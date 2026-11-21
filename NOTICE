@@ -1,0 +1,28 @@
+RMandelbulb3D
+Copyright (C) 2026 Christian Nielebock
+
+RMandelbulb3D is free software: you can redistribute it and/or modify it under the terms of the
+GNU Lesser General Public License as published by the Free Software Foundation, either version
+2.1 of the License, or (at your option) any later version. See LICENSE.
+
+This program is a re-implementation of Mandelbulb3D (https://github.com/thargor6/mb3d), which is
+licensed under the GNU Lesser General Public License, version 2.1 or (at your option) any later
+version:
+
+  Mandelbulb3D by Jesse (and contributors), maintained by Andreas Maschke and others.
+
+Parts derived from Mandelbulb3D:
+- The import of Mandelbulb3D parameter files (.m3p and text parameters) follows the parameter
+  layout of Mandelbulb3D's source (TypeDefinitions.pas, FileHandling.pas, HeaderTrafos.pas).
+- The formula option memory layout follows CustomFormulas.pas (FillCustomVBufWithVars).
+- crates/rmb-core/src/formula/lib/mb3d.mbf is generated from the Mandelbulb3D formula files
+  (M3Formulas/*.m3f) by translating their machine code. The formulas were written by the
+  Mandelbulb3D authors and many formula contributors (among them Luca GN / DarkBeam, Kali,
+  Tglad, msltoe, Buddhi, Jesse and others named in the formula descriptions).
+- Built-in formulas such as Integer Power, Real Power, Quaternion, Tricorn, Amazing Box and
+  Folding Int Pow follow their Mandelbulb3D definitions (formulas.pas).
+
+The user interface theme follows RWildFire (https://github.com/Ravetracer/RWildFire, LGPL 3.0 or
+later) by the same author.
+
+THIS SOFTWARE IS PROVIDED WITHOUT ANY WARRANTY; see LICENSE for details.

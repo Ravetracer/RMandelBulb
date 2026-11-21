@@ -1,0 +1,431 @@
+// SPDX-License-Identifier: LGPL-2.1-or-later
+
+//! Mandelbulb3D formula files (`*.m3f`) translated into the formula language.
+//!
+//! An `.m3f` file holds 32-bit x86 machine code (x87, some SSE2) of one iteration, the
+//! formula's options and constants. `translate` reads the file, rebuilds the parameter memory
+//! the code expects (Mandelbulb3D's `FillCustomVBufWithVars`) and turns the machine code into
+//! formula-language source by symbolic execution (`x86.rs`). The result compiles for the GPU
+//! and the CPU like any other formula.
+
+mod x86;
+
+use std::fmt::Write;
+
+/// One (expanded) option: what the user edits.
+#[derive(Clone, Debug)]
+pub struct Opt {
+    /// Mandelbulb3D option type (0 = Double … 22 = DReci2).
+    pub kind: u8,
+    pub name: String,
+    pub default: f64,
+    /// Formula-language identifier.
+    pub ident: String,
+}
+
+/// A parsed `.m3f` file.
+#[derive(Clone, Debug, Default)]
+pub struct M3f {
+    pub name: String,
+    pub options: Vec<Opt>,
+    pub de_option: i32,
+    pub de_scale: f64,
+    pub ade_scale: f64,
+    pub version: i32,
+    /// Constants area (8 bytes per constant, from offset 0 of the parameter pointer).
+    pub constants: Vec<u8>,
+    pub code: Vec<u8>,
+    pub description: String,
+    /// The formula is Pascal source for Mandelbulb3D's JIT compiler (not supported yet).
+    pub has_source: bool,
+}
+
+const TYPE_NAMES: [&str; 23] = [
+    "DOUBLE",
+    "SINGLE",
+    "INTEGER",
+    "DOUBLEANGLE",
+    "SINGLEANGLE",
+    "3DOUBLEANGLES",
+    "3SINGLEANGLES",
+    "BOXSCALE",
+    "FOLDING",
+    "DSQUARE",
+    "NOVARIABLE",
+    "FOLDING16",
+    "6SINGLEANGLES",
+    "DRECIPRO",
+    "2DOUBLES",
+    "DSQRRECI",
+    "2SINGLES",
+    "4SINGLES",
+    "3SCALESANGLES",
+    "SCALESROT",
+    "2INTEGER",
+    "SRECI2",
+    "DRECI2",
+];
+
+fn parse_num(s: &str) -> f64 {
+    s.trim().replace(',', ".").parse::<f64>().unwrap_or(0.0)
+}
+
+fn ident_for(i: usize, name: &str) -> String {
+    let mut s: String = name.chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '_' }).collect();
+    while s.contains("__") {
+        s = s.replace("__", "_");
+    }
+    let s = s.trim_matches('_');
+    if s.is_empty() { format!("o{i}") } else { format!("o{i}_{s}") }
+}
+
+impl M3f {
+    pub fn parse(name: &str, text: &str) -> Result<M3f, String> {
+        let mut m = M3f { name: name.to_string(), de_scale: 1.0, ade_scale: 1.0, ..Default::default() };
+        let mut section = String::new();
+        let mut code_hex = String::new();
+        let mut desc = Vec::new();
+        let mut after_end = false;
+        for raw in text.lines() {
+            let line = raw.trim();
+            if after_end {
+                desc.push(raw.trim_end().to_string());
+                continue;
+            }
+            if line.starts_with('[') && line.ends_with(']') {
+                section = line.to_uppercase();
+                if section == "[END]" {
+                    after_end = true;
+                }
+                continue;
+            }
+            if line.is_empty() {
+                continue;
+            }
+            match section.as_str() {
+                "[OPTIONS]" => m.option_line(line),
+                "[CONSTANTS]" => m.constant_line(line),
+                "[CODE]" => code_hex.extend(line.chars().filter(|c| c.is_ascii_hexdigit())),
+                "[SOURCE]" => m.has_source = true,
+                _ => {}
+            }
+        }
+        if code_hex.len() >= 2 {
+            let n = code_hex.len() / 2 * 2;
+            m.code = (0..n).step_by(2).filter_map(|i| u8::from_str_radix(&code_hex[i..i + 2], 16).ok()).collect();
+        }
+        let d = desc.join("\n");
+        m.description = d.trim().trim_start_matches("Description:").trim().to_string();
+        if m.code.is_empty() && !m.has_source {
+            return Err("no [CODE] section".into());
+        }
+        Ok(m)
+    }
+
+    fn option_line(&mut self, line: &str) {
+        let upper = line.to_uppercase();
+        let last = line.rsplit(|c: char| c.is_whitespace() || c == '=').find(|s| !s.is_empty()).unwrap_or("");
+        let key = upper.trim_start_matches('.');
+        if key.starts_with("DEOPTION") {
+            self.de_option = parse_num(last) as i32;
+            return;
+        }
+        if key.starts_with("DESCALE") {
+            self.de_scale = parse_num(last);
+            return;
+        }
+        if key.starts_with("ADESCALE") {
+            self.ade_scale = parse_num(last);
+            return;
+        }
+        if key.starts_with("VERSION") {
+            self.version = parse_num(last) as i32;
+            return;
+        }
+        if ["SSE", "SIPOW", "RSTOP", "DIFS"].iter().any(|k| key.starts_with(k)) {
+            return;
+        }
+        let first = key.split_whitespace().next().unwrap_or("");
+        let Some(kind) = TYPE_NAMES.iter().position(|t| *t == first) else { return };
+        if self.options.len() >= 16 {
+            return;
+        }
+        let kind = kind as u8;
+        let (lhs, rhs) = line.split_once('=').unwrap_or((line, "0"));
+        let label = lhs.split_whitespace().skip(1).collect::<Vec<_>>().join(" ");
+        let default = parse_num(rhs.split_whitespace().last().unwrap_or("0"));
+        let mut push = |kind: u8, name: String, default: f64| {
+            let i = self.options.len();
+            if i < 16 {
+                self.options.push(Opt { kind, ident: ident_for(i, &name), name, default });
+            }
+        };
+        match kind {
+            5 | 6 => {
+                for ax in ["X", "Y", "Z"] {
+                    push(kind, format!("{label} {ax}"), default);
+                }
+            }
+            12 => {
+                for pl in ["YZ", "XZ", "XY", "XW", "YW", "ZW"] {
+                    push(kind, format!("{label} {pl}"), default);
+                }
+            }
+            18 => {
+                push(kind, label.clone(), default);
+                for c in ["A", "B", "C"] {
+                    push(6, format!("Rotation {c}"), 0.0);
+                }
+            }
+            19 => {
+                let scale = parse_num(rhs.split_whitespace().next().unwrap_or("1"));
+                push(kind, format!("Scale {label}"), scale);
+                push(6, format!("Rotation {label}"), default);
+            }
+            _ => push(kind, label, default),
+        }
+    }
+
+    fn constant_line(&mut self, line: &str) {
+        let upper = line.trim_start_matches('.').to_uppercase();
+        let last = line.rsplit(|c: char| c.is_whitespace() || c == '=').find(|s| !s.is_empty()).unwrap_or("0");
+        let mut slot = [0u8; 8];
+        if upper.starts_with("DOUBLE") {
+            slot = parse_num(last).to_le_bytes();
+        } else if upper.starts_with("INT64") {
+            slot = parse_int(last).to_le_bytes();
+        } else if upper.starts_with("INT") {
+            slot[..4].copy_from_slice(&(parse_int(last) as i32).to_le_bytes());
+        } else if upper.starts_with("SINGLE") {
+            slot[..4].copy_from_slice(&(parse_num(last) as f32).to_le_bytes());
+        } else {
+            return;
+        }
+        self.constants.extend_from_slice(&slot);
+    }
+
+    /// The formula is a 4D formula (w is the fourth coordinate, the derivative lives elsewhere).
+    pub fn is_4d(&self) -> bool {
+        matches!(self.de_option, 4..=6)
+    }
+}
+
+fn parse_int(s: &str) -> i64 {
+    let s = s.trim();
+    if let Some(h) = s.strip_prefix('$') {
+        u64::from_str_radix(h, 16).map(|v| v as i64).unwrap_or(0)
+    } else {
+        s.parse::<i64>().unwrap_or(0)
+    }
+}
+
+/// A value the formula code finds in its parameter memory below the parameter pointer.
+#[derive(Clone, Debug)]
+pub(crate) struct MemSlot {
+    /// Byte offset from the parameter pointer (negative).
+    pub offset: i64,
+    pub kind: SlotKind,
+    /// Formula-language expression of the value (in terms of the parameters), or None if the
+    /// slot holds something that cannot be expressed (a function pointer).
+    pub expr: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SlotKind {
+    F64,
+    F32,
+    I32,
+}
+
+/// Rebuilds Mandelbulb3D's `FillCustomVBufWithVars`: where each option value (or the values
+/// derived from it) lies below the parameter pointer.
+pub(crate) fn memory_layout(opts: &[Opt]) -> Vec<MemSlot> {
+    let mut slots = vec![MemSlot { offset: -8, kind: SlotKind::F64, expr: Some("0.5".into()) }];
+    let mut p: i64 = -8;
+    let id = |i: usize| opts.get(i).map(|o| o.ident.clone()).unwrap_or_else(|| "0.0".into());
+    let mut push = |p: &mut i64, size: u8, kind: SlotKind, expr: Option<String>| {
+        *p -= size as i64;
+        slots.push(MemSlot { offset: *p, kind, expr });
+    };
+    let rot = |a: String, b: String, c: String| -> [String; 9] {
+        let (sx, cx) = (format!("sin({a} * pi / 180.0)"), format!("cos({a} * pi / 180.0)"));
+        let (sy, cy) = (format!("sin({b} * pi / 180.0)"), format!("cos({b} * pi / 180.0)"));
+        let (sz, cz) = (format!("sin({c} * pi / 180.0)"), format!("cos({c} * pi / 180.0)"));
+        [
+            format!("{cy} * {cz}"),
+            format!("-{cy} * {sz}"),
+            sy.clone(),
+            format!("{sx} * {sy} * {cz} + {cx} * {sz}"),
+            format!("{cx} * {cz} - {sx} * {sy} * {sz}"),
+            format!("-{sx} * {cy}"),
+            format!("{sx} * {sz} - {cx} * {sy} * {cz}"),
+            format!("{cx} * {sy} * {sz} + {sx} * {cz}"),
+            format!("{cx} * {cy}"),
+        ]
+    };
+    let mut i = 0;
+    while i < opts.len().min(16) {
+        let v = id(i);
+        use SlotKind::*;
+        match opts[i].kind {
+            0 => push(&mut p, 8, F64, Some(v)),
+            1 => push(&mut p, 4, F32, Some(v)),
+            2 => push(&mut p, 4, I32, Some(format!("round({v})"))),
+            3 => {
+                push(&mut p, 8, F64, Some(format!("sin({v} * pi / 180.0)")));
+                push(&mut p, 8, F64, Some(format!("cos({v} * pi / 180.0)")));
+            }
+            4 => {
+                push(&mut p, 4, F32, Some(format!("sin({v} * pi / 180.0)")));
+                push(&mut p, 4, F32, Some(format!("cos({v} * pi / 180.0)")));
+            }
+            5 | 6 => {
+                let m = rot(v, id(i + 1), id(i + 2));
+                let (size, kind) = if opts[i].kind == 5 { (8, F64) } else { (4, F32) };
+                for e in m {
+                    push(&mut p, size, kind, Some(e));
+                }
+                i += 2;
+            }
+            7 => {
+                let prev = if i > 0 { id(i - 1) } else { "0.0".into() };
+                push(&mut p, 8, F64, Some(format!("{prev} / sqr(max(1.0e-40, {v}))")));
+                push(&mut p, 8, F64, Some(format!("sqr(max(1.0e-40, {v}))")));
+            }
+            8 => {
+                push(&mut p, 8, F64, Some(v.clone()));
+                push(&mut p, 8, F64, Some(format!("2.0 * {v}")));
+                push(&mut p, 8, F64, Some(format!("-{v}")));
+                push(&mut p, 8, F64, Some(format!("-2.0 * {v}")));
+                push(&mut p, 4, I32, None);
+            }
+            9 => push(&mut p, 8, F64, Some(format!("sqr({v})"))),
+            10 => {}
+            11 => {
+                push(&mut p, 8, F64, Some(v.clone()));
+                push(&mut p, 8, F64, Some(v.clone()));
+                push(&mut p, 8, F64, Some(format!("-{v}")));
+                push(&mut p, 8, F64, Some(format!("-{v}")));
+            }
+            12 => {
+                for _ in 0..16 {
+                    push(&mut p, 4, F32, None);
+                }
+                i += 5;
+            }
+            13 => push(&mut p, 8, F64, Some(format!("1.0 / sel(abs({v}) < 1.0e-40, sel({v} < 0.0, -1.0e-40, 1.0e-40), {v})"))),
+            14 => {
+                push(&mut p, 8, F64, Some(v.clone()));
+                push(&mut p, 8, F64, Some(v));
+            }
+            15 => push(&mut p, 8, F64, Some(format!("1.0 / max(1.0e-40, sqr({v}))"))),
+            16 | 17 => {
+                for _ in 0..(if opts[i].kind == 17 { 4 } else { 2 }) {
+                    push(&mut p, 4, F32, Some(v.clone()));
+                }
+            }
+            18 => {
+                let m = rot(id(i + 1), id(i + 2), id(i + 3));
+                for e in m {
+                    push(&mut p, 4, F32, Some(format!("({e}) * {v}")));
+                }
+                i += 3;
+            }
+            19 => {
+                let r = id(i + 1);
+                push(&mut p, 4, F32, Some(format!("sin({r} * pi / 180.0) * {v}")));
+                push(&mut p, 4, F32, Some(format!("cos({r} * pi / 180.0) * {v}")));
+                i += 1;
+            }
+            20 => {
+                push(&mut p, 4, I32, Some(format!("round({v})")));
+                push(&mut p, 4, I32, Some(format!("round({v})")));
+            }
+            21 => {
+                push(&mut p, 4, F32, Some(v.clone()));
+                push(&mut p, 4, F32, Some(format!("1.0 / max(1.0e-30, {v})")));
+            }
+            22 => {
+                push(&mut p, 8, F64, Some(v.clone()));
+                push(&mut p, 8, F64, Some(format!("1.0 / max(1.0e-40, {v})")));
+            }
+            _ => {}
+        }
+        // Mandelbulb3D stops filling past 256 bytes.
+        if -p > 256 {
+            break;
+        }
+        i += 1;
+    }
+    slots
+}
+
+/// Result of a translation.
+pub struct Translated {
+    /// Formula-language source of the formula.
+    pub source: String,
+}
+
+/// Translates a parsed `.m3f` into formula-language source.
+pub fn translate(m: &M3f) -> Result<Translated, String> {
+    if m.has_source {
+        return Err("Pascal source formula (JIT) is not supported yet".into());
+    }
+    if m.de_option >= 20 {
+        return Err("dIFS formula (distance IFS) is not supported yet".into());
+    }
+    let layout = memory_layout(&m.options);
+    let body = x86::translate(m, &layout)?;
+    let mut s = String::new();
+    let category = if m.de_option < 0 {
+        "MB3D transforms"
+    } else if m.is_4d() {
+        "MB3D 4D"
+    } else {
+        "MB3D 3D"
+    };
+    let de = match m.de_option {
+        2 | 5 | 6 | 11 => "linear",
+        _ => "numeric",
+    };
+    let first_line = m.description.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("").replace('"', "'");
+    let _ = writeln!(s, "formula \"{}\" {{", m.name);
+    let _ = writeln!(s, "    category \"{category}\"");
+    let _ = writeln!(s, "    description \"Mandelbulb3D formula {}. {}\"", m.name, first_line.chars().take(200).collect::<String>());
+    let _ = writeln!(s, "    de {de}");
+    if m.de_option < 0 {
+        s.push_str("    transform\n");
+    }
+    let scale = if de == "linear" { m.ade_scale } else { m.de_scale };
+    if scale.is_finite() && scale > 0.0 && scale != 1.0 {
+        let _ = writeln!(s, "    descale {}", crate::formula::wgsl::lit(scale));
+    }
+    let _ = writeln!(s, "    alias \"{}\"", m.name);
+    for o in &m.options {
+        let d = o.default;
+        let span = d.abs().max(1.0) * 2.0;
+        let (kind, lo, hi) = match o.kind {
+            2 | 20 => ("int", d - span, d + span),
+            3..=6 | 12 => ("angle", -180.0, 180.0),
+            10 => ("int", 0.0, 16.0),
+            _ => ("", d - span, d + span),
+        };
+        let label = o.name.replace('"', "'");
+        let _ = writeln!(s, "    param {} \"{}\" = {} [{}, {}] {kind}", o.ident, label, num(d), num(lo), num(hi));
+    }
+    s.push_str(&body);
+    s.push_str("}\n");
+    Ok(Translated { source: s })
+}
+
+fn num(v: f64) -> String {
+    crate::formula::wgsl::lit(if v.is_finite() { v } else { 0.0 })
+}
+
+/// Reads and translates a file; the formula name is the file stem.
+pub fn translate_file(path: &std::path::Path) -> Result<Translated, String> {
+    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+    let text: String = bytes.iter().map(|&b| b as char).collect();
+    let name = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+    translate(&M3f::parse(&name, &text)?)
+}

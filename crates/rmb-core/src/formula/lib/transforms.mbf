@@ -1,0 +1,164 @@
+// Transforms: building blocks for hybrids. They change the point but add no constant by
+// themselves (except "Add C"), and are skipped by the escape test.
+
+formula "Rotate" {
+    category "Transforms"
+    description "Rotates the point about the x, y and z axes (in that order)."
+    transform
+    de linear
+    alias "_Rotate" (ax, ay, az)
+    param ax "Angle X" = 0 angle
+    param ay "Angle Y" = 0 angle
+    param az "Angle Z" = 0 angle
+    init {
+        let sa = sin(ax * pi / 180.0)
+        let ca = cos(ax * pi / 180.0)
+        let sb = sin(ay * pi / 180.0)
+        let cb = cos(ay * pi / 180.0)
+        let sc = sin(az * pi / 180.0)
+        let cc = cos(az * pi / 180.0)
+        let m00 = cc * cb
+        let m01 = cc * sb * sa - sc * ca
+        let m02 = cc * sb * ca + sc * sa
+        let m10 = sc * cb
+        let m11 = sc * sb * sa + cc * ca
+        let m12 = sc * sb * ca - cc * sa
+        let m20 = -sb
+        let m21 = cb * sa
+        let m22 = cb * ca
+    }
+    iter {
+        let rx = m00 * x + m01 * y + m02 * z
+        let ry = m10 * x + m11 * y + m12 * z
+        z = m20 * x + m21 * y + m22 * z
+        x = rx
+        y = ry
+    }
+}
+
+formula "Scale" {
+    category "Transforms"
+    description "Scales the point (and the derivative)."
+    transform
+    de linear
+    alias "_Scale"
+    param s "Scale" = 1.5 [-4, 4]
+    iter {
+        x *= s
+        y *= s
+        z *= s
+        w *= s
+        dr *= abs(s)
+    }
+}
+
+formula "Translate" {
+    category "Transforms"
+    description "Adds a fixed offset."
+    transform
+    de linear
+    param tx "X" = 0 [-2, 2]
+    param ty "Y" = 0 [-2, 2]
+    param tz "Z" = 0 [-2, 2]
+    iter {
+        x += tx
+        y += ty
+        z += tz
+    }
+}
+
+formula "Add C" {
+    category "Transforms"
+    description "Adds the constant c (pixel position or Julia seed), scaled."
+    transform
+    de linear
+    alias "_addC" (mx, my, mz)
+    param mx "X multiplier" = 1 [-2, 2]
+    param my "Y multiplier" = 1 [-2, 2]
+    param mz "Z multiplier" = 1 [-2, 2]
+    iter {
+        x += cx * mx
+        y += cy * my
+        z += cz * mz
+    }
+}
+
+formula "Box fold" {
+    category "Transforms"
+    description "Folds each axis back at +-limit (the Mandelbox fold)."
+    transform
+    de linear
+    alias "_Folding1" (fold)
+    param fold "Limit" = 1 [0, 3]
+    iter {
+        x = abs(x + fold) - abs(x - fold) - x
+        y = abs(y + fold) - abs(y - fold) - y
+        z = abs(z + fold) - abs(z - fold) - z
+    }
+}
+
+formula "Sphere fold" {
+    category "Transforms"
+    description "Inverts the point inside the fixed radius, linearly scales it inside the min radius."
+    transform
+    de linear
+    alias "_SphereFold"
+    param min_r "Min radius" = 0.5 [0, 2]
+    param fixed_r "Fixed radius" = 1 [0, 3]
+    init {
+        let mr2 = max(min_r * min_r, 1.0e-12)
+        let fr2 = fixed_r * fixed_r
+    }
+    iter {
+        let r2 = x * x + y * y + z * z
+        let m = 1.0
+        if r2 < mr2 {
+            m = fr2 / mr2
+        } else if r2 < fr2 {
+            m = fr2 / r2
+        }
+        x *= m
+        y *= m
+        z *= m
+        dr *= m
+    }
+}
+
+formula "Abs" {
+    category "Transforms"
+    description "Mirrors the chosen axes to their positive side."
+    transform
+    de linear
+    alias "_Abs"
+    param fx "X" = 1 bool
+    param fy "Y" = 1 bool
+    param fz "Z" = 1 bool
+    iter {
+        if fx > 0.5 { x = abs(x) }
+        if fy > 0.5 { y = abs(y) }
+        if fz > 0.5 { z = abs(z) }
+    }
+}
+
+formula "Sphere inversion" {
+    category "Transforms"
+    description "Inverts the point in a sphere around a center."
+    transform
+    de linear
+    alias "_SphereInv"
+    param radius "Radius" = 1 [0.01, 4]
+    param ox "Center X" = 0 [-2, 2]
+    param oy "Center Y" = 0 [-2, 2]
+    param oz "Center Z" = 0 [-2, 2]
+    iter {
+        x += ox
+        y += oy
+        z += oz
+        let r2 = max(x * x + y * y + z * z, 1.0e-20)
+        let m = radius * radius / r2
+        x = x * m - ox
+        y = y * m - oy
+        z = z * m - oz
+        dr *= m
+    }
+}

@@ -1,0 +1,21 @@
+[workspace]
+resolver = "3"
+members = ["crates/rmb-core", "crates/rmb-gpu", "crates/rmb-app", "crates/rmb-cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "LGPL-2.1-or-later"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+
+[profile.dev]
+opt-level = 1
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+opt-level = 3
+debug = false

@@ -1,0 +1,166 @@
+// Power bulbs: the Mandelbulb family (Daniel White, Paul Nylander and variants).
+
+formula "Mandelbulb" {
+    category "Bulbs"
+    description "Spherical power bulb (White/Nylander): z -> z^n + c with theta measured from the z axis."
+    de log
+    param power "Power" = 8 [1, 16]
+    param theta_phase "Theta phase" = 0 [-180, 180] angle
+    param phi_phase "Phi phase" = 0 [-180, 180] angle
+    param z_mul "Z multiplier" = 1 [-2, 2]
+    init {
+        let tp = theta_phase * pi / 180.0
+        let pp = phi_phase * pi / 180.0
+    }
+    iter {
+        let r = max(sqrt(x * x + y * y + z * z), 1.0e-20)
+        let theta = acos(clamp(z / r, -1.0, 1.0)) * power + tp
+        let phi = atan2(y, x) * power + pp
+        dr = power * pow(r, power - 1.0) * dr + 1.0
+        let zr = pow(r, power)
+        let st = sin(theta)
+        x = zr * st * cos(phi) + cx
+        y = zr * st * sin(phi) + cy
+        z = zr * cos(theta) * z_mul + cz
+    }
+}
+
+formula "Mandelbulb (cosine)" {
+    category "Bulbs"
+    description "Power bulb with the latitude measured from the xy plane (the classic Mandelbulb3D integer power look)."
+    de log
+    alias "Integer Power"
+    alias "IntPow"
+    alias "Real Power"
+    alias "RealPower"
+    param power "Power" = 8 [1, 16]
+    param z_mul "Z multiplier" = -1 [-2, 2]
+    iter {
+        let r = max(sqrt(x * x + y * y + z * z), 1.0e-20)
+        let theta = asin(clamp(z / r, -1.0, 1.0)) * power
+        let phi = atan2(y, x) * power
+        dr = power * pow(r, power - 1.0) * dr + 1.0
+        let zr = pow(r, power)
+        let ct = cos(theta)
+        x = zr * ct * cos(phi) + cx
+        y = zr * ct * sin(phi) + cy
+        z = zr * sin(theta) * z_mul + cz
+    }
+}
+
+formula "Mandelbar bulb" {
+    category "Bulbs"
+    description "Tricorn-like bulb: the azimuth turns backwards (conjugate)."
+    de log
+    param power "Power" = 2 [1, 16]
+    iter {
+        let r = max(sqrt(x * x + y * y + z * z), 1.0e-20)
+        let theta = asin(clamp(z / r, -1.0, 1.0)) * power
+        let phi = -atan2(y, x) * power
+        dr = power * pow(r, power - 1.0) * dr + 1.0
+        let zr = pow(r, power)
+        let ct = cos(theta)
+        x = zr * ct * cos(phi) + cx
+        y = zr * ct * sin(phi) + cy
+        z = -zr * sin(theta) + cz
+    }
+}
+
+formula "Square bulb" {
+    category "Bulbs"
+    description "Trigonometry-free power 2 bulb (White's squarbulb)."
+    de log
+    alias "Integer Power 2"
+    iter {
+        let rxy2 = x * x + y * y
+        let a = 1.0 - z * z / max(rxy2, 1.0e-20)
+        let r = sqrt(rxy2 + z * z)
+        dr = 2.0 * r * dr + 1.0
+        let nx = (x * x - y * y) * a
+        let ny = 2.0 * x * y * a
+        z = -2.0 * z * sqrt(rxy2) + cz
+        x = nx + cx
+        y = ny + cy
+    }
+}
+
+formula "Bristorbrot" {
+    category "Bulbs"
+    description "Doug Bristor's power 2 hypercomplex variation."
+    de log
+    iter {
+        let r = sqrt(x * x + y * y + z * z)
+        dr = 2.0 * r * dr + 1.0
+        let nx = x * x - y * y - z * z
+        let ny = y * (2.0 * x - z)
+        z = z * (2.0 * x + y) + cz
+        x = nx + cx
+        y = ny + cy
+    }
+}
+
+formula "Xenodreambuie" {
+    category "Bulbs"
+    description "Power bulb by Xenodreambuie (Jesse) with alpha and beta angle offsets."
+    de log
+    param power "Power" = 9 [1, 16]
+    param alpha "Alpha" = 0 [-180, 180] angle
+    param beta "Beta" = 0 [-180, 180] angle
+    init {
+        let a = alpha * pi / 180.0
+        let b = beta * pi / 180.0
+    }
+    iter {
+        let r = max(sqrt(x * x + y * y + z * z), 1.0e-20)
+        let th = (acos(clamp(z / r, -1.0, 1.0)) + b) * power
+        let ph = (atan2(y, x) + a) * power
+        dr = power * pow(r, power - 1.0) * dr + 1.0
+        let zr = pow(r, power)
+        let st = sin(th)
+        x = zr * st * cos(ph) + cx
+        y = zr * st * sin(ph) + cy
+        z = zr * cos(th) + cz
+    }
+}
+
+formula "Folding bulb" {
+    category "Bulbs"
+    description "Box-folds the point before a power bulb step (Mandelbulb3D's Folding Int Pow)."
+    de log
+    alias "Folding Int Pow" (power, z_mul, fold)
+    param power "Power" = 2 [1, 16]
+    param fold "Fold" = 2 [0, 3]
+    param z_mul "Z multiplier" = -1 [-2, 2]
+    iter {
+        x = abs(x + fold) - abs(x - fold) - x
+        y = abs(y + fold) - abs(y - fold) - y
+        z = abs(z + fold) - abs(z - fold) - z
+        let r = max(sqrt(x * x + y * y + z * z), 1.0e-20)
+        let theta = asin(clamp(z / r, -1.0, 1.0)) * power
+        let phi = atan2(y, x) * power
+        dr = power * pow(r, power - 1.0) * dr + 1.0
+        let zr = pow(r, power)
+        let ct = cos(theta)
+        x = zr * ct * cos(phi) + cx
+        y = zr * ct * sin(phi) + cy
+        z = zr * sin(theta) * z_mul + cz
+    }
+}
+
+formula "Tricorn" {
+    category "Bulbs"
+    description "Mandelbulb3D's Tricorn: x^2 - y^2 - z^2, 2xy, z multiplier times xz."
+    de log
+    alias "Tricorn"
+    param z_mul "Z multiplier" = -2 [-4, 4]
+    param cz_mul "CZ multiplier" = 1 [-2, 2]
+    iter {
+        let r = sqrt(x * x + y * y + z * z)
+        dr = 2.0 * r * dr + 1.0
+        let nx = x * x - y * y - z * z
+        let ny = 2.0 * x * y
+        z = z_mul * x * z + cz_mul * cz
+        x = nx + cx
+        y = ny + cy
+    }
+}

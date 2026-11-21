@@ -1,0 +1,10 @@
+[package]
+name = "rmb-cli"
+version = "0.1.0"
+edition = "2024"
+license = "LGPL-2.1-or-later"
+
+[dependencies]
+rmb-core = { version = "0.1.0", path = "../rmb-core" }
+rmb-gpu = { version = "0.1.0", path = "../rmb-gpu" }
+rayon = "1.12"

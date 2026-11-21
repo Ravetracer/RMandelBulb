@@ -1,0 +1,131 @@
+// Iterated function systems built from folds: sponges, tetrahedra, kaleidoscopes.
+
+formula "Menger sponge" {
+    category "IFS"
+    description "Menger sponge: absolute fold, sort fold, scale about an offset."
+    de linear
+    alias "Menger3" (scale, ox, oy, oz)
+    param scale "Scale" = 3 [1, 5]
+    param ox "Offset X" = 1 [0, 2]
+    param oy "Offset Y" = 1 [0, 2]
+    param oz "Offset Z" = 1 [0, 2]
+    init {
+        let sx = ox * (scale - 1.0)
+        let sy = oy * (scale - 1.0)
+        let sz = oz * (scale - 1.0)
+    }
+    iter {
+        x = abs(x)
+        y = abs(y)
+        z = abs(z)
+        if x < y { let t = x; x = y; y = t }
+        if x < z { let t = x; x = z; z = t }
+        if y < z { let t = y; y = z; z = t }
+        x = scale * x - sx
+        y = scale * y - sy
+        z = scale * z
+        if z > 0.5 * sz { z -= sz }
+        dr = dr * scale
+    }
+}
+
+formula "Sierpinski tetrahedron" {
+    category "IFS"
+    description "Sierpinski tetrahedron by plane folds."
+    de linear
+    alias "Sierpinski3" (scale, ox, oy, oz)
+    param scale "Scale" = 2 [1, 4]
+    param ox "Offset X" = 1 [0, 2]
+    param oy "Offset Y" = 1 [0, 2]
+    param oz "Offset Z" = 1 [0, 2]
+    iter {
+        if x + y < 0.0 { let t = -y; y = -x; x = t }
+        if x + z < 0.0 { let t = -z; z = -x; x = t }
+        if y + z < 0.0 { let t = -z; z = -y; y = t }
+        x = scale * x - ox * (scale - 1.0)
+        y = scale * y - oy * (scale - 1.0)
+        z = scale * z - oz * (scale - 1.0)
+        dr = dr * scale
+    }
+}
+
+formula "Kaleidoscopic IFS" {
+    category "IFS"
+    description "Knighty's kaleidoscopic IFS: folds, rotation, scale about an offset, second rotation."
+    de linear
+    alias "KIFS"
+    param scale "Scale" = 2 [1, 4]
+    param ox "Offset X" = 1 [-2, 2]
+    param oy "Offset Y" = 1 [-2, 2]
+    param oz "Offset Z" = 1 [-2, 2]
+    param abs_fold "Absolute fold" = 1 bool
+    param sort_fold "Sort fold" = 1 bool
+    param tetra_fold "Tetra fold" = 0 bool
+    param ax "Rotation X" = 0 angle
+    param ay "Rotation Y" = 0 angle
+    param az "Rotation Z" = 0 angle
+    init {
+        let sa = sin(ax * pi / 180.0)
+        let ca = cos(ax * pi / 180.0)
+        let sb = sin(ay * pi / 180.0)
+        let cb = cos(ay * pi / 180.0)
+        let sc = sin(az * pi / 180.0)
+        let cc = cos(az * pi / 180.0)
+        let m00 = cc * cb
+        let m01 = cc * sb * sa - sc * ca
+        let m02 = cc * sb * ca + sc * sa
+        let m10 = sc * cb
+        let m11 = sc * sb * sa + cc * ca
+        let m12 = sc * sb * ca - cc * sa
+        let m20 = -sb
+        let m21 = cb * sa
+        let m22 = cb * ca
+    }
+    iter {
+        if abs_fold > 0.5 {
+            x = abs(x)
+            y = abs(y)
+            z = abs(z)
+        }
+        if tetra_fold > 0.5 {
+            if x + y < 0.0 { let t = -y; y = -x; x = t }
+            if x + z < 0.0 { let t = -z; z = -x; x = t }
+            if y + z < 0.0 { let t = -z; z = -y; y = t }
+        }
+        if sort_fold > 0.5 {
+            if x < y { let t = x; x = y; y = t }
+            if x < z { let t = x; x = z; z = t }
+            if y < z { let t = y; y = z; z = t }
+        }
+        let rx = m00 * x + m01 * y + m02 * z
+        let ry = m10 * x + m11 * y + m12 * z
+        let rz = m20 * x + m21 * y + m22 * z
+        x = scale * rx - ox * (scale - 1.0)
+        y = scale * ry - oy * (scale - 1.0)
+        z = scale * rz
+        let oz2 = oz * (scale - 1.0)
+        if z > 0.5 * oz2 { z -= oz2 }
+        dr = dr * scale
+    }
+}
+
+formula "Octahedron" {
+    category "IFS"
+    description "Octahedral IFS (sorted absolute values, scaled toward the x corner)."
+    de linear
+    alias "OctaFullIFS" (scale, ox)
+    param scale "Scale" = 2 [1, 4]
+    param ox "Offset" = 1 [0, 2]
+    iter {
+        x = abs(x)
+        y = abs(y)
+        z = abs(z)
+        if x < y { let t = x; x = y; y = t }
+        if x < z { let t = x; x = z; z = t }
+        if y < z { let t = y; y = z; z = t }
+        x = scale * x - ox * (scale - 1.0)
+        y = scale * y
+        z = scale * z
+        dr = dr * scale
+    }
+}

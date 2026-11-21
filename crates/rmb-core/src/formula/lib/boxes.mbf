@@ -1,0 +1,165 @@
+// Folding fractals: Tglad's Mandelbox ("Amazing Box") and relatives.
+
+formula "Amazing Box" {
+    category "Boxes"
+    description "Tglad's Mandelbox: box fold, sphere fold, scale and add c."
+    de linear
+    alias "Amazing Box" (scale, min_r, fold)
+    alias "AmazingBox" (scale, min_r, fold)
+    alias "Mandelbox"
+    param scale "Scale" = 2 [-4, 4]
+    param min_r "Min radius" = 0.5 [0, 2]
+    param fixed_r "Fixed radius" = 1 [0, 3]
+    param fold "Fold limit" = 1 [0, 3]
+    init {
+        let mr2 = max(min_r * min_r, 1.0e-12)
+        let fr2 = fixed_r * fixed_r
+    }
+    iter {
+        x = abs(x + fold) - abs(x - fold) - x
+        y = abs(y + fold) - abs(y - fold) - y
+        z = abs(z + fold) - abs(z - fold) - z
+        let r2 = x * x + y * y + z * z
+        let m = scale
+        if r2 < mr2 {
+            m = scale * fr2 / mr2
+        } else if r2 < fr2 {
+            m = scale * fr2 / r2
+        }
+        x = x * m + cx
+        y = y * m + cy
+        z = z * m + cz
+        dr = dr * abs(m) + 1.0
+    }
+}
+
+formula "Amazing Surf" {
+    category "Boxes"
+    description "Mandelbox variant that folds only x and y, giving surf-like sheets."
+    de linear
+    alias "Amazing Surf" (scale, min_r, fold)
+    param scale "Scale" = 1.8 [-4, 4]
+    param min_r "Min radius" = 0.5 [0, 2]
+    param fold "Fold limit" = 1 [0, 3]
+    param c_mul "C multiplier" = 1 [-2, 2]
+    init { let mr2 = max(min_r * min_r, 1.0e-12) }
+    iter {
+        x = abs(x + fold) - abs(x - fold) - x
+        y = abs(y + fold) - abs(y - fold) - y
+        let r2 = x * x + y * y + z * z
+        let m = scale
+        if r2 < mr2 {
+            m = scale / mr2
+        } else if r2 < 1.0 {
+            m = scale / r2
+        }
+        x = x * m + cx * c_mul
+        y = y * m + cy * c_mul
+        z = z * m + cz * c_mul
+        dr = dr * abs(m) + 1.0
+    }
+}
+
+formula "ABox Mod Kali" {
+    category "Boxes"
+    description "Kali's fold (Fold - |(|x + mod| - Fold)| - |mod|) with a variable scale; after ABoxMod1 by Luca."
+    de linear
+    alias "ABoxMod1"
+    param scale "Scale" = 2 [-4, 4]
+    param min_r "Min radius" = 0 [0, 2]
+    param fold "Fold" = 2 [0, 4]
+    param scale_vary "Scale vary" = 0 [-1, 1]
+    param fx "Fold X mod" = 0 [-2, 2]
+    param fy "Fold Y mod" = 0 [-2, 2]
+    param fz "Fold Z mod" = 0 [-2, 2]
+    init { let mr2 = max(min_r * min_r, 1.0e-12) }
+    iter {
+        let s = scale + scale_vary * (abs(scale) - 1.0)
+        x = fold - abs(abs(x + fx) - fold) - abs(fx)
+        y = fold - abs(abs(y + fy) - fold) - abs(fy)
+        z = fold - abs(abs(z + fz) - fold) - abs(fz)
+        let r2 = x * x + y * y + z * z
+        let m = s
+        if r2 < mr2 {
+            m = s / mr2
+        } else if r2 < 1.0 {
+            m = s / r2
+        }
+        x = x * m + cx
+        y = y * m + cy
+        z = z * m + cz
+        dr = dr * abs(m) + 1.0
+    }
+}
+
+formula "Kali box" {
+    category "Boxes"
+    description "Kali's box: absolute value, translation, sphere inversion with a minimum radius, scale."
+    de linear
+    alias "ABoxModKali" (scale, min_r, tz, ty, tx)
+    param scale "Scale" = 2.04 [-4, 4]
+    param min_r "Min radius" = 0.5 [0.01, 2]
+    param tx "Translate X" = 0.0 [-2, 2]
+    param ty "Translate Y" = 0.0 [-2, 2]
+    param tz "Translate Z" = 0.0 [-2, 2]
+    init { let mr2 = max(min_r * min_r, 1.0e-12) }
+    iter {
+        x = abs(x) + tx
+        y = abs(y) + ty
+        z = abs(z) + tz
+        let r2 = x * x + y * y + z * z
+        let m = scale / clamp(r2, mr2, 1.0)
+        x = x * m + cx
+        y = y * m + cy
+        z = z * m + cz
+        dr = dr * abs(m) + 1.0
+    }
+}
+
+formula "Kaliset" {
+    category "Boxes"
+    description "Kali's set: p = |p| / dot(p, p) * scale + c."
+    de linear
+    param scale "Scale" = -1.8 [-4, 4]
+    param min_r2 "Min r^2" = 0.001 [0.0001, 1]
+    iter {
+        x = abs(x)
+        y = abs(y)
+        z = abs(z)
+        let r2 = max(x * x + y * y + z * z, min_r2)
+        let m = scale / r2
+        x = x * m + cx
+        y = y * m + cy
+        z = z * m + cz
+        dr = dr * abs(m) + 1.0
+    }
+}
+
+formula "Mandelbox 4D" {
+    category "Boxes"
+    description "Mandelbox in four dimensions; w starts at the W slice value."
+    de linear
+    param scale "Scale" = 2 [-4, 4]
+    param min_r "Min radius" = 0.5 [0, 2]
+    param fold "Fold limit" = 1 [0, 3]
+    param cw_add "W add" = 0 [-2, 2]
+    init { let mr2 = max(min_r * min_r, 1.0e-12) }
+    iter {
+        x = abs(x + fold) - abs(x - fold) - x
+        y = abs(y + fold) - abs(y - fold) - y
+        z = abs(z + fold) - abs(z - fold) - z
+        w = abs(w + fold) - abs(w - fold) - w
+        let r2 = x * x + y * y + z * z + w * w
+        let m = scale
+        if r2 < mr2 {
+            m = scale / mr2
+        } else if r2 < 1.0 {
+            m = scale / r2
+        }
+        x = x * m + cx
+        y = y * m + cy
+        z = z * m + cz
+        w = w * m + cw + cw_add
+        dr = dr * abs(m) + 1.0
+    }
+}
