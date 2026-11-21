@@ -168,7 +168,8 @@ pub fn get(n: i32) -> Option<Arc<Map>> {
 /// An image by file name (background images): an existing path, or the name in the search
 /// folders. Loaded on first use.
 pub fn get_file(name: &str) -> Option<Arc<Map>> {
-    static FILES: OnceLock<RwLock<HashMap<(String, u64), Option<Arc<Map>>>>> = OnceLock::new();
+    type Files = RwLock<HashMap<(String, u64), Option<Arc<Map>>>>;
+    static FILES: OnceLock<Files> = OnceLock::new();
     let files = FILES.get_or_init(|| RwLock::new(HashMap::new()));
     let key = (name.to_string(), generation());
     if let Some(m) = files.read().unwrap_or_else(|e| e.into_inner()).get(&key) {
