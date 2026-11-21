@@ -24,7 +24,19 @@ pub enum Handle {
     Rim(usize),
     Corner(usize),
     Dial(usize),
+    /// Move along world axis 0 (x), 1 (y) or 2 (z).
+    Axis(usize, usize),
 }
+
+/// World axes and their colors (x red, y green, z blue, as in 3D editors).
+pub const AXES: [(V3, Color32, &str); 3] = [
+    (V3 { x: 1.0, y: 0.0, z: 0.0 }, Color32::from_rgb(235, 80, 80), "X"),
+    (V3 { x: 0.0, y: 1.0, z: 0.0 }, Color32::from_rgb(110, 200, 80), "Y"),
+    (V3 { x: 0.0, y: 0.0, z: 1.0 }, Color32::from_rgb(80, 140, 240), "Z"),
+];
+
+/// Length of the move arrows in pixels.
+const ARROW_PX: f64 = 70.0;
 
 /// Projection of the view (camera and image rectangle).
 pub struct Proj {
@@ -52,6 +64,35 @@ impl Proj {
         let sx = d.dot(self.cam.right) / (z * self.t * self.aspect);
         let sy = d.dot(self.cam.up) / (z * self.t);
         (sx.abs() < 50.0 && sy.abs() < 50.0).then(|| pos2(self.rect.center().x + sx as f32 * self.rect.width() * 0.5, self.rect.center().y - sy as f32 * self.rect.height() * 0.5))
+    }
+
+    /// World length of one pixel at `p`.
+    fn world_per_px(&self, p: V3) -> f64 {
+        2.0 * self.depth(p).max(1e-9) * self.t / self.rect.height() as f64
+    }
+
+    /// A world segment on screen, clipped where it passes behind the camera.
+    pub fn segment(&self, a: V3, b: V3) -> Option<(Pos2, Pos2)> {
+        let near = 1e-4 * (self.cam.position.length() + 1.0);
+        let (za, zb) = (self.depth(a), self.depth(b));
+        if za < near && zb < near {
+            return None;
+        }
+        let (a, b) = if za < near {
+            (a + (b - a) * ((near - za) / (zb - za)), b)
+        } else if zb < near {
+            (a, a + (b - a) * ((near - za) / (zb - za)))
+        } else {
+            (a, b)
+        };
+        let s = |p: V3| {
+            let d = p - self.cam.position;
+            let z = d.dot(self.cam.forward).max(near);
+            let sx = d.dot(self.cam.right) / (z * self.t * self.aspect);
+            let sy = d.dot(self.cam.up) / (z * self.t);
+            pos2(self.rect.center().x + sx as f32 * self.rect.width() * 0.5, self.rect.center().y - sy as f32 * self.rect.height() * 0.5)
+        };
+        Some((s(a), s(b)))
     }
 
     /// `p` moved by the screen offset `delta` in the plane facing the camera (with `depth`:
@@ -111,6 +152,10 @@ pub fn handles(scene: &Scene, selected: usize, proj: &Proj, rect: Rect) -> Vec<(
         if i != selected {
             continue;
         }
+        let len = ARROW_PX * proj.world_per_px(l.position);
+        for (a, (e, _, _)) in AXES.iter().enumerate() {
+            out.extend(proj.screen(l.position + *e * len).map(|s| (Handle::Axis(i, a), s)));
+        }
         match l.kind {
             LightKind::Spot => {
                 out.extend(proj.screen(l.target).map(|s| (Handle::Target(i), s)));
@@ -130,9 +175,7 @@ pub fn handles(scene: &Scene, selected: usize, proj: &Proj, rect: Rect) -> Vec<(
 
 /// The handle under `p` (selected light's handles first).
 pub fn hit(handles: &[(Handle, Pos2)], p: Pos2, selected: usize) -> Option<Handle> {
-    let light = |h: &Handle| match *h {
-        Handle::Position(i) | Handle::Target(i) | Handle::Rim(i) | Handle::Corner(i) | Handle::Dial(i) => i,
-    };
+    let light = |h: &Handle| light_of(*h);
     handles
         .iter()
         .filter(|(_, s)| s.distance(p) < 10.0)
@@ -147,7 +190,7 @@ pub fn hit(handles: &[(Handle, Pos2)], p: Pos2, selected: usize) -> Option<Handl
 /// The light a handle belongs to.
 pub fn light_of(h: Handle) -> usize {
     match h {
-        Handle::Position(i) | Handle::Target(i) | Handle::Rim(i) | Handle::Corner(i) | Handle::Dial(i) => i,
+        Handle::Position(i) | Handle::Target(i) | Handle::Rim(i) | Handle::Corner(i) | Handle::Dial(i) | Handle::Axis(i, _) => i,
     }
 }
 
@@ -165,6 +208,22 @@ pub fn apply(h: Handle, scene: &mut Scene, proj: &Proj, rect: Rect, pointer: Pos
             l.position = p;
         }
         Handle::Target(_) => l.target = proj.drag(l.target, delta, depth),
+        Handle::Axis(_, a) => {
+            // Along the axis by the part of the mouse move in the axis's screen direction.
+            let e = AXES[a].0;
+            let len = ARROW_PX * proj.world_per_px(l.position);
+            if let (Some(p0), Some(p1)) = (proj.screen(l.position), proj.screen(l.position + e * len)) {
+                let sd = p1 - p0;
+                let l2 = sd.length_sq();
+                if l2 > 1.0 {
+                    let mv = e * (len * (delta.dot(sd) / l2) as f64);
+                    l.position += mv;
+                    if l.kind == LightKind::Line {
+                        l.target += mv;
+                    }
+                }
+            }
+        }
         Handle::Rim(_) => {
             let q = proj.drag(rim_point(&cam, l.position, l.target, l.cone_angle), delta, false);
             let a = (l.target - l.position).normalize();
@@ -296,9 +355,40 @@ pub fn draw(painter: &Painter, scene: &Scene, selected: usize, proj: &Proj, rect
             painter.circle(p, r, col, Stroke::new(if sel { 2.0 } else { 1.0 }, if sel { theme::ACCENT } else { Color32::BLACK }));
         }
     }
+    // Selected positional light: a dashed line down to the ground (z = 0) with a mark there,
+    // and the move arrows along the world axes.
+    if let Some(l) = lights.get(selected).filter(|l| l.kind.positional()) {
+        let ground = v3(l.position.x, l.position.y, 0.0);
+        if let Some((a, b)) = proj.segment(l.position, ground) {
+            let dash = Stroke::new(1.0, Color32::from_white_alpha(140));
+            painter.add(egui::Shape::dashed_line(&[a, b], dash, 5.0, 4.0));
+            let r = 0.04 * proj.world_per_px(ground) * 150.0;
+            let ring: Vec<Pos2> = (0..=24)
+                .filter_map(|k| {
+                    let w = k as f64 / 24.0 * std::f64::consts::TAU;
+                    proj.screen(ground + v3(r * w.cos(), r * w.sin(), 0.0))
+                })
+                .collect();
+            painter.add(egui::Shape::line(ring, Stroke::new(1.2, Color32::from_white_alpha(160))));
+        }
+        let len = ARROW_PX * proj.world_per_px(l.position);
+        if let Some(p0) = proj.screen(l.position) {
+            for (a, (e, col, name)) in AXES.iter().enumerate() {
+                let Some(p1) = proj.screen(l.position + *e * len) else { continue };
+                let hot = hover == Some(Handle::Axis(selected, a));
+                let w = if hot { 3.5 } else { 2.0 };
+                painter.line_segment([p0, p1], Stroke::new(w, *col));
+                let dir = (p1 - p0).normalized();
+                let side = vec2(-dir.y, dir.x);
+                let head = if hot { 11.0 } else { 9.0 };
+                painter.add(egui::Shape::convex_polygon(vec![p1 + dir * head, p1 + side * head * 0.45, p1 - side * head * 0.45], *col, Stroke::NONE));
+                painter.text(p1 + dir * (head + 7.0), egui::Align2::CENTER_CENTER, *name, egui::FontId::proportional(11.0), *col);
+            }
+        }
+    }
     // Handles of the selected light.
     for (h, p) in handles(scene, selected, proj, rect) {
-        if light_of(h) != selected || matches!(h, Handle::Position(_) | Handle::Dial(_)) {
+        if light_of(h) != selected || matches!(h, Handle::Position(_) | Handle::Dial(_) | Handle::Axis(..)) {
             continue;
         }
         let r = if hover == Some(h) { 7.0 } else { 5.0 };
@@ -326,5 +416,124 @@ pub fn tip(h: Handle, scene: &Scene) -> String {
         Handle::Rim(_) => format!("Light {n}: drag to widen or narrow the cone"),
         Handle::Corner(_) => format!("Light {n}: drag to resize the rectangle"),
         Handle::Dial(_) => format!("Light {n} (directional): drag to turn it; filled = shines from the camera's side"),
+        Handle::Axis(_, a) => format!("Light {n}: drag to move along {}", AXES[a].2),
     }
+}
+
+/// The light's position as text (shown while dragging).
+pub fn position_text(h: Handle, scene: &Scene) -> Option<String> {
+    let l = scene.lighting.lights.get(light_of(h))?;
+    match h {
+        Handle::Position(_) | Handle::Axis(..) if l.kind.positional() => Some(format!("x {:.3}  y {:.3}  z {:.3}", l.position.x, l.position.y, l.position.z)),
+        Handle::Target(_) => Some(format!("x {:.3}  y {:.3}  z {:.3}", l.target.x, l.target.y, l.target.z)),
+        Handle::Rim(_) => Some(format!("cone {:.1}°", l.cone_angle)),
+        Handle::Corner(_) => Some(format!("{:.3} × {:.3}", l.width, l.height)),
+        Handle::Dial(_) => Some(format!("azimuth {:.1}°  elevation {:.1}°", l.azimuth, l.elevation)),
+        _ => None,
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Orientation guides: ground grid with the axes, and the axis cross in the corner.
+
+/// Draws the ground grid (plane z = 0) around the camera's spot on it, the x and y axes on
+/// it and the z axis through the origin.
+pub fn draw_grid(painter: &Painter, proj: &Proj, rect: Rect) {
+    let painter = painter.with_clip_rect(rect);
+    let cam = &proj.cam;
+    // Spacing by the camera's height above the plane (or its distance to the origin).
+    let h = cam.position.z.abs().max(cam.position.length() * 0.05).max(1e-9);
+    let unit = 10f64.powf(h.log10().round());
+    let minor = unit / 10.0;
+    let (cx, cy) = ((cam.position.x / unit).round() * unit, (cam.position.y / unit).round() * unit);
+    let line = |a: V3, b: V3, alpha: u8, w: f32, col: Color32| {
+        if let Some((p, q)) = proj.segment(a, b) {
+            painter.line_segment([p, q], Stroke::new(w, col.gamma_multiply(alpha as f32 / 255.0)));
+        }
+    };
+    let gray = Color32::from_gray(200);
+    // Fine lines near the camera, unit lines farther out.
+    for (step, n, alpha) in [(minor, 30i64, 40u8), (unit, 15, 70)] {
+        let ext = step * n as f64;
+        for k in -n..=n {
+            let off = k as f64 * step;
+            let x = cx + off;
+            let y = cy + off;
+            if step == minor && (x / unit - (x / unit).round()).abs() < 1e-6 {
+                continue;
+            }
+            let fade = (1.0 - (k.abs() as f64 / n as f64)).powf(0.7);
+            let a = (alpha as f64 * fade) as u8;
+            if x.abs() > 1e-9 * unit {
+                line(v3(x, cy - ext, 0.0), v3(x, cy + ext, 0.0), a, 1.0, gray);
+            }
+            if y.abs() > 1e-9 * unit {
+                line(v3(cx - ext, y, 0.0), v3(cx + ext, y, 0.0), a, 1.0, gray);
+            }
+        }
+    }
+    let far = unit * 15.0;
+    line(v3(cx - far, 0.0, 0.0), v3(cx + far, 0.0, 0.0), 200, 1.5, AXES[0].1);
+    line(v3(0.0, cy - far, 0.0), v3(0.0, cy + far, 0.0), 200, 1.5, AXES[1].1);
+    line(v3(0.0, 0.0, -far * 0.2), v3(0.0, 0.0, far * 0.2), 160, 1.5, AXES[2].1);
+}
+
+/// Center and radius of the axis cross (bottom right of the view).
+fn triad_area(rect: Rect) -> (Pos2, f32) {
+    let r = 30.0;
+    (pos2(rect.right() - r - 18.0, rect.bottom() - r - 18.0), r)
+}
+
+/// Screen tips of the axis cross: (axis index, sign, position).
+fn triad_tips(cam: &Camera, rect: Rect) -> Vec<(usize, f64, Pos2)> {
+    let (c, r) = triad_area(rect);
+    let mut tips = Vec::new();
+    for (a, (e, _, _)) in AXES.iter().enumerate() {
+        for sign in [1.0, -1.0] {
+            let d = *e * sign;
+            tips.push((a, sign, c + vec2(d.dot(cam.right) as f32 * r, -(d.dot(cam.up) as f32) * r)));
+        }
+    }
+    tips
+}
+
+/// Draws the axis cross: where the world axes point from this view (the labelled ends are the
+/// positive directions; click one to look along it).
+pub fn draw_triad(painter: &Painter, cam: &Camera, rect: Rect, hover: Option<(usize, f64)>) {
+    let (c, r) = triad_area(rect);
+    painter.circle_filled(c, r + 12.0, Color32::from_black_alpha(90));
+    // Far ends first, so the near ones are drawn on top.
+    let mut tips = triad_tips(cam, rect);
+    tips.sort_by(|a, b| {
+        let da = (AXES[a.0].0 * a.1).dot(cam.forward);
+        let db = (AXES[b.0].0 * b.1).dot(cam.forward);
+        db.total_cmp(&da)
+    });
+    for (a, sign, p) in tips {
+        let col = AXES[a].1;
+        let hot = hover == Some((a, sign));
+        if sign > 0.0 {
+            painter.line_segment([c, p], Stroke::new(2.0, col));
+            painter.circle(p, if hot { 9.0 } else { 7.5 }, col, Stroke::new(if hot { 2.0 } else { 0.0 }, Color32::WHITE));
+            painter.text(p, egui::Align2::CENTER_CENTER, AXES[a].2, egui::FontId::proportional(10.0), Color32::BLACK);
+        } else {
+            painter.circle(p, if hot { 7.0 } else { 5.0 }, col.gamma_multiply(0.35), Stroke::new(1.0, col));
+        }
+    }
+}
+
+/// The axis end of the cross under `p`: (axis index, sign).
+pub fn triad_hit(cam: &Camera, rect: Rect, p: Pos2) -> Option<(usize, f64)> {
+    triad_tips(cam, rect).into_iter().filter(|t| t.2.distance(p) < 10.0).min_by(|a, b| a.2.distance(p).total_cmp(&b.2.distance(p))).map(|(a, s, _)| (a, s))
+}
+
+/// Points the camera along an axis: from the `sign` side of axis `a` toward `target`, at the
+/// same distance.
+pub fn look_along(cam: &mut Camera, a: usize, sign: f64, target: V3) {
+    let dist = (cam.position - target).length().max(1e-9);
+    let e = AXES[a].0 * sign;
+    cam.position = target + e * dist;
+    // Top and bottom views keep +y up on the screen, the others +z.
+    let up = if a == 2 { v3(0.0, 1.0, 0.0) } else { v3(0.0, 0.0, 1.0) };
+    cam.look_at(target, up);
 }

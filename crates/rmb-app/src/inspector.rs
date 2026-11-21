@@ -112,9 +112,10 @@ impl Inspector {
                 if li.kind.positional() {
                     let speed = (li.position.length() * 0.002).max(1e-9);
                     let what = if li.kind == LightKind::Line { "Start of the line light" } else { "Light position" };
-                    widgets::drag(ui, "X", what, &mut li.position.x, speed, dl.position.x);
-                    widgets::drag(ui, "Y", what, &mut li.position.y, speed, dl.position.y);
-                    widgets::drag(ui, "Z", what, &mut li.position.z, speed, dl.position.z);
+                    let tip = |axis: &str| format!("{what} along the world {axis} axis (the arrows on the light in the view)");
+                    widgets::drag(ui, "X", &tip("x (red)"), &mut li.position.x, speed, dl.position.x);
+                    widgets::drag(ui, "Y", &tip("y (green)"), &mut li.position.y, speed, dl.position.y);
+                    widgets::drag(ui, "Z", &tip("z (blue, up)"), &mut li.position.z, speed, dl.position.z);
                     widgets::label(ui, "", "");
                     ui.horizontal(|ui| {
                         if ui.small_button("At camera").on_hover_text("Moves the light to the camera (spot and area lights then shine along the view)").clicked() {
@@ -397,9 +398,9 @@ fn camera(ui: &mut Ui, scene: &mut Scene, view: &mut Viewport) {
     widgets::grid(ui, "cam", |ui| {
         let dist = c.position.length().max(1e-12);
         let speed = (dist * 0.002).max(1e-12);
-        widgets::drag(ui, "X", "Camera position", &mut c.position.x, speed, d.position.x);
-        widgets::drag(ui, "Y", "Camera position", &mut c.position.y, speed, d.position.y);
-        widgets::drag(ui, "Z", "Camera position", &mut c.position.z, speed, d.position.z);
+        widgets::drag(ui, "X", "Camera position along the world x axis (red line of the grid); not left/right of the view", &mut c.position.x, speed, d.position.x);
+        widgets::drag(ui, "Y", "Camera position along the world y axis (green line of the grid); not forward/back of the view", &mut c.position.y, speed, d.position.y);
+        widgets::drag(ui, "Z", "Camera position along the world z axis (up, blue)", &mut c.position.z, speed, d.position.z);
         widgets::slider(ui, "Field of view", "Vertical opening angle in degrees", &mut c.fov, 5.0..=120.0, d.fov);
     });
     let f = c.forward;

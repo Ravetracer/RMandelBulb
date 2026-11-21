@@ -345,6 +345,13 @@ impl App {
             }
             ui.separator();
             if ui
+                .selectable_label(self.view.show_guides, format!("{}  Grid", egui_phosphor::regular::GRID_FOUR))
+                .on_hover_text("Ground grid (z = 0) with the x (red), y (green) and z (blue) axes, and the axis cross in the corner (click an axis to look along it)")
+                .clicked()
+            {
+                self.view.show_guides = !self.view.show_guides;
+            }
+            if ui
                 .selectable_label(self.view.show_lights, format!("{}  Lights", icons::LIGHT))
                 .on_hover_text("Show the lights in the view with handles to move and aim them (click one to edit it)")
                 .clicked()

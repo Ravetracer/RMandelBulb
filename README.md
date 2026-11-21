@@ -32,8 +32,11 @@ modern egui interface and import of Mandelbulb3D parameters.
   - Low-resolution preview while moving.
   - Lens flares per light (star, anamorphic streak, ghosts, rings, lens dirt; presets),
     hidden when the fractal covers the light.
-  - Lights are drawn in the view with gizmos: drag positions, aim points, the spot cone, the
-    area size, and turn directional lights on a dial.
+  - Ground grid (z = 0) with the colored x/y/z axes and an axis cross; click an axis to look
+    along it.
+  - Lights are drawn in the view with gizmos: move lights freely or along the x/y/z arrows
+    (a dashed line shows the spot below them), drag aim points, the spot cone and the area
+    size, and turn directional lights on a dial.
 - **Files**:
   - Native `.rmb` (JSON).
   - Mandelbulb3D `.m3p` files, and MB3D text parameters pasted with Ctrl+V.

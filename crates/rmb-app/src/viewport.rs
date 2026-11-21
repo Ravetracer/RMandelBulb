@@ -85,6 +85,8 @@ pub struct Viewport {
     pub recording: Option<Recording>,
     /// Draw the lights with their gizmos.
     pub show_lights: bool,
+    /// Draw the ground grid, the axes and the axis cross.
+    pub show_guides: bool,
     /// The light being edited (shared with the inspector).
     pub selected_light: usize,
     /// A light was picked in the view (the inspector switches to it).
@@ -151,6 +153,7 @@ impl Viewport {
             overlay: None,
             recording: None,
             show_lights: true,
+            show_guides: true,
             selected_light: 0,
             light_clicked: false,
             gizmo: None,
@@ -213,6 +216,20 @@ impl Viewport {
         let full = ((rect.width() * ppp * prefs.preview_percent as f32 / 100.0).round().max(16.0) as u32, (rect.height() * ppp * prefs.preview_percent as f32 / 100.0).round().max(16.0) as u32);
 
         let previewing = self.preview.is_some();
+        // Axis cross: click an axis end to look along it.
+        let mut triad_hover = None;
+        if self.show_guides && !previewing {
+            triad_hover = resp.hover_pos().and_then(|p| crate::gizmos::triad_hit(&doc.scene.camera, rect, p));
+            if let Some((a, sign)) = triad_hover {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                if resp.clicked() {
+                    let target = self.pivot.or_else(|| Self::pick_at(rect, rect.center(), &doc.scene).map(|(_, h)| h)).unwrap_or(V3::ZERO);
+                    crate::gizmos::look_along(&mut doc.scene.camera, a, sign, target);
+                    self.pivot = Some(target);
+                    self.nav();
+                }
+            }
+        }
         // Light gizmos take the drags that start on one of their handles.
         let gizmos_on = self.show_lights && !previewing && self.recording.is_none();
         let mut hover_handle = None;
@@ -285,14 +302,34 @@ impl Viewport {
         if prefs.keep_aspect {
             ui.painter().rect_stroke(rect, 0.0, egui::Stroke::new(1.0, theme::BORDER), egui::StrokeKind::Outside);
         }
+        if self.show_guides {
+            crate::gizmos::draw_grid(ui.painter(), &crate::gizmos::Proj::new(&camera, aspect, rect), rect);
+        }
         self.draw_overlay(ui, rect, &camera, aspect);
         if gizmos_on {
             let proj = crate::gizmos::Proj::new(&doc.scene.camera, doc.scene.aspect(), rect);
             let active = self.gizmo.or(hover_handle);
             crate::gizmos::draw(ui.painter(), &doc.scene, self.selected_light, &proj, rect, active);
             if let (Some(h), Some(p)) = (active, resp.hover_pos().or(resp.interact_pointer_pos())) {
-                let galley = ui.painter().layout_no_wrap(crate::gizmos::tip(h, &doc.scene), egui::FontId::proportional(theme::fs(11.5)), theme::TEXT);
+                let mut text = crate::gizmos::tip(h, &doc.scene);
+                if self.gizmo.is_some()
+                    && let Some(pos) = crate::gizmos::position_text(h, &doc.scene)
+                {
+                    text = pos;
+                }
+                let galley = ui.painter().layout_no_wrap(text, egui::FontId::proportional(theme::fs(11.5)), theme::TEXT);
                 let r = Rect::from_min_size(p + vec2(14.0, 14.0), galley.size() + vec2(12.0, 6.0));
+                ui.painter().rect_filled(r, 4.0, Color32::from_black_alpha(190));
+                ui.painter().galley(r.min + vec2(6.0, 3.0), galley, theme::TEXT);
+            }
+        }
+        if self.show_guides {
+            crate::gizmos::draw_triad(ui.painter(), &camera, rect, triad_hover);
+            if let (Some((a, s)), Some(p)) = (triad_hover, resp.hover_pos()) {
+                let name = format!("Look along {}{}", if s > 0.0 { "−" } else { "+" }, crate::gizmos::AXES[a].2);
+                let tip = format!("{name} (from the {}{} side)", if s > 0.0 { "+" } else { "−" }, crate::gizmos::AXES[a].2);
+                let galley = ui.painter().layout_no_wrap(tip, egui::FontId::proportional(theme::fs(11.5)), theme::TEXT);
+                let r = Rect::from_min_size(p - vec2(galley.size().x + 24.0, 28.0), galley.size() + vec2(12.0, 6.0));
                 ui.painter().rect_filled(r, 4.0, Color32::from_black_alpha(190));
                 ui.painter().galley(r.min + vec2(6.0, 3.0), galley, theme::TEXT);
             }
