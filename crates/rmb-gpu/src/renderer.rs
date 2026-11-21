@@ -109,6 +109,7 @@ struct Uniforms {
     cmap1: [f32; 4],
     cmap2: [f32; 4],
     cmap_rot: [[f32; 4]; 3],
+    glass: [f32; 4],
 }
 
 #[repr(C)]
@@ -235,6 +236,7 @@ fn uniforms(scene: &Scene, prog: &Program, w: u32, h: u32, fast: bool) -> Unifor
             let r = rmb_core::maps::rotation_matrix(m.color_map.rotation);
             [0, 1, 2].map(|i| [r[i][0] as f32, r[i][1] as f32, r[i][2] as f32, 0.0])
         },
+        glass: [if m.transmission && m.reflection > 0.0 { 1.0 } else { 0.0 }, m.refraction_index as f32, m.absorption as f32, m.scattering as f32],
     }
 }
 
@@ -470,7 +472,9 @@ impl GpuRenderer {
         self.upload_maps(&prog, scene);
         let shade = rmb_core::render::shading_scene(scene);
         let g = &shade.material.gradient;
-        let mut lut: Vec<[f32; 4]> = rmb_core::gradient::lut(g).iter().chain(&rmb_core::gradient::lut_specular(g)).map(|c| [c[0], c[1], c[2], 1.0]).collect();
+        // Highlight entries carry the transparency in w.
+        let mut lut: Vec<[f32; 4]> = rmb_core::gradient::lut(g).iter().map(|c| [c[0], c[1], c[2], 1.0]).collect();
+        lut.extend(rmb_core::gradient::lut_specular(g).iter().zip(rmb_core::gradient::lut_transparency(g)).map(|(c, t)| [c[0], c[1], c[2], t]));
         let rough = rmb_core::render::rough_tables();
         lut.extend((0..128).map(|i| [0, 1, 2, 3].map(|k| rough[k][i] as f32)));
         // Interior colors (when there are none the shader does not read them).

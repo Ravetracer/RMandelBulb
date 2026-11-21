@@ -79,6 +79,16 @@ pub fn lut(stops: &[ColorStop]) -> Vec<[f32; 3]> {
     (0..LUT_SIZE).map(|i| sample(stops, i as f64 / (LUT_SIZE - 1) as f64)).collect()
 }
 
+/// Transparency at `t` (0..1) of a gradient.
+pub fn sample_transparency(stops: &[ColorStop], t: f64) -> f32 {
+    sample_by(stops, t, [0.0; 3], |s| [s.transparency; 3])[0]
+}
+
+/// The transparencies sampled like [`lut`].
+pub fn lut_transparency(stops: &[ColorStop]) -> Vec<f32> {
+    (0..LUT_SIZE).map(|i| sample_transparency(stops, i as f64 / (LUT_SIZE - 1) as f64)).collect()
+}
+
 /// The highlight colors sampled like [`lut`].
 pub fn lut_specular(stops: &[ColorStop]) -> Vec<[f32; 3]> {
     (0..LUT_SIZE).map(|i| sample_specular(stops, i as f64 / (LUT_SIZE - 1) as f64)).collect()

@@ -516,7 +516,7 @@ pub fn import_binary(b: &[u8]) -> Result<Import, String> {
     let mut stops: Vec<ColorStop> = (0..10)
         .map(|k| {
             let o = light + 260 + k * 10;
-            ColorStop { pos: r.u16(o) as f64 / 32767.0, color: r.rgb(o + 2), specular: r.rgb(o + 6) }
+            ColorStop { pos: r.u16(o) as f64 / 32767.0, color: r.rgb(o + 2), specular: r.rgb(o + 6), transparency: r.u8(o + 9) as f32 / 255.0 }
         })
         .collect();
     stops.sort_by(|a, b| a.pos.total_cmp(&b.pos));
@@ -692,7 +692,7 @@ pub fn import_binary(b: &[u8]) -> Result<Import, String> {
             .map(|k| {
                 let o = light + 360 + k * 6;
                 let spec = srgb_to_linear(r.u8(o + 5));
-                ColorStop { pos: r.u16(o) as f64 / 32767.0, color: r.rgb(o + 2), specular: [spec; 3] }
+                ColorStop { pos: r.u16(o) as f64 / 32767.0, color: r.rgb(o + 2), specular: [spec; 3], transparency: 0.0 }
             })
             .collect();
         istops.sort_by(|a, b| a.pos.total_cmp(&b.pos));
@@ -723,16 +723,22 @@ pub fn import_binary(b: &[u8]) -> Result<Import, String> {
     s.lighting.roughness = r.u8(light + 2) as f64 / 255.0;
 
     // ---- reflections (CalcSR): SRamount (332) when they are calculated automatically (336
-    // bit 0), SRreflectioncount (337) bounces. Transmission (bit 1) is not supported.
+    // bit 0), SRreflectioncount (337) bounces. Transmission (bit 1): refraction index sTRIndex
+    // (116), scattering sTRscattering (120), absorption sTransmissionAbsorption (370, per world
+    // unit: CalcSR multiplies it with dStepWidth and the path length in steps).
     let sr = r.u8(336);
     if sr & 1 != 0 {
         s.material.reflection = r.f32(332).clamp(0.0, 100.0);
         s.material.reflection_bounces = (r.u8(337) as u32).clamp(1, 8);
         if sr & 2 != 0 {
-            warnings.push("transparency (transmission) is not supported; the material only reflects".into());
+            s.material.transmission = true;
+            // In-and-outside rendering refracts nothing (CalcSRT).
+            s.material.refraction_index = if inside_mode == 2 { 1.0 } else { r.f32(116).clamp(1.0, 5.0) };
+            s.material.scattering = r.f32(120).clamp(0.0, 10000.0);
+            s.material.absorption = r.f32(370).clamp(0.0, 1.0e6);
         }
         if sr & 4 != 0 {
-            warnings.push("reflections only on dIFS formulas are shown on all surfaces".into());
+            warnings.push("reflections and transmission only on dIFS formulas are shown on all surfaces".into());
         }
     }
 

@@ -52,11 +52,12 @@ struct U {
     cmap1: vec4<f32>,      // cos, sin of the 2D rotation, iteration scale, iteration offset
     cmap2: vec4<f32>,      // luminance only, average color
     cmap_rot: array<vec4<f32>, 3>, // rotation of the normal mode (rows)
+    glass: vec4<f32>,      // transmission on, refraction index, absorption, scattering
 }
 
 @group(0) @binding(0) var<uniform> u: U;
 @group(0) @binding(1) var<storage, read> prm: array<f32>;
-// Surface colors at 0..255, highlight colors at 256..511, rough diffuse tables at 512..639
+// Surface colors at 0..255, highlight colors (w: transparency) at 256..511, rough diffuse tables at 512..639
 // (one table per component), interior colors at 640..895 and their highlights at 896..1151.
 @group(0) @binding(2) var<storage, read> lut: array<vec4<f32>>;
 @group(0) @binding(3) var<storage, read_write> accum: array<vec4<f32>>;
@@ -68,6 +69,12 @@ struct U {
 @group(0) @binding(5) var<storage, read> maps: array<u32>;
 
 var<private> aux_albedo: vec3<f32>;
+// Swaps inside and outside rendering (rays travelling inside glass; Evaluator::flip).
+var<private> flip: bool;
+
+fn inside_now() -> bool {
+    return (u.scales.z > 0.5) != flip;
+}
 var<private> aux_normal: vec3<f32>;
 
 struct Orbit {
@@ -362,7 +369,7 @@ fn combine_de(a: Orbit, b: Orbit) -> Orbit {
 fn orbit(p: vec3<f32>, h: f32) -> Orbit {
     var o = fractal_de(p, h);
     var de = max(o.de * u.march.w, 0.0);
-    if (u.scales.z > 0.5) {
+    if (inside_now()) {
         // Inside rendering (mirrors fractal.rs).
         let s = 2.0 * h;
         if (DIFS_1) {
@@ -574,7 +581,7 @@ fn soft_shadow(p: vec3<f32>, l: vec3<f32>, eps: f32, softness: f32, max_t: f32) 
             return 0.0;
         }
         // Inside rendering: the estimate is a fixed step in the set, not a distance; only hits count.
-        if (softness > 0.0 && u.scales.z < 0.5) {
+        if (softness > 0.0 && !inside_now()) {
             res = min(res, d / (softness * t));
         }
         t += max(d * u.march.y, e);
@@ -617,7 +624,7 @@ fn ambient_occlusion(p: vec3<f32>, n: vec3<f32>, t: f32) -> f32 {
     if (mode == 0u) {
         return 1.0;
     }
-    if (mode == 1u && u.scales.z > 0.5) {
+    if (mode == 1u && inside_now()) {
         // The fast samples need distances, which inside rendering does not have.
         return 1.0;
     }
@@ -697,6 +704,7 @@ fn color_value(h: Hit, n: vec3<f32>, pos: vec3<f32>) -> f32 {
 struct Colors {
     base: vec3<f32>,
     spec: vec3<f32>,
+    trans: f32,
 }
 
 fn gradient(v: f32, dist: f32) -> Colors {
@@ -713,6 +721,7 @@ fn gradient(v: f32, dist: f32) -> Colors {
     var c: Colors;
     c.base = mix(lut[0].xyz, base, u.color2.x);
     c.spec = mix(lut[i + 256u].xyz, lut[i + 257u].xyz, f);
+    c.trans = mix(lut[i + 256u].w, lut[i + 257u].w, f);
     return c;
 }
 
@@ -813,16 +822,21 @@ struct Traced {
     normal: vec3<f32>,
     hit: bool,
     pos: vec3<f32>,
+    hit_pos: vec3<f32>,
+    eps: f32,
     n: vec3<f32>,
     dir: vec3<f32>,
     t: f32,
     spec: vec3<f32>,
+    base: vec3<f32>,
+    trans: f32,
     fog: f32,
 }
 
 // Mirrors Shader::trace: one ray from `o` along `d` (distances `t0`..`max_t`; fog, glow and
-// visible lights measured from `t_base`).
-fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sy: f32) -> Traced {
+// visible lights measured from `t_base`; `inside`: inside glass; `glass`: light amount that
+// scales the diffuse light down by the transparency).
+fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sy: f32, inside: bool, glass: f32) -> Traced {
     var tr: Traced;
     tr.hit = false;
     let h = march_ray(o, d, t0, max_t, u.band.z);
@@ -843,7 +857,10 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sy: f32) 
     var c: vec3<f32>;
     tr.normal = vec3<f32>(0.0);
     if (!h.hit) {
-        let f = fog_amount(u.cam_fwd.w);
+        var f = 0.0;
+        if (!inside) {
+            f = fog_amount(u.cam_fwd.w);
+        }
         c = mix(bg, fog_col, max(f, 0.0));
         tr.albedo = clamp(c, vec3<f32>(0.0), vec3<f32>(1.0));
     } else {
@@ -875,12 +892,13 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sy: f32) 
             let f = x - f32(i);
             cols.base = mix(lut[640u + i].xyz, lut[641u + i].xyz, f);
             cols.spec = mix(lut[896u + i].xyz, lut[897u + i].xyz, f);
+            cols.trans = 0.0;
         }
         if (u.cmap0.x > 0.5) {
             cols.base = map_color(h, pos, n, cv, cols.base, rr);
         }
         let base = cols.base;
-        let p = pos + n * (h.eps * select(1.5, 4.0, u.scales.z > 0.5));
+        let p = pos + n * (h.eps * select(1.5, 4.0, inside_now()));
         let ao = ambient_occlusion(p, n, h.t);
         let hemi = dot(n, u.amb_up.xyz) * 0.5 + 0.5;
         var diffuse = mix(u.ground.xyz, u.sky.xyz, hemi) * u.ao.w * ao;
@@ -933,18 +951,31 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sy: f32) 
             diffuse += li.color.xyz * df * w;
             spec += li.color.xyz * s * w;
         }
-        let lit = base * diffuse + spec * cols.spec;
-        let f = fog_amount(h.t - t_base);
+        let keep = max(1.0 - cols.trans * glass, 0.0);
+        let lit = base * diffuse * keep + spec * cols.spec;
+        var f = 0.0;
+        if (!inside) {
+            f = fog_amount(h.t - t_base);
+        }
         c = lit * (1.0 - f) + fog_col * max(f, 0.0);
         tr.albedo = clamp(base * (1.0 - f) + fog_col * max(f, 0.0), vec3<f32>(0.0), vec3<f32>(1.0));
         tr.normal = n;
         tr.hit = true;
         tr.pos = p;
+        tr.hit_pos = pos;
+        tr.eps = h.eps;
+        tr.base = base;
+        tr.trans = cols.trans;
         tr.n = n;
         tr.dir = d;
         tr.t = h.t;
         tr.spec = cols.spec;
         tr.fog = f;
+    }
+    if (inside) {
+        // Inside glass: no glow and no visible lights.
+        tr.c = c;
+        return tr;
     }
     let glow_col = mix(u.glow.xyz, u.glow2.xyz, glow_mix);
     if (u.glow3.y > 0.5) {
@@ -985,13 +1016,13 @@ fn sample_pixel(px: u32, py: u32, sample: u32) -> vec3<f32> {
     }
     // Without reflections (most scenes) a single trace: compiles much faster.
     if (!REFLECT) {
-        let tr = trace(o, d, u.scales.w, u.cam_fwd.w, 0.0, sy);
+        let tr = trace(o, d, u.scales.w, u.cam_fwd.w, 0.0, sy, false, 0.0);
         aux_albedo = tr.albedo;
         aux_normal = tr.normal;
         return tr.c;
     }
-    // Primary ray and reflections (mirrors Shader::sample_aux) in one loop with a single
-    // trace call.
+    // Primary ray, reflections and transmission (mirrors Shader::sample_aux) in one loop with
+    // a single trace call.
     var c = vec3<f32>(0.0);
     var weight = vec3<f32>(1.0);
     var ro = o;
@@ -1005,32 +1036,138 @@ fn sample_pixel(px: u32, py: u32, sample: u32) -> vec3<f32> {
     if (amount > 0.0) {
         bounces = clamp(u32(u.fog3.w), 1u, 8u);
     }
+    var glass = 0.0;
+    if (u.glass.x > 0.5 && amount > 0.0) {
+        glass = amount;
+    }
     let fov = 2.0 * atan(u.cam_pos.w);
+    var inside = false;
+    var prev: Traced;
     for (var b = 0u; b <= bounces; b++) {
-        let tr = trace(ro, rd, t0, max_t, t_base, syr);
+        var g = glass;
+        if (b == bounces) {
+            g = 0.0;
+        }
+        let tr = trace(ro, rd, t0, max_t, t_base, syr, inside, g);
         if (b == 0u) {
             aux_albedo = tr.albedo;
             aux_normal = tr.normal;
             c = tr.c;
         } else {
+            if (inside) {
+                // Absorbed by the color where the ray entered; light scattered on the way.
+                var len = u.cam_fwd.w;
+                var end = ro + rd * (t0 + len);
+                if (tr.hit) {
+                    len = tr.t - prev.t;
+                    end = tr.hit_pos;
+                }
+                let ab = exp2(len * u.glass.z * log2(max(prev.base, vec3<f32>(1.0e-30))));
+                let sc_amt = (1.0 - dot(ab, vec3<f32>(0.3, 0.59, 0.11))) * u.glass.w / 330.0;
+                if (sc_amt > 0.0) {
+                    c += light_sum(ro + rd * t0, end) * prev.base * weight * (ab + 1.0) * 0.5 * sc_amt;
+                }
+                weight *= ab;
+            }
             c += weight * tr.c;
         }
         if (b == bounces || !tr.hit) {
             break;
         }
-        weight *= tr.spec * amount * clamp(1.0 - tr.fog, 0.0, 1.0);
+        let bn = bounce(tr, inside);
+        weight *= bn.f * amount * clamp(1.0 - tr.fog, 0.0, 1.0);
         if (all(weight < vec3<f32>(1.0e-4))) {
             break;
         }
-        let r = tr.dir - tr.n * (2.0 * dot(tr.dir, tr.n));
-        ro = tr.pos - r * tr.t;
-        rd = r;
+        var start = tr.pos;
+        if (bn.refract) {
+            start = tr.hit_pos - tr.n * tr.eps;
+            inside = !inside;
+            flip = inside;
+        }
+        prev = tr;
+        rd = bn.dir;
+        ro = start - rd * tr.t;
         t0 = tr.t;
         max_t = tr.t + u.cam_fwd.w;
         t_base = tr.t;
-        syr = clamp(2.0 * asin(clamp(dot(r, u.cam_up.xyz), -1.0, 1.0)) / fov, -1.0, 1.0);
+        syr = clamp(2.0 * asin(clamp(dot(rd, u.cam_up.xyz), -1.0, 1.0)) / fov, -1.0, 1.0);
     }
+    flip = false;
     return c;
+}
+
+struct Bounce {
+    dir: vec3<f32>,
+    f: vec3<f32>,
+    refract: bool,
+}
+
+// Mirrors Shader::bounce: direction after surface `s`, path weight factor, refracted or not.
+fn bounce(s: Traced, inside: bool) -> Bounce {
+    var r: Bounce;
+    r.dir = s.dir - s.n * (2.0 * dot(s.dir, s.n));
+    r.f = s.spec;
+    r.refract = false;
+    let a = s.trans;
+    if (u.glass.x < 0.5 || a <= 0.0) {
+        return r;
+    }
+    var eta = 1.0 / u.glass.y;
+    if (inside) {
+        eta = u.glass.y;
+    }
+    var ci = -dot(s.dir, s.n);
+    let k = 1.0 - eta * eta * (1.0 - ci * ci);
+    let smax = max(max(s.spec.x, s.spec.y), s.spec.z);
+    if (k <= 0.0) {
+        // Total internal reflection.
+        r.f = s.spec * (1.0 - a + a * a / (smax + 0.01));
+        return r;
+    }
+    let ct = sqrt(k);
+    let t = normalize(s.dir * eta + s.n * (eta * ci - ct));
+    ci = abs(ci);
+    var fr = ci;
+    if (ct > 1.0e-16) {
+        let rs = (ci - eta * ct) / (ci + eta * ct);
+        let rp = (ct - eta * ci) / (ct + eta * ci);
+        fr = (rs * rs + rp * rp) * 0.5;
+    }
+    let wt = max((1.0 - fr * smax) * a, 0.0);
+    let wr = s.spec * (fr + (1.0 - fr) * (1.0 - a));
+    let lr = (wr.x + wr.y + wr.z) / 3.0;
+    if (wt + lr <= 0.0) {
+        r.f = vec3<f32>(0.0);
+        return r;
+    }
+    let p = wt / (wt + lr);
+    if (rnd() < p) {
+        r.dir = t;
+        r.f = vec3<f32>(wt / p);
+        r.refract = true;
+    } else {
+        r.f = wr / (1.0 - p);
+    }
+    return r;
+}
+
+// Mirrors Shader::light_sum.
+fn light_sum(a: vec3<f32>, b: vec3<f32>) -> vec3<f32> {
+    var sum = vec3<f32>(0.0);
+    let ab = b - a;
+    let l2 = max(dot(ab, ab), 1.0e-30);
+    for (var i = 0u; i < u.size.w; i++) {
+        let li = u.lights[i];
+        var w = 1.0;
+        if (li.color.w > 0.5) {
+            let s = clamp(dot(li.dir.xyz - a, ab) / l2, 0.0, 1.0);
+            let v = li.dir.xyz - (a + ab * s);
+            w = 1.0 / max(dot(v, v), 1.0e-12);
+        }
+        sum += li.color.xyz * w;
+    }
+    return sum;
 }
 
 @compute @workgroup_size(8, 8)

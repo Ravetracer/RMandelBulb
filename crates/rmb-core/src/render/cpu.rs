@@ -22,6 +22,8 @@ pub struct Shader<'a> {
     /// Interior colors (empty: none).
     pub lut_int: Vec<[f32; 3]>,
     pub lut_int_spec: Vec<[f32; 3]>,
+    /// Transparency per gradient entry.
+    pub lut_trans: Vec<f32>,
 }
 
 pub struct Hit {
@@ -48,6 +50,7 @@ impl<'a> Shader<'a> {
             }),
             lut_int: if scene.material.interior.is_empty() { Vec::new() } else { crate::gradient::lut(&scene.material.interior) },
             lut_int_spec: if scene.material.interior.is_empty() { Vec::new() } else { crate::gradient::lut_specular(&scene.material.interior) },
+            lut_trans: crate::gradient::lut_transparency(g),
         }
     }
 
@@ -165,7 +168,7 @@ impl<'a> Shader<'a> {
                 return 0.0;
             }
             // Inside rendering: the estimate is a fixed step in the set, not a distance; only hits count.
-            if softness > 0.0 && !self.scene.fractal.inside {
+            if softness > 0.0 && !ev.inside() {
                 res = res.min(d / (softness * t));
             }
             t += (d * self.scene.march.step).max(e);
@@ -183,7 +186,7 @@ impl<'a> Shader<'a> {
         match l.ao_mode {
             AoMode::Off => 1.0,
             // The fast samples need distances, which inside rendering does not have.
-            AoMode::Fast if self.scene.fractal.inside => 1.0,
+            AoMode::Fast if ev.inside() => 1.0,
             AoMode::Fast => {
                 let (mut occ, mut w) = (0.0, 1.0);
                 for k in 1..=5 {
@@ -338,8 +341,9 @@ impl<'a> Shader<'a> {
         Some((mix(&self.lut_int), mix(&self.lut_int_spec)))
     }
 
-    /// Surface and highlight color for the color value `v` of a hit at distance `dist`.
-    fn gradient(&self, v: f64, dist: f64) -> ([f64; 3], [f64; 3]) {
+    /// Surface color, highlight color and transparency for the color value `v` of a hit at
+    /// distance `dist`.
+    fn gradient(&self, v: f64, dist: f64) -> ([f64; 3], [f64; 3], f64) {
         let m = &self.scene.material;
         let mut t = v * m.color_scale + m.color_offset + m.depth_shift * (dist - m.depth_reference);
         t = if m.repeat { t - t.floor() } else { t.clamp(0.0, 1.0) };
@@ -352,6 +356,7 @@ impl<'a> Shader<'a> {
         (
             [0, 1, 2].map(|k| first[k] as f64 + (base[k] - first[k] as f64) * m.saturation),
             mix(&self.lut_spec),
+            self.lut_trans[i] as f64 + (self.lut_trans[i + 1] as f64 - self.lut_trans[i] as f64) * f,
         )
     }
 
@@ -378,43 +383,128 @@ impl<'a> Shader<'a> {
             d = (focus - o).normalize();
         }
         let t0 = super::start_distance(sc);
-        let first = self.trace(ev, o, d, t0, sc.march.max_distance, 0.0, sy, &mut rng);
-        let mut c = first.color;
-        // Reflections (Mandelbulb3D's CalcSR): each bounce adds the reflected scene, weighted by
-        // the highlight color of the reflecting surface, the reflection amount and how much of
-        // the surface the fog leaves visible.
         let m = &sc.material;
-        if m.reflection > 0.0 {
+        let amount = m.reflection;
+        let bounces = m.reflection_bounces.clamp(1, 8);
+        // Glass scales the diffuse light down by the transparency on every surface a path
+        // continues from (Mandelbulb3D's bScaleAmbDiffDown).
+        let glass = if m.transmission && amount > 0.0 { amount } else { 0.0 };
+        let first = self.trace(ev, Seg { o, d, t0, max_t: sc.march.max_distance, t_base: 0.0, sy, inside: false, glass }, &mut rng);
+        let mut c = first.color;
+        // Reflections and transmission (Mandelbulb3D's CalcSR): each part of the path adds the
+        // scene it sees, weighted by the reflectance or transmittance of the surfaces before it,
+        // the light amount and how much of those surfaces the fog leaves visible. Where Mandelbulb3D
+        // follows both the reflected and the refracted ray, one of them is picked by its weight.
+        if amount > 0.0 {
             let mut weight = [1.0; 3];
             let mut surf = first.surface;
-            for _ in 0..m.reflection_bounces.clamp(1, 8) {
+            let mut inside = false;
+            for b in 0..bounces {
                 let Some(s) = surf else { break };
+                let (dir, f, refract) = self.bounce(&s, inside, &mut rng);
                 let vis = (1.0 - s.fog).clamp(0.0, 1.0);
-                for (w, sp) in weight.iter_mut().zip(s.spec) {
-                    *w *= sp * m.reflection * vis;
+                for (w, fk) in weight.iter_mut().zip(f) {
+                    *w *= fk * amount * vis;
                 }
                 if weight.iter().all(|w| *w < 1e-4) {
                     break;
                 }
-                let r = s.dir - s.n * (2.0 * s.dir.dot(s.n));
-                // Marched as a continuation of the path, so the surface threshold keeps growing
-                // with the distance travelled.
-                let origin = s.pos - r * s.t;
-                let syr = (2.0 * r.dot(cam.up).clamp(-1.0, 1.0).asin() / cam.fov.to_radians()).clamp(-1.0, 1.0);
-                let tr = self.trace(ev, origin, r, s.t, s.t + sc.march.max_distance, s.t, syr, &mut rng);
+                // Refracted rays start on the far side of the surface, reflected ones at the
+                // shading point. Both are marched as a continuation of the path, so the surface
+                // threshold keeps growing with the distance travelled.
+                let start = if refract { s.hit - s.n * s.eps } else { s.pos };
+                if refract {
+                    inside = !inside;
+                    ev.flip = inside;
+                }
+                let syr = (2.0 * dir.dot(cam.up).clamp(-1.0, 1.0).asin() / cam.fov.to_radians()).clamp(-1.0, 1.0);
+                let seg = Seg { o: start - dir * s.t, d: dir, t0: s.t, max_t: s.t + sc.march.max_distance, t_base: s.t, sy: syr, inside, glass: if b + 1 < bounces { glass } else { 0.0 } };
+                let tr = self.trace(ev, seg, &mut rng);
+                if inside {
+                    // Absorbed by the color where the ray entered; light scattered on the way.
+                    let len = tr.surface.map_or(sc.march.max_distance, |e| e.t - s.t);
+                    let ab = s.base.map(|v| (len * m.absorption * v.max(1e-30).log2()).exp2());
+                    let sc_amt = (1.0 - (0.3 * ab[0] + 0.59 * ab[1] + 0.11 * ab[2])) * m.scattering / 330.0;
+                    if sc_amt > 0.0 {
+                        let end = tr.surface.map_or(start + dir * len, |e| e.hit);
+                        let light = self.light_sum(start, end);
+                        for k in 0..3 {
+                            c[k] += light[k] * s.base[k] * weight[k] * (ab[k] + 1.0) * 0.5 * sc_amt;
+                        }
+                    }
+                    for (w, a) in weight.iter_mut().zip(ab) {
+                        *w *= a;
+                    }
+                }
                 for k in 0..3 {
                     c[k] += weight[k] * tr.color[k];
                 }
                 surf = tr.surface;
             }
+            ev.flip = false;
         }
         Sample { color: c, albedo: first.albedo, normal: first.normal }
     }
 
-    /// Traces one ray from `o` along `d` (from distance `t0` to `max_t`; fog, glow and visible
-    /// lights measure from `t_base`): its color and the surface it hit.
-    #[allow(clippy::too_many_arguments)]
-    fn trace(&self, ev: &mut Evaluator, o: V3, d: V3, t0: f64, max_t: f64, t_base: f64, sy: f64, rng: &mut Rng) -> Traced {
+    /// Direction of the path after surface `s` (`inside`: the ray travels inside glass), the
+    /// factor of the path weight and whether the ray was refracted. Mirrors CalcSR.CalcRay:
+    /// Fresnel reflectance and total internal reflection.
+    fn bounce(&self, s: &Surface, inside: bool, rng: &mut Rng) -> (V3, [f64; 3], bool) {
+        let m = &self.scene.material;
+        let reflect = s.dir - s.n * (2.0 * s.dir.dot(s.n));
+        let a = s.trans;
+        if !m.transmission || a <= 0.0 {
+            return (reflect, s.spec, false);
+        }
+        let eta = if inside { m.refraction_index } else { 1.0 / m.refraction_index };
+        let ci = -s.dir.dot(s.n);
+        let k = 1.0 - eta * eta * (1.0 - ci * ci);
+        let smax = s.spec[0].max(s.spec[1]).max(s.spec[2]);
+        if k <= 0.0 {
+            // Total internal reflection.
+            let g = 1.0 - a + a * a / (smax + 0.01);
+            return (reflect, s.spec.map(|v| v * g), false);
+        }
+        let ct = k.sqrt();
+        let t = (s.dir * eta + s.n * (eta * ci - ct)).normalize();
+        let ci = ci.abs();
+        let sq = |x: f64| x * x;
+        let fr = if ct > 1e-16 { (sq((ci - eta * ct) / (ci + eta * ct)) + sq((ct - eta * ci) / (ct + eta * ci))) * 0.5 } else { ci };
+        let wt = ((1.0 - fr * smax) * a).max(0.0);
+        let wr = s.spec.map(|v| v * (fr + (1.0 - fr) * (1.0 - a)));
+        let lr = (wr[0] + wr[1] + wr[2]) / 3.0;
+        if wt + lr <= 0.0 {
+            return (reflect, [0.0; 3], false);
+        }
+        let p = wt / (wt + lr);
+        if rng.next_f64() < p { (t, [wt / p; 3], true) } else { (reflect, wr.map(|v| v / (1.0 - p)), false) }
+    }
+
+    /// Light reaching the segment `a`..`b` (Mandelbulb3D's AddLight): point lights by their
+    /// squared distance to it.
+    fn light_sum(&self, a: V3, b: V3) -> [f64; 3] {
+        let mut sum = [0.0; 3];
+        let ab = b - a;
+        let l2 = ab.dot(ab).max(1e-30);
+        for li in &self.frame.lights {
+            let w = match li.point {
+                Some(lp) => {
+                    let s = ((lp - a).dot(ab) / l2).clamp(0.0, 1.0);
+                    let v = lp - (a + ab * s);
+                    1.0 / v.dot(v).max(1e-12)
+                }
+                None => 1.0,
+            };
+            for (s, c) in sum.iter_mut().zip(li.color) {
+                *s += c * w;
+            }
+        }
+        sum
+    }
+
+    /// Traces one part of a path: its color and the surface it hit.
+    fn trace(&self, ev: &mut Evaluator, seg: Seg, rng: &mut Rng) -> Traced {
+        let Seg { o, d, t0, max_t, t_base, sy, inside, glass } = seg;
         let sc = self.scene;
         let fr = &self.frame;
         let (hit, _, steps) = self.march(ev, o, d, t0, max_t, sc.march.max_steps);
@@ -428,7 +518,8 @@ impl<'a> Shader<'a> {
         let mut surface = None;
         let mut c = match &hit {
             None => {
-                let f = sc.fog.amount(far, near, far);
+                // Inside glass there is no fog (CalcOpenAir).
+                let f = if inside { 0.0 } else { sc.fog.amount(far, near, far) };
                 let c = [0, 1, 2].map(|k| bg[k] + (fog_col[k] - bg[k]) * f.max(0.0));
                 albedo = c.map(|v| v.clamp(0.0, 1.0));
                 c
@@ -441,14 +532,14 @@ impl<'a> Shader<'a> {
                 let rr = rough * sc.lighting.roughness;
                 let spec_rough = 1.0 + (2.0 * rr).min(1.0) * (4.0 / sc.lighting.shininess.max(1.0) - 1.0);
                 let cv = self.color_value(h, n);
-                let (base, spec_col) = match self.interior_colors(h, n, h.t) {
-                    Some(c) => c,
+                let (base, spec_col, trans) = match self.interior_colors(h, n, h.t) {
+                    Some((b, s)) => (b, s, 0.0),
                     None => self.gradient(cv, h.t),
                 };
                 let base = self.map_color(h, n, cv, base, rr);
                 // Shading point just off the surface; inside rendering puts the surface one
                 // threshold into the solid, so it needs a larger offset.
-                let p = h.pos + n * (h.eps * if sc.fractal.inside { 4.0 } else { 1.5 });
+                let p = h.pos + n * (h.eps * if ev.inside() { 4.0 } else { 1.5 });
                 let ao = self.ambient_occlusion(ev, p, n, h.t, rng);
                 let l = &sc.lighting;
                 let hemi = n.dot(fr.ambient_up) * 0.5 + 0.5;
@@ -486,14 +577,19 @@ impl<'a> Shader<'a> {
                         spec[k] += li.color[k] * s * w;
                     }
                 }
-                let lit = [0, 1, 2].map(|k| base[k] * diffuse[k] + spec[k] * spec_col[k]);
-                let f = sc.fog.amount(h.t - t_base, near, far);
+                let keep = (1.0 - trans * glass).max(0.0);
+                let lit = [0, 1, 2].map(|k| base[k] * diffuse[k] * keep + spec[k] * spec_col[k]);
+                let f = if inside { 0.0 } else { sc.fog.amount(h.t - t_base, near, far) };
                 albedo = [0, 1, 2].map(|k| (base[k] * (1.0 - f) + fog_col[k] * f.max(0.0)).clamp(0.0, 1.0));
                 normal = n;
-                surface = Some(Surface { pos: p, n, dir: d, t: h.t, spec: spec_col, fog: f });
+                surface = Some(Surface { pos: p, hit: h.pos, eps: h.eps, n, dir: d, t: h.t, spec: spec_col, base, trans, fog: f });
                 [0, 1, 2].map(|k| lit[k] * (1.0 - f) + fog_col[k] * f.max(0.0))
             }
         };
+        if inside {
+            // Inside glass: no glow and no visible lights.
+            return Traced { color: c, albedo, normal, surface };
+        }
         let g1 = sc.fog.glow_color;
         let g2 = sc.fog.glow_color2;
         let glow_col = [0, 1, 2].map(|k| g1[k] as f64 + (g2[k] as f64 - g1[k] as f64) * glow_mix);
@@ -534,11 +630,31 @@ struct Traced {
     surface: Option<Surface>,
 }
 
-/// A surface hit, as far as a reflection needs it.
+/// One part of a light path: from `o` along `d`, distances `t0`..`max_t`; fog, glow and
+/// visible lights measure from `t_base`; `sy` is the screen height of the direction for the
+/// background. `inside`: the ray travels inside glass. `glass`: the light amount that scales the
+/// diffuse light down by the transparency (0: none).
+#[derive(Clone, Copy)]
+struct Seg {
+    o: V3,
+    d: V3,
+    t0: f64,
+    max_t: f64,
+    t_base: f64,
+    sy: f64,
+    inside: bool,
+    glass: f64,
+}
+
+/// A surface hit, as far as a reflection or refraction needs it.
 #[derive(Clone, Copy)]
 struct Surface {
-    /// Shading point (just off the surface).
+    /// Shading point (just off the surface, on the side of the ray).
     pos: V3,
+    /// Hit point and its surface threshold.
+    hit: V3,
+    eps: f64,
+    /// Normal, facing the ray.
     n: V3,
     /// Direction of the ray that hit it.
     dir: V3,
@@ -546,6 +662,9 @@ struct Surface {
     t: f64,
     /// Highlight color (reflectance).
     spec: [f64; 3],
+    /// Surface color (absorption inside glass) and transparency.
+    base: [f64; 3],
+    trans: f64,
     /// Fog amount at the hit.
     fog: f64,
 }

@@ -263,10 +263,16 @@ fn color(ui: &mut Ui, scene: &mut Scene) {
     ui.add_space(4.0);
     let mut remove = None;
     let n = m.gradient.len();
+    let glass = m.transmission;
     for (i, s) in m.gradient.iter_mut().enumerate() {
         ui.horizontal(|ui| {
             widgets::color_button(ui, &mut s.color).on_hover_text("Surface color");
             widgets::color_button(ui, &mut s.specular).on_hover_text("Highlight color: multiplies the specular light here");
+            if glass {
+                ui.add(egui::DragValue::new(&mut s.transparency).range(0.0..=1.0).speed(0.01).max_decimals(2))
+                    .on_hover_text("Transparency of the glass at this color (0 = opaque, 1 = clear)");
+                ui.spacing_mut().slider_width = (ui.spacing().slider_width - 50.0).max(60.0);
+            }
             ui.add(egui::Slider::new(&mut s.pos, 0.0..=1.0).max_decimals(3)).on_hover_text("Position of this color on the gradient");
             if n > 2 && widgets::icon_button(ui, icons::X, "Remove this color").clicked() {
                 remove = Some(i);
@@ -298,7 +304,7 @@ fn color(ui: &mut Ui, scene: &mut Scene) {
         if !m.interior.is_empty() {
             widgets::label(ui, "Interior colors", "Colors where rays meet the inside of the fractal (cut planes, camera inside the solid); imported from Mandelbulb3D");
             ui.horizontal(|ui| {
-                widgets::gradient_strip(ui, &m.interior, 14.0);
+                widgets::gradient_strip_sized(ui, &m.interior, ui.spacing().slider_width, 14.0);
                 if widgets::icon_button(ui, icons::X, "Remove the interior colors (the normal gradient is used)").clicked() {
                     m.interior.clear();
                 }
@@ -313,9 +319,15 @@ fn color(ui: &mut Ui, scene: &mut Scene) {
         widgets::checkbox(ui, "Repeat", "Repeat the gradient (else clamp at its ends)", &mut m.repeat);
         widgets::slider(ui, "Color amount", "0: everything in the first gradient color", &mut m.saturation, 0.0..=1.0, d.saturation);
         widgets::slider(ui, "Specular", "Shininess of the material (all lights)", &mut m.specular, 0.0..=3.0, d.specular);
-        widgets::slider(ui, "Reflection", "Mirror reflections: this amount times the highlight color of the gradient (0 = off; costs another ray per bounce)", &mut m.reflection, 0.0..=2.0, d.reflection);
+        widgets::slider(ui, "Reflection", "Mirror reflections and glass: the light amount of each reflected or refracted ray; reflections are weighted by the highlight color of the gradient (0 = off; costs another ray per bounce)", &mut m.reflection, 0.0..=2.0, d.reflection);
         if m.reflection > 0.0 {
-            widgets::slider_u32(ui, "Bounces", "Reflections of reflections", &mut m.reflection_bounces, 1..=8, d.reflection_bounces);
+            widgets::slider_u32(ui, "Bounces", "Reflections of reflections; with glass, how many surfaces a ray passes through or reflects from", &mut m.reflection_bounces, 1..=8, d.reflection_bounces);
+            widgets::checkbox(ui, "Glass", "Light passes through the surfaces by the transparency of each gradient color (set next to the colors), refracted and absorbed inside", &mut m.transmission);
+            if m.transmission {
+                widgets::slider(ui, "Refraction index", "How much rays bend entering the glass (1 = not at all, water 1.33, glass 1.5, diamond 2.4)", &mut m.refraction_index, 1.0..=3.0, d.refraction_index);
+                widgets::slider_log(ui, "Absorption", "How much light the glass absorbs per world unit; tints with the surface color where the ray entered", &mut m.absorption, 0.0..=1000.0, d.absorption);
+                widgets::slider_log(ui, "Scattering", "Light scattered inside the glass, in the surface color", &mut m.scattering, 0.0..=1000.0, d.scattering);
+            }
         }
     });
     color_map(ui, m);

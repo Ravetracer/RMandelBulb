@@ -608,6 +608,10 @@ pub struct ColorStop {
     /// Color of the highlights at this stop (multiplies the specular light).
     #[serde(default = "white")]
     pub specular: [f32; 3],
+    /// Share of light that passes through the surface at this stop (0..1; needs
+    /// `Material::transmission`).
+    #[serde(default)]
+    pub transparency: f32,
 }
 
 fn white() -> [f32; 3] {
@@ -616,7 +620,7 @@ fn white() -> [f32; 3] {
 
 impl ColorStop {
     pub fn new(pos: f64, color: [f32; 3]) -> ColorStop {
-        ColorStop { pos, color, specular: white() }
+        ColorStop { pos, color, specular: white(), transparency: 0.0 }
     }
 }
 
@@ -706,6 +710,17 @@ pub struct Material {
     pub reflection: f64,
     /// Reflections of reflections.
     pub reflection_bounces: u32,
+    /// Glass: light passes through surfaces by the transparency of the gradient stops, refracted
+    /// and absorbed inside (Mandelbulb3D's transmission). Shares `reflection` (light amount) and
+    /// `reflection_bounces` (path length) with the reflections.
+    pub transmission: bool,
+    /// Index of refraction of the glass (1 = no bending).
+    pub refraction_index: f64,
+    /// Absorption per world unit inside the glass; tints with the surface color where the ray
+    /// entered.
+    pub absorption: f64,
+    /// Light scattered inside the glass (Mandelbulb3D's scattering, 0..330 and more).
+    pub scattering: f64,
 }
 
 impl Default for Material {
@@ -727,6 +742,10 @@ impl Default for Material {
             interior_offset: 0.0,
             reflection: 0.0,
             reflection_bounces: 2,
+            transmission: false,
+            refraction_index: 1.5,
+            absorption: 1.0,
+            scattering: 0.0,
         }
     }
 }

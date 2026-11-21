@@ -135,6 +135,21 @@ little-endian.
   the reflected color weighted by: the specular color of the reflecting surface · amount · what
   the fog leaves visible there; the weights multiply over the bounces. Reflected hits are shaded
   like primary ones (lights, hard shadows, AO with fewer rays); misses show the background.
+- Transmission (glass, bit 1): the alpha byte of each gradient stop's specular color (light
+  record +260 + 10 k + 9) is the transparency `a`; refraction index sTRIndex (f32 at 116; 1 for
+  inside-and-outside rendering), scattering sTRscattering (120), absorption
+  sTransmissionAbsorption (370). CalcRay builds a tree: at a surface with `a` > 0 it follows the
+  refracted ray (eta = 1/n entering, n leaving; normal from the DE, facing the ray) and then the
+  reflected one. Fresnel F = ((ci − η ct)/(ci + η ct))² + ((ct − η ci)/(ct + η ci))², halved.
+  Refracted weight · (1 − F · max(spec)) · a, reflected weight · spec · (F + (1 − F)(1 − a));
+  total internal reflection: spec · (1 − a + a²/(max(spec) + 0.01)). A ray inside the solid
+  marches with inside rendering switched (bInsideRendering flipped), has no fog, and is absorbed
+  by `diffuse color of the entry surface ^ (length · absorption)` (world units: absorption ·
+  dStepWidth · length in steps); scattering adds the lights times that color times
+  (1 − Y(absorbed)) · sTRscattering / 330. Surfaces the path continues from scale their diffuse
+  and ambient light by 1 − a · SRamount (bScaleAmbDiffDown; not on the last bounce).
+  RMandelbulb3D follows one branch of the tree per sample, picked by its weight (averaged over
+  the samples it gives the same result).
 - Interpolation hybrid (addon byte 1 = 1): the iteration counts of formulas 1 and 2 are f32
   weights. Every iteration runs both on the same point; result = blend of the two vectors scaled
   to the blended length; derivative |w1|·s1 + |w2|·s2 (doInterpolHybridPasDE).

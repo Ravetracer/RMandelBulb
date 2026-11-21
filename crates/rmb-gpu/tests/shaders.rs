@@ -245,3 +245,42 @@ fn gpu_matches_cpu_with_a_difs_mix() {
     assert!(Program::new(&scene.fractal, &scene.cut).is_mix());
     parity(scene);
 }
+
+#[test]
+fn gpu_matches_cpu_with_glass() {
+    // Refraction, Fresnel reflection, absorption and scattering inside the bulb.
+    let mut scene = Scene::default();
+    scene.lighting.ao_mode = rmb_core::scene::AoMode::Fast;
+    for (i, s) in scene.material.gradient.iter_mut().enumerate() {
+        s.transparency = if i % 2 == 0 { 1.0 } else { 0.6 };
+    }
+    scene.material.reflection = 1.0;
+    scene.material.reflection_bounces = 4;
+    scene.material.transmission = true;
+    scene.material.refraction_index = 1.4;
+    scene.material.absorption = 0.8;
+    scene.material.scattering = 30.0;
+    let cpu = |s: &Scene| {
+        let mut r = rmb_core::render::cpu::CpuRenderer::new(s.clone(), 48, 32);
+        r.render_pass();
+        r.rgba8()
+    };
+    let mut opaque = scene.clone();
+    opaque.material.transmission = false;
+    let changed = cpu(&scene).iter().zip(cpu(&opaque)).filter(|(a, b)| (**a as i32 - *b as i32).abs() > 8).count();
+    assert!(changed > 100, "glass changes only {changed} channels");
+    parity(scene);
+}
+
+#[test]
+fn gpu_matches_cpu_with_mandelbulb3d_glass() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../mb3d/M3Parameter/toricaleggs.m3p");
+    let Ok(bytes) = std::fs::read(&path) else {
+        eprintln!("sample not found, skipped");
+        return;
+    };
+    let mut scene = rmb_core::io::m3p::import_binary(&bytes).expect("import").scene;
+    scene.lighting.ao_mode = rmb_core::scene::AoMode::Fast;
+    assert!(scene.material.transmission);
+    parity(scene);
+}

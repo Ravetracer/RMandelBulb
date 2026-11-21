@@ -140,7 +140,12 @@ pub fn icon_button(ui: &mut Ui, icon: &str, tip: &str) -> Response {
 
 /// A gradient preview strip.
 pub fn gradient_strip(ui: &mut Ui, stops: &[rmb_core::scene::ColorStop], height: f32) -> Response {
-    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), height), egui::Sense::click());
+    gradient_strip_sized(ui, stops, ui.available_width(), height)
+}
+
+/// A gradient strip of a fixed width (in grids, where the available width is unbounded).
+pub fn gradient_strip_sized(ui: &mut Ui, stops: &[rmb_core::scene::ColorStop], width: f32, height: f32) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(width, height), egui::Sense::click());
     let lut = rmb_core::gradient::lut(stops);
     let mut mesh = egui::Mesh::default();
     let n = lut.len();

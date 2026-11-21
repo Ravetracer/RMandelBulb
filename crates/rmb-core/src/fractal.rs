@@ -284,7 +284,7 @@ impl Program {
                 })
                 .collect()
         };
-        Evaluator { prog: self, regs: regs(self), regs2: self.part2.as_deref().map(regs).unwrap_or_default() }
+        Evaluator { prog: self, regs: regs(self), regs2: self.part2.as_deref().map(regs).unwrap_or_default(), flip: false }
     }
 }
 
@@ -293,6 +293,8 @@ pub struct Evaluator<'a> {
     prog: &'a Program,
     regs: Vec<Vec<f64>>,
     regs2: Vec<Vec<f64>>,
+    /// Swaps inside and outside rendering (rays travelling inside glass).
+    pub flip: bool,
 }
 
 struct Iterated {
@@ -545,7 +547,7 @@ impl Evaluator<'_> {
             }
         }
         let mut de = (o.de * prog.scene_de_scale).max(0.0);
-        if prog.inside {
+        if prog.inside != self.flip {
             // Mandelbulb3D's inside rendering: points in the set step on with four times the
             // surface threshold (h is half of it); outside, the estimate falls below the
             // threshold one threshold beyond the boundary.
@@ -562,6 +564,11 @@ impl Evaluator<'_> {
 
     pub fn de(&mut self, p: V3, h: f64) -> f64 {
         self.orbit(p, h).de
+    }
+
+    /// Whether the estimate is the inside one (inside rendering, or a ray inside glass).
+    pub fn inside(&self) -> bool {
+        self.prog.inside != self.flip
     }
 }
 
