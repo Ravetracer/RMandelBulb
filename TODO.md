@@ -51,10 +51,18 @@
       fringes, rainbow ring, lens dirt; presets; fade when hidden, in fog or off screen)
   - [ ] Compare with the reference images in `../_dev` once more after use; possible
         additions: light rays through fog (god rays), bokeh-textured ghosts, custom ghost layouts
-- [ ] Glowing palette colors that produce a shimmering/glow effect
-- [ ] Palette colors that act as light sources in that color (strength, glow, …)
-  - [ ] Like emission in MagicaVoxel:
+- [x] Glowing palette colors that produce a shimmering/glow effect (glow collected along the
+      rays near emissive parts)
+- [x] Palette colors that act as light sources in that color (emission per gradient color,
+      light cast by a hemisphere ray per sample, reach, glow and glow size)
+  - [x] Like emission in MagicaVoxel:
         https://www.megavoxels.com/learn/how-to-create-lights-in-magicavoxel-using-emission/
+  - [ ] Possible: animated shimmer (flicker over time), emission from color maps
+- [ ] Scene composition like Mandelbulber's boolean mode (as used by Julius Horsthuis): several
+      independent fractals, each with its own position, rotation and scale, combined by union,
+      subtraction, intersection (and smooth variants), plus primitives (plane, box, sphere,
+      cylinder, water surface) with their own materials. Today: one hybrid chain or two chains
+      combined (union / smooth / mix).
 - [ ] Loading 3D objects into the scene (standard formats, Blender, …)
 - [ ] Textures instead of colors, or as masks over the colors with layer blend modes
 - [x] AI denoiser (Intel Open Image Denoise, from RWildFire) with albedo and normal helper images

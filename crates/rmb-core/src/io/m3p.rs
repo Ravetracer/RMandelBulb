@@ -516,7 +516,7 @@ pub fn import_binary(b: &[u8]) -> Result<Import, String> {
     let mut stops: Vec<ColorStop> = (0..10)
         .map(|k| {
             let o = light + 260 + k * 10;
-            ColorStop { pos: r.u16(o) as f64 / 32767.0, color: r.rgb(o + 2), specular: r.rgb(o + 6), transparency: r.u8(o + 9) as f32 / 255.0 }
+            ColorStop { pos: r.u16(o) as f64 / 32767.0, color: r.rgb(o + 2), specular: r.rgb(o + 6), transparency: r.u8(o + 9) as f32 / 255.0, emission: 0.0 }
         })
         .collect();
     stops.sort_by(|a, b| a.pos.total_cmp(&b.pos));
@@ -692,7 +692,7 @@ pub fn import_binary(b: &[u8]) -> Result<Import, String> {
             .map(|k| {
                 let o = light + 360 + k * 6;
                 let spec = srgb_to_linear(r.u8(o + 5));
-                ColorStop { pos: r.u16(o) as f64 / 32767.0, color: r.rgb(o + 2), specular: [spec; 3], transparency: 0.0 }
+                ColorStop { pos: r.u16(o) as f64 / 32767.0, color: r.rgb(o + 2), specular: [spec; 3], transparency: 0.0, emission: 0.0 }
             })
             .collect();
         istops.sort_by(|a, b| a.pos.total_cmp(&b.pos));

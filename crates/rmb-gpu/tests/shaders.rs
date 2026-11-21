@@ -401,3 +401,28 @@ fn gpu_matches_cpu_with_spot_area_and_line_lights() {
     scene.camera.look_at(p(-0.3, 0.0, 0.6), p(0.0, 0.0, 1.0));
     parity(scene);
 }
+
+#[test]
+fn gpu_matches_cpu_with_emissive_colors() {
+    // Self-shining colors, the light they cast (one hemisphere ray) and their glow.
+    let mut scene = Scene::default();
+    scene.lighting.ao_mode = rmb_core::scene::AoMode::Raytraced;
+    scene.lighting.lights[0].intensity = 0.3;
+    for (i, s) in scene.material.gradient.iter_mut().enumerate() {
+        s.emission = if i % 2 == 1 { 2.0 } else { 0.0 };
+    }
+    scene.material.emission_light = 1.5;
+    scene.material.emission_glow = 0.8;
+    let cpu = |s: &Scene| {
+        let mut r = rmb_core::render::cpu::CpuRenderer::new(s.clone(), 48, 32);
+        r.render_pass();
+        r.rgba8()
+    };
+    let mut plain = scene.clone();
+    for s in plain.material.gradient.iter_mut() {
+        s.emission = 0.0;
+    }
+    let changed = cpu(&scene).iter().zip(cpu(&plain)).filter(|(a, b)| (**a as i32 - *b as i32).abs() > 8).count();
+    assert!(changed > 100, "emission changes only {changed} channels");
+    parity(scene);
+}

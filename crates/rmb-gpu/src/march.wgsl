@@ -57,11 +57,12 @@ struct U {
     cmap_rot: array<vec4<f32>, 3>, // rotation of the normal mode (rows)
     glass: vec4<f32>,      // transmission on, refraction index, absorption, scattering
     bg2: vec4<f32>,        // background image brightness, screen coordinates, ambient from it, fog added
+    emis: vec4<f32>,       // emissive colors: light, reach, glow, glow size (0 when nothing emits)
 }
 
 @group(0) @binding(0) var<uniform> u: U;
 @group(0) @binding(1) var<storage, read> prm: array<f32>;
-// Surface colors at 0..255, highlight colors (w: transparency) at 256..511, rough diffuse tables at 512..639
+// Surface colors (w: emission) at 0..255, highlight colors (w: transparency) at 256..511, rough diffuse tables at 512..639
 // (one table per component), interior colors at 640..895 and their highlights at 896..1151.
 @group(0) @binding(2) var<storage, read> lut: array<vec4<f32>>;
 @group(0) @binding(3) var<storage, read_write> accum: array<vec4<f32>>;
@@ -108,6 +109,8 @@ struct Hit {
     steps: u32,
     glow_steps: u32,
     orbit: Orbit,
+    // Glow of emissive colors collected along the ray.
+    halo: vec3<f32>,
 }
 
 fn is_finite(v: f32) -> bool {
@@ -441,9 +444,12 @@ fn eps_at(t: f32) -> f32 {
     return max(u.march.x * u.cam_up.w * t, 1.0e-7);
 }
 
-fn march_ray(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, max_steps: u32) -> Hit {
+// Mirrors Shader::march_ex (`halo`: collect the glow of emissive colors).
+fn march_ray(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, max_steps: u32, halo_on: bool) -> Hit {
     var h: Hit;
     h.hit = false;
+    h.halo = vec3<f32>(0.0);
+    let halo = halo_on && u.emis.z > 0.0;
     var t = t0;
     var last_step = 0.0;
     var step = 0u;
@@ -482,6 +488,13 @@ fn march_ray(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, max_steps: u32) ->
             return h;
         }
         last_step = max(ob.de * u.march.y, eps * 0.1);
+        if (halo) {
+            let r = max(u.emis.w * t, eps);
+            if (ob.de < 8.0 * r) {
+                let e = emission_at(ob, o + d * t, eps, t);
+                h.halo += e * (exp(-ob.de / r) * min(last_step, r) / r);
+            }
+        }
         t += last_step;
         if (t > max_t) {
             h.steps = step;
@@ -647,20 +660,19 @@ fn ao_curve(occ: f32) -> f32 {
     return max(d + (s - 1.0) * (d * d - d), 0.0);
 }
 
-fn ambient_occlusion(p: vec3<f32>, n: vec3<f32>, t: f32) -> f32 {
+// Mirrors Shader::ambient_occlusion: x the occlusion factor, yzw the light of emissive colors
+// (one hemisphere ray serves both).
+fn ambient_occlusion(p: vec3<f32>, n: vec3<f32>, t: f32) -> vec4<f32> {
     let radius = u.ao.z * t;
     var mode = u32(u.ao.x);
-    if (u.dof.w > 0.5 && mode == 2u) {
+    // Fast preview: no traced rays.
+    let fast = u.dof.w > 0.5;
+    if (fast && mode == 2u) {
         mode = 1u;
     }
-    if (mode == 0u) {
-        return 1.0;
-    }
-    if (mode == 1u && inside_now()) {
+    var ao = 1.0;
+    if (mode == 1u && !inside_now()) {
         // The fast samples need distances, which inside rendering does not have.
-        return 1.0;
-    }
-    if (mode == 1u) {
         var occ = 0.0;
         var w = 1.0;
         for (var k = 1u; k <= 5u; k++) {
@@ -669,17 +681,38 @@ fn ambient_occlusion(p: vec3<f32>, n: vec3<f32>, t: f32) -> f32 {
             occ += max(h - d, 0.0) / radius * w;
             w *= 0.6;
         }
-        return ao_curve(clamp(occ / 0.959, 0.0, 1.0));
+        ao = ao_curve(clamp(occ / 0.959, 0.0, 1.0));
     }
-    let u1 = rnd();
-    let u2 = rnd();
-    let d = cosine_dir(n, u1, u2);
-    let eps = eps_at(t);
-    let h = march_ray(p + n * (eps * 2.0), d, 0.0, radius, 48u);
-    if (h.hit) {
-        return ao_curve(clamp(1.0 - h.t / radius, 0.0, 1.0));
+    let traced = mode == 2u;
+    let light = u.emis.x > 0.0 && !fast;
+    var emitted = vec3<f32>(0.0);
+    if (traced || light) {
+        let u1 = rnd();
+        let u2 = rnd();
+        let d = cosine_dir(n, u1, u2);
+        let eps = eps_at(t);
+        var reach = 0.0;
+        if (traced) {
+            reach = radius;
+        }
+        if (light) {
+            reach = max(reach, u.emis.y * t);
+        }
+        var steps = 48u;
+        if (light) {
+            steps = 96u;
+        }
+        let h = march_ray(p + n * (eps * 2.0), d, 0.0, reach, steps, false);
+        if (h.hit) {
+            if (traced && h.t < radius) {
+                ao = ao_curve(clamp(1.0 - h.t / radius, 0.0, 1.0));
+            }
+            if (light) {
+                emitted = emission_at(h.orbit, p + n * (eps * 2.0) + d * h.t, h.eps, t + h.t) * u.emis.x;
+            }
+        }
     }
-    return 1.0;
+    return vec4<f32>(ao, emitted);
 }
 
 fn background(d: vec3<f32>, sy: f32) -> vec3<f32> {
@@ -737,6 +770,7 @@ struct Colors {
     base: vec3<f32>,
     spec: vec3<f32>,
     trans: f32,
+    emis: f32,
 }
 
 fn gradient(v: f32, dist: f32) -> Colors {
@@ -754,7 +788,21 @@ fn gradient(v: f32, dist: f32) -> Colors {
     c.base = mix(lut[0].xyz, base, u.color2.x);
     c.spec = mix(lut[i + 256u].xyz, lut[i + 257u].xyz, f);
     c.trans = mix(lut[i + 256u].w, lut[i + 257u].w, f);
+    c.emis = mix(lut[i].w, lut[i + 1u].w, f);
     return c;
+}
+
+// Mirrors Shader::emission_at: emitted radiance for an orbit at `pos`.
+fn emission_at(ob: Orbit, pos: vec3<f32>, eps: f32, t: f32) -> vec3<f32> {
+    if (u.interior.x > 0.5 && !ob.escaped) {
+        return vec3<f32>(0.0);
+    }
+    var h: Hit;
+    h.orbit = ob;
+    h.eps = eps;
+    h.t = t;
+    let c = gradient(color_value(h, vec3<f32>(0.0), pos), t);
+    return c.base * c.emis;
 }
 
 // Mirrors scene::GlowShape::shape: (share of the pixel that stays, light added).
@@ -947,7 +995,7 @@ struct Traced {
 fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sx: f32, sy: f32, inside: bool, glass: f32) -> Traced {
     var tr: Traced;
     tr.hit = false;
-    let h = march_ray(o, d, t0, max_t, u.band.z);
+    let h = march_ray(o, d, t0, max_t, u.band.z, true);
     let glow = u.glow.w * max(f32(h.glow_steps) - u.glow3.x, 0.0) / f32(max(u.band.z, 1u));
     var glow_mix = 0.0;
     if (u.glow2.w > 0.0) {
@@ -1005,13 +1053,15 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sx: f32, 
             cols.base = mix(lut[640u + i].xyz, lut[641u + i].xyz, f);
             cols.spec = mix(lut[896u + i].xyz, lut[897u + i].xyz, f);
             cols.trans = 0.0;
+            cols.emis = 0.0;
         }
         if (u.cmap0.x > 0.5) {
             cols.base = map_color(h, pos, n, cv, cols.base, rr);
         }
         let base = cols.base;
         let p = pos + n * (h.eps * select(1.5, 4.0, inside_now()));
-        let ao = ambient_occlusion(p, n, h.t);
+        let aol = ambient_occlusion(p, n, h.t);
+        let ao = aol.x;
         let hemi = dot(n, u.amb_up.xyz) * 0.5 + 0.5;
         var amb = mix(u.ground.xyz, u.sky.xyz, hemi);
         if (u.bg2.z > 0.5 && u.bg_rot[0].w > 0.5) {
@@ -1022,7 +1072,7 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sx: f32, 
             }
             amb = background_ambient(n) * keep + fog_col * fi;
         }
-        var diffuse = amb * u.ao.w * ao;
+        var diffuse = amb * u.ao.w * ao + aol.yzw;
         var spec = vec3<f32>(0.0);
         let shin = u.sky.w;
         for (var i = 0u; i < u.size.w; i++) {
@@ -1076,7 +1126,8 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sx: f32, 
             spec += li.color.xyz * s * w;
         }
         let keep = max(1.0 - cols.trans * glass, 0.0);
-        let lit = base * diffuse * keep + spec * cols.spec;
+        // Emissive colors shine by themselves.
+        let lit = base * (diffuse * keep + cols.emis) + spec * cols.spec;
         var f = 0.0;
         if (!inside) {
             f = fog_amount(h.t - t_base);
@@ -1096,6 +1147,8 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sx: f32, 
         tr.spec = cols.spec;
         tr.fog = f;
     }
+    // Glow of the emissive colors the ray passed.
+    c += h.halo * u.emis.z;
     if (inside) {
         // Inside glass: no glow and no visible lights.
         tr.c = c;

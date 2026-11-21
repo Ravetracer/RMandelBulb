@@ -79,6 +79,16 @@ pub fn lut(stops: &[ColorStop]) -> Vec<[f32; 3]> {
     (0..LUT_SIZE).map(|i| sample(stops, i as f64 / (LUT_SIZE - 1) as f64)).collect()
 }
 
+/// Emission strength at `t` (0..1) of a gradient.
+pub fn sample_emission(stops: &[ColorStop], t: f64) -> f32 {
+    sample_by(stops, t, [0.0; 3], |s| [s.emission; 3])[0]
+}
+
+/// The emission strengths sampled like [`lut`].
+pub fn lut_emission(stops: &[ColorStop]) -> Vec<f32> {
+    (0..LUT_SIZE).map(|i| sample_emission(stops, i as f64 / (LUT_SIZE - 1) as f64)).collect()
+}
+
 /// Transparency at `t` (0..1) of a gradient.
 pub fn sample_transparency(stops: &[ColorStop], t: f64) -> f32 {
     sample_by(stops, t, [0.0; 3], |s| [s.transparency; 3])[0]

@@ -42,6 +42,8 @@ modern egui interface and import of Mandelbulb3D parameters.
   - Native `.rmb` (JSON).
   - Mandelbulb3D `.m3p` files, and MB3D text parameters pasted with Ctrl+V.
   - PNG export that embeds the scene, so opening the PNG restores it.
+- **Emissive colors**: gradient colors can shine by themselves, light their surroundings in
+  their color and glow (MagicaVoxel-style emission).
 - **Animation** (Animation button, timeline under the view):
   - Keyframes are whole scenes. The camera follows a smooth path through them that never
     overshoots, and every other setting blends between them.

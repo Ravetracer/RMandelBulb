@@ -26,6 +26,9 @@ pub struct Shader<'a> {
     pub lut_int_spec: Vec<[f32; 3]>,
     /// Transparency per gradient entry.
     pub lut_trans: Vec<f32>,
+    /// Emission strength per gradient entry, and whether any color emits.
+    pub lut_emis: Vec<f32>,
+    pub emissive: bool,
 }
 
 pub struct Hit {
@@ -54,6 +57,8 @@ impl<'a> Shader<'a> {
             lut_int: if scene.material.interior.is_empty() { Vec::new() } else { crate::gradient::lut(&scene.material.interior) },
             lut_int_spec: if scene.material.interior.is_empty() { Vec::new() } else { crate::gradient::lut_specular(&scene.material.interior) },
             lut_trans: crate::gradient::lut_transparency(g),
+            lut_emis: crate::gradient::lut_emission(g),
+            emissive: g.iter().any(|s| s.emission > 0.0),
         }
     }
 
@@ -65,7 +70,18 @@ impl<'a> Shader<'a> {
     /// Marches a ray. Returns the hit (if any), the number of steps taken and the number of
     /// glowing steps (see `Fog::glow_iteration`).
     pub fn march(&self, ev: &mut Evaluator, o: V3, d: V3, t0: f64, max_t: f64, max_steps: u32) -> (Option<Hit>, u32, u32) {
+        let (h, s, g, _) = self.march_ex(ev, o, d, t0, max_t, max_steps, false);
+        (h, s, g)
+    }
+
+    /// [`Shader::march`] that with `halo` also collects the glow of emissive colors the ray
+    /// passes close to: per step the emission at the point times exp(-distance / R) over R,
+    /// R = glow size · ray distance.
+    #[allow(clippy::too_many_arguments)]
+    fn march_ex(&self, ev: &mut Evaluator, o: V3, d: V3, t0: f64, max_t: f64, max_steps: u32, halo: bool) -> (Option<Hit>, u32, u32, [f64; 3]) {
         let m = &self.scene.march;
+        let halo = halo && self.emissive && self.scene.material.emission_glow > 0.0;
+        let mut glow_e = [0.0; 3];
         let glow_it = self.scene.fog.glow_iteration;
         let mut t = t0;
         let mut last_step = 0.0;
@@ -92,16 +108,36 @@ impl<'a> Shader<'a> {
                         dt *= 0.5;
                     }
                 }
-                return (Some(Hit { t: t_hit, pos: o + d * t_hit, eps: self.eps_at(t_hit), orbit: orbit_hit, steps: step }), step, glow.min(step));
+                return (Some(Hit { t: t_hit, pos: o + d * t_hit, eps: self.eps_at(t_hit), orbit: orbit_hit, steps: step }), step, glow.min(step), glow_e);
             }
             // At least a tenth of the threshold: no stalling where the estimate is near zero.
             last_step = (orbit.de * m.step).max(eps * 0.1);
+            if halo {
+                let r = (self.scene.material.emission_glow_size * t).max(eps);
+                if orbit.de < 8.0 * r {
+                    let e = self.emission_at(&orbit, p, eps, t);
+                    let w = (-orbit.de / r).exp() * last_step.min(r) / r;
+                    for k in 0..3 {
+                        glow_e[k] += e[k] * w;
+                    }
+                }
+            }
             t += last_step;
             if t > max_t {
-                return (None, step, glow.min(step));
+                return (None, step, glow.min(step), glow_e);
             }
         }
-        (None, max_steps, glow)
+        (None, max_steps, glow, glow_e)
+    }
+
+    /// Emitted radiance (color × emission strength of the gradient) for an orbit at `p`.
+    fn emission_at(&self, orbit: &Orbit, p: V3, eps: f64, t: f64) -> [f64; 3] {
+        if !self.lut_int.is_empty() && !orbit.escaped {
+            return [0.0; 3];
+        }
+        let h = Hit { t, pos: p, eps, orbit: *orbit, steps: 0 };
+        let (base, _, _, e) = self.gradient(self.color_value(&h, V3::ZERO), t);
+        base.map(|c| c * e)
     }
 
     pub fn normal(&self, ev: &mut Evaluator, p: V3, eps: f64) -> V3 {
@@ -183,12 +219,40 @@ impl<'a> Shader<'a> {
         r * r * (3.0 - 2.0 * r)
     }
 
-    fn ambient_occlusion(&self, ev: &mut Evaluator, p: V3, n: V3, t: f64, rng: &mut Rng) -> f64 {
+    /// Ambient occlusion and the light of emissive colors at `p`. Both use one random ray into
+    /// the hemisphere (ray traced occlusion counts hits within the occlusion radius, the
+    /// emission of whatever the ray hits within the emission reach adds to the light).
+    fn ambient_occlusion(&self, ev: &mut Evaluator, p: V3, n: V3, t: f64, rng: &mut Rng) -> (f64, [f64; 3]) {
+        let l = &self.scene.lighting;
+        let m = &self.scene.material;
+        let radius = l.ao_radius * t;
+        let light = self.emissive && m.emission_light > 0.0;
+        let traced = l.ao_mode == AoMode::Raytraced;
+        let mut ao = if traced { 1.0 } else { self.ao_fast(ev, p, n, t) };
+        let mut emitted = [0.0; 3];
+        if traced || light {
+            let d = cosine_dir(n, rng.next_f64(), rng.next_f64());
+            let eps = self.eps_at(t);
+            let reach = if traced { radius } else { 0.0 }.max(if light { m.emission_reach * t } else { 0.0 });
+            let (hit, _, _) = self.march(ev, p + n * (eps * 2.0), d, 0.0, reach, if light { 96 } else { 48 });
+            if let Some(h) = hit {
+                if traced && h.t < radius {
+                    ao = ao_curve((1.0 - h.t / radius).clamp(0.0, 1.0), l.ao_strength);
+                }
+                if light {
+                    let e = self.emission_at(&h.orbit, h.pos, h.eps, t + h.t);
+                    emitted = e.map(|v| v * m.emission_light);
+                }
+            }
+        }
+        (ao, emitted)
+    }
+
+    /// The fast (distance sampled) ambient occlusion.
+    fn ao_fast(&self, ev: &mut Evaluator, p: V3, n: V3, t: f64) -> f64 {
         let l = &self.scene.lighting;
         let radius = l.ao_radius * t;
         match l.ao_mode {
-            AoMode::Off => 1.0,
-            // The fast samples need distances, which inside rendering does not have.
             AoMode::Fast if ev.inside() => 1.0,
             AoMode::Fast => {
                 let (mut occ, mut w) = (0.0, 1.0);
@@ -200,15 +264,7 @@ impl<'a> Shader<'a> {
                 }
                 ao_curve((occ / 0.959).clamp(0.0, 1.0), l.ao_strength)
             }
-            AoMode::Raytraced => {
-                let d = cosine_dir(n, rng.next_f64(), rng.next_f64());
-                let eps = self.eps_at(t);
-                let (hit, _, _) = self.march(ev, p + n * (eps * 2.0), d, 0.0, radius, 48);
-                match hit {
-                    Some(h) => ao_curve((1.0 - h.t / radius).clamp(0.0, 1.0), l.ao_strength),
-                    None => 1.0,
-                }
-            }
+            _ => 1.0,
         }
     }
 
@@ -363,7 +419,7 @@ impl<'a> Shader<'a> {
 
     /// Surface color, highlight color and transparency for the color value `v` of a hit at
     /// distance `dist`.
-    fn gradient(&self, v: f64, dist: f64) -> ([f64; 3], [f64; 3], f64) {
+    fn gradient(&self, v: f64, dist: f64) -> ([f64; 3], [f64; 3], f64, f64) {
         let m = &self.scene.material;
         let mut t = v * m.color_scale + m.color_offset + m.depth_shift * (dist - m.depth_reference);
         t = if m.repeat { t - t.floor() } else { t.clamp(0.0, 1.0) };
@@ -377,6 +433,7 @@ impl<'a> Shader<'a> {
             [0, 1, 2].map(|k| first[k] as f64 + (base[k] - first[k] as f64) * m.saturation),
             mix(&self.lut_spec),
             self.lut_trans[i] as f64 + (self.lut_trans[i + 1] as f64 - self.lut_trans[i] as f64) * f,
+            self.lut_emis[i] as f64 + (self.lut_emis[i + 1] as f64 - self.lut_emis[i] as f64) * f,
         )
     }
 
@@ -528,7 +585,7 @@ impl<'a> Shader<'a> {
         let Seg { o, d, t0, max_t, t_base, sx, sy, inside, glass } = seg;
         let sc = self.scene;
         let fr = &self.frame;
-        let (hit, _, steps) = self.march(ev, o, d, t0, max_t, sc.march.max_steps);
+        let (hit, _, steps, halo) = self.march_ex(ev, o, d, t0, max_t, sc.march.max_steps, true);
         let (glow, glow_mix) = sc.fog.glow_at(steps as f64, sc.march.max_steps as f64);
         let grad = self.background(d, sy);
         let bg = self.background_image(d, sx, sy).unwrap_or(grad);
@@ -555,15 +612,15 @@ impl<'a> Shader<'a> {
                 let rr = rough * sc.lighting.roughness;
                 let spec_rough = 1.0 + (2.0 * rr).min(1.0) * (4.0 / sc.lighting.shininess.max(1.0) - 1.0);
                 let cv = self.color_value(h, n);
-                let (base, spec_col, trans) = match self.interior_colors(h, n, h.t) {
-                    Some((b, s)) => (b, s, 0.0),
+                let (base, spec_col, trans, emis) = match self.interior_colors(h, n, h.t) {
+                    Some((b, s)) => (b, s, 0.0, 0.0),
                     None => self.gradient(cv, h.t),
                 };
                 let base = self.map_color(h, n, cv, base, rr);
                 // Shading point just off the surface; inside rendering puts the surface one
                 // threshold into the solid, so it needs a larger offset.
                 let p = h.pos + n * (h.eps * if ev.inside() { 4.0 } else { 1.5 });
-                let ao = self.ambient_occlusion(ev, p, n, h.t, rng);
+                let (ao, emitted) = self.ambient_occlusion(ev, p, n, h.t, rng);
                 let l = &sc.lighting;
                 let hemi = n.dot(fr.ambient_up) * 0.5 + 0.5;
                 let amb = match self.background_ambient(n).filter(|_| l.ambient_from_background) {
@@ -576,7 +633,7 @@ impl<'a> Shader<'a> {
                     }
                     None => [0, 1, 2].map(|k| l.ground_color[k] as f64 + (l.sky_color[k] - l.ground_color[k]) as f64 * hemi),
                 };
-                let mut diffuse = amb.map(|a| a * l.ambient * ao);
+                let mut diffuse = [0, 1, 2].map(|k| amb[k] * l.ambient * ao + emitted[k]);
                 let mut spec = [0.0; 3];
                 for li in &fr.lights {
                     // Direction, falloff and shadow length; area and line lights at a random
@@ -608,7 +665,8 @@ impl<'a> Shader<'a> {
                     }
                 }
                 let keep = (1.0 - trans * glass).max(0.0);
-                let lit = [0, 1, 2].map(|k| base[k] * diffuse[k] * keep + spec[k] * spec_col[k]);
+                // Emissive colors shine by themselves.
+                let lit = [0, 1, 2].map(|k| base[k] * (diffuse[k] * keep + emis) + spec[k] * spec_col[k]);
                 let f = if inside { 0.0 } else { sc.fog.amount(h.t - t_base, near, far) };
                 albedo = [0, 1, 2].map(|k| (base[k] * (1.0 - f) + fog_col[k] * f.max(0.0)).clamp(0.0, 1.0));
                 normal = n;
@@ -616,6 +674,11 @@ impl<'a> Shader<'a> {
                 [0, 1, 2].map(|k| lit[k] * (1.0 - f) + fog_col[k] * f.max(0.0))
             }
         };
+        // Glow of the emissive colors the ray passed.
+        let eg = sc.material.emission_glow;
+        for k in 0..3 {
+            c[k] += halo[k] * eg;
+        }
         if inside {
             // Inside glass: no glow and no visible lights.
             return Traced { color: c, albedo, normal, surface };

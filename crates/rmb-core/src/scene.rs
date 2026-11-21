@@ -681,6 +681,10 @@ pub struct ColorStop {
     /// `Material::transmission`).
     #[serde(default)]
     pub transparency: f32,
+    /// The surface shines in its color by itself with this strength (0 = not), lights its
+    /// surroundings and glows (see `Material::emission_*`).
+    #[serde(default)]
+    pub emission: f32,
 }
 
 fn white() -> [f32; 3] {
@@ -689,7 +693,7 @@ fn white() -> [f32; 3] {
 
 impl ColorStop {
     pub fn new(pos: f64, color: [f32; 3]) -> ColorStop {
-        ColorStop { pos, color, specular: white(), transparency: 0.0 }
+        ColorStop { pos, color, specular: white(), transparency: 0.0, emission: 0.0 }
     }
 }
 
@@ -790,6 +794,15 @@ pub struct Material {
     pub absorption: f64,
     /// Light scattered inside the glass (Mandelbulb3D's scattering, 0..330 and more).
     pub scattering: f64,
+    /// Emissive colors (`ColorStop::emission`): how much they light their surroundings (0 =
+    /// not; costs a ray per sample).
+    pub emission_light: f64,
+    /// How far that light reaches, relative to the distance from the camera.
+    pub emission_reach: f64,
+    /// Glow around emissive parts, collected along the rays.
+    pub emission_glow: f64,
+    /// Size of that glow, relative to the distance from the camera.
+    pub emission_glow_size: f64,
 }
 
 impl Default for Material {
@@ -815,6 +828,10 @@ impl Default for Material {
             refraction_index: 1.5,
             absorption: 1.0,
             scattering: 0.0,
+            emission_light: 1.0,
+            emission_reach: 0.5,
+            emission_glow: 1.0,
+            emission_glow_size: 0.02,
         }
     }
 }

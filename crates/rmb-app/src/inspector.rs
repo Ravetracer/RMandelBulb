@@ -471,6 +471,13 @@ fn color(ui: &mut Ui, scene: &mut Scene) {
                     .on_hover_text("Transparency of the glass at this color (0 = opaque, 1 = clear)");
                 ui.spacing_mut().slider_width = (ui.spacing().slider_width - 50.0).max(60.0);
             }
+            let e = ui
+                .add(egui::DragValue::new(&mut s.emission).range(0.0..=100.0).speed(0.02).max_decimals(2).prefix(format!("{} ", egui_phosphor::regular::SPARKLE)))
+                .on_hover_text("Emission: this color shines by itself, lights its surroundings and glows (0 = off; settings under Mapping › Emissive colors)");
+            if s.emission > 0.0 {
+                e.highlight();
+            }
+            ui.spacing_mut().slider_width = (ui.spacing().slider_width - 55.0).max(50.0);
             ui.add(egui::Slider::new(&mut s.pos, 0.0..=1.0).max_decimals(3)).on_hover_text("Position of this color on the gradient");
             if n > 2 && widgets::icon_button(ui, icons::X, "Remove this color").clicked() {
                 remove = Some(i);
@@ -528,7 +535,33 @@ fn color(ui: &mut Ui, scene: &mut Scene) {
             }
         }
     });
+    emissive(ui, m);
     color_map(ui, m);
+}
+
+/// Settings of the emissive gradient colors.
+fn emissive(ui: &mut Ui, m: &mut rmb_core::scene::Material) {
+    let d = rmb_core::scene::Material::default();
+    if widgets::section(ui, "Emissive colors", true) {
+        m.emission_light = d.emission_light;
+        m.emission_reach = d.emission_reach;
+        m.emission_glow = d.emission_glow;
+        m.emission_glow_size = d.emission_glow_size;
+    }
+    if !m.gradient.iter().any(|s| s.emission > 0.0) {
+        ui.label(RichText::new("Give a gradient color an emission (the sparkle field next to it) to let it shine, light its surroundings and glow.").size(theme::fs(11.5)).color(theme::TEXT_MUTED));
+        return;
+    }
+    widgets::grid(ui, "emissive", |ui| {
+        widgets::slider_log(ui, "Light", "How much emissive colors light their surroundings in their color (0 = not; costs a ray per sample, refines with the samples)", &mut m.emission_light, 0.0..=20.0, d.emission_light);
+        if m.emission_light > 0.0 {
+            widgets::slider_log(ui, "Reach", "How far that light reaches, relative to the distance from the camera", &mut m.emission_reach, 0.01..=10.0, d.emission_reach);
+        }
+        widgets::slider_log(ui, "Glow", "Glow around emissive parts, also in the air in front of them", &mut m.emission_glow, 0.0..=20.0, d.emission_glow);
+        if m.emission_glow > 0.0 {
+            widgets::slider_log(ui, "Glow size", "Size of the glow, relative to the distance from the camera", &mut m.emission_glow_size, 0.001..=0.5, d.emission_glow_size);
+        }
+    });
 }
 
 fn color_map(ui: &mut Ui, m: &mut rmb_core::scene::Material) {

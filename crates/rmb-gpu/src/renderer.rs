@@ -114,6 +114,7 @@ struct Uniforms {
     cmap_rot: [[f32; 4]; 3],
     glass: [f32; 4],
     bg2: [f32; 4],
+    emis: [f32; 4],
 }
 
 #[repr(C)]
@@ -262,6 +263,11 @@ fn uniforms(scene: &Scene, prog: &Program, w: u32, h: u32, fast: bool) -> Unifor
             [0, 1, 2].map(|i| [r[i][0] as f32, r[i][1] as f32, r[i][2] as f32, 0.0])
         },
         glass: [if m.transmission && m.reflection > 0.0 { 1.0 } else { 0.0 }, m.refraction_index as f32, m.absorption as f32, m.scattering as f32],
+        emis: {
+            let any = m.gradient.iter().any(|s| s.emission > 0.0);
+            let on = |v: f64| if any { v.max(0.0) as f32 } else { 0.0 };
+            [on(m.emission_light), m.emission_reach as f32, on(m.emission_glow), m.emission_glow_size as f32]
+        },
         bg2: [
             bg.image_intensity as f32,
             if bg.image_screen { 1.0 } else { 0.0 },
@@ -512,7 +518,8 @@ impl GpuRenderer {
         let shade = rmb_core::render::shading_scene(scene);
         let g = &shade.material.gradient;
         // Highlight entries carry the transparency in w.
-        let mut lut: Vec<[f32; 4]> = rmb_core::gradient::lut(g).iter().map(|c| [c[0], c[1], c[2], 1.0]).collect();
+        // Surface entries carry the emission strength in w.
+        let mut lut: Vec<[f32; 4]> = rmb_core::gradient::lut(g).iter().zip(rmb_core::gradient::lut_emission(g)).map(|(c, e)| [c[0], c[1], c[2], e]).collect();
         lut.extend(rmb_core::gradient::lut_specular(g).iter().zip(rmb_core::gradient::lut_transparency(g)).map(|(c, t)| [c[0], c[1], c[2], t]));
         let rough = rmb_core::render::rough_tables();
         lut.extend((0..128).map(|i| [0, 1, 2, 3].map(|k| rough[k][i] as f32)));
