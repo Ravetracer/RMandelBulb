@@ -295,6 +295,20 @@ fn color(ui: &mut Ui, scene: &mut Scene) {
         ui.end_row();
         widgets::slider_log(ui, "Scale", "How fast the colors change with the value (negative reverses the gradient)", &mut m.color_scale, -10.0..=10.0, d.color_scale);
         widgets::slider(ui, "Offset", "Shifts the gradient", &mut m.color_offset, -5.0..=5.0, d.color_offset);
+        if !m.interior.is_empty() {
+            widgets::label(ui, "Interior colors", "Colors where rays meet the inside of the fractal (cut planes, camera inside the solid); imported from Mandelbulb3D");
+            ui.horizontal(|ui| {
+                widgets::gradient_strip(ui, &m.interior, 14.0);
+                if widgets::icon_button(ui, icons::X, "Remove the interior colors (the normal gradient is used)").clicked() {
+                    m.interior.clear();
+                }
+            });
+            ui.end_row();
+        }
+        widgets::slider(ui, "Depth shift", "Moves the gradient with the distance from the camera (gradient lengths per world unit beyond the reference)", &mut m.depth_shift, -2.0..=2.0, d.depth_shift);
+        if m.depth_shift != 0.0 {
+            widgets::slider_log(ui, "Depth reference", "Distance where the depth shift is 0", &mut m.depth_reference, 0.0..=100.0, d.depth_reference);
+        }
         widgets::slider(ui, "Detail shift", "Adds this times the log of the surface threshold to iteration values: keeps colors steady while zooming (Mandelbulb3D)", &mut m.detail_shift, -2.0..=2.0, d.detail_shift);
         widgets::checkbox(ui, "Repeat", "Repeat the gradient (else clamp at its ends)", &mut m.repeat);
         widgets::slider(ui, "Color amount", "0: everything in the first gradient color", &mut m.saturation, 0.0..=1.0, d.saturation);

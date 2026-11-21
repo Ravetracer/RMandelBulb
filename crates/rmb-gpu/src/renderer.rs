@@ -104,6 +104,7 @@ struct Uniforms {
     glow3: [f32; 4],
     bg_rot: [[f32; 4]; 3],
     blend: [f32; 4],
+    interior: [f32; 4],
 }
 
 #[repr(C)]
@@ -190,7 +191,7 @@ fn uniforms(scene: &Scene, prog: &Program, w: u32, h: u32, fast: bool) -> Unifor
         glow: c4(scene.fog.glow_color, scene.fog.glow),
         dof: [if scene.dof.enabled { 1.0 } else { 0.0 }, scene.dof.aperture as f32, scene.dof.focus_distance as f32, if fast { 1.0 } else { 0.0 }],
         color: [m.color_mode.index() as f32, m.color_scale as f32, m.color_offset as f32, if m.repeat { 1.0 } else { 0.0 }],
-        color2: [m.saturation as f32, prog.cuts.len() as f32, 0.0, 0.0],
+        color2: [m.saturation as f32, prog.cuts.len() as f32, m.depth_shift as f32, m.depth_reference as f32],
         cuts,
         slots,
         lights,
@@ -212,6 +213,7 @@ fn uniforms(scene: &Scene, prog: &Program, w: u32, h: u32, fast: bool) -> Unifor
             let [a, b] = prog.blend.unwrap_or([0.0; 2]);
             [a as f32, b as f32, scene.march.smooth_normals.min(8) as f32, l.roughness as f32]
         },
+        interior: [if m.interior.is_empty() { 0.0 } else { 1.0 }, m.interior_scale as f32, m.interior_offset as f32, 0.0],
     }
 }
 
@@ -343,7 +345,7 @@ impl GpuRenderer {
             uniform_buf: uniform("march-uniforms", std::mem::size_of::<Uniforms>()),
             post_buf: uniform("post-uniforms", std::mem::size_of::<PostUniforms>()),
             prm: storage_buffer(device, "prm", 1024),
-            lut: storage_buffer(device, "lut", ((rmb_core::gradient::LUT_SIZE * 2 + 128) * 16) as u64),
+            lut: storage_buffer(device, "lut", ((rmb_core::gradient::LUT_SIZE * 4 + 128) * 16) as u64),
             maps: storage_buffer(device, "maps", 16),
             map_numbers: Vec::new(),
             map_background: String::new(),
@@ -450,6 +452,10 @@ impl GpuRenderer {
         let mut lut: Vec<[f32; 4]> = rmb_core::gradient::lut(g).iter().chain(&rmb_core::gradient::lut_specular(g)).map(|c| [c[0], c[1], c[2], 1.0]).collect();
         let rough = rmb_core::render::rough_tables();
         lut.extend((0..128).map(|i| [0, 1, 2, 3].map(|k| rough[k][i] as f32)));
+        // Interior colors (when there are none the shader does not read them).
+        let interior = &shade.material.interior;
+        let (ib, is) = if interior.is_empty() { (vec![[0.0; 3]; 256], vec![[0.0; 3]; 256]) } else { (rmb_core::gradient::lut(interior), rmb_core::gradient::lut_specular(interior)) };
+        lut.extend(ib.iter().chain(&is).map(|c| [c[0], c[1], c[2], 1.0]));
         self.ctx.queue.write_buffer(&self.lut, 0, bytemuck::cast_slice(&lut));
         self.uniforms = Some(uniforms(&shade, &prog, width, height, fast));
         self.request_pipeline(&prog);

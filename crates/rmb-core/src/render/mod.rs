@@ -197,7 +197,7 @@ pub fn shading_scene(scene: &Scene) -> Cow<'_, Scene> {
     }
     let mut s = scene.clone();
     let c = |x: &mut [f32; 3]| *x = x.map(to_display);
-    for st in &mut s.material.gradient {
+    for st in s.material.gradient.iter_mut().chain(s.material.interior.iter_mut()) {
         c(&mut st.color);
         c(&mut st.specular);
     }

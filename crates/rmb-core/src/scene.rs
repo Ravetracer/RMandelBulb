@@ -628,6 +628,16 @@ pub struct Material {
     /// Adds this times the natural log of the surface threshold (world units) to the
     /// iteration color value; keeps colors steady while zooming (Mandelbulb3D).
     pub detail_shift: f64,
+    /// Shifts the gradient position by this much per world unit of distance beyond
+    /// `depth_reference` (Mandelbulb3D's color variation with depth; 0 = off).
+    pub depth_shift: f64,
+    /// Distance from the camera where the depth shift is 0.
+    pub depth_reference: f64,
+    /// Colors where a ray meets the inside of the fractal (cut planes, camera inside the solid);
+    /// empty: the normal gradient. Indexed by the final radius (inside rendering: iterations).
+    pub interior: Vec<ColorStop>,
+    pub interior_scale: f64,
+    pub interior_offset: f64,
     /// Mirror reflections: amount (0 = off) times the highlight color of the gradient.
     pub reflection: f64,
     /// Reflections of reflections.
@@ -645,6 +655,11 @@ impl Default for Material {
             specular: 1.0,
             saturation: 1.0,
             detail_shift: 0.0,
+            depth_shift: 0.0,
+            depth_reference: 0.0,
+            interior: Vec::new(),
+            interior_scale: 1.0,
+            interior_offset: 0.0,
             reflection: 0.0,
             reflection_bounces: 2,
         }

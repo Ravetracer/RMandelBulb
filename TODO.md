@@ -19,7 +19,9 @@
 - [x] Dynamic fog on one iteration, AO strength above 1, AO reach like MB3D
 - [x] Visible light sources (glow shapes soft, sharp, ball, halo; occlusion and depth fog)
 - [x] Smoothed normals and roughness (dull highlights, softer diffuse on rough parts)
-- [ ] Color variation with depth (VarColZpos), interior colors, color maps on the surface
+- [x] Color variation with depth (VarColZpos), interior colors (cut faces, camera inside)
+- [ ] Color maps on the surface (diffuse color from a map: on normals, 3D wrap, iterations/trap;
+      8 samples)
 - [ ] Unverified (no reference render): "KentPress - Parameter 3 tweak fogits" renders almost
       white (dynamic fog on iteration 31), "Waste-and-tragedy - Mandalex" overexposed (strong
       point light; MB3D's screen-space AO probably darkens more)

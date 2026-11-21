@@ -17,6 +17,9 @@ pub struct Shader<'a> {
     pub lut: Vec<[f32; 3]>,
     pub lut_spec: Vec<[f32; 3]>,
     pub bg_image: Option<(std::sync::Arc<crate::maps::Map>, [[f64; 3]; 3])>,
+    /// Interior colors (empty: none).
+    pub lut_int: Vec<[f32; 3]>,
+    pub lut_int_spec: Vec<[f32; 3]>,
 }
 
 pub struct Hit {
@@ -37,6 +40,8 @@ impl<'a> Shader<'a> {
             lut: crate::gradient::lut(g),
             lut_spec: crate::gradient::lut_specular(g),
             bg_image: super::background_image(scene),
+            lut_int: if scene.material.interior.is_empty() { Vec::new() } else { crate::gradient::lut(&scene.material.interior) },
+            lut_int_spec: if scene.material.interior.is_empty() { Vec::new() } else { crate::gradient::lut_specular(&scene.material.interior) },
         }
     }
 
@@ -254,9 +259,32 @@ impl<'a> Shader<'a> {
     }
 
     /// Surface and highlight color for the color value `v`.
-    fn gradient(&self, v: f64) -> ([f64; 3], [f64; 3]) {
+    /// Interior colors for a hit whose orbit did not escape (None: not interior or no interior
+    /// colors): indexed by the final radius relative to the bailout (inside rendering: the
+    /// iteration value), like Mandelbulb3D's CalcColorsInside.
+    fn interior_colors(&self, hit: &Hit, n: V3, dist: f64) -> Option<([f64; 3], [f64; 3])> {
         let m = &self.scene.material;
-        let mut t = v * m.color_scale + m.color_offset;
+        if self.lut_int.is_empty() || hit.orbit.escaped {
+            return None;
+        }
+        let v = if self.scene.fractal.inside {
+            self.color_value(hit, n) / (self.scene.fractal.max_iterations as f64 + 1.0)
+        } else {
+            (hit.orbit.r2 / self.prog.bailout2.max(1e-30)).clamp(0.0, 1.0)
+        };
+        let mut t = v * m.interior_scale + m.interior_offset + m.depth_shift * (dist - m.depth_reference);
+        t = if m.repeat { t - t.floor() } else { t.clamp(0.0, 1.0) };
+        let x = t * (self.lut_int.len() - 1) as f64;
+        let i = (x.floor() as usize).min(self.lut_int.len() - 2);
+        let f = x - i as f64;
+        let mix = |l: &[[f32; 3]]| [0, 1, 2].map(|k| l[i][k] as f64 + (l[i + 1][k] as f64 - l[i][k] as f64) * f);
+        Some((mix(&self.lut_int), mix(&self.lut_int_spec)))
+    }
+
+    /// Surface and highlight color for the color value `v` of a hit at distance `dist`.
+    fn gradient(&self, v: f64, dist: f64) -> ([f64; 3], [f64; 3]) {
+        let m = &self.scene.material;
+        let mut t = v * m.color_scale + m.color_offset + m.depth_shift * (dist - m.depth_reference);
         t = if m.repeat { t - t.floor() } else { t.clamp(0.0, 1.0) };
         let x = t * (self.lut.len() - 1) as f64;
         let i = (x.floor() as usize).min(self.lut.len() - 2);
@@ -355,7 +383,10 @@ impl<'a> Shader<'a> {
                 // softens the diffuse curves (PaintThread.CalcPixelColor2).
                 let rr = rough * sc.lighting.roughness;
                 let spec_rough = 1.0 + (2.0 * rr).min(1.0) * (4.0 / sc.lighting.shininess.max(1.0) - 1.0);
-                let (base, spec_col) = self.gradient(self.color_value(h, n));
+                let (base, spec_col) = match self.interior_colors(h, n, h.t) {
+                    Some(c) => c,
+                    None => self.gradient(self.color_value(h, n), h.t),
+                };
                 // Shading point just off the surface; inside rendering puts the surface one
                 // threshold into the solid, so it needs a larger offset.
                 let p = h.pos + n * (h.eps * if sc.fractal.inside { 4.0 } else { 1.5 });

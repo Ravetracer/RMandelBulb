@@ -149,3 +149,13 @@ little-endian.
 - Shading: dRough = roughness · RoughnessFactor (light +2, /255). Specular weight
   (1 + min(1, 2·dRough)·(1/p - 1)); diffuse = mix(table, rough table, dRough), rough tables =
   blurred square roots of the diffuse tables (LightAdjust.SetCosTabFunction).
+
+## Depth color variation and interior colors (PaintThread.CalcColors / CalcColorsInside)
+
+- VarColZpos (i16 at light +0): the color index gets sColZmul · zPos added, sColZmul =
+  VarColZpos · -0.005 / (stepWidth · Width), zPos = depth relative to the mid plane: the gradient
+  position moves by 0.5 · sColZmul per world unit.
+- Interior colors (ICols at light +360, 4 × position u16 + RGBA, alpha = specular) color pixels
+  whose ray meets the inside of the set (no DE stop: cut faces, camera inside): SIgradient =
+  32768 + 32767 · Rout / RStop (inside rendering: smooth iterations · 32767 / (maxIt + 1));
+  start/end from TBoptions bits 0..6 / 7..13 as 32768 + s⁴ · 0.000158025.

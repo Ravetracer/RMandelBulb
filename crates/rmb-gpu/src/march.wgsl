@@ -33,7 +33,7 @@ struct U {
     glow: vec4<f32>,       // w: amount
     dof: vec4<f32>,        // enabled, aperture, focus distance, fast preview
     color: vec4<f32>,      // mode, scale, offset, repeat
-    color2: vec4<f32>,     // saturation, cut count
+    color2: vec4<f32>,     // saturation, cut count, depth shift, depth reference
     cuts: array<vec4<f32>, 3>,   // axis, position, keep above
     slots: array<vec4<u32>, 8>,  // x: iterations
     lights: array<GLight, 6>,
@@ -47,12 +47,13 @@ struct U {
     glow3: vec4<f32>,      // glow offset (steps), blend, glow iteration, reflection amount
     bg_rot: array<vec4<f32>, 3>, // background image rotation rows; [0].w: has image, [1].w: display space
     blend: vec4<f32>,      // interpolation hybrid weights of slots 1 and 2, smooth normals, roughness
+    interior: vec4<f32>,   // interior colors: on, scale, offset
 }
 
 @group(0) @binding(0) var<uniform> u: U;
 @group(0) @binding(1) var<storage, read> prm: array<f32>;
 // Surface colors at 0..255, highlight colors at 256..511, rough diffuse tables at 512..639
-// (one table per component).
+// (one table per component), interior colors at 640..895 and their highlights at 896..1151.
 @group(0) @binding(2) var<storage, read> lut: array<vec4<f32>>;
 @group(0) @binding(3) var<storage, read_write> accum: array<vec4<f32>>;
 // Denoiser helper images per pixel: [2 i] albedo, [2 i + 1] world normal (summed like accum).
@@ -592,8 +593,8 @@ struct Colors {
     spec: vec3<f32>,
 }
 
-fn gradient(v: f32) -> Colors {
-    var t = v * u.color.y + u.color.z;
+fn gradient(v: f32, dist: f32) -> Colors {
+    var t = v * u.color.y + u.color.z + u.color2.z * (dist - u.color2.w);
     if (u.color.w > 0.5) {
         t = t - floor(t);
     } else {
@@ -749,7 +750,25 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sy: f32) 
         // Roughness dulls the highlights and softens the diffuse curves.
         let rr = nr.w * u.blend.w;
         let spec_rough = 1.0 + min(2.0 * rr, 1.0) * (4.0 / max(u.sky.w, 1.0) - 1.0);
-        let cols = gradient(color_value(h, n, pos));
+        var cols = gradient(color_value(h, n, pos), h.t);
+        // Interior colors where the orbit did not escape (mirrors Shader::interior_colors).
+        if (u.interior.x > 0.5 && !h.orbit.escaped) {
+            var v = clamp(h.orbit.r2 / max(u.march.z, 1.0e-30), 0.0, 1.0);
+            if (u.scales.z > 0.5) {
+                v = color_value(h, n, pos) / (u.frac.z + 1.0);
+            }
+            var t = v * u.interior.y + u.interior.z + u.color2.z * (h.t - u.color2.w);
+            if (u.color.w > 0.5) {
+                t = t - floor(t);
+            } else {
+                t = clamp(t, 0.0, 1.0);
+            }
+            let x = t * 255.0;
+            let i = min(u32(floor(x)), 254u);
+            let f = x - f32(i);
+            cols.base = mix(lut[640u + i].xyz, lut[641u + i].xyz, f);
+            cols.spec = mix(lut[896u + i].xyz, lut[897u + i].xyz, f);
+        }
         let base = cols.base;
         let p = pos + n * (h.eps * select(1.5, 4.0, u.scales.z > 0.5));
         let ao = ambient_occlusion(p, n, h.t);

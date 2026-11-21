@@ -660,6 +660,40 @@ pub fn import_binary(b: &[u8]) -> Result<Import, String> {
         // Lens radius = Ap * focus distance; the scene's lens radius is aperture * focus * 0.1.
         s.dof.aperture = ap * 10.0;
     }
+    // ---- interior colors (ICols at light +360: 4 × position u16, RGB, specular byte), used
+    // where rays meet the inside (cut planes); index (CalcSCstartAndSCmul, inside):
+    // position = 0.5 · (v · 32767 - s⁴k) / ((e⁴ - s⁴)k), v = Rout / RStop, k = 0.000158025.
+    {
+        let mut istops: Vec<ColorStop> = (0..4)
+            .map(|k| {
+                let o = light + 360 + k * 6;
+                let spec = srgb_to_linear(r.u8(o + 5));
+                ColorStop { pos: r.u16(o) as f64 / 32767.0, color: r.rgb(o + 2), specular: [spec; 3] }
+            })
+            .collect();
+        istops.sort_by(|a, b| a.pos.total_cmp(&b.pos));
+        let end = if cycling { istops.first().cloned() } else { istops.last().cloned() };
+        if let Some(end) = end {
+            istops.push(ColorStop { pos: 1.0, ..end });
+        }
+        let s4 = ((tb_options & 0x7F) as f64).powi(4);
+        let e4 = (((tb_options >> 7) & 0x7F) as f64).powi(4);
+        let k = 0.000158025;
+        let span = if ((e4 - s4) * k).abs() < 1e-10 { 1e-10 } else { (e4 - s4) * k };
+        s.material.interior = istops;
+        s.material.interior_scale = 0.5 * 32767.0 / span;
+        s.material.interior_offset = -0.5 * s4 * k / span;
+    }
+
+    // ---- color variation with depth (VarColZpos, light +0): the gradient position moves by
+    // 0.5 · sColZmul per world unit of depth beyond the mid plane, sColZmul = VarColZpos ·
+    // -0.005 / (stepWidth · Width).
+    let var_col_z = r.u16(light) as i16 as f64;
+    if var_col_z != 0.0 {
+        s.material.depth_shift = 0.5 * var_col_z * -0.005 / (sw * width as f64);
+        s.material.depth_reference = (mid - s.camera.position).length();
+    }
+
     // ---- smoothed normals (iOptions bits 6..9) and the roughness factor (light record +2)
     s.march.smooth_normals = ((r.u16(16) >> 6) & 15).min(8) as u32;
     s.lighting.roughness = r.u8(light + 2) as f64 / 255.0;

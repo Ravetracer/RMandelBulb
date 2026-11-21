@@ -140,6 +140,13 @@ fn gpu_matches_cpu_with_mandelbulb3d_shading() {
     scene.material.color_scale = -0.3;
     scene.material.color_offset = 1.7;
     scene.material.detail_shift = 0.24;
+    scene.material.depth_shift = 0.3;
+    scene.material.depth_reference = 3.0;
+    // Interior colors on a cut face.
+    scene.material.interior = rmb_core::gradient::preset("Ice").unwrap_or_default();
+    scene.material.interior_scale = 0.8;
+    scene.material.interior_offset = 0.1;
+    scene.cut.z = rmb_core::scene::CutPlane { enabled: true, position: 0.1, keep_above: false };
     // A shadowed point light and highlight colors per gradient stop.
     scene.lighting.lights.push(rmb_core::scene::Light {
         kind: rmb_core::scene::LightKind::Point,
