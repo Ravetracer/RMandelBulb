@@ -8,11 +8,12 @@
 - [x] Ambient light relative to the camera, diffuse/specular multipliers
 - [x] Color index like MB3D (smooth iterations from Rout/Rold, start/end sliders, color cycling)
 - [x] Depth of field import (focus distance, aperture)
-- [ ] Interpolation hybrids (currently imported as alternating)
+- [x] Interpolation hybrids (two formulas blended per iteration)
 - [x] Background images (panorama with MB3D's rotation and B-spline sampling)
   - [ ] Screen-coordinate images, MB3D's "convert to spherical" on load, ambient light from the
         image (samples: material colors, Mengerplus for MC)
-- [ ] Reflections (MB3D's reflection amount; mirror spheres in "material colors", "Wada basin")
+- [x] Reflections (MB3D's reflection amount and bounces, weighted by the highlight colors)
+- [ ] Transparency / transmission (MB3D's glass: "material colors", "toricaleggs", "Torii")
 - [x] Positional lights (point lights with 1/d² falloff)
 - [x] Specular colors per gradient stop, MB3D's diffuse light functions, lights darkened by AO
 - [x] Dynamic fog on one iteration, AO strength above 1, AO reach like MB3D
@@ -41,6 +42,8 @@
   - [ ] Reference images: `../_dev`
 - [ ] Glowing palette colors that produce a shimmering/glow effect
 - [ ] Palette colors that act as light sources in that color (strength, glow, …)
+  - [ ] Like emission in MagicaVoxel:
+        https://www.megavoxels.com/learn/how-to-create-lights-in-magicavoxel-using-emission/
 - [ ] Loading 3D objects into the scene (standard formats, Blender, …)
 - [ ] Textures instead of colors, or as masks over the colors with layer blend modes
 - [x] AI denoiser (Intel Open Image Denoise, from RWildFire) with albedo and normal helper images

@@ -208,10 +208,8 @@ pub fn import_binary(b: &[u8]) -> Result<Import, String> {
     if r.u8(addon) < 16 {
         warnings.push("old formula section layout; formulas could not be read".into());
     }
-    match hybrid_type {
-        1 => warnings.push("interpolation hybrid imported as an alternating hybrid".into()),
-        3 => warnings.push("(K/L)IFS hybrid mode is not supported".into()),
-        _ => {}
+    if hybrid_type == 3 {
+        warnings.push("(K/L)IFS hybrid mode is not supported".into());
     }
     // Raw slots: (iterations, formula number, name, option values).
     let mut raw: Vec<(i32, i32, String, Vec<f64>)> = (0..n_slots)
@@ -276,8 +274,22 @@ pub fn import_binary(b: &[u8]) -> Result<Import, String> {
     let mut missing = Vec::new();
     // For the color index: (iterations, DE kind, first option value, name) of each used slot.
     let mut color_info: Vec<(f64, DeKind, f64, String)> = Vec::new();
+    // Interpolation hybrid: the iteration counts of the first two formulas are float weights.
+    let weight = |its: i32| f32::from_bits(its as u32) as f64;
+    if hybrid_type == 1 {
+        let w: Vec<f64> = raw.iter().take(2).map(|r| weight(r.0)).collect();
+        if w.len() == 2 && w.iter().all(|v| v.is_finite()) {
+            f.blend = Some([w[0], w[1]]);
+        }
+        if raw.iter().skip(2).any(|r| r.0 != 0 && r.1 >= 0) {
+            warnings.push("an interpolation hybrid uses only its first two formulas".into());
+        }
+    }
     for (i, (its, fnr, name, values)) in raw.into_iter().enumerate() {
-        if its <= 0 || fnr < 0 {
+        if hybrid_type == 1 && (i > 1 || fnr < 0) {
+            continue;
+        }
+        if hybrid_type != 1 && (its <= 0 || fnr < 0) {
             continue;
         }
         if hybrid_type == 0 && i > end1 && end1 > 0 {
@@ -648,6 +660,20 @@ pub fn import_binary(b: &[u8]) -> Result<Import, String> {
         // Lens radius = Ap * focus distance; the scene's lens radius is aperture * focus * 0.1.
         s.dof.aperture = ap * 10.0;
     }
+    // ---- reflections (CalcSR): SRamount (332) when they are calculated automatically (336
+    // bit 0), SRreflectioncount (337) bounces. Transmission (bit 1) is not supported.
+    let sr = r.u8(336);
+    if sr & 1 != 0 {
+        s.material.reflection = r.f32(332).clamp(0.0, 100.0);
+        s.material.reflection_bounces = (r.u8(337) as u32).clamp(1, 8);
+        if sr & 2 != 0 {
+            warnings.push("transparency (transmission) is not supported; the material only reflects".into());
+        }
+        if sr & 4 != 0 {
+            warnings.push("reflections only on dIFS formulas are shown on all surfaces".into());
+        }
+    }
+
     // ---- background image (spherical; LightVals: BuildRotMatrixS(π - offX·π/128, offY·π/128,
     // offZ·π/128)); the depth fog keeps the vertical gradient.
     let bg_name = r.cstr(light + 384, 24);

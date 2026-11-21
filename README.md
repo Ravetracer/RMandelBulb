@@ -65,8 +65,8 @@ Linux and macOS), `oidn/` of the source tree, the system library path.
   to the program.
 - Inside rendering (views from within the set) works like Mandelbulb3D's: rays step through the
   set in small steps, so it is slower.
-- Not yet supported from MB3D: interpolation hybrids (imported as alternating), the dIFS "mix"
-  combination, reflections, ambient light from background images.
+- Not yet supported from MB3D: the dIFS "mix" combination, transparency (transmission), ambient
+  light from background images.
 - Imported scenes shade like MB3D (display space, depth fog over the view range, dynamic fog,
   MB3D's color index, depth of field); results are close, not pixel-identical.
 - The GPU renders in f32, so very deep zooms need the CPU renderer (`rmb-cli render --cpu`).

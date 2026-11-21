@@ -230,6 +230,9 @@ pub struct Fractal {
     /// Two formula chains whose distance estimates are combined (Mandelbulb3D's DE
     /// combination): slots before `start` form the first chain, the rest the second.
     pub combine: Option<DeCombine>,
+    /// Interpolation of the first two slots (Mandelbulb3D's interpolation hybrid): every
+    /// iteration runs both on the same point and blends the results with these weights.
+    pub blend: Option<[f64; 2]>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -299,6 +302,7 @@ impl Default for Fractal {
             rotation_4d: [0.0; 3],
             inside: false,
             combine: None,
+            blend: None,
         }
     }
 }
@@ -617,6 +621,10 @@ pub struct Material {
     /// Adds this times the natural log of the surface threshold (world units) to the
     /// iteration color value; keeps colors steady while zooming (Mandelbulb3D).
     pub detail_shift: f64,
+    /// Mirror reflections: amount (0 = off) times the highlight color of the gradient.
+    pub reflection: f64,
+    /// Reflections of reflections.
+    pub reflection_bounces: u32,
 }
 
 impl Default for Material {
@@ -630,6 +638,8 @@ impl Default for Material {
             specular: 1.0,
             saturation: 1.0,
             detail_shift: 0.0,
+            reflection: 0.0,
+            reflection_bounces: 2,
         }
     }
 }

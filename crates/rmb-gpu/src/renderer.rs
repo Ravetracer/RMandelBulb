@@ -103,6 +103,7 @@ struct Uniforms {
     glow2: [f32; 4],
     glow3: [f32; 4],
     bg_rot: [[f32; 4]; 3],
+    blend: [f32; 4],
 }
 
 #[repr(C)]
@@ -198,15 +199,16 @@ fn uniforms(scene: &Scene, prog: &Program, w: u32, h: u32, fast: bool) -> Unifor
         rot4,
         amb_up: v4(fr.ambient_up, bg.curve),
         fog2: [if fog.mode == FogMode::Range { 1.0 } else { 0.0 }, fog.strength as f32, fog.start as f32, fog.curve as f32],
-        fog3: [if fog.squared { 1.0 } else { 0.0 }, if fog.from_background { 1.0 } else { 0.0 }, m.detail_shift as f32, 0.0],
+        fog3: [if fog.squared { 1.0 } else { 0.0 }, if fog.from_background { 1.0 } else { 0.0 }, m.detail_shift as f32, m.reflection_bounces as f32],
         glow2: c4(fog.glow_color2, fog.glow_mix_steps),
-        glow3: [fog.glow_offset as f32, if fog.glow_blend { 1.0 } else { 0.0 }, fog.glow_iteration as f32, 0.0],
+        glow3: [fog.glow_offset as f32, if fog.glow_blend { 1.0 } else { 0.0 }, fog.glow_iteration as f32, m.reflection as f32],
         bg_rot: {
             let m = rmb_core::maps::rotation_matrix(bg.image_rotation);
             let has = !bg.image.trim().is_empty() && rmb_core::render::background_image(scene).is_some();
             let flags = [if has { 1.0 } else { 0.0 }, if scene.post.display_space { 1.0 } else { 0.0 }, 0.0];
             [0, 1, 2].map(|i| [m[i][0] as f32, m[i][1] as f32, m[i][2] as f32, flags[i]])
         },
+        blend: prog.blend.map(|[a, b]| [a as f32, b as f32, 0.0, 0.0]).unwrap_or([0.0; 4]),
     }
 }
 
@@ -426,7 +428,8 @@ impl GpuRenderer {
         if self.key.as_ref() == Some(&key) {
             return;
         }
-        let prog = Program::new(&scene.fractal, &scene.cut);
+        let mut prog = Program::new(&scene.fractal, &scene.cut);
+        prog.reflections = scene.material.reflection > 0.0;
         self.ensure_target(width, height);
         let device = &self.ctx.device;
         // Parameters

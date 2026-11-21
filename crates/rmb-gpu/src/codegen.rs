@@ -19,6 +19,7 @@ const TEMPLATE: &str = include_str!("march.wgsl");
 pub fn march_shader(prog: &Program) -> String {
     let mut s = String::from(PRELUDE);
     let _ = writeln!(s, "const ROTATE_4D: bool = {};", prog.rotation_4d.is_some());
+    let _ = writeln!(s, "const REFLECT: bool = {};", prog.reflections);
     s.push_str(&chain(prog, 1, 0, "u.frac.z", "u.frac.w"));
     match prog.part2.as_deref() {
         Some(p2) => {
@@ -61,7 +62,22 @@ fn chain(prog: &Program, k: usize, slot_base: usize, limit: &str, repeat: &str) 
     let _ = writeln!(s, "    if (DIFS_{k}) {{\n        {} = 1.0;\n    }}\n    out.de = 65535.0;", names[STATE_AUX]);
     let _ = writeln!(s, "    if (NSLOTS_{k} == 0u) {{\n        return out;\n    }}");
     let _ = writeln!(s, "    let limit = select(u32({limit}), fixed_n, use_fixed);\n    let repeat_from = u32({repeat});");
-    s.push_str("    var slot = 0u;\n    var count = 0u;\n    var n = 0u;\n    let cap = limit * 8u + 64u;\n    var steps = 0u;\n");
+    s.push_str("    var n = 0u;\n");
+    // Interpolation hybrid (mirrors fractal.rs): both formulas from the same point, blended.
+    let blend = k == 1 && prog.blend.is_some() && prog.slots.len() >= 2;
+    if blend {
+        let (x, y, z, w, dr, rout, rold, it) = (&names[0], &names[1], &names[2], &names[3], &names[8], &names[STATE_ROUT], &names[STATE_ROLD], &names[9]);
+        let _ = writeln!(s, "    loop {{\n        if (n >= limit) {{\n            break;\n        }}\n        {rold} = {rout};\n        {it} = fl(n);");
+        let _ = writeln!(s, "        let in_s = vec4<fl>({x}, {y}, {z}, {w});\n        let in_dr = {dr};\n        {{ // {}", prog.slots[0].formula.def.name);
+        s.push_str(&emit_iter(&prog.slots[0].formula.def, prog.slots[0].offset, 3));
+        let _ = writeln!(s, "        }}\n        let a_s = vec4<fl>({x}, {y}, {z}, {w});\n        let a_dr = {dr};\n        {x} = in_s.x;\n        {y} = in_s.y;\n        {z} = in_s.z;\n        {w} = in_s.w;\n        {dr} = in_dr;\n        {{ // {}", prog.slots[1].formula.def.name);
+        s.push_str(&emit_iter(&prog.slots[1].formula.def, prog.slots[1].offset, 3));
+        let _ = writeln!(
+            s,
+            "        }}\n        let w1 = fl(u.blend.x);\n        let w2 = fl(u.blend.y);\n        let len_b = sqrt({x} * {x} + {y} * {y} + {z} * {z});\n        let l = length(a_s.xyz) * w1 + len_b * w2;\n        {x} = a_s.x * w1 + {x} * w2;\n        {y} = a_s.y * w1 + {y} * w2;\n        {z} = a_s.z * w1 + {z} * w2;\n        {w} = a_s.w * w1 + {w} * w2;\n        {dr} = abs(a_dr) * w1 + abs({dr}) * w2;\n        let f = l / sqrt({x} * {x} + {y} * {y} + {z} * {z} + 1.0e-40);\n        {x} = {x} * f;\n        {y} = {y} * f;\n        {z} = {z} * f;\n        n += 1u;\n        let r2 = f32(l * l);\n        {rout} = fl(r2);\n        out.trap = min(out.trap, r2);\n        if (!use_fixed && !(r2 <= u.march.z)) {{\n            out.escaped = true;\n            break;\n        }}\n    }}\n    // The normal hybrid loop is not used.\n    if (false) {{"
+        );
+    }
+    s.push_str("    var slot = 0u;\n    var count = 0u;\n    let cap = limit * 8u + 64u;\n    var steps = 0u;\n");
     s.push_str("    loop {\n        if (n >= limit || steps >= cap) {\n            break;\n        }\n        steps += 1u;\n");
     let _ = writeln!(
         s,
@@ -93,6 +109,9 @@ fn chain(prog: &Program, k: usize, slot_base: usize, limit: &str, repeat: &str) 
         a2 = names[STATE_AUX + 2],
         dr = names[8]
     );
+    if blend {
+        s.push_str("    }\n");
+    }
     let _ = writeln!(s, "    out.s = vec4<f32>(f32({}), f32({}), f32({}), f32({}));\n    out.rold = f32({});\n    out.dr = f32({});\n    out.n = n;\n    return out;\n}}", names[0], names[1], names[2], names[3], names[STATE_ROLD], names[8]);
     s.push_str(&CHAIN_DE.replace("SCALE_K", if k == 1 { "u.scales.x" } else { "u.scales.y" }).replace("_K", &format!("_{k}")));
     s
@@ -114,6 +133,8 @@ fn chain_de_K(p: vec3<f32>, h: f32) -> Orbit {
         de = max(it.de, 0.0);
     } else if (it.escaped) {
         if (NUMERIC_K) {
+            // Gradient step: at least a little relative to the point (mirrors fractal.rs).
+            let h = max(h, length(p) * 2e-6);
             var g = vec3<f32>(0.0);
             for (var k = 0u; k < 3u; k++) {
                 var q = p;

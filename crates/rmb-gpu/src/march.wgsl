@@ -42,10 +42,11 @@ struct U {
     rot4: array<vec4<f32>, 4>, // 4D start rotation (rows)
     amb_up: vec4<f32>,     // xyz: ambient sky axis, w: vertical background curve
     fog2: vec4<f32>,       // fog mode, strength, start, curve
-    fog3: vec4<f32>,       // squared, from background, color detail shift
+    fog3: vec4<f32>,       // squared, from background, color detail shift, reflection bounces
     glow2: vec4<f32>,      // second glow color, w: steps to the second color
-    glow3: vec4<f32>,      // glow offset (steps), blend, glow iteration
+    glow3: vec4<f32>,      // glow offset (steps), blend, glow iteration, reflection amount
     bg_rot: array<vec4<f32>, 3>, // background image rotation rows; [0].w: has image, [1].w: display space
+    blend: vec4<f32>,      // interpolation hybrid weights of slots 1 and 2
 }
 
 @group(0) @binding(0) var<uniform> u: U;
@@ -603,6 +604,134 @@ fn fog_amount(t: f32) -> f32 {
     return f;
 }
 
+// Mirrors cpu.rs Traced / Surface.
+struct Traced {
+    c: vec3<f32>,
+    albedo: vec3<f32>,
+    normal: vec3<f32>,
+    hit: bool,
+    pos: vec3<f32>,
+    n: vec3<f32>,
+    dir: vec3<f32>,
+    t: f32,
+    spec: vec3<f32>,
+    fog: f32,
+}
+
+// Mirrors Shader::trace: one ray from `o` along `d` (distances `t0`..`max_t`; fog, glow and
+// visible lights measured from `t_base`).
+fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sy: f32) -> Traced {
+    var tr: Traced;
+    tr.hit = false;
+    let h = march_ray(o, d, t0, max_t, u.band.z);
+    let glow = u.glow.w * max(f32(h.glow_steps) - u.glow3.x, 0.0) / f32(max(u.band.z, 1u));
+    var glow_mix = 0.0;
+    if (u.glow2.w > 0.0) {
+        glow_mix = min(f32(h.glow_steps) / u.glow2.w, 1.0);
+    }
+    let grad = background(d, sy);
+    var bg = grad;
+    if (u.bg_rot[0].w > 0.5) {
+        bg = background_image(d);
+    }
+    var fog_col = u.fog.xyz;
+    if (u.fog3.y > 0.5) {
+        fog_col = grad;
+    }
+    var c: vec3<f32>;
+    tr.normal = vec3<f32>(0.0);
+    if (!h.hit) {
+        let f = fog_amount(u.cam_fwd.w);
+        c = mix(bg, fog_col, max(f, 0.0));
+        tr.albedo = clamp(c, vec3<f32>(0.0), vec3<f32>(1.0));
+    } else {
+        let pos = o + d * h.t;
+        var n = surface_normal(pos, h.eps);
+        if (dot(n, d) > 0.0) {
+            n = -n;
+        }
+        let cols = gradient(color_value(h, n, pos));
+        let base = cols.base;
+        let p = pos + n * (h.eps * select(1.5, 4.0, u.scales.z > 0.5));
+        let ao = ambient_occlusion(p, n, h.t);
+        let hemi = dot(n, u.amb_up.xyz) * 0.5 + 0.5;
+        var diffuse = mix(u.ground.xyz, u.sky.xyz, hemi) * u.ao.w * ao;
+        var spec = vec3<f32>(0.0);
+        let shin = u.sky.w;
+        for (var i = 0u; i < u.size.w; i++) {
+            let li = u.lights[i];
+            // Point lights: direction, squared-distance falloff and shadow length.
+            var ldir = li.dir.xyz;
+            var atten = 1.0;
+            var max_l = u.cam_fwd.w;
+            if (li.color.w > 0.5) {
+                let v = li.dir.xyz - p;
+                let d2 = max(dot(v, v), 1.0e-30);
+                let dist = sqrt(d2);
+                ldir = v / dist;
+                atten = 1.0 / d2;
+                max_l = dist;
+            }
+            let ndl = dot(n, ldir);
+            let curve = u32(li.opts.z);
+            var df = max(ndl, 0.0);
+            if (curve == 1u) {
+                df = df * df;
+            } else if (curve == 2u) {
+                df = ndl * 0.5 + 0.5;
+            } else if (curve == 3u) {
+                df = (ndl * 0.5 + 0.5) * (ndl * 0.5 + 0.5);
+            }
+            // Back faces: only wrapping curves reach them, and not through shadows.
+            if (df <= 0.0 || (ndl <= 0.0 && li.opts.x > 0.5)) {
+                continue;
+            }
+            var sh = 1.0;
+            if (li.opts.x > 0.5 && u.dof.w < 0.5) {
+                sh = soft_shadow(p, ldir, h.eps, li.opts.y, max_l);
+            }
+            if (sh <= 0.0) {
+                continue;
+            }
+            let w = sh * atten * (1.0 - li.opts.w * (1.0 - ao));
+            let hv = normalize(ldir - d);
+            var s = 0.0;
+            if (ndl > 0.0) {
+                s = pow(max(dot(n, hv), 0.0), shin) * li.dir.w * u.ground.w * (shin + 8.0) / 25.0;
+            }
+            diffuse += li.color.xyz * df * w;
+            spec += li.color.xyz * s * w;
+        }
+        let lit = base * diffuse + spec * cols.spec;
+        let f = fog_amount(h.t - t_base);
+        c = lit * (1.0 - f) + fog_col * max(f, 0.0);
+        tr.albedo = clamp(base * (1.0 - f) + fog_col * max(f, 0.0), vec3<f32>(0.0), vec3<f32>(1.0));
+        tr.normal = n;
+        tr.hit = true;
+        tr.pos = p;
+        tr.n = n;
+        tr.dir = d;
+        tr.t = h.t;
+        tr.spec = cols.spec;
+        tr.fog = f;
+    }
+    let glow_col = mix(u.glow.xyz, u.glow2.xyz, glow_mix);
+    if (u.glow3.y > 0.5) {
+        c = mix(c, glow_col, clamp(glow, 0.0, 1.0));
+    } else {
+        c += glow_col * glow;
+    }
+    // Visible light sources (seen from where this ray part starts).
+    let ray_from = o + d * t_base;
+    for (var i = 0u; i < u.size.w; i++) {
+        if (u.lights[i].glow.x > 0.5) {
+            c = light_glow(i, ray_from, d, h.hit, h.t - t_base, fog_col, c);
+        }
+    }
+    tr.c = c;
+    return tr;
+}
+
 fn sample_pixel(px: u32, py: u32, sample: u32) -> vec3<f32> {
     rng_state = pcg(px ^ pcg(py ^ pcg(sample)));
     var jx = 0.5;
@@ -623,102 +752,52 @@ fn sample_pixel(px: u32, py: u32, sample: u32) -> vec3<f32> {
         o = o + u.cam_right.xyz * (r * cos(a)) + u.cam_up.xyz * (r * sin(a));
         d = normalize(focus - o);
     }
-    let h = march_ray(o, d, u.scales.w, u.cam_fwd.w, u.band.z);
-    let glow = u.glow.w * max(f32(h.glow_steps) - u.glow3.x, 0.0) / f32(max(u.band.z, 1u));
-    var glow_mix = 0.0;
-    if (u.glow2.w > 0.0) {
-        glow_mix = min(f32(h.glow_steps) / u.glow2.w, 1.0);
+    // Without reflections (most scenes) a single trace: compiles much faster.
+    if (!REFLECT) {
+        let tr = trace(o, d, u.scales.w, u.cam_fwd.w, 0.0, sy);
+        aux_albedo = tr.albedo;
+        aux_normal = tr.normal;
+        return tr.c;
     }
-    let grad = background(d, sy);
-    var bg = grad;
-    if (u.bg_rot[0].w > 0.5) {
-        bg = background_image(d);
+    // Primary ray and reflections (mirrors Shader::sample_aux) in one loop with a single
+    // trace call.
+    var c = vec3<f32>(0.0);
+    var weight = vec3<f32>(1.0);
+    var ro = o;
+    var rd = d;
+    var t0 = u.scales.w;
+    var max_t = u.cam_fwd.w;
+    var t_base = 0.0;
+    var syr = sy;
+    let amount = u.glow3.w;
+    var bounces = 0u;
+    if (amount > 0.0) {
+        bounces = clamp(u32(u.fog3.w), 1u, 8u);
     }
-    var fog_col = u.fog.xyz;
-    if (u.fog3.y > 0.5) {
-        fog_col = grad;
-    }
-    var c: vec3<f32>;
-    aux_normal = vec3<f32>(0.0);
-    if (!h.hit) {
-        let f = fog_amount(u.cam_fwd.w);
-        c = mix(bg, fog_col, max(f, 0.0));
-        aux_albedo = clamp(c, vec3<f32>(0.0), vec3<f32>(1.0));
-    } else {
-        let pos = o + d * h.t;
-        var n = surface_normal(pos, h.eps);
-        if (dot(n, d) > 0.0) {
-            n = -n;
+    let fov = 2.0 * atan(u.cam_pos.w);
+    for (var b = 0u; b <= bounces; b++) {
+        let tr = trace(ro, rd, t0, max_t, t_base, syr);
+        if (b == 0u) {
+            aux_albedo = tr.albedo;
+            aux_normal = tr.normal;
+            c = tr.c;
+        } else {
+            c += weight * tr.c;
         }
-        let cols = gradient(color_value(h, n, pos));
-        let base = cols.base;
-        let p = pos + n * (h.eps * select(1.5, 4.0, u.scales.z > 0.5));
-        let ao = ambient_occlusion(p, n, h.t);
-        let hemi = dot(n, u.amb_up.xyz) * 0.5 + 0.5;
-        var diffuse = mix(u.ground.xyz, u.sky.xyz, hemi) * u.ao.w * ao;
-        var spec = vec3<f32>(0.0);
-        let shin = u.sky.w;
-        for (var i = 0u; i < u.size.w; i++) {
-            let li = u.lights[i];
-            // Point lights: direction, squared-distance falloff and shadow length.
-            var ldir = li.dir.xyz;
-            var atten = 1.0;
-            var max_t = u.cam_fwd.w;
-            if (li.color.w > 0.5) {
-                let v = li.dir.xyz - p;
-                let d2 = max(dot(v, v), 1.0e-30);
-                let dist = sqrt(d2);
-                ldir = v / dist;
-                atten = 1.0 / d2;
-                max_t = dist;
-            }
-            let ndl = dot(n, ldir);
-            let curve = u32(li.opts.z);
-            var df = max(ndl, 0.0);
-            if (curve == 1u) {
-                df = df * df;
-            } else if (curve == 2u) {
-                df = ndl * 0.5 + 0.5;
-            } else if (curve == 3u) {
-                df = (ndl * 0.5 + 0.5) * (ndl * 0.5 + 0.5);
-            }
-            // Back faces: only wrapping curves reach them, and not through shadows.
-            if (df <= 0.0 || (ndl <= 0.0 && li.opts.x > 0.5)) {
-                continue;
-            }
-            var sh = 1.0;
-            if (li.opts.x > 0.5 && u.dof.w < 0.5) {
-                sh = soft_shadow(p, ldir, h.eps, li.opts.y, max_t);
-            }
-            if (sh <= 0.0) {
-                continue;
-            }
-            let w = sh * atten * (1.0 - li.opts.w * (1.0 - ao));
-            let hv = normalize(ldir - d);
-            var s = 0.0;
-            if (ndl > 0.0) {
-                s = pow(max(dot(n, hv), 0.0), shin) * li.dir.w * u.ground.w * (shin + 8.0) / 25.0;
-            }
-            diffuse += li.color.xyz * df * w;
-            spec += li.color.xyz * s * w;
+        if (b == bounces || !tr.hit) {
+            break;
         }
-        let lit = base * diffuse + spec * cols.spec;
-        let f = fog_amount(h.t);
-        c = lit * (1.0 - f) + fog_col * max(f, 0.0);
-        aux_albedo = clamp(base * (1.0 - f) + fog_col * max(f, 0.0), vec3<f32>(0.0), vec3<f32>(1.0));
-        aux_normal = n;
-    }
-    let glow_col = mix(u.glow.xyz, u.glow2.xyz, glow_mix);
-    if (u.glow3.y > 0.5) {
-        c = mix(c, glow_col, clamp(glow, 0.0, 1.0));
-    } else {
-        c += glow_col * glow;
-    }
-    // Visible light sources.
-    for (var i = 0u; i < u.size.w; i++) {
-        if (u.lights[i].glow.x > 0.5) {
-            c = light_glow(i, o, d, h.hit, h.t, fog_col, c);
+        weight *= tr.spec * amount * clamp(1.0 - tr.fog, 0.0, 1.0);
+        if (all(weight < vec3<f32>(1.0e-4))) {
+            break;
         }
+        let r = tr.dir - tr.n * (2.0 * dot(tr.dir, tr.n));
+        ro = tr.pos - r * tr.t;
+        rd = r;
+        t0 = tr.t;
+        max_t = tr.t + u.cam_fwd.w;
+        t_base = tr.t;
+        syr = clamp(2.0 * asin(clamp(dot(r, u.cam_up.xyz), -1.0, 1.0)) / fov, -1.0, 1.0);
     }
     return c;
 }

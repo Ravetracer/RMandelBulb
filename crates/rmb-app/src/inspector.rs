@@ -296,6 +296,10 @@ fn color(ui: &mut Ui, scene: &mut Scene) {
         widgets::checkbox(ui, "Repeat", "Repeat the gradient (else clamp at its ends)", &mut m.repeat);
         widgets::slider(ui, "Color amount", "0: everything in the first gradient color", &mut m.saturation, 0.0..=1.0, d.saturation);
         widgets::slider(ui, "Specular", "Shininess of the material (all lights)", &mut m.specular, 0.0..=3.0, d.specular);
+        widgets::slider(ui, "Reflection", "Mirror reflections: this amount times the highlight color of the gradient (0 = off; costs another ray per bounce)", &mut m.reflection, 0.0..=2.0, d.reflection);
+        if m.reflection > 0.0 {
+            widgets::slider_u32(ui, "Bounces", "Reflections of reflections", &mut m.reflection_bounces, 1..=8, d.reflection_bounces);
+        }
     });
 }
 

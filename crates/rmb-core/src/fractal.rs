@@ -74,6 +74,11 @@ pub struct Program {
     pub part2: Option<Box<Program>>,
     pub combine_mode: CombineMode,
     pub combine_smooth: f64,
+    /// Interpolation of the first two slots (weights), see `Fractal::blend`.
+    pub blend: Option<[f64; 2]>,
+    /// The GPU shader includes the reflection loop (set by the renderer; shaders without it
+    /// compile faster).
+    pub reflections: bool,
     /// Inside rendering (the estimate is inverted around the surface threshold).
     pub inside: bool,
 }
@@ -151,6 +156,16 @@ impl Program {
                 p.part2 = Some(Box::new(p2));
             }
         }
+        // Interpolation of two formulas (not with a DE combination, transforms or dIFS).
+        if let Some(w) = f.blend
+            && p.part2.is_none()
+            && p.slots.len() >= 2
+            && !p.difs
+            && !p.slots[0].transform
+            && !p.slots[1].transform
+        {
+            p.blend = Some(w);
+        }
         p.cuts = cut.planes().iter().enumerate().filter(|(_, pl)| pl.enabled).map(|(a, pl)| (a, pl.position, pl.keep_above)).collect();
         let uses_w = |prog: &Program| prog.slots.iter().any(|s| uses_state(&s.formula.def.iter, 3));
         if f.rotation_4d.iter().any(|a| *a != 0.0) && (uses_w(&p) || p.part2.as_deref().is_some_and(uses_w)) {
@@ -218,6 +233,8 @@ impl Program {
             part2: None,
             combine_mode: CombineMode::Min,
             combine_smooth: 0.0,
+            blend: None,
+            reflections: false,
             inside: f.inside,
         }
     }
@@ -240,6 +257,8 @@ impl Program {
             s.push_str(&part(p2));
         }
         s.push_str(if self.rotation_4d.is_some() { "|r4" } else { "" });
+        s.push_str(if self.blend.is_some() { "|blend" } else { "" });
+        s.push_str(if self.reflections { "|refl" } else { "" });
         s
     }
 
@@ -304,6 +323,47 @@ fn iterate(top: &Program, prog: &Program, regs: &mut [Vec<f64>], p: V3, fixed: O
         return out;
     }
     let limit = fixed.unwrap_or(prog.max_iterations);
+    if let Some([w1, w2]) = prog.blend {
+        // Interpolation hybrid (doInterpolHybridPas): both formulas from the same point, the
+        // results blended by direction and length; the derivative from absolute values.
+        while out.n < limit {
+            st[STATE_ROLD] = st[STATE_ROUT];
+            st[STATE_ITER] = out.n as f64;
+            let input = st;
+            regs[0][..STATE_COUNT].copy_from_slice(&st);
+            (prog.slots[0].formula.cpu.iter)(&mut regs[0]);
+            let a: [f64; STATE_COUNT] = regs[0][..STATE_COUNT].try_into().unwrap_or(st);
+            let mut b = a;
+            b[..4].copy_from_slice(&input[..4]);
+            b[STATE_DR] = input[STATE_DR];
+            regs[1][..STATE_COUNT].copy_from_slice(&b);
+            (prog.slots[1].formula.cpu.iter)(&mut regs[1]);
+            st.copy_from_slice(&regs[1][..STATE_COUNT]);
+            let len = |v: &[f64]| (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+            let l = len(&a) * w1 + len(&st) * w2;
+            for k in 0..4 {
+                st[k] = a[k] * w1 + st[k] * w2;
+            }
+            st[STATE_DR] = a[STATE_DR].abs() * w1 + st[STATE_DR].abs() * w2;
+            let f = l / (len(&st).powi(2) + 1e-40).sqrt();
+            for v in st.iter_mut().take(3) {
+                *v *= f;
+            }
+            out.n += 1;
+            let r2 = l * l;
+            st[STATE_ROUT] = r2;
+            out.trap = out.trap.min(r2);
+            // NaN counts as escaped.
+            if fixed.is_none() && (r2.is_nan() || r2 > prog.bailout2) {
+                out.escaped = true;
+                break;
+            }
+        }
+        out.state.copy_from_slice(&st[..4]);
+        out.rold = st[STATE_ROLD];
+        out.dr = st[STATE_DR];
+        return out;
+    }
     let (mut slot, mut count) = (0usize, 0u32);
     // Transforms do not count as iterations; the step cap ends chains of only transforms.
     let cap = limit.saturating_mul(8).saturating_add(64);
@@ -375,6 +435,9 @@ fn chain_orbit(top: &Program, prog: &Program, regs: &mut [Vec<f64>], p: V3, h: f
     } else if !it.escaped {
         0.0
     } else if prog.numeric {
+        // Gradient step: at least a little relative to the point (f32 on the GPU cancels
+        // out with the tiny surface thresholds close to the camera).
+        let h = h.max(p.length() * 2e-6);
         let mut g = [0.0; 3];
         for (k, gk) in g.iter_mut().enumerate() {
             let mut q = p;

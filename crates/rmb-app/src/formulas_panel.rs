@@ -274,6 +274,27 @@ fn iteration(ui: &mut Ui, f: &mut Fractal) {
 
 fn combine(ui: &mut Ui, f: &mut Fractal) {
     widgets::section(ui, "Two chains", false);
+    let mut blend = f.blend.is_some();
+    if ui
+        .checkbox(&mut blend, "Interpolate slots 1 and 2")
+        .on_hover_text("Every iteration runs the first two formulas on the same point and blends their results by these weights (Mandelbulb3D's interpolation hybrid); the other slots are not used")
+        .changed()
+    {
+        f.blend = blend.then_some([0.5, 0.5]);
+        if blend {
+            f.combine = None;
+        }
+    }
+    if let Some(w) = f.blend.as_mut() {
+        widgets::grid(ui, "blend", |ui| {
+            widgets::slider(ui, "Weight 1", "Share of slot 1", &mut w[0], -1.0..=2.0, 0.5);
+            widgets::slider(ui, "Weight 2", "Share of slot 2", &mut w[1], -1.0..=2.0, 0.5);
+        });
+        if f.slots.len() < 2 {
+            ui.label(RichText::new("Needs at least two slots.").color(theme::WARN));
+        }
+        return;
+    }
     let mut on = f.combine.is_some();
     if ui
         .checkbox(&mut on, "DE combination")

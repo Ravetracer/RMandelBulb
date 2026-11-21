@@ -246,7 +246,47 @@ impl<'a> Shader<'a> {
             o = o + cam.right * (r * a.cos()) + cam.up * (r * a.sin());
             d = (focus - o).normalize();
         }
-        let (hit, _, steps) = self.march(ev, o, d, super::start_distance(sc), sc.march.max_distance, sc.march.max_steps);
+        let t0 = super::start_distance(sc);
+        let first = self.trace(ev, o, d, t0, sc.march.max_distance, 0.0, sy, &mut rng);
+        let mut c = first.color;
+        // Reflections (Mandelbulb3D's CalcSR): each bounce adds the reflected scene, weighted by
+        // the highlight color of the reflecting surface, the reflection amount and how much of
+        // the surface the fog leaves visible.
+        let m = &sc.material;
+        if m.reflection > 0.0 {
+            let mut weight = [1.0; 3];
+            let mut surf = first.surface;
+            for _ in 0..m.reflection_bounces.clamp(1, 8) {
+                let Some(s) = surf else { break };
+                let vis = (1.0 - s.fog).clamp(0.0, 1.0);
+                for (w, sp) in weight.iter_mut().zip(s.spec) {
+                    *w *= sp * m.reflection * vis;
+                }
+                if weight.iter().all(|w| *w < 1e-4) {
+                    break;
+                }
+                let r = s.dir - s.n * (2.0 * s.dir.dot(s.n));
+                // Marched as a continuation of the path, so the surface threshold keeps growing
+                // with the distance travelled.
+                let origin = s.pos - r * s.t;
+                let syr = (2.0 * r.dot(cam.up).clamp(-1.0, 1.0).asin() / cam.fov.to_radians()).clamp(-1.0, 1.0);
+                let tr = self.trace(ev, origin, r, s.t, s.t + sc.march.max_distance, s.t, syr, &mut rng);
+                for k in 0..3 {
+                    c[k] += weight[k] * tr.color[k];
+                }
+                surf = tr.surface;
+            }
+        }
+        Sample { color: c, albedo: first.albedo, normal: first.normal }
+    }
+
+    /// Traces one ray from `o` along `d` (from distance `t0` to `max_t`; fog, glow and visible
+    /// lights measure from `t_base`): its color and the surface it hit.
+    #[allow(clippy::too_many_arguments)]
+    fn trace(&self, ev: &mut Evaluator, o: V3, d: V3, t0: f64, max_t: f64, t_base: f64, sy: f64, rng: &mut Rng) -> Traced {
+        let sc = self.scene;
+        let fr = &self.frame;
+        let (hit, _, steps) = self.march(ev, o, d, t0, max_t, sc.march.max_steps);
         let (glow, glow_mix) = sc.fog.glow_at(steps as f64, sc.march.max_steps as f64);
         let grad = self.background(d, sy);
         let bg = self.background_image(d).unwrap_or(grad);
@@ -254,6 +294,7 @@ impl<'a> Shader<'a> {
         let (near, far) = (super::start_distance(sc), sc.march.max_distance);
         let albedo: [f64; 3];
         let mut normal = V3::ZERO;
+        let mut surface = None;
         let mut c = match &hit {
             None => {
                 let f = sc.fog.amount(far, near, far);
@@ -268,7 +309,7 @@ impl<'a> Shader<'a> {
                 // Shading point just off the surface; inside rendering puts the surface one
                 // threshold into the solid, so it needs a larger offset.
                 let p = h.pos + n * (h.eps * if sc.fractal.inside { 4.0 } else { 1.5 });
-                let ao = self.ambient_occlusion(ev, p, n, h.t, &mut rng);
+                let ao = self.ambient_occlusion(ev, p, n, h.t, rng);
                 let l = &sc.lighting;
                 let hemi = n.dot(fr.ambient_up) * 0.5 + 0.5;
                 let mut diffuse = [0, 1, 2].map(|k| (l.ground_color[k] as f64 + (l.sky_color[k] - l.ground_color[k]) as f64 * hemi) * l.ambient * ao);
@@ -303,9 +344,10 @@ impl<'a> Shader<'a> {
                     }
                 }
                 let lit = [0, 1, 2].map(|k| base[k] * diffuse[k] + spec[k] * spec_col[k]);
-                let f = sc.fog.amount(h.t, near, far);
+                let f = sc.fog.amount(h.t - t_base, near, far);
                 albedo = [0, 1, 2].map(|k| (base[k] * (1.0 - f) + fog_col[k] * f.max(0.0)).clamp(0.0, 1.0));
                 normal = n;
+                surface = Some(Surface { pos: p, n, dir: d, t: h.t, spec: spec_col, fog: f });
                 [0, 1, 2].map(|k| lit[k] * (1.0 - f) + fog_col[k] * f.max(0.0))
             }
         };
@@ -322,19 +364,44 @@ impl<'a> Shader<'a> {
                 *ck += glow_col[k] * glow;
             }
         }
-        // Visible light sources.
-        let hit_t = hit.as_ref().map(|h| h.t);
+        // Visible light sources (seen from where this ray part starts).
+        let hit_t = hit.as_ref().map(|h| h.t - t_base);
+        let from = o + d * t_base;
         for li in &fr.lights {
             if let Some(g) = &li.glow
-                && let Some((add, keep, fl)) = super::light_glow(li, g, o, d, hit_t, &sc.fog, near, far)
+                && let Some((add, keep, fl)) = super::light_glow(li, g, from, d, hit_t, &sc.fog, near, far)
             {
                 for k in 0..3 {
                     c[k] = c[k] * keep + fog_col[k] * fl * (1.0 - keep) + add[k];
                 }
             }
         }
-        Sample { color: c, albedo, normal }
+        Traced { color: c, albedo, normal, surface }
     }
+}
+
+/// What [`Shader::trace`] found.
+struct Traced {
+    color: [f64; 3],
+    albedo: [f64; 3],
+    normal: V3,
+    surface: Option<Surface>,
+}
+
+/// A surface hit, as far as a reflection needs it.
+#[derive(Clone, Copy)]
+struct Surface {
+    /// Shading point (just off the surface).
+    pos: V3,
+    n: V3,
+    /// Direction of the ray that hit it.
+    dir: V3,
+    /// Path length to the hit.
+    t: f64,
+    /// Highlight color (reflectance).
+    spec: [f64; 3],
+    /// Fog amount at the hit.
+    fog: f64,
 }
 
 /// One pixel sample: radiance and the denoiser's helper values (albedo, world normal).

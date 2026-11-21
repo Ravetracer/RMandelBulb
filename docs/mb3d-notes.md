@@ -127,3 +127,14 @@ little-endian.
   +50, +51, +67), u = atan2(v0, v2)·(-1/2π) + 0.5, v = 0.5 - asin(v1)/π, B-spline sampled with
   horizontal wrap and vertical clamp. TBoptions bit 15: screen coordinates instead.
 - The depth fog still blends toward the depth colors (DepthCol/DepthCol2), not the image.
+
+## Reflections (CalcSR.pas) and interpolation hybrids (formulas.pas)
+
+- Reflections are calculated when byte 336 bit 0 is set (bit 1: transmission, bit 2: only on
+  dIFS); amount SRamount (f32 at 332), bounces SRreflectioncount (byte 337). Each bounce adds
+  the reflected color weighted by: the specular color of the reflecting surface · amount · what
+  the fog leaves visible there; the weights multiply over the bounces. Reflected hits are shaded
+  like primary ones (lights, hard shadows, AO with fewer rays); misses show the background.
+- Interpolation hybrid (addon byte 1 = 1): the iteration counts of formulas 1 and 2 are f32
+  weights. Every iteration runs both on the same point; result = blend of the two vectors scaled
+  to the blended length; derivative |w1|·s1 + |w2|·s2 (doInterpolHybridPasDE).

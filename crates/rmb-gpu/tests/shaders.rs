@@ -20,7 +20,9 @@ fn every_formula_compiles_to_valid_wgsl() {
         s.fractal.slots = vec![Slot::new(&f.def.name), Slot::new("Amazing Box")];
         for numeric in [false, true] {
             s.fractal.de_mode = if numeric { rmb_core::scene::DeMode::NumericLog } else { rmb_core::scene::DeMode::Auto };
-            let prog = Program::new(&s.fractal, &s.cut);
+            let mut prog = Program::new(&s.fractal, &s.cut);
+            validate(&rmb_gpu::codegen::march_shader(&prog), &f.def.name);
+            prog.reflections = true;
             validate(&rmb_gpu::codegen::march_shader(&prog), &f.def.name);
         }
     }
@@ -123,6 +125,9 @@ fn gpu_matches_cpu_with_mandelbulb3d_shading() {
     scene.lighting.lights[1].azimuth = 175.0;
     scene.lighting.lights[1].elevation = 5.0;
     scene.lighting.lights[1].glow_size = 15.0;
+    // Two bounces of reflections.
+    scene.material.reflection = 0.6;
+    scene.material.reflection_bounces = 2;
     // A panorama background image, if Mandelbulb3D's maps are there.
     if rmb_core::maps::get_file("1031.jpg").is_some() {
         scene.background.image = "1031.jpg".into();
@@ -193,5 +198,16 @@ fn gpu_matches_cpu_with_a_height_map() {
     let mut scene = rmb_core::io::m3p::import_binary(&bytes).expect("import").scene;
     scene.lighting.ao_mode = rmb_core::scene::AoMode::Fast;
     assert!(Program::new(&scene.fractal, &scene.cut).map_numbers().contains(&10));
+    parity(scene);
+}
+
+#[test]
+fn gpu_matches_cpu_with_an_interpolation_hybrid() {
+    let mut scene = Scene::default();
+    scene.lighting.ao_mode = rmb_core::scene::AoMode::Fast;
+    // Two bulb variants (a bulb blended with a box is too chaotic for f32 against f64).
+    scene.fractal.slots = vec![Slot::new("Mandelbulb"), Slot::new("Mandelbulb (cosine)")];
+    scene.fractal.blend = Some([0.6, 0.4]);
+    assert!(Program::new(&scene.fractal, &scene.cut).blend.is_some());
     parity(scene);
 }
