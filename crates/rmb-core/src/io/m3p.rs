@@ -220,7 +220,13 @@ pub fn import_binary(b: &[u8]) -> Result<Import, String> {
             let fnr = r.i32(o + 4);
             let name = if (0..10).contains(&fnr) { INTERNAL[fnr as usize].to_string() } else { r.cstr(o + 12, 32) };
             let n_opt = (r.i32(o + 8).clamp(0, 16)) as usize;
-            (r.i32(o), fnr, name, (0..n_opt).map(|k| r.f64(o + 60 + k * 8)).collect())
+            let mut values: Vec<f64> = (0..n_opt).map(|k| r.f64(o + 60 + k * 8)).collect();
+            // Bulbox got a second threshold later; old files use the first one for both
+            // (FileHandling.UpdateFormulaOptionAbove20).
+            if fnr == 5 && values.len() == 5 {
+                values.push(values[4]);
+            }
+            (r.i32(o), fnr, name, values)
         })
         .collect();
     let mut hyb1 = r.u8(addon + 5) as u32;

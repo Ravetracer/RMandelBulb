@@ -81,6 +81,11 @@ cargo clippy -j 8 --workspace --all-targets
   the loop become variables, found by retrying). Value sets of integer indexes turn table
   accesses into `sel` / `if` chains. JIT formulas (`[SOURCE]`, Pascal) go through `pascal.rs`.
   Not supported: map functions, formulas that switch the hybrid's formulas, random numbers.
+- Formulas the translator cannot handle are written by hand in `lib/mb3d_builtin.mbf` (also
+  MB3D's built-in Bulbox and Aexion C). `m3f-check` falls back to the library formula with the
+  .m3f's name, so hand-written versions are checked too; `M3F_VALUES="v1,v2,…"` sets the option
+  values (default: the file's defaults). `cargo run -p rmb-core --example m3f_disasm -- f.m3f`
+  prints the machine code.
 - Regenerate from both folders: `rmb-cli m3f ../mb3d/M3Formulas ../mb3d/EM_JIT_M3Formulas -o …`.
 - Regenerate without piping the output into `head`: a closed pipe kills `rmb-cli` before it
   writes the file.

@@ -27,14 +27,15 @@
 //! read only), `rout` (squared length after the last counted iteration, kept by the hybrid
 //! loop), `rold` (`rout` before this iteration), `px py pz` (the point's original position,
 //! read only) and `a0` … `a7` (scratch values kept over the iterations of one point, start at
-//! 0; Mandelbulb3D formulas keep e.g. a varying scale there). `let` declares a mutable local. `init` runs once per render on the CPU: its
+//! 0; Mandelbulb3D formulas keep e.g. a varying scale there), `julia` (1 in Julia mode, else 0;
+//! read only). `let` declares a mutable local. `init` runs once per render on the CPU: its
 //! top-level `let`s become read-only constants of `iter` (e.g. a rotation matrix).
 
 use std::fmt;
 
 /// Names of the state registers, in register order.
-pub const STATE_NAMES: [&str; 23] = [
-    "x", "y", "z", "w", "cx", "cy", "cz", "cw", "dr", "i", "rout", "rold", "px", "py", "pz", "a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7",
+pub const STATE_NAMES: [&str; 24] = [
+    "x", "y", "z", "w", "cx", "cy", "cz", "cw", "dr", "i", "rout", "rold", "px", "py", "pz", "a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7", "julia",
 ];
 pub const STATE_COUNT: usize = STATE_NAMES.len();
 /// Register index of the derivative.
@@ -47,10 +48,12 @@ pub const STATE_ROLD: usize = 11;
 pub const STATE_PX: usize = 12;
 /// First of the eight scratch registers.
 pub const STATE_AUX: usize = 15;
+/// Julia mode flag (read only).
+pub const STATE_JULIA: usize = 23;
 
 /// State registers formulas may not assign.
 pub fn is_read_only(i: usize) -> bool {
-    i == STATE_ITER || (STATE_PX..STATE_PX + 3).contains(&i)
+    i == STATE_ITER || i == STATE_JULIA || (STATE_PX..STATE_PX + 3).contains(&i)
 }
 
 #[derive(Debug, Clone)]

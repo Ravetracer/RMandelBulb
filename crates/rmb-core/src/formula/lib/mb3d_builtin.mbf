@@ -1,0 +1,334 @@
+// Mandelbulb3D formulas written by hand from their assembler or machine code (GNU LGPL 2.1 or
+// later, by the Mandelbulb3D authors and formula contributors): the built-in formulas that are
+// not .m3f files (formulas.pas) and .m3f formulas the translator cannot handle. Those are
+// checked against the original machine code with tools/m3f-check.
+
+formula "Bulbox" {
+    category "Hybrids"
+    description "Mandelbulb3D's Bulbox: a scaled power-2 bulb inside the threshold radius, the Amazing Box outside, blended in between."
+    de numeric
+    descale 0.2
+    alias "Bulbox" (scale, min_r, fold, bulb_scale, r_thr, r_thr2)
+    param scale "Scale" = 2 [-4, 4]
+    param min_r "Min R" = 0.5 [0, 2]
+    param fold "Box fold" = 1 [0, 3]
+    param bulb_scale "Bulb scaling" = 1 [0.1, 4]
+    param r_thr "Box/Bulb R threshold" = 2 [0, 8]
+    param r_thr2 "Box/Bulb R threshold 2" = 1.9 [0, 8]
+    init {
+        let mr2 = max(min_r * min_r, 1.0e-40)
+        let t1 = r_thr * r_thr
+        let t2 = r_thr2 * r_thr2
+    }
+    iter {
+        let r2 = x * x + y * y + z * z
+        // Power-2 bulb with scaling (HybridItIntPow2scale).
+        let s = bulb_scale
+        let bx = x / s
+        let by = y / s
+        let bz = z / s
+        let xx = bx * bx
+        let yy = by * by
+        let a = max(xx + yy, 1.0e-40)
+        let a2 = (a - bz * bz) / a
+        let qx = a2 * (xx - yy) * s + cx
+        let qy = 2.0 * bx * by * a2 * s + cy
+        let qz = -2.0 * sqrt(a) * bz * s + cz
+        // Amazing Box (HybridCube): fold, sphere fold with fixed radius 1, scale, add c.
+        let fx = abs(x + fold) - abs(x - fold) - x
+        let fy = abs(y + fold) - abs(y - fold) - y
+        let fz = abs(z + fold) - abs(z - fold) - z
+        let fr = fx * fx + fy * fy + fz * fz
+        let m = scale
+        if fr < mr2 {
+            m = scale / mr2
+        } else if fr < 1.0 {
+            m = scale / fr
+        }
+        let ox = fx * m + cx
+        let oy = fy * m + cy
+        let oz = fz * m + cz
+        if r2 < t1 {
+            if r2 < t2 {
+                x = qx
+                y = qy
+                z = qz
+            } else {
+                // Blend the directions and the lengths of both results.
+                let k = (r2 - t2) / (t1 - t2)
+                let k2 = 1.0 - k
+                let len = sqrt(ox * ox + oy * oy + oz * oz) * k + k2 * sqrt(qx * qx + qy * qy + qz * qz)
+                let vx = ox * k + k2 * qx
+                let vy = oy * k + k2 * qy
+                let vz = oz * k + k2 * qz
+                let f = len / sqrt(vx * vx + vy * vy + vz * vz + 1.0e-40)
+                x = vx * f
+                y = vy * f
+                z = vz * f
+            }
+        } else {
+            x = ox
+            y = oy
+            z = oz
+        }
+    }
+}
+
+formula "Aexion C" {
+    category "Bulbs"
+    description "Mandelbulb3D's Aexion C: a power bulb whose constant c is rotated by its own angles each iteration (modes 0..31 choose the angles)."
+    de numeric
+    alias "Aexion C" (power, z_mul, rot_c, cond_phi, pow_c, cz_mul, powc_dist, mode)
+    param power "Power" = 8 [1, 16]
+    param z_mul "Z multiplier" = 1 [-2, 2]
+    param rot_c "Enable rotate C" = 1 bool
+    param cond_phi "Conditional phi" = 0 bool
+    param pow_c "Float power C" = 8 [-16, 16]
+    param cz_mul "Cz multiplier" = 1 [-2, 2]
+    param powc_dist "Power C on distance to C" = 0 bool
+    param mode "Mode" = 0 [0, 31] int
+    init {
+        // Mode bits.
+        let b0 = sel(fract(floor(mode) / 2.0) >= 0.5, 1.0, 0.0)
+        let b1 = sel(fract(floor(mode) / 4.0) >= 0.5, 1.0, 0.0)
+        let b2 = sel(fract(floor(mode) / 8.0) >= 0.5, 1.0, 0.0)
+        let b3 = sel(fract(floor(mode) / 16.0) >= 0.5, 1.0, 0.0)
+        let b4 = sel(fract(floor(mode) / 32.0) >= 0.5, 1.0, 0.0)
+    }
+    iter {
+        let r2 = max(x * x + y * y + z * z, 1.0e-30)
+        let th = atan2(sqrt(x * x + z * z), y) * power
+        let ph = atan2(z, x) * power
+        let r1 = pow(r2, power * 0.5)
+        x = cos(ph) * cos(th) * r1 + cx
+        y = cos(th) * sin(ph) * r1 + cy
+        z = sin(th) * r1 * z_mul + cz
+        if rot_c > 0.5 {
+            let pd = pow_c
+            if powc_dist > 0.5 {
+                pd = pow_c * sqrt(sqr(x - cx) + sqr(y - cy) + sqr(z - cz))
+            }
+            let rc = sqrt(cx * cx + cy * cy + cz * cz)
+            // Angles from c (or from the point relative to c).
+            let ax = sel(b4 > 0.5, x - cx, cx)
+            let ay = sel(b4 > 0.5, y - cy, cy)
+            let az = sel(b4 > 0.5, z - cz, cz)
+            let s0 = sel(b3 > 0.5, az, ay)
+            let s1 = sel(b3 > 0.5, ay, az)
+            let q = sqrt(s1 * s1 + ax * ax)
+            let t = sel(b0 > 0.5, atan2(s0, q), atan2(q, s0))
+            let p = sel(b1 > 0.5, atan2(ax, s1), atan2(s1, ax))
+            let u1 = sel(b2 > 0.5, t, p)
+            let u2 = sel(b2 > 0.5, p, t)
+            // Conditional sign: flips the first angle where the tested coordinate is >= 0.
+            let v = x
+            if b1 > 0.5 {
+                v = sel(b3 > 0.5, y, z)
+            }
+            if b2 > 0.5 {
+                v = sel(b3 > 0.5, z, y)
+            }
+            if cond_phi > 0.5 && v >= 0.0 {
+                u1 = -u1
+            }
+            u1 = u1 * pd
+            u2 = u2 * pd
+            cx = cos(u1) * cos(u2) * rc
+            cz = sin(u2) * rc * cz_mul
+            cy = cos(u2) * sin(u1) * rc
+        }
+    }
+}
+
+formula "Amazing Surf 2" {
+    category "MB3D 3D"
+    description "Mandelbulb3D formula Amazing Surf 2. Modified fold formula; fold X and Y is 'infinitized' around the origin."
+    de linear
+    alias "Amazing Surf 2" (scale, min_r, fold_xy, rot_x, rot_y, rot_z, fiddler)
+    param scale "Scale" = 2 [-2, 6]
+    param min_r "Min R" = 0 [-1.5, 2.5]
+    param fold_xy "FoldXY" = 0.5 [-1.5, 2.5]
+    param rot_x "Rotation1 X" = 0 [-180, 180] angle
+    param rot_y "Rotation1 Y" = 0 [-180, 180] angle
+    param rot_z "Rotation1 Z" = 0 [-180, 180] angle
+    param fiddler "Fold fiddler" = 0 [0, 15] int
+    init {
+        let mr2 = sqr(max(1.0e-40, min_r))
+        let box_scale = scale / mr2
+        let sx = sin(rot_x * pi / 180.0)
+        let cxa = cos(rot_x * pi / 180.0)
+        let sy = sin(rot_y * pi / 180.0)
+        let cya = cos(rot_y * pi / 180.0)
+        let sz = sin(rot_z * pi / 180.0)
+        let cza = cos(rot_z * pi / 180.0)
+        let k76 = single(cxa * cya)
+        let k72 = single(cxa * sy * sz + sx * cza)
+        let k68 = single(sx * sz - cxa * sy * cza)
+        let k64 = single(-sx * cya)
+        let k60 = single(cxa * cza - sx * sy * sz)
+        let k56 = single(sx * sy * cza + cxa * sz)
+        let k52 = single(sy)
+        let k48 = single(-cya * sz)
+        let k44 = single(cya * cza)
+        let f0 = sel(fract(floor(fiddler) / 2.0) >= 0.5, 1.0, 0.0)
+        let f1 = sel(fract(floor(fiddler) / 4.0) >= 0.5, 1.0, 0.0)
+        let f2 = sel(fract(floor(fiddler) / 8.0) >= 0.5, 1.0, 0.0)
+        let f3 = sel(fract(floor(fiddler) / 16.0) >= 0.5, 1.0, 0.0)
+    }
+    iter {
+        x = fold_xy * x
+        if f0 > 0.5 {
+            x = abs(x)
+        }
+        y = fold_xy * y
+        if f1 > 0.5 {
+            y = abs(y)
+        }
+        // Fold of x and y: inside (-2, 2] a triangle wave of the mantissa times the power of
+        // two of the value (bit manipulation of the double in the original), outside a plain fold.
+        for k in 0..2 {
+            let v = sel(k == 0, x, y)
+            let out = 0.0
+            if v > -2.0 && v <= 2.0 {
+                if sel(k == 0, f2, f3) > 0.5 {
+                    v = v - 1.5 * sign(v)
+                }
+                let a = abs(v)
+                if a > 0.0 {
+                    let e = floor(log(a) / log(2.0))
+                    let p2 = pow(2.0, e)
+                    let m = a / p2
+                    if m >= 2.0 {
+                        m = m * 0.5
+                        p2 = p2 * 2.0
+                        e = e + 1.0
+                    }
+                    if m < 1.0 {
+                        m = m * 2.0
+                        p2 = p2 * 0.5
+                        e = e - 1.0
+                    }
+                    out = (0.5 - abs(m - 1.5)) * p2 * sign(v)
+                    // The lowest bit of the biased exponent flips the sign: even exponents.
+                    if e - 2.0 * floor(e * 0.5) < 0.5 {
+                        out = -out
+                    }
+                }
+            } else {
+                out = -sign(v) * (0.5 - abs(abs(v) - 1.5))
+            }
+            if k == 0 {
+                x = out
+            } else {
+                y = out
+            }
+        }
+        let xr = x / fold_xy
+        let yr = y / fold_xy
+        let nx = xr * k76 + yr * k72 + z * k68
+        let ny = xr * k64 + yr * k60 + z * k56
+        let nz = xr * k52 + yr * k48 + z * k44
+        let r2 = nx * nx + ny * ny + nz * nz
+        let m = scale
+        if r2 < mr2 {
+            m = box_scale
+        } else if r2 <= 1.0 {
+            m = scale / r2
+        }
+        dr = dr * m
+        x = nx * m + cx
+        y = ny * m + cy
+        z = nz * m + cz
+    }
+}
+
+formula "GeneralQuat" {
+    category "MB3D 4D"
+    description "Mandelbulb3D formula GeneralQuat. A generalization of a power 2 formula with 4 components: each option (1..4 = x, y, z, w; negative subtracts) says where its term goes."
+    de numeric
+    alias "GeneralQuat" (ij, ji, jj, ik, ki, jk, kj, kk)
+    param ij "IJ yz" = 4 [-4, 4] int
+    param ji "JI yz" = 4 [-4, 4] int
+    param jj "JJ zz" = -2 [-4, 4] int
+    param ik "IK yw" = -3 [-4, 4] int
+    param ki "KI yw" = -3 [-4, 4] int
+    param jk "JK zw" = 1 [-4, 4] int
+    param kj "KJ zw" = 1 [-4, 4] int
+    param kk "KK ww" = 2 [-4, 4] int
+    init {
+        let e_ij = sel(round(ij) - 1.0 < 0.0, -(round(ij) - 1.0) - 2.0, round(ij) - 1.0)
+        let i_ij = e_ij - 4.0 * floor(e_ij / 4.0)
+        let s_ij = sel(round(ij) - 1.0 < 0.0, -1.0, 1.0)
+        let e_ji = sel(round(ji) - 1.0 < 0.0, -(round(ji) - 1.0) - 2.0, round(ji) - 1.0)
+        let i_ji = e_ji - 4.0 * floor(e_ji / 4.0)
+        let s_ji = sel(round(ji) - 1.0 < 0.0, -1.0, 1.0)
+        let e_jj = sel(round(jj) - 1.0 < 0.0, -(round(jj) - 1.0) - 2.0, round(jj) - 1.0)
+        let i_jj = e_jj - 4.0 * floor(e_jj / 4.0)
+        let s_jj = sel(round(jj) - 1.0 < 0.0, -1.0, 1.0)
+        let e_ik = sel(round(ik) - 1.0 < 0.0, -(round(ik) - 1.0) - 2.0, round(ik) - 1.0)
+        let i_ik = e_ik - 4.0 * floor(e_ik / 4.0)
+        let s_ik = sel(round(ik) - 1.0 < 0.0, -1.0, 1.0)
+        let e_ki = sel(round(ki) - 1.0 < 0.0, -(round(ki) - 1.0) - 2.0, round(ki) - 1.0)
+        let i_ki = e_ki - 4.0 * floor(e_ki / 4.0)
+        let s_ki = sel(round(ki) - 1.0 < 0.0, -1.0, 1.0)
+        let e_jk = sel(round(jk) - 1.0 < 0.0, -(round(jk) - 1.0) - 2.0, round(jk) - 1.0)
+        let i_jk = e_jk - 4.0 * floor(e_jk / 4.0)
+        let s_jk = sel(round(jk) - 1.0 < 0.0, -1.0, 1.0)
+        let e_kj = sel(round(kj) - 1.0 < 0.0, -(round(kj) - 1.0) - 2.0, round(kj) - 1.0)
+        let i_kj = e_kj - 4.0 * floor(e_kj / 4.0)
+        let s_kj = sel(round(kj) - 1.0 < 0.0, -1.0, 1.0)
+        let e_kk = sel(round(kk) - 1.0 < 0.0, -(round(kk) - 1.0) - 2.0, round(kk) - 1.0)
+        let i_kk = e_kk - 4.0 * floor(e_kk / 4.0)
+        let s_kk = sel(round(kk) - 1.0 < 0.0, -1.0, 1.0)
+    }
+    iter {
+        let a0 = x * x - y * y
+        let a1 = 2.0 * x * y
+        let a2 = 2.0 * x * z
+        let a3 = 2.0 * x * w
+        let t_ij = s_ij * y * z
+        a0 = a0 + sel(i_ij == 0.0, t_ij, 0.0)
+        a1 = a1 + sel(i_ij == 1.0, t_ij, 0.0)
+        a2 = a2 + sel(i_ij == 2.0, t_ij, 0.0)
+        a3 = a3 + sel(i_ij == 3.0, t_ij, 0.0)
+        let t_ji = s_ji * y * z
+        a0 = a0 + sel(i_ji == 0.0, t_ji, 0.0)
+        a1 = a1 + sel(i_ji == 1.0, t_ji, 0.0)
+        a2 = a2 + sel(i_ji == 2.0, t_ji, 0.0)
+        a3 = a3 + sel(i_ji == 3.0, t_ji, 0.0)
+        let t_jj = s_jj * z * z
+        a0 = a0 + sel(i_jj == 0.0, t_jj, 0.0)
+        a1 = a1 + sel(i_jj == 1.0, t_jj, 0.0)
+        a2 = a2 + sel(i_jj == 2.0, t_jj, 0.0)
+        a3 = a3 + sel(i_jj == 3.0, t_jj, 0.0)
+        let t_ik = s_ik * y * w
+        a0 = a0 + sel(i_ik == 0.0, t_ik, 0.0)
+        a1 = a1 + sel(i_ik == 1.0, t_ik, 0.0)
+        a2 = a2 + sel(i_ik == 2.0, t_ik, 0.0)
+        a3 = a3 + sel(i_ik == 3.0, t_ik, 0.0)
+        let t_ki = s_ki * y * w
+        a0 = a0 + sel(i_ki == 0.0, t_ki, 0.0)
+        a1 = a1 + sel(i_ki == 1.0, t_ki, 0.0)
+        a2 = a2 + sel(i_ki == 2.0, t_ki, 0.0)
+        a3 = a3 + sel(i_ki == 3.0, t_ki, 0.0)
+        let t_jk = s_jk * z * w
+        a0 = a0 + sel(i_jk == 0.0, t_jk, 0.0)
+        a1 = a1 + sel(i_jk == 1.0, t_jk, 0.0)
+        a2 = a2 + sel(i_jk == 2.0, t_jk, 0.0)
+        a3 = a3 + sel(i_jk == 3.0, t_jk, 0.0)
+        let t_kj = s_kj * z * w
+        a0 = a0 + sel(i_kj == 0.0, t_kj, 0.0)
+        a1 = a1 + sel(i_kj == 1.0, t_kj, 0.0)
+        a2 = a2 + sel(i_kj == 2.0, t_kj, 0.0)
+        a3 = a3 + sel(i_kj == 3.0, t_kj, 0.0)
+        let t_kk = s_kk * w * w
+        a0 = a0 + sel(i_kk == 0.0, t_kk, 0.0)
+        a1 = a1 + sel(i_kk == 1.0, t_kk, 0.0)
+        a2 = a2 + sel(i_kk == 2.0, t_kk, 0.0)
+        a3 = a3 + sel(i_kk == 3.0, t_kk, 0.0)
+        x = a0 + cx
+        y = a1 + cy
+        z = a2 + cz
+        w = a3 + cw
+    }
+}

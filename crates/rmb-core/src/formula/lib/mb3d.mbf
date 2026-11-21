@@ -1470,6 +1470,616 @@ formula "ABoxSphereOffset4d" {
     }
 }
 
+formula "ABoxVSShapes" {
+    category "MB3D 3D"
+    description "Mandelbulb3D formula ABoxVSShapes. Same as normal ABox Vary Scale but 'r' is replaced by another expression,"
+    de linear
+    alias "ABoxVSShapes"
+    param o0_scale "Scale" = 2.0 [-2.0, 6.0] 
+    param o1_min_r "Min R" = 0.5 [-1.5, 2.5] 
+    param o2_fold "Fold" = 1.0 [-1.0, 3.0] 
+    param o3_scale_vary "Scale vary" = 0.0 [-2.0, 2.0] 
+    param o4_shape_mode "Shape mode" = 1.0 [-1.0, 3.0] int
+    param o5_shape_modifier_1 "Shape modifier 1" = 1.5 [-1.5, 4.5] 
+    param o6_shape_modifier_2 "Shape modifier 2" = 0.666 [-1.334, 2.666] 
+    init {
+        let k68 = o6_shape_modifier_2
+        let k60 = o5_shape_modifier_1
+        let k52 = round(o4_shape_mode)
+        let k48 = o3_scale_vary
+        let k40 = o2_fold
+        let k32 = sqr(max(1.0e-40, o1_min_r))
+        let k24 = o0_scale / sqr(max(1.0e-40, o1_min_r))
+        let k16 = o0_scale
+    }
+    iter {
+        let f0 = 0.0
+        let f1 = 0.0
+        let f2 = 0.0
+        let f3 = 0.0
+        let f4 = 0.0
+        let f5 = 0.0
+        let fc_a = 0.0
+        let fc_b = 0.0
+        let ft = 0.0
+        let r_eax = 0.0
+        let m12 = 0.0
+        let m20 = 0.0
+        let m28 = 0.0
+        let m36 = 0.0
+        if a1 > 0.0 {
+        } else {
+            a1 = a1 + 1.0
+            f0 = k16
+            a0 = f0
+        }
+        f0 = a0
+        f1 = 1.0
+        f2 = f0
+        f2 = abs(f2)
+        f1 = f2 - f1
+        f1 = f1 * k48
+        f0 = f0 + f1
+        a0 = f0
+        f0 = k40
+        f1 = f0
+        f2 = f1
+        f0 = f0 + f2
+        f2 = -f2
+        f3 = x
+        fc_a = f3
+        fc_b = f1
+        if fc_a < fc_b {
+            fc_a = f3
+            fc_b = f2
+            if fc_a >= fc_b {
+            } else {
+                f3 = -f3
+                f3 = f3 - f0
+            }
+        } else {
+            f3 = -f3
+            f3 = f3 + f0
+        }
+        f4 = y
+        fc_a = f4
+        fc_b = f1
+        if fc_a < fc_b {
+            fc_a = f4
+            fc_b = f2
+            if fc_a >= fc_b {
+            } else {
+                f4 = -f4
+                f4 = f4 - f0
+            }
+        } else {
+            f4 = -f4
+            f4 = f4 + f0
+        }
+        f5 = z
+        fc_a = f5
+        fc_b = f1
+        if fc_a < fc_b {
+            fc_a = f5
+            fc_b = f2
+            if fc_a >= fc_b {
+            } else {
+                f5 = -f5
+                f5 = f5 - f0
+            }
+        } else {
+            f5 = -f5
+            f5 = f5 + f0
+        }
+        ft = f5
+        f5 = f2
+        f2 = ft
+        ft = f4
+        f4 = f1
+        f1 = ft
+        ft = f3
+        f3 = f0
+        f0 = ft
+        if k52 != 1.0 {
+            if k52 != 2.0 {
+                if k52 != 3.0 {
+                    if k52 != 4.0 {
+                        if k52 != 5.0 {
+                            if k52 != 6.0 {
+                                if k52 != 7.0 {
+                                    if k52 != 8.0 {
+                                        if k52 != 10.0 {
+                                            if k52 != 11.0 {
+                                                if k52 != 9.0 {
+                                                    if k52 != 12.0 {
+                                                        if k52 != 13.0 {
+                                                            if k52 != 14.0 {
+                                                                if k52 != 15.0 {
+                                                                    if k52 != 16.0 {
+                                                                        if k52 != 17.0 {
+                                                                            f3 = 0.0
+                                                                        } else {
+                                                                            f3 = f0
+                                                                            f3 = abs(f3)
+                                                                            f3 = f3 + f3
+                                                                            f3 = f3 + f3
+                                                                            f4 = f0
+                                                                            f4 = f4 * f4
+                                                                            f4 = f4 + f4
+                                                                            f5 = f1
+                                                                            f5 = f5 * f5
+                                                                            f4 = f4 + f5
+                                                                            f5 = f2
+                                                                            f5 = f5 * f5
+                                                                            f4 = f4 + f5
+                                                                            f3 = f4 / f3
+                                                                            f3 = f3 * f3
+                                                                            f3 = f3 * k68
+                                                                            f3 = f3 + k60
+                                                                        }
+                                                                        r_eax = sel(fc_a < fc_b, 2048.0, sel(fc_a == fc_b, 10240.0, 2048.0))
+                                                                    } else {
+                                                                        f3 = f2
+                                                                        f3 = f3 * f3
+                                                                        f4 = f1
+                                                                        f4 = f4 - k60
+                                                                        f4 = f4 * f4
+                                                                        f3 = f3 + f4
+                                                                        f4 = f0
+                                                                        f4 = f4 - k60
+                                                                        f4 = f4 * f4
+                                                                        f3 = f3 + f4
+                                                                        m12 = f3
+                                                                        f3 = f2
+                                                                        f3 = f3 - k60
+                                                                        f3 = f3 * f3
+                                                                        f4 = f1
+                                                                        f4 = f4 * f4
+                                                                        f3 = f3 + f4
+                                                                        f4 = f0
+                                                                        f4 = f4 - k60
+                                                                        f4 = f4 * f4
+                                                                        f3 = f3 + f4
+                                                                        m20 = f3
+                                                                        f3 = f2
+                                                                        f3 = f3 - k60
+                                                                        f3 = f3 * f3
+                                                                        f4 = f1
+                                                                        f4 = f4 - k60
+                                                                        f4 = f4 * f4
+                                                                        f3 = f3 + f4
+                                                                        f4 = f0
+                                                                        f4 = f4 * f4
+                                                                        f3 = f3 + f4
+                                                                        m28 = f3
+                                                                        f3 = f2
+                                                                        f3 = f3 + k60
+                                                                        f3 = f3 * f3
+                                                                        f4 = f1
+                                                                        f4 = f4 + k60
+                                                                        f4 = f4 * f4
+                                                                        f3 = f3 + f4
+                                                                        f4 = f0
+                                                                        f4 = f4 + k60
+                                                                        f4 = f4 * f4
+                                                                        f3 = f3 + f4
+                                                                        m36 = f3
+                                                                        f3 = m12
+                                                                        f4 = m20
+                                                                        fc_a = f4
+                                                                        fc_b = f3
+                                                                        if fc_a >= fc_b {
+                                                                            f3 = f4
+                                                                        }
+                                                                        f4 = m28
+                                                                        fc_a = f4
+                                                                        fc_b = f3
+                                                                        if fc_a >= fc_b {
+                                                                            f3 = f4
+                                                                        }
+                                                                        f4 = m36
+                                                                        fc_a = f4
+                                                                        fc_b = f3
+                                                                        if fc_a >= fc_b {
+                                                                            f3 = f4
+                                                                        }
+                                                                        f3 = f3 * k68
+                                                                        r_eax = sel(fc_a < fc_b, 3072.0, sel(fc_a == fc_b, 11264.0, 3072.0))
+                                                                    }
+                                                                } else {
+                                                                    f3 = f2
+                                                                    f3 = f3 * f3
+                                                                    f4 = f1
+                                                                    f4 = f4 * f4
+                                                                    f3 = f3 + f4
+                                                                    f3 = f3 * k68
+                                                                    f4 = f0
+                                                                    f4 = abs(f4)
+                                                                    fc_a = f4
+                                                                    fc_b = k60
+                                                                    if fc_a >= fc_b {
+                                                                        f4 = f4 - k60
+                                                                        f4 = f4 * f4
+                                                                    } else {
+                                                                        f4 = 0.0
+                                                                    }
+                                                                    f3 = f3 + f4
+                                                                    r_eax = sel(fc_a < fc_b, 3072.0, sel(fc_a == fc_b, 11264.0, 3072.0))
+                                                                }
+                                                            } else {
+                                                                f3 = f0
+                                                                f3 = f3 * f3
+                                                                f3 = f3 * k60
+                                                                f4 = f1
+                                                                f4 = f4 * f4
+                                                                f3 = f3 + f4
+                                                                f4 = f0
+                                                                f4 = f4 * f4
+                                                                f4 = f4 * k60
+                                                                f5 = f2
+                                                                f5 = f5 * f5
+                                                                f4 = f4 + f5
+                                                                fc_a = f4
+                                                                fc_b = f3
+                                                                if fc_a >= fc_b {
+                                                                    f3 = f4
+                                                                    f3 = f3 * k68
+                                                                } else {
+                                                                    f3 = f3 * k68
+                                                                }
+                                                                r_eax = sel(fc_a < fc_b, 3072.0, sel(fc_a == fc_b, 11264.0, 3072.0))
+                                                            }
+                                                        } else {
+                                                            f3 = f0
+                                                            f3 = -f3
+                                                            f4 = 1.0
+                                                            fc_a = f4
+                                                            fc_b = f3
+                                                            if fc_a >= fc_b {
+                                                            } else {
+                                                                f3 = 1.0
+                                                            }
+                                                            f3 = f3 * k60
+                                                            f4 = f2
+                                                            f4 = f4 * f4
+                                                            f5 = f1
+                                                            f5 = f5 * f5
+                                                            f4 = f4 + f5
+                                                            f3 = f3 + f4
+                                                            f3 = f3 * k68
+                                                            r_eax = sel(fc_a < fc_b, 4096.0, sel(fc_a == fc_b, 12288.0, 4096.0))
+                                                        }
+                                                    } else {
+                                                        f3 = f0
+                                                        f3 = -f3
+                                                        f3 = f3 * k60
+                                                        f4 = f2
+                                                        f4 = f4 * f4
+                                                        f5 = f1
+                                                        f5 = f5 * f5
+                                                        f4 = f4 + f5
+                                                        f4 = sqrt(f4)
+                                                        f4 = f4 * k68
+                                                        f3 = f3 + f4
+                                                        f4 = 0.0
+                                                        fc_a = f4
+                                                        fc_b = f3
+                                                        if fc_a < fc_b {
+                                                        } else {
+                                                            f3 = 0.0
+                                                        }
+                                                        f3 = f3 * f3
+                                                        r_eax = sel(fc_a < fc_b, 4096.0, sel(fc_a == fc_b, 12288.0, 4096.0))
+                                                    }
+                                                } else {
+                                                    f3 = f0
+                                                    f3 = f3 * f3
+                                                    f3 = f3 * f3
+                                                    f4 = f1
+                                                    f4 = f4 * f4
+                                                    f4 = f4 * f4
+                                                    f3 = f3 + f4
+                                                    f4 = f2
+                                                    f4 = f4 * f4
+                                                    f4 = f4 * f4
+                                                    f3 = f3 + f4
+                                                    m20 = f3
+                                                    f3 = f0
+                                                    f3 = f3 * f3
+                                                    f4 = f1
+                                                    f4 = f4 * f4
+                                                    f3 = f3 + f4
+                                                    f4 = f2
+                                                    f4 = f4 * f4
+                                                    f3 = f3 + f4
+                                                    f3 = f3 * k68
+                                                    f3 = f3 + m20
+                                                    f3 = f3 + k60
+                                                    r_eax = sel(fc_a < fc_b, 2048.0, sel(fc_a == fc_b, 10240.0, 2048.0))
+                                                }
+                                            } else {
+                                                f3 = f0
+                                                f3 = f3 * f3
+                                                m12 = f3
+                                                f3 = f1
+                                                f3 = f3 * f3
+                                                m20 = f3
+                                                f3 = f2
+                                                f3 = f3 * f3
+                                                m28 = f3
+                                                f3 = f0
+                                                f3 = f3 * f1
+                                                f3 = f3 * f2
+                                                f3 = f3 * 3.0
+                                                f4 = m12
+                                                f4 = f4 * m20
+                                                f4 = f4 * m28
+                                                f3 = f3 + f4
+                                                f4 = m12
+                                                f4 = f4 * m20
+                                                f5 = m12
+                                                f5 = f5 * m28
+                                                f4 = f4 + f5
+                                                f5 = m28
+                                                f5 = f5 * m20
+                                                f4 = f4 + f5
+                                                f4 = f4 * k60
+                                                f3 = f3 + f4
+                                                f4 = m12
+                                                f4 = f4 + m20
+                                                f4 = f4 + m28
+                                                f4 = f4 * k60
+                                                f4 = f4 * k60
+                                                f3 = f3 + f4
+                                                f3 = f3 + k68
+                                                f3 = f3 * 0.1
+                                                r_eax = sel(fc_a < fc_b, 2048.0, sel(fc_a == fc_b, 10240.0, 2048.0))
+                                            }
+                                        } else {
+                                            f3 = f0
+                                            f3 = f3 * f3
+                                            f3 = f3 * f3
+                                            f4 = f1
+                                            f4 = f4 * f4
+                                            f4 = f4 * f4
+                                            f3 = f3 + f4
+                                            f4 = f2
+                                            f4 = f4 * f4
+                                            f4 = f4 * f4
+                                            f3 = f3 + f4
+                                            f3 = f3 * k68
+                                            f3 = f3 - k60
+                                            r_eax = sel(fc_a < fc_b, 2048.0, sel(fc_a == fc_b, 10240.0, 2048.0))
+                                        }
+                                    } else {
+                                        f3 = f0
+                                        f3 = f3 * f3
+                                        f4 = f3
+                                        f4 = f4 - k60
+                                        f3 = f3 * f4
+                                        f4 = f2
+                                        f4 = f4 * f4
+                                        f5 = f1
+                                        f5 = f5 * f5
+                                        f4 = f4 + f5
+                                        f3 = f3 + f4
+                                        f3 = f3 * k68
+                                        r_eax = sel(fc_a < fc_b, 2048.0, sel(fc_a == fc_b, 10240.0, 2048.0))
+                                    }
+                                } else {
+                                    f3 = f0
+                                    f3 = f3 * f3
+                                    f4 = k60
+                                    fc_a = f4
+                                    fc_b = f3
+                                    if fc_a < fc_b {
+                                        f3 = 1.0
+                                    } else {
+                                        f3 = f4 - f3
+                                    }
+                                    f4 = f2
+                                    f4 = f4 * f4
+                                    f5 = f1
+                                    f5 = f5 * f5
+                                    fc_a = f5
+                                    fc_b = f4
+                                    if fc_a >= fc_b {
+                                        f4 = f5
+                                    }
+                                    f4 = f4 * k68
+                                    ft = f4
+                                    f4 = f3
+                                    f3 = ft
+                                    fc_a = f4
+                                    fc_b = f3
+                                    if fc_a < fc_b {
+                                        f3 = f3 / f4
+                                    }
+                                    r_eax = sel(fc_a < fc_b, 3072.0, sel(fc_a == fc_b, 11264.0, 3072.0))
+                                }
+                            } else {
+                                f3 = f0
+                                f3 = f3 * f3
+                                f4 = k60
+                                fc_a = f4
+                                fc_b = f3
+                                if fc_a < fc_b {
+                                    f3 = 1.0
+                                } else {
+                                    f3 = f4 - f3
+                                }
+                                f4 = f2
+                                f4 = f4 * f4
+                                f5 = f1
+                                f5 = f5 * f5
+                                fc_a = f5
+                                fc_b = f4
+                                if fc_a >= fc_b {
+                                    f4 = f5
+                                }
+                                f4 = f4 * k68
+                                ft = f4
+                                f4 = f3
+                                f3 = ft
+                                fc_a = f4
+                                fc_b = f3
+                                if fc_a >= fc_b {
+                                    f3 = f3 / f4
+                                }
+                                r_eax = sel(fc_a < fc_b, 3072.0, sel(fc_a == fc_b, 11264.0, 3072.0))
+                            }
+                        } else {
+                            f3 = f0
+                            f3 = abs(f3)
+                            f4 = k60
+                            fc_a = f4
+                            fc_b = f3
+                            if fc_a < fc_b {
+                                f3 = 1.0
+                            } else {
+                                f3 = f4 - f3
+                            }
+                            f4 = f2
+                            f4 = f4 * f4
+                            f5 = f1
+                            f5 = f5 * f5
+                            f4 = f4 + f5
+                            f4 = f4 * k68
+                            ft = f4
+                            f4 = f3
+                            f3 = ft
+                            fc_a = f4
+                            fc_b = f3
+                            if fc_a < fc_b {
+                                f3 = f3 / f4
+                            }
+                            r_eax = sel(fc_a < fc_b, 3072.0, sel(fc_a == fc_b, 11264.0, 3072.0))
+                        }
+                    } else {
+                        f3 = f0
+                        f3 = abs(f3)
+                        f4 = k60
+                        fc_a = f4
+                        fc_b = f3
+                        if fc_a < fc_b {
+                            f3 = 1.0
+                        } else {
+                            f3 = f4 - f3
+                        }
+                        f4 = f2
+                        f4 = f4 * f4
+                        f5 = f1
+                        f5 = f5 * f5
+                        f4 = f4 + f5
+                        f4 = f4 * k68
+                        ft = f4
+                        f4 = f3
+                        f3 = ft
+                        fc_a = f4
+                        fc_b = f3
+                        if fc_a >= fc_b {
+                            f3 = f3 / f4
+                        }
+                        r_eax = sel(fc_a < fc_b, 3072.0, sel(fc_a == fc_b, 11264.0, 3072.0))
+                    }
+                } else {
+                    f3 = f0
+                    f3 = abs(f3)
+                    f4 = k60
+                    fc_a = f4
+                    fc_b = f3
+                    if fc_a < fc_b {
+                        f3 = 0.0
+                    } else {
+                        f3 = f4 - f3
+                        f3 = f3 * f3
+                    }
+                    f4 = f2
+                    f4 = f4 * f4
+                    f5 = f1
+                    f5 = f5 * f5
+                    f4 = f4 + f5
+                    f4 = f4 * k68
+                    fc_a = f4
+                    fc_b = f3
+                    if fc_a < fc_b {
+                        f3 = f4
+                    }
+                    r_eax = sel(fc_a < fc_b, 3072.0, sel(fc_a == fc_b, 11264.0, 3072.0))
+                }
+            } else {
+                f3 = f0
+                f3 = abs(f3)
+                f4 = k60
+                fc_a = f4
+                fc_b = f3
+                if fc_a < fc_b {
+                    f3 = 0.0
+                } else {
+                    f3 = f4 - f3
+                    f3 = f3 * f3
+                }
+                f4 = f2
+                f4 = f4 * f4
+                f5 = f1
+                f5 = f5 * f5
+                f4 = f4 + f5
+                f4 = f4 * k68
+                fc_a = f4
+                fc_b = f3
+                if fc_a >= fc_b {
+                    f3 = f4
+                }
+                r_eax = sel(fc_a < fc_b, 3072.0, sel(fc_a == fc_b, 11264.0, 3072.0))
+            }
+        } else {
+            f3 = f2
+            f3 = f3 * f3
+            f4 = f1
+            f4 = f4 * f4
+            f3 = f3 + f4
+            f3 = sqrt(f3)
+            f3 = f3 - k60
+            f3 = f3 * f3
+            f4 = f0
+            f4 = f4 * f4
+            f3 = f3 + f4
+            f3 = f3 * k68
+            r_eax = sel(fc_a < fc_b, 2048.0, sel(fc_a == fc_b, 10240.0, 2048.0))
+        }
+        fc_a = f3
+        fc_b = k32
+        if fc_a >= fc_b {
+            f4 = 1.0
+            fc_a = f4
+            fc_b = f3
+            if fc_a < fc_b {
+                fc_a = f4
+                fc_b = f3
+                f3 = a0
+            } else {
+                f3 = a0 / f3
+            }
+            r_eax = sel(fc_a < fc_b, 3072.0, sel(fc_a == fc_b, 11264.0, 3072.0))
+        } else {
+            f3 = k24
+            r_eax = sel(fc_a < fc_b, 4096.0, sel(fc_a == fc_b, 12288.0, 4096.0))
+        }
+        f4 = dr
+        f4 = f4 * f3
+        dr = f4
+        f0 = f0 * f3
+        f1 = f1 * f3
+        f2 = f2 * f3
+        f2 = f2 + cz
+        z = f2
+        f1 = f1 + cy
+        y = f1
+        f0 = f0 + cx
+        x = f0
+    }
+}
+
 formula "ABoxVSWavy" {
     category "MB3D 3D"
     description "Mandelbulb3D formula ABoxVSWavy. This formula has been suggested by Aexion in FF. I modified and generalized it a bit."
@@ -2960,6 +3570,7 @@ formula "ATetraVS" {
         let m56 = 0.0
         let m60 = 0.0
         let m64 = 0.0
+        let m80 = 0.0
         f0 = k52
         m32 = f0
         f0 = k56
@@ -3349,6 +3960,7 @@ formula "ATetraVS" {
                     x = f2
                     y = f1
                     z = f0
+                    m80 = 742.0
                 } else {
                     f0 = m40
                     f0 = -f0
@@ -3635,6 +4247,7 @@ formula "ATetraVS" {
                     x = f2
                     y = f1
                     z = f0
+                    m80 = 623.0
                 }
             } else {
                 f0 = m36
@@ -3922,6 +4535,7 @@ formula "ATetraVS" {
                 x = f2
                 y = f1
                 z = f0
+                m80 = 501.0
             }
         } else {
             f0 = m40
@@ -4209,6 +4823,7 @@ formula "ATetraVS" {
             x = f2
             y = f1
             z = f0
+            m80 = 379.0
         }
         if a1 > 0.0 {
         } else {
@@ -11340,6 +11955,7 @@ formula "DodecahedronIFSex" {
         let m12 = 0.0
         let m20 = 0.0
         let m28 = 0.0
+        let m84 = 0.0
         f0 = z
         f1 = y
         f2 = x
@@ -11432,6 +12048,7 @@ formula "DodecahedronIFSex" {
             z = f0
         }
         if k124 != 0.0 {
+            m84 = 250.0
         } else {
             f0 = z
             f1 = y
@@ -11469,6 +12086,7 @@ formula "DodecahedronIFSex" {
             x = f2
             y = f1
             z = f0
+            m84 = 261.0
         }
         f0 = m12
         f1 = m20
@@ -11502,6 +12120,7 @@ formula "DodecahedronIFSex" {
             z = f0
         }
         if k124 != 1.0 {
+            m84 = 363.0
         } else {
             f0 = z
             f1 = y
@@ -11539,6 +12158,7 @@ formula "DodecahedronIFSex" {
             x = f2
             y = f1
             z = f0
+            m84 = 374.0
         }
         f0 = m12
         f1 = m20
@@ -11572,6 +12192,7 @@ formula "DodecahedronIFSex" {
             z = f0
         }
         if k124 != 2.0 {
+            m84 = 379.0
         } else {
             f0 = z
             f1 = y
@@ -11609,6 +12230,7 @@ formula "DodecahedronIFSex" {
             x = f2
             y = f1
             z = f0
+            m84 = 390.0
         }
         f0 = m12
         f1 = m20
@@ -11642,6 +12264,7 @@ formula "DodecahedronIFSex" {
             z = f0
         }
         if k124 != 3.0 {
+            m84 = 395.0
         } else {
             f0 = z
             f1 = y
@@ -11679,6 +12302,7 @@ formula "DodecahedronIFSex" {
             x = f2
             y = f1
             z = f0
+            m84 = 406.0
         }
         f0 = m12
         f1 = m20
@@ -11712,6 +12336,7 @@ formula "DodecahedronIFSex" {
             z = f0
         }
         if k124 != 4.0 {
+            m84 = 411.0
         } else {
             f0 = z
             f1 = y
@@ -11749,6 +12374,7 @@ formula "DodecahedronIFSex" {
             x = f2
             y = f1
             z = f0
+            m84 = 422.0
         }
         f0 = m12
         f1 = m20
@@ -11782,6 +12408,7 @@ formula "DodecahedronIFSex" {
             z = f0
         }
         if k124 != 5.0 {
+            m84 = 427.0
         } else {
             f0 = z
             f1 = y
@@ -11819,6 +12446,7 @@ formula "DodecahedronIFSex" {
             x = f2
             y = f1
             z = f0
+            m84 = 438.0
         }
         f0 = m12
         f1 = m20
@@ -11852,6 +12480,7 @@ formula "DodecahedronIFSex" {
             z = f0
         }
         if k124 != 6.0 {
+            m84 = 443.0
         } else {
             f0 = z
             f1 = y
@@ -11889,6 +12518,7 @@ formula "DodecahedronIFSex" {
             x = f2
             y = f1
             z = f0
+            m84 = 454.0
         }
         f0 = z
         f1 = y
@@ -11951,6 +12581,7 @@ formula "DodecahedronIFSex" {
             x = f2
             y = f1
             z = f0
+            m84 = 517.0
         }
     }
 }
@@ -12316,6 +12947,9 @@ formula "GenIntPower" {
         let x5h = 0.0
         let x6l = 0.0
         let x6h = 0.0
+        let m20 = 0.0
+        let m24 = 0.0
+        let m28 = 0.0
         x6l = 0.0
         x6h = (-0.0)
         x0l = x
@@ -12432,10 +13066,12 @@ formula "GenIntPower" {
                     x0l = x0l + x0h
                     x0h = ft
                     if r_edx <= 2.0 {
+                        m28 = 664.0
                     } else {
                         x3l = x1l
                         x3h = x1h
                         if r_edx < 4.0 {
+                            m28 = 664.0
                         } else {
                             x4l = x0l
                             x4h = x0h
@@ -12456,6 +13092,7 @@ formula "GenIntPower" {
                             x0h = ft
                             if r_edx < 8.0 {
                                 if r_edx < 6.0 {
+                                    m28 = 691.0
                                 } else {
                                     x1l = x4l
                                     x1h = x4h
@@ -12472,6 +13109,7 @@ formula "GenIntPower" {
                                     ft = x2l + x2h
                                     x0l = x0l + x0h
                                     x0h = ft
+                                    m28 = 726.0
                                 }
                             } else {
                                 x1l = x0l
@@ -12490,6 +13128,7 @@ formula "GenIntPower" {
                                 x0l = x0l + x0h
                                 x0h = ft
                                 if r_edx < 10.0 {
+                                    m28 = 705.0
                                 } else {
                                     x1l = x4l
                                     x1h = x4h
@@ -12506,6 +13145,7 @@ formula "GenIntPower" {
                                     ft = x2l + x2h
                                     x0l = x0l + x0h
                                     x0h = ft
+                                    m28 = 726.0
                                 }
                             }
                         }
@@ -12528,6 +13168,7 @@ formula "GenIntPower" {
                             ft = x2l + x2h
                             x0l = x0l + x0h
                             x0h = ft
+                            m28 = 739.0
                         }
                     }
                     if r_esi == 0.0 {
@@ -12545,6 +13186,7 @@ formula "GenIntPower" {
                     ft = x0l
                     x0h = ft
                     x0l = z
+                    m24 = 627.0
                 } else {
                     z = x0h
                     ft = x1l
@@ -12590,10 +13232,12 @@ formula "GenIntPower" {
                     x0l = x0l + x0h
                     x0h = ft
                     if r_edx <= 2.0 {
+                        m28 = 664.0
                     } else {
                         x3l = x1l
                         x3h = x1h
                         if r_edx < 4.0 {
+                            m28 = 664.0
                         } else {
                             x4l = x0l
                             x4h = x0h
@@ -12614,6 +13258,7 @@ formula "GenIntPower" {
                             x0h = ft
                             if r_edx < 8.0 {
                                 if r_edx < 6.0 {
+                                    m28 = 691.0
                                 } else {
                                     x1l = x4l
                                     x1h = x4h
@@ -12630,6 +13275,7 @@ formula "GenIntPower" {
                                     ft = x2l + x2h
                                     x0l = x0l + x0h
                                     x0h = ft
+                                    m28 = 726.0
                                 }
                             } else {
                                 x1l = x0l
@@ -12648,6 +13294,7 @@ formula "GenIntPower" {
                                 x0l = x0l + x0h
                                 x0h = ft
                                 if r_edx < 10.0 {
+                                    m28 = 705.0
                                 } else {
                                     x1l = x4l
                                     x1h = x4h
@@ -12664,6 +13311,7 @@ formula "GenIntPower" {
                                     ft = x2l + x2h
                                     x0l = x0l + x0h
                                     x0h = ft
+                                    m28 = 726.0
                                 }
                             }
                         }
@@ -12686,6 +13334,7 @@ formula "GenIntPower" {
                             ft = x2l + x2h
                             x0l = x0l + x0h
                             x0h = ft
+                            m28 = 739.0
                         }
                     }
                     if r_esi == 0.0 {
@@ -12701,6 +13350,7 @@ formula "GenIntPower" {
                     x1l = x0h
                     x1h = ft
                     x0h = z
+                    m24 = 559.0
                 }
             } else {
                 x3l = x0l
@@ -12745,10 +13395,12 @@ formula "GenIntPower" {
                 x0l = x0l + x0h
                 x0h = ft
                 if r_edx <= 2.0 {
+                    m28 = 664.0
                 } else {
                     x3l = x1l
                     x3h = x1h
                     if r_edx < 4.0 {
+                        m28 = 664.0
                     } else {
                         x4l = x0l
                         x4h = x0h
@@ -12769,6 +13421,7 @@ formula "GenIntPower" {
                         x0h = ft
                         if r_edx < 8.0 {
                             if r_edx < 6.0 {
+                                m28 = 691.0
                             } else {
                                 x1l = x4l
                                 x1h = x4h
@@ -12785,6 +13438,7 @@ formula "GenIntPower" {
                                 ft = x2l + x2h
                                 x0l = x0l + x0h
                                 x0h = ft
+                                m28 = 726.0
                             }
                         } else {
                             x1l = x0l
@@ -12803,6 +13457,7 @@ formula "GenIntPower" {
                             x0l = x0l + x0h
                             x0h = ft
                             if r_edx < 10.0 {
+                                m28 = 705.0
                             } else {
                                 x1l = x4l
                                 x1h = x4h
@@ -12819,6 +13474,7 @@ formula "GenIntPower" {
                                 ft = x2l + x2h
                                 x0l = x0l + x0h
                                 x0h = ft
+                                m28 = 726.0
                             }
                         }
                     }
@@ -12841,6 +13497,7 @@ formula "GenIntPower" {
                         ft = x2l + x2h
                         x0l = x0l + x0h
                         x0h = ft
+                        m28 = 739.0
                     }
                 }
                 if r_esi == 0.0 {
@@ -12854,6 +13511,7 @@ formula "GenIntPower" {
                 ft = x0h * x5h
                 x0l = x0l * x5l
                 x0h = ft
+                m24 = 495.0
             }
         } else {
             cfl = sel(r_ebx < 4.0, 1.0, 0.0)
@@ -12901,10 +13559,12 @@ formula "GenIntPower" {
                     x0l = x0l + x0h
                     x0h = ft
                     if r_edx <= 2.0 {
+                        m28 = 664.0
                     } else {
                         x3l = x1l
                         x3h = x1h
                         if r_edx < 4.0 {
+                            m28 = 664.0
                         } else {
                             x4l = x0l
                             x4h = x0h
@@ -12925,6 +13585,7 @@ formula "GenIntPower" {
                             x0h = ft
                             if r_edx < 8.0 {
                                 if r_edx < 6.0 {
+                                    m28 = 691.0
                                 } else {
                                     x1l = x4l
                                     x1h = x4h
@@ -12941,6 +13602,7 @@ formula "GenIntPower" {
                                     ft = x2l + x2h
                                     x0l = x0l + x0h
                                     x0h = ft
+                                    m28 = 726.0
                                 }
                             } else {
                                 x1l = x0l
@@ -12959,6 +13621,7 @@ formula "GenIntPower" {
                                 x0l = x0l + x0h
                                 x0h = ft
                                 if r_edx < 10.0 {
+                                    m28 = 705.0
                                 } else {
                                     x1l = x4l
                                     x1h = x4h
@@ -12975,6 +13638,7 @@ formula "GenIntPower" {
                                     ft = x2l + x2h
                                     x0l = x0l + x0h
                                     x0h = ft
+                                    m28 = 726.0
                                 }
                             }
                         }
@@ -12997,6 +13661,7 @@ formula "GenIntPower" {
                             ft = x2l + x2h
                             x0l = x0l + x0h
                             x0h = ft
+                            m28 = 739.0
                         }
                     }
                     if r_esi == 0.0 {
@@ -13021,6 +13686,7 @@ formula "GenIntPower" {
                     ft = x1h
                     x1l = x1h
                     x1h = ft
+                    m24 = 415.0
                 } else {
                     x = x0h
                     ft = x1l
@@ -13058,10 +13724,12 @@ formula "GenIntPower" {
                     x0l = x0l + x0h
                     x0h = ft
                     if r_edx <= 2.0 {
+                        m28 = 664.0
                     } else {
                         x3l = x1l
                         x3h = x1h
                         if r_edx < 4.0 {
+                            m28 = 664.0
                         } else {
                             x4l = x0l
                             x4h = x0h
@@ -13082,6 +13750,7 @@ formula "GenIntPower" {
                             x0h = ft
                             if r_edx < 8.0 {
                                 if r_edx < 6.0 {
+                                    m28 = 691.0
                                 } else {
                                     x1l = x4l
                                     x1h = x4h
@@ -13098,6 +13767,7 @@ formula "GenIntPower" {
                                     ft = x2l + x2h
                                     x0l = x0l + x0h
                                     x0h = ft
+                                    m28 = 726.0
                                 }
                             } else {
                                 x1l = x0l
@@ -13116,6 +13786,7 @@ formula "GenIntPower" {
                                 x0l = x0l + x0h
                                 x0h = ft
                                 if r_edx < 10.0 {
+                                    m28 = 705.0
                                 } else {
                                     x1l = x4l
                                     x1h = x4h
@@ -13132,6 +13803,7 @@ formula "GenIntPower" {
                                     ft = x2l + x2h
                                     x0l = x0l + x0h
                                     x0h = ft
+                                    m28 = 726.0
                                 }
                             }
                         }
@@ -13154,6 +13826,7 @@ formula "GenIntPower" {
                             ft = x2l + x2h
                             x0l = x0l + x0h
                             x0h = ft
+                            m28 = 739.0
                         }
                     }
                     if r_esi == 0.0 {
@@ -13178,6 +13851,7 @@ formula "GenIntPower" {
                     ft = x1h
                     x1l = x1h
                     x1h = ft
+                    m24 = 345.0
                 }
             } else {
                 x5l = x0l
@@ -13214,10 +13888,12 @@ formula "GenIntPower" {
                 x0l = x0l + x0h
                 x0h = ft
                 if r_edx <= 2.0 {
+                    m28 = 664.0
                 } else {
                     x3l = x1l
                     x3h = x1h
                     if r_edx < 4.0 {
+                        m28 = 664.0
                     } else {
                         x4l = x0l
                         x4h = x0h
@@ -13238,6 +13914,7 @@ formula "GenIntPower" {
                         x0h = ft
                         if r_edx < 8.0 {
                             if r_edx < 6.0 {
+                                m28 = 691.0
                             } else {
                                 x1l = x4l
                                 x1h = x4h
@@ -13254,6 +13931,7 @@ formula "GenIntPower" {
                                 ft = x2l + x2h
                                 x0l = x0l + x0h
                                 x0h = ft
+                                m28 = 726.0
                             }
                         } else {
                             x1l = x0l
@@ -13272,6 +13950,7 @@ formula "GenIntPower" {
                             x0l = x0l + x0h
                             x0h = ft
                             if r_edx < 10.0 {
+                                m28 = 705.0
                             } else {
                                 x1l = x4l
                                 x1h = x4h
@@ -13288,6 +13967,7 @@ formula "GenIntPower" {
                                 ft = x2l + x2h
                                 x0l = x0l + x0h
                                 x0h = ft
+                                m28 = 726.0
                             }
                         }
                     }
@@ -13310,6 +13990,7 @@ formula "GenIntPower" {
                         ft = x2l + x2h
                         x0l = x0l + x0h
                         x0h = ft
+                        m28 = 739.0
                     }
                 }
                 if r_esi == 0.0 {
@@ -13329,9 +14010,11 @@ formula "GenIntPower" {
                 ft = x0h * x5h
                 x0l = x0l * x5l
                 x0h = ft
+                m24 = 282.0
             }
         }
         if k24 == 0.0 {
+            m20 = 138.0
         } else {
             r_edx = k28
             r_ebx = k32
@@ -13396,10 +14079,12 @@ formula "GenIntPower" {
                         x0l = x0l + x0h
                         x0h = ft
                         if r_edx <= 2.0 {
+                            m28 = 664.0
                         } else {
                             x3l = x1l
                             x3h = x1h
                             if r_edx < 4.0 {
+                                m28 = 664.0
                             } else {
                                 x4l = x0l
                                 x4h = x0h
@@ -13420,6 +14105,7 @@ formula "GenIntPower" {
                                 x0h = ft
                                 if r_edx < 8.0 {
                                     if r_edx < 6.0 {
+                                        m28 = 691.0
                                     } else {
                                         x1l = x4l
                                         x1h = x4h
@@ -13436,6 +14122,7 @@ formula "GenIntPower" {
                                         ft = x2l + x2h
                                         x0l = x0l + x0h
                                         x0h = ft
+                                        m28 = 726.0
                                     }
                                 } else {
                                     x1l = x0l
@@ -13454,6 +14141,7 @@ formula "GenIntPower" {
                                     x0l = x0l + x0h
                                     x0h = ft
                                     if r_edx < 10.0 {
+                                        m28 = 705.0
                                     } else {
                                         x1l = x4l
                                         x1h = x4h
@@ -13470,6 +14158,7 @@ formula "GenIntPower" {
                                         ft = x2l + x2h
                                         x0l = x0l + x0h
                                         x0h = ft
+                                        m28 = 726.0
                                     }
                                 }
                             }
@@ -13492,6 +14181,7 @@ formula "GenIntPower" {
                                 ft = x2l + x2h
                                 x0l = x0l + x0h
                                 x0h = ft
+                                m28 = 739.0
                             }
                         }
                         if r_esi == 0.0 {
@@ -13509,6 +14199,7 @@ formula "GenIntPower" {
                         ft = x0l
                         x0h = ft
                         x0l = z
+                        m24 = 627.0
                     } else {
                         z = x0h
                         ft = x1l
@@ -13554,10 +14245,12 @@ formula "GenIntPower" {
                         x0l = x0l + x0h
                         x0h = ft
                         if r_edx <= 2.0 {
+                            m28 = 664.0
                         } else {
                             x3l = x1l
                             x3h = x1h
                             if r_edx < 4.0 {
+                                m28 = 664.0
                             } else {
                                 x4l = x0l
                                 x4h = x0h
@@ -13578,6 +14271,7 @@ formula "GenIntPower" {
                                 x0h = ft
                                 if r_edx < 8.0 {
                                     if r_edx < 6.0 {
+                                        m28 = 691.0
                                     } else {
                                         x1l = x4l
                                         x1h = x4h
@@ -13594,6 +14288,7 @@ formula "GenIntPower" {
                                         ft = x2l + x2h
                                         x0l = x0l + x0h
                                         x0h = ft
+                                        m28 = 726.0
                                     }
                                 } else {
                                     x1l = x0l
@@ -13612,6 +14307,7 @@ formula "GenIntPower" {
                                     x0l = x0l + x0h
                                     x0h = ft
                                     if r_edx < 10.0 {
+                                        m28 = 705.0
                                     } else {
                                         x1l = x4l
                                         x1h = x4h
@@ -13628,6 +14324,7 @@ formula "GenIntPower" {
                                         ft = x2l + x2h
                                         x0l = x0l + x0h
                                         x0h = ft
+                                        m28 = 726.0
                                     }
                                 }
                             }
@@ -13650,6 +14347,7 @@ formula "GenIntPower" {
                                 ft = x2l + x2h
                                 x0l = x0l + x0h
                                 x0h = ft
+                                m28 = 739.0
                             }
                         }
                         if r_esi == 0.0 {
@@ -13665,6 +14363,7 @@ formula "GenIntPower" {
                         x1l = x0h
                         x1h = ft
                         x0h = z
+                        m24 = 559.0
                     }
                 } else {
                     x3l = x0l
@@ -13709,10 +14408,12 @@ formula "GenIntPower" {
                     x0l = x0l + x0h
                     x0h = ft
                     if r_edx <= 2.0 {
+                        m28 = 664.0
                     } else {
                         x3l = x1l
                         x3h = x1h
                         if r_edx < 4.0 {
+                            m28 = 664.0
                         } else {
                             x4l = x0l
                             x4h = x0h
@@ -13733,6 +14434,7 @@ formula "GenIntPower" {
                             x0h = ft
                             if r_edx < 8.0 {
                                 if r_edx < 6.0 {
+                                    m28 = 691.0
                                 } else {
                                     x1l = x4l
                                     x1h = x4h
@@ -13749,6 +14451,7 @@ formula "GenIntPower" {
                                     ft = x2l + x2h
                                     x0l = x0l + x0h
                                     x0h = ft
+                                    m28 = 726.0
                                 }
                             } else {
                                 x1l = x0l
@@ -13767,6 +14470,7 @@ formula "GenIntPower" {
                                 x0l = x0l + x0h
                                 x0h = ft
                                 if r_edx < 10.0 {
+                                    m28 = 705.0
                                 } else {
                                     x1l = x4l
                                     x1h = x4h
@@ -13783,6 +14487,7 @@ formula "GenIntPower" {
                                     ft = x2l + x2h
                                     x0l = x0l + x0h
                                     x0h = ft
+                                    m28 = 726.0
                                 }
                             }
                         }
@@ -13805,6 +14510,7 @@ formula "GenIntPower" {
                             ft = x2l + x2h
                             x0l = x0l + x0h
                             x0h = ft
+                            m28 = 739.0
                         }
                     }
                     if r_esi == 0.0 {
@@ -13818,6 +14524,7 @@ formula "GenIntPower" {
                     ft = x0h * x5h
                     x0l = x0l * x5l
                     x0h = ft
+                    m24 = 495.0
                 }
             } else {
                 cfl = sel(r_ebx < 4.0, 1.0, 0.0)
@@ -13865,10 +14572,12 @@ formula "GenIntPower" {
                         x0l = x0l + x0h
                         x0h = ft
                         if r_edx <= 2.0 {
+                            m28 = 664.0
                         } else {
                             x3l = x1l
                             x3h = x1h
                             if r_edx < 4.0 {
+                                m28 = 664.0
                             } else {
                                 x4l = x0l
                                 x4h = x0h
@@ -13889,6 +14598,7 @@ formula "GenIntPower" {
                                 x0h = ft
                                 if r_edx < 8.0 {
                                     if r_edx < 6.0 {
+                                        m28 = 691.0
                                     } else {
                                         x1l = x4l
                                         x1h = x4h
@@ -13905,6 +14615,7 @@ formula "GenIntPower" {
                                         ft = x2l + x2h
                                         x0l = x0l + x0h
                                         x0h = ft
+                                        m28 = 726.0
                                     }
                                 } else {
                                     x1l = x0l
@@ -13923,6 +14634,7 @@ formula "GenIntPower" {
                                     x0l = x0l + x0h
                                     x0h = ft
                                     if r_edx < 10.0 {
+                                        m28 = 705.0
                                     } else {
                                         x1l = x4l
                                         x1h = x4h
@@ -13939,6 +14651,7 @@ formula "GenIntPower" {
                                         ft = x2l + x2h
                                         x0l = x0l + x0h
                                         x0h = ft
+                                        m28 = 726.0
                                     }
                                 }
                             }
@@ -13961,6 +14674,7 @@ formula "GenIntPower" {
                                 ft = x2l + x2h
                                 x0l = x0l + x0h
                                 x0h = ft
+                                m28 = 739.0
                             }
                         }
                         if r_esi == 0.0 {
@@ -13985,6 +14699,7 @@ formula "GenIntPower" {
                         ft = x1h
                         x1l = x1h
                         x1h = ft
+                        m24 = 415.0
                     } else {
                         x = x0h
                         ft = x1l
@@ -14022,10 +14737,12 @@ formula "GenIntPower" {
                         x0l = x0l + x0h
                         x0h = ft
                         if r_edx <= 2.0 {
+                            m28 = 664.0
                         } else {
                             x3l = x1l
                             x3h = x1h
                             if r_edx < 4.0 {
+                                m28 = 664.0
                             } else {
                                 x4l = x0l
                                 x4h = x0h
@@ -14046,6 +14763,7 @@ formula "GenIntPower" {
                                 x0h = ft
                                 if r_edx < 8.0 {
                                     if r_edx < 6.0 {
+                                        m28 = 691.0
                                     } else {
                                         x1l = x4l
                                         x1h = x4h
@@ -14062,6 +14780,7 @@ formula "GenIntPower" {
                                         ft = x2l + x2h
                                         x0l = x0l + x0h
                                         x0h = ft
+                                        m28 = 726.0
                                     }
                                 } else {
                                     x1l = x0l
@@ -14080,6 +14799,7 @@ formula "GenIntPower" {
                                     x0l = x0l + x0h
                                     x0h = ft
                                     if r_edx < 10.0 {
+                                        m28 = 705.0
                                     } else {
                                         x1l = x4l
                                         x1h = x4h
@@ -14096,6 +14816,7 @@ formula "GenIntPower" {
                                         ft = x2l + x2h
                                         x0l = x0l + x0h
                                         x0h = ft
+                                        m28 = 726.0
                                     }
                                 }
                             }
@@ -14118,6 +14839,7 @@ formula "GenIntPower" {
                                 ft = x2l + x2h
                                 x0l = x0l + x0h
                                 x0h = ft
+                                m28 = 739.0
                             }
                         }
                         if r_esi == 0.0 {
@@ -14142,6 +14864,7 @@ formula "GenIntPower" {
                         ft = x1h
                         x1l = x1h
                         x1h = ft
+                        m24 = 345.0
                     }
                 } else {
                     x5l = x0l
@@ -14178,10 +14901,12 @@ formula "GenIntPower" {
                     x0l = x0l + x0h
                     x0h = ft
                     if r_edx <= 2.0 {
+                        m28 = 664.0
                     } else {
                         x3l = x1l
                         x3h = x1h
                         if r_edx < 4.0 {
+                            m28 = 664.0
                         } else {
                             x4l = x0l
                             x4h = x0h
@@ -14202,6 +14927,7 @@ formula "GenIntPower" {
                             x0h = ft
                             if r_edx < 8.0 {
                                 if r_edx < 6.0 {
+                                    m28 = 691.0
                                 } else {
                                     x1l = x4l
                                     x1h = x4h
@@ -14218,6 +14944,7 @@ formula "GenIntPower" {
                                     ft = x2l + x2h
                                     x0l = x0l + x0h
                                     x0h = ft
+                                    m28 = 726.0
                                 }
                             } else {
                                 x1l = x0l
@@ -14236,6 +14963,7 @@ formula "GenIntPower" {
                                 x0l = x0l + x0h
                                 x0h = ft
                                 if r_edx < 10.0 {
+                                    m28 = 705.0
                                 } else {
                                     x1l = x4l
                                     x1h = x4h
@@ -14252,6 +14980,7 @@ formula "GenIntPower" {
                                     ft = x2l + x2h
                                     x0l = x0l + x0h
                                     x0h = ft
+                                    m28 = 726.0
                                 }
                             }
                         }
@@ -14274,6 +15003,7 @@ formula "GenIntPower" {
                             ft = x2l + x2h
                             x0l = x0l + x0h
                             x0h = ft
+                            m28 = 739.0
                         }
                     }
                     if r_esi == 0.0 {
@@ -14293,8 +15023,10 @@ formula "GenIntPower" {
                     ft = x0h * x5h
                     x0l = x0l * x5l
                     x0h = ft
+                    m24 = 282.0
                 }
             }
+            m20 = 155.0
         }
         if k36 == 0.0 {
         } else {
@@ -14361,10 +15093,12 @@ formula "GenIntPower" {
                         x0l = x0l + x0h
                         x0h = ft
                         if r_edx <= 2.0 {
+                            m28 = 664.0
                         } else {
                             x3l = x1l
                             x3h = x1h
                             if r_edx < 4.0 {
+                                m28 = 664.0
                             } else {
                                 x4l = x0l
                                 x4h = x0h
@@ -14385,6 +15119,7 @@ formula "GenIntPower" {
                                 x0h = ft
                                 if r_edx < 8.0 {
                                     if r_edx < 6.0 {
+                                        m28 = 691.0
                                     } else {
                                         x1l = x4l
                                         x1h = x4h
@@ -14401,6 +15136,7 @@ formula "GenIntPower" {
                                         ft = x2l + x2h
                                         x0l = x0l + x0h
                                         x0h = ft
+                                        m28 = 726.0
                                     }
                                 } else {
                                     x1l = x0l
@@ -14419,6 +15155,7 @@ formula "GenIntPower" {
                                     x0l = x0l + x0h
                                     x0h = ft
                                     if r_edx < 10.0 {
+                                        m28 = 705.0
                                     } else {
                                         x1l = x4l
                                         x1h = x4h
@@ -14435,6 +15172,7 @@ formula "GenIntPower" {
                                         ft = x2l + x2h
                                         x0l = x0l + x0h
                                         x0h = ft
+                                        m28 = 726.0
                                     }
                                 }
                             }
@@ -14457,6 +15195,7 @@ formula "GenIntPower" {
                                 ft = x2l + x2h
                                 x0l = x0l + x0h
                                 x0h = ft
+                                m28 = 739.0
                             }
                         }
                         if r_esi == 0.0 {
@@ -14474,6 +15213,7 @@ formula "GenIntPower" {
                         ft = x0l
                         x0h = ft
                         x0l = z
+                        m24 = 627.0
                     } else {
                         z = x0h
                         ft = x1l
@@ -14519,10 +15259,12 @@ formula "GenIntPower" {
                         x0l = x0l + x0h
                         x0h = ft
                         if r_edx <= 2.0 {
+                            m28 = 664.0
                         } else {
                             x3l = x1l
                             x3h = x1h
                             if r_edx < 4.0 {
+                                m28 = 664.0
                             } else {
                                 x4l = x0l
                                 x4h = x0h
@@ -14543,6 +15285,7 @@ formula "GenIntPower" {
                                 x0h = ft
                                 if r_edx < 8.0 {
                                     if r_edx < 6.0 {
+                                        m28 = 691.0
                                     } else {
                                         x1l = x4l
                                         x1h = x4h
@@ -14559,6 +15302,7 @@ formula "GenIntPower" {
                                         ft = x2l + x2h
                                         x0l = x0l + x0h
                                         x0h = ft
+                                        m28 = 726.0
                                     }
                                 } else {
                                     x1l = x0l
@@ -14577,6 +15321,7 @@ formula "GenIntPower" {
                                     x0l = x0l + x0h
                                     x0h = ft
                                     if r_edx < 10.0 {
+                                        m28 = 705.0
                                     } else {
                                         x1l = x4l
                                         x1h = x4h
@@ -14593,6 +15338,7 @@ formula "GenIntPower" {
                                         ft = x2l + x2h
                                         x0l = x0l + x0h
                                         x0h = ft
+                                        m28 = 726.0
                                     }
                                 }
                             }
@@ -14615,6 +15361,7 @@ formula "GenIntPower" {
                                 ft = x2l + x2h
                                 x0l = x0l + x0h
                                 x0h = ft
+                                m28 = 739.0
                             }
                         }
                         if r_esi == 0.0 {
@@ -14630,6 +15377,7 @@ formula "GenIntPower" {
                         x1l = x0h
                         x1h = ft
                         x0h = z
+                        m24 = 559.0
                     }
                 } else {
                     x3l = x0l
@@ -14674,10 +15422,12 @@ formula "GenIntPower" {
                     x0l = x0l + x0h
                     x0h = ft
                     if r_edx <= 2.0 {
+                        m28 = 664.0
                     } else {
                         x3l = x1l
                         x3h = x1h
                         if r_edx < 4.0 {
+                            m28 = 664.0
                         } else {
                             x4l = x0l
                             x4h = x0h
@@ -14698,6 +15448,7 @@ formula "GenIntPower" {
                             x0h = ft
                             if r_edx < 8.0 {
                                 if r_edx < 6.0 {
+                                    m28 = 691.0
                                 } else {
                                     x1l = x4l
                                     x1h = x4h
@@ -14714,6 +15465,7 @@ formula "GenIntPower" {
                                     ft = x2l + x2h
                                     x0l = x0l + x0h
                                     x0h = ft
+                                    m28 = 726.0
                                 }
                             } else {
                                 x1l = x0l
@@ -14732,6 +15484,7 @@ formula "GenIntPower" {
                                 x0l = x0l + x0h
                                 x0h = ft
                                 if r_edx < 10.0 {
+                                    m28 = 705.0
                                 } else {
                                     x1l = x4l
                                     x1h = x4h
@@ -14748,6 +15501,7 @@ formula "GenIntPower" {
                                     ft = x2l + x2h
                                     x0l = x0l + x0h
                                     x0h = ft
+                                    m28 = 726.0
                                 }
                             }
                         }
@@ -14770,6 +15524,7 @@ formula "GenIntPower" {
                             ft = x2l + x2h
                             x0l = x0l + x0h
                             x0h = ft
+                            m28 = 739.0
                         }
                     }
                     if r_esi == 0.0 {
@@ -14783,6 +15538,7 @@ formula "GenIntPower" {
                     ft = x0h * x5h
                     x0l = x0l * x5l
                     x0h = ft
+                    m24 = 495.0
                 }
             } else {
                 cfl = sel(r_ebx < 4.0, 1.0, 0.0)
@@ -14830,10 +15586,12 @@ formula "GenIntPower" {
                         x0l = x0l + x0h
                         x0h = ft
                         if r_edx <= 2.0 {
+                            m28 = 664.0
                         } else {
                             x3l = x1l
                             x3h = x1h
                             if r_edx < 4.0 {
+                                m28 = 664.0
                             } else {
                                 x4l = x0l
                                 x4h = x0h
@@ -14854,6 +15612,7 @@ formula "GenIntPower" {
                                 x0h = ft
                                 if r_edx < 8.0 {
                                     if r_edx < 6.0 {
+                                        m28 = 691.0
                                     } else {
                                         x1l = x4l
                                         x1h = x4h
@@ -14870,6 +15629,7 @@ formula "GenIntPower" {
                                         ft = x2l + x2h
                                         x0l = x0l + x0h
                                         x0h = ft
+                                        m28 = 726.0
                                     }
                                 } else {
                                     x1l = x0l
@@ -14888,6 +15648,7 @@ formula "GenIntPower" {
                                     x0l = x0l + x0h
                                     x0h = ft
                                     if r_edx < 10.0 {
+                                        m28 = 705.0
                                     } else {
                                         x1l = x4l
                                         x1h = x4h
@@ -14904,6 +15665,7 @@ formula "GenIntPower" {
                                         ft = x2l + x2h
                                         x0l = x0l + x0h
                                         x0h = ft
+                                        m28 = 726.0
                                     }
                                 }
                             }
@@ -14926,6 +15688,7 @@ formula "GenIntPower" {
                                 ft = x2l + x2h
                                 x0l = x0l + x0h
                                 x0h = ft
+                                m28 = 739.0
                             }
                         }
                         if r_esi == 0.0 {
@@ -14950,6 +15713,7 @@ formula "GenIntPower" {
                         ft = x1h
                         x1l = x1h
                         x1h = ft
+                        m24 = 415.0
                     } else {
                         x = x0h
                         ft = x1l
@@ -14987,10 +15751,12 @@ formula "GenIntPower" {
                         x0l = x0l + x0h
                         x0h = ft
                         if r_edx <= 2.0 {
+                            m28 = 664.0
                         } else {
                             x3l = x1l
                             x3h = x1h
                             if r_edx < 4.0 {
+                                m28 = 664.0
                             } else {
                                 x4l = x0l
                                 x4h = x0h
@@ -15011,6 +15777,7 @@ formula "GenIntPower" {
                                 x0h = ft
                                 if r_edx < 8.0 {
                                     if r_edx < 6.0 {
+                                        m28 = 691.0
                                     } else {
                                         x1l = x4l
                                         x1h = x4h
@@ -15027,6 +15794,7 @@ formula "GenIntPower" {
                                         ft = x2l + x2h
                                         x0l = x0l + x0h
                                         x0h = ft
+                                        m28 = 726.0
                                     }
                                 } else {
                                     x1l = x0l
@@ -15045,6 +15813,7 @@ formula "GenIntPower" {
                                     x0l = x0l + x0h
                                     x0h = ft
                                     if r_edx < 10.0 {
+                                        m28 = 705.0
                                     } else {
                                         x1l = x4l
                                         x1h = x4h
@@ -15061,6 +15830,7 @@ formula "GenIntPower" {
                                         ft = x2l + x2h
                                         x0l = x0l + x0h
                                         x0h = ft
+                                        m28 = 726.0
                                     }
                                 }
                             }
@@ -15083,6 +15853,7 @@ formula "GenIntPower" {
                                 ft = x2l + x2h
                                 x0l = x0l + x0h
                                 x0h = ft
+                                m28 = 739.0
                             }
                         }
                         if r_esi == 0.0 {
@@ -15107,6 +15878,7 @@ formula "GenIntPower" {
                         ft = x1h
                         x1l = x1h
                         x1h = ft
+                        m24 = 345.0
                     }
                 } else {
                     x5l = x0l
@@ -15143,10 +15915,12 @@ formula "GenIntPower" {
                     x0l = x0l + x0h
                     x0h = ft
                     if r_edx <= 2.0 {
+                        m28 = 664.0
                     } else {
                         x3l = x1l
                         x3h = x1h
                         if r_edx < 4.0 {
+                            m28 = 664.0
                         } else {
                             x4l = x0l
                             x4h = x0h
@@ -15167,6 +15941,7 @@ formula "GenIntPower" {
                             x0h = ft
                             if r_edx < 8.0 {
                                 if r_edx < 6.0 {
+                                    m28 = 691.0
                                 } else {
                                     x1l = x4l
                                     x1h = x4h
@@ -15183,6 +15958,7 @@ formula "GenIntPower" {
                                     ft = x2l + x2h
                                     x0l = x0l + x0h
                                     x0h = ft
+                                    m28 = 726.0
                                 }
                             } else {
                                 x1l = x0l
@@ -15201,6 +15977,7 @@ formula "GenIntPower" {
                                 x0l = x0l + x0h
                                 x0h = ft
                                 if r_edx < 10.0 {
+                                    m28 = 705.0
                                 } else {
                                     x1l = x4l
                                     x1h = x4h
@@ -15217,6 +15994,7 @@ formula "GenIntPower" {
                                     ft = x2l + x2h
                                     x0l = x0l + x0h
                                     x0h = ft
+                                    m28 = 726.0
                                 }
                             }
                         }
@@ -15239,6 +16017,7 @@ formula "GenIntPower" {
                             ft = x2l + x2h
                             x0l = x0l + x0h
                             x0h = ft
+                            m28 = 739.0
                         }
                     }
                     if r_esi == 0.0 {
@@ -15258,8 +16037,10 @@ formula "GenIntPower" {
                     ft = x0h * x5h
                     x0l = x0l * x5l
                     x0h = ft
+                    m24 = 282.0
                 }
             }
+            m20 = 172.0
         }
         x5l = y
         x5h = 0.0
@@ -18259,6 +19040,7 @@ formula "KaliLinCombSSE2sm" {
         let x5h = 0.0
         let x6l = 0.0
         let x6h = 0.0
+        let m24 = 0.0
         r_edi = k12
         if a1 != 0.0 {
             x6l = a2
@@ -18305,6 +19087,7 @@ formula "KaliLinCombSSE2sm" {
         cfl = sel(floor(r_edi / 1.0) - 2.0 * floor(r_edi / 2.0) > 0.5, 1.0, 0.0)
         r_edi = floor(r_edi / 2.0)
         if r_edi != 3.0 {
+            m24 = 151.0
         } else {
             x2l = x0l
             x2h = x0h
@@ -18328,6 +19111,7 @@ formula "KaliLinCombSSE2sm" {
             ft = x0h - x3h
             x0l = x0l - x3l
             x0h = ft
+            m24 = 165.0
         }
         cfl = sel(r_edi < 2.0, 1.0, 0.0)
         r_edi = r_edi - 2.0
@@ -18350,6 +19134,7 @@ formula "KaliLinCombSSE2sm" {
             ft = x0h - x2h
             x0l = x0l - x2l
             x0h = ft
+            m24 = 175.0
         }
         cfl = sel(r_edi < 2.0, 1.0, 0.0)
         r_edi = r_edi - 2.0
@@ -18372,6 +19157,7 @@ formula "KaliLinCombSSE2sm" {
             ft = x0h - x2h
             x0l = x0l - x2l
             x0h = ft
+            m24 = 185.0
         }
         cfl = sel(floor(r_ebx / 1.0) - 2.0 * floor(r_ebx / 2.0) > 0.5, 1.0, 0.0)
         r_ebx = floor(r_ebx / 2.0)
@@ -18399,6 +19185,7 @@ formula "KaliLinCombSSE2sm" {
             ft = x0h - x3h
             x0l = x0l - x3l
             x0h = ft
+            m24 = 194.0
         }
         x2l = cz
         x3l = cx
@@ -21830,6 +22617,455 @@ formula "Makin4D p8b" {
         f0 = f0 + k16
         f0 = f0 + w
         w = f0
+    }
+}
+
+formula "Mandalex" {
+    category "MB3D 3D"
+    description "Mandelbulb3D formula Mandalex. KNOWN ISSUE:"
+    de linear
+    alias "Mandalex"
+    param o0_scale "Scale" = 2.0 [-2.0, 6.0] 
+    param o1_min_r "Min R" = 0.0 [-2.0, 2.0] 
+    param o2_fold "Fold" = 1.0 [-1.0, 3.0] 
+    param o3_rotation1_x "Rotation1 X" = 0.0 [-180.0, 180.0] angle
+    param o4_rotation1_y "Rotation1 Y" = 0.0 [-180.0, 180.0] angle
+    param o5_rotation1_z "Rotation1 Z" = 0.0 [-180.0, 180.0] angle
+    param o6_linear_pull "Linear Pull" = 2.0 [-2.0, 6.0] 
+    param o7_postlinear_pull "Postlinear Pull" = 2.0 [-2.0, 6.0] 
+    param o8_pull_effect "Pull Effect" = 1.0 [-1.0, 3.0] 
+    param o9_pull_fiddler_0_to_3 "Pull fiddler (0 to 3)" = 0.0 [-2.0, 2.0] int
+    init {
+        let k104 = round(o9_pull_fiddler_0_to_3)
+        let k100 = o8_pull_effect
+        let k92 = o7_postlinear_pull
+        let k84 = o6_linear_pull
+        let k76 = single(cos(o3_rotation1_x * pi / 180.0) * cos(o4_rotation1_y * pi / 180.0))
+        let k72 = single(cos(o3_rotation1_x * pi / 180.0) * sin(o4_rotation1_y * pi / 180.0) * sin(o5_rotation1_z * pi / 180.0) + sin(o3_rotation1_x * pi / 180.0) * cos(o5_rotation1_z * pi / 180.0))
+        let k68 = single(sin(o3_rotation1_x * pi / 180.0) * sin(o5_rotation1_z * pi / 180.0) - cos(o3_rotation1_x * pi / 180.0) * sin(o4_rotation1_y * pi / 180.0) * cos(o5_rotation1_z * pi / 180.0))
+        let k64 = single(-sin(o3_rotation1_x * pi / 180.0) * cos(o4_rotation1_y * pi / 180.0))
+        let k60 = single(cos(o3_rotation1_x * pi / 180.0) * cos(o5_rotation1_z * pi / 180.0) - sin(o3_rotation1_x * pi / 180.0) * sin(o4_rotation1_y * pi / 180.0) * sin(o5_rotation1_z * pi / 180.0))
+        let k56 = single(sin(o3_rotation1_x * pi / 180.0) * sin(o4_rotation1_y * pi / 180.0) * cos(o5_rotation1_z * pi / 180.0) + cos(o3_rotation1_x * pi / 180.0) * sin(o5_rotation1_z * pi / 180.0))
+        let k52 = single(sin(o4_rotation1_y * pi / 180.0))
+        let k48 = single(-cos(o4_rotation1_y * pi / 180.0) * sin(o5_rotation1_z * pi / 180.0))
+        let k44 = single(cos(o4_rotation1_y * pi / 180.0) * cos(o5_rotation1_z * pi / 180.0))
+        let k40 = o2_fold
+        let k32 = sqr(max(1.0e-40, o1_min_r))
+        let k24 = o0_scale / sqr(max(1.0e-40, o1_min_r))
+        let k16 = o0_scale
+    }
+    iter {
+        let f0 = 0.0
+        let f1 = 0.0
+        let f2 = 0.0
+        let f3 = 0.0
+        let f4 = 0.0
+        let f5 = 0.0
+        let fc_a = 0.0
+        let fc_b = 0.0
+        let ft = 0.0
+        let r_eax = 0.0
+        let bwa = 0.0
+        let bwb = 0.0
+        let bwr = 0.0
+        let bwx = 0.0
+        let bwy = 0.0
+        let m12 = 0.0
+        f0 = k84
+        f1 = x
+        f1 = abs(f1)
+        fc_a = f1
+        fc_b = f0
+        if fc_a >= fc_b {
+            m12 = 0.0
+        } else {
+            m12 = 1.0
+        }
+        f1 = y
+        f1 = abs(f1)
+        fc_a = f1
+        fc_b = f0
+        if fc_a >= fc_b {
+        } else {
+            m12 = m12 + 1.0
+        }
+        f1 = z
+        f1 = abs(f1)
+        fc_a = f1
+        fc_b = f0
+        if fc_a >= fc_b {
+        } else {
+            m12 = m12 + 1.0
+        }
+        r_eax = k104
+        r_eax = (r_eax - 4.0 * floor(r_eax / 4.0))
+        bwa = r_eax
+        bwb = m12
+        bwr = 0.0
+        bwx = bwa - 2.0 * floor(bwa * 0.5)
+        bwy = bwb - 2.0 * floor(bwb * 0.5)
+        bwr = bwr + abs(bwx - bwy) * 1.0
+        bwa = floor(bwa * 0.5)
+        bwb = floor(bwb * 0.5)
+        bwx = bwa - 2.0 * floor(bwa * 0.5)
+        bwy = bwb - 2.0 * floor(bwb * 0.5)
+        bwr = bwr + abs(bwx - bwy) * 2.0
+        bwa = floor(bwa * 0.5)
+        bwb = floor(bwb * 0.5)
+        bwx = bwa - 2.0 * floor(bwa * 0.5)
+        bwy = bwb - 2.0 * floor(bwb * 0.5)
+        bwr = bwr + abs(bwx - bwy) * 4.0
+        bwa = floor(bwa * 0.5)
+        bwb = floor(bwb * 0.5)
+        bwx = bwa - 2.0 * floor(bwa * 0.5)
+        bwy = bwb - 2.0 * floor(bwb * 0.5)
+        bwr = bwr + abs(bwx - bwy) * 8.0
+        bwa = floor(bwa * 0.5)
+        bwb = floor(bwb * 0.5)
+        bwx = bwa - 2.0 * floor(bwa * 0.5)
+        bwy = bwb - 2.0 * floor(bwb * 0.5)
+        bwr = bwr + abs(bwx - bwy) * 16.0
+        bwa = floor(bwa * 0.5)
+        bwb = floor(bwb * 0.5)
+        bwx = bwa - 2.0 * floor(bwa * 0.5)
+        bwy = bwb - 2.0 * floor(bwb * 0.5)
+        bwr = bwr + abs(bwx - bwy) * 32.0
+        bwa = floor(bwa * 0.5)
+        bwb = floor(bwb * 0.5)
+        bwx = bwa - 2.0 * floor(bwa * 0.5)
+        bwy = bwb - 2.0 * floor(bwb * 0.5)
+        bwr = bwr + abs(bwx - bwy) * 64.0
+        bwa = floor(bwa * 0.5)
+        bwb = floor(bwb * 0.5)
+        bwx = bwa - 2.0 * floor(bwa * 0.5)
+        bwy = bwb - 2.0 * floor(bwb * 0.5)
+        bwr = bwr + abs(bwx - bwy) * 128.0
+        bwa = floor(bwa * 0.5)
+        bwb = floor(bwb * 0.5)
+        r_eax = bwr
+        if r_eax != 0.0 {
+        } else {
+            f0 = f0 * k100
+            f1 = x
+            f2 = 0.0
+            fc_a = f2
+            fc_b = f1
+            if fc_a >= fc_b {
+                f2 = 1.0
+                f2 = -f2
+            } else {
+                f2 = 1.0
+            }
+            f2 = f2 * f0
+            f1 = f1 - f2
+            x = f1
+            f1 = y
+            f2 = 0.0
+            fc_a = f2
+            fc_b = f1
+            if fc_a >= fc_b {
+                f2 = 1.0
+                f2 = -f2
+            } else {
+                f2 = 1.0
+            }
+            f2 = f2 * f0
+            f1 = f1 - f2
+            y = f1
+            f1 = z
+            f2 = 0.0
+            fc_a = f2
+            fc_b = f1
+            if fc_a >= fc_b {
+                f2 = 1.0
+                f2 = -f2
+            } else {
+                f2 = 1.0
+            }
+            f2 = f2 * f0
+            f1 = f1 - f2
+            z = f1
+            r_eax = sel(fc_a < fc_b, 6144.0, sel(fc_a == fc_b, 14336.0, 6144.0))
+        }
+        f0 = x
+        f1 = y
+        f2 = z
+        f3 = f2
+        f3 = f3 * k68
+        f4 = f1
+        f4 = f4 * k72
+        f3 = f3 + f4
+        f4 = f0
+        f4 = f4 * k76
+        f3 = f3 + f4
+        f4 = f2
+        f4 = f4 * k44
+        f5 = f1
+        f5 = f5 * k48
+        f4 = f4 + f5
+        f5 = f0
+        f5 = f5 * k52
+        f4 = f4 + f5
+        ft = f4
+        f4 = f2
+        f2 = ft
+        f4 = f4 * k56
+        ft = f4
+        f4 = f1
+        f1 = ft
+        f4 = f4 * k60
+        f1 = f1 + f4
+        ft = f3
+        f3 = f0
+        f0 = ft
+        f3 = f3 * k64
+        f1 = f1 + f3
+        z = f2
+        y = f1
+        x = f0
+        f0 = k40
+        f1 = f0
+        f2 = f1
+        f0 = f0 + f2
+        f2 = -f2
+        f3 = x
+        fc_a = f3
+        fc_b = f1
+        if fc_a < fc_b {
+            fc_a = f3
+            fc_b = f2
+            if fc_a >= fc_b {
+            } else {
+                f3 = -f3
+                f3 = f3 - f0
+            }
+        } else {
+            f3 = -f3
+            f3 = f3 + f0
+        }
+        f4 = y
+        fc_a = f4
+        fc_b = f1
+        if fc_a < fc_b {
+            fc_a = f4
+            fc_b = f2
+            if fc_a >= fc_b {
+            } else {
+                f4 = -f4
+                f4 = f4 - f0
+            }
+        } else {
+            f4 = -f4
+            f4 = f4 + f0
+        }
+        f5 = z
+        fc_a = f5
+        fc_b = f1
+        if fc_a < fc_b {
+            fc_a = f5
+            fc_b = f2
+            if fc_a >= fc_b {
+            } else {
+                f5 = -f5
+                f5 = f5 - f0
+            }
+        } else {
+            f5 = -f5
+            f5 = f5 + f0
+        }
+        ft = f5
+        f5 = f2
+        f2 = ft
+        ft = f4
+        f4 = f1
+        f1 = ft
+        ft = f3
+        f3 = f0
+        f0 = ft
+        f3 = f2
+        f3 = f3 * k68
+        f4 = f1
+        f4 = f4 * k72
+        f3 = f3 + f4
+        f4 = f0
+        f4 = f4 * k76
+        f3 = f3 + f4
+        f4 = f2
+        f4 = f4 * k44
+        f5 = f1
+        f5 = f5 * k48
+        f4 = f4 + f5
+        f5 = f0
+        f5 = f5 * k52
+        f4 = f4 + f5
+        ft = f4
+        f4 = f2
+        f2 = ft
+        f4 = f4 * k56
+        ft = f4
+        f4 = f1
+        f1 = ft
+        f4 = f4 * k60
+        f1 = f1 + f4
+        ft = f3
+        f3 = f0
+        f0 = ft
+        f3 = f3 * k64
+        f1 = f1 + f3
+        f3 = f2
+        f3 = f3 * f2
+        f4 = f1
+        f4 = f4 * f1
+        f3 = f3 + f4
+        f4 = f0
+        f4 = f4 * f0
+        f3 = f3 + f4
+        fc_a = f3
+        fc_b = k32
+        if fc_a >= fc_b {
+            f4 = 1.0
+            fc_a = f4
+            fc_b = f3
+            if fc_a < fc_b {
+                fc_a = f4
+                fc_b = f3
+                f3 = k16
+            } else {
+                f3 = k16 / f3
+            }
+            r_eax = sel(fc_a < fc_b, 3072.0, sel(fc_a == fc_b, 11264.0, 3072.0))
+        } else {
+            f3 = k24
+            r_eax = sel(fc_a < fc_b, 4096.0, sel(fc_a == fc_b, 12288.0, 4096.0))
+        }
+        f4 = dr
+        f4 = f4 * f3
+        dr = f4
+        f0 = f0 * f3
+        f1 = f1 * f3
+        f2 = f2 * f3
+        f2 = f2 + cz
+        z = f2
+        f1 = f1 + cy
+        y = f1
+        f0 = f0 + cx
+        x = f0
+        f0 = k92
+        f1 = x
+        f1 = abs(f1)
+        fc_a = f1
+        fc_b = f0
+        if fc_a >= fc_b {
+            m12 = 0.0
+        } else {
+            m12 = 1.0
+        }
+        f1 = y
+        f1 = abs(f1)
+        fc_a = f1
+        fc_b = f0
+        if fc_a >= fc_b {
+        } else {
+            m12 = m12 + 1.0
+        }
+        f1 = z
+        f1 = abs(f1)
+        fc_a = f1
+        fc_b = f0
+        if fc_a >= fc_b {
+        } else {
+            m12 = m12 + 1.0
+        }
+        r_eax = k104
+        r_eax = (r_eax - 4.0 * floor(r_eax / 4.0))
+        bwa = r_eax
+        bwb = m12
+        bwr = 0.0
+        bwx = bwa - 2.0 * floor(bwa * 0.5)
+        bwy = bwb - 2.0 * floor(bwb * 0.5)
+        bwr = bwr + abs(bwx - bwy) * 1.0
+        bwa = floor(bwa * 0.5)
+        bwb = floor(bwb * 0.5)
+        bwx = bwa - 2.0 * floor(bwa * 0.5)
+        bwy = bwb - 2.0 * floor(bwb * 0.5)
+        bwr = bwr + abs(bwx - bwy) * 2.0
+        bwa = floor(bwa * 0.5)
+        bwb = floor(bwb * 0.5)
+        bwx = bwa - 2.0 * floor(bwa * 0.5)
+        bwy = bwb - 2.0 * floor(bwb * 0.5)
+        bwr = bwr + abs(bwx - bwy) * 4.0
+        bwa = floor(bwa * 0.5)
+        bwb = floor(bwb * 0.5)
+        bwx = bwa - 2.0 * floor(bwa * 0.5)
+        bwy = bwb - 2.0 * floor(bwb * 0.5)
+        bwr = bwr + abs(bwx - bwy) * 8.0
+        bwa = floor(bwa * 0.5)
+        bwb = floor(bwb * 0.5)
+        bwx = bwa - 2.0 * floor(bwa * 0.5)
+        bwy = bwb - 2.0 * floor(bwb * 0.5)
+        bwr = bwr + abs(bwx - bwy) * 16.0
+        bwa = floor(bwa * 0.5)
+        bwb = floor(bwb * 0.5)
+        bwx = bwa - 2.0 * floor(bwa * 0.5)
+        bwy = bwb - 2.0 * floor(bwb * 0.5)
+        bwr = bwr + abs(bwx - bwy) * 32.0
+        bwa = floor(bwa * 0.5)
+        bwb = floor(bwb * 0.5)
+        bwx = bwa - 2.0 * floor(bwa * 0.5)
+        bwy = bwb - 2.0 * floor(bwb * 0.5)
+        bwr = bwr + abs(bwx - bwy) * 64.0
+        bwa = floor(bwa * 0.5)
+        bwb = floor(bwb * 0.5)
+        bwx = bwa - 2.0 * floor(bwa * 0.5)
+        bwy = bwb - 2.0 * floor(bwb * 0.5)
+        bwr = bwr + abs(bwx - bwy) * 128.0
+        bwa = floor(bwa * 0.5)
+        bwb = floor(bwb * 0.5)
+        r_eax = bwr
+        if r_eax != 0.0 {
+        } else {
+            f0 = f0 * k100
+            f1 = x
+            f2 = 0.0
+            fc_a = f2
+            fc_b = f1
+            if fc_a >= fc_b {
+                f2 = 1.0
+                f2 = -f2
+            } else {
+                f2 = 1.0
+            }
+            f2 = f2 * f0
+            f1 = f1 - f2
+            x = f1
+            f1 = y
+            f2 = 0.0
+            fc_a = f2
+            fc_b = f1
+            if fc_a >= fc_b {
+                f2 = 1.0
+                f2 = -f2
+            } else {
+                f2 = 1.0
+            }
+            f2 = f2 * f0
+            f1 = f1 - f2
+            y = f1
+            f1 = z
+            f2 = 0.0
+            fc_a = f2
+            fc_b = f1
+            if fc_a >= fc_b {
+                f2 = 1.0
+                f2 = -f2
+            } else {
+                f2 = 1.0
+            }
+            f2 = f2 * f0
+            f1 = f1 - f2
+            z = f1
+            r_eax = sel(fc_a < fc_b, 6144.0, sel(fc_a == fc_b, 14336.0, 6144.0))
+        }
     }
 }
 
@@ -33109,6 +34345,7 @@ formula "TetraFolding Pow2" {
         let m56 = 0.0
         let m60 = 0.0
         let m64 = 0.0
+        let m80 = 0.0
         f0 = k60
         m32 = f0
         f0 = k64
@@ -33499,6 +34736,7 @@ formula "TetraFolding Pow2" {
                     x = f2
                     y = f1
                     z = f0
+                    m80 = 742.0
                 } else {
                     f0 = m40
                     f0 = -f0
@@ -33785,6 +35023,7 @@ formula "TetraFolding Pow2" {
                     x = f2
                     y = f1
                     z = f0
+                    m80 = 623.0
                 }
             } else {
                 f0 = m36
@@ -34072,6 +35311,7 @@ formula "TetraFolding Pow2" {
                 x = f2
                 y = f1
                 z = f0
+                m80 = 501.0
             }
         } else {
             f0 = m40
@@ -34359,6 +35599,7 @@ formula "TetraFolding Pow2" {
             x = f2
             y = f1
             z = f0
+            m80 = 379.0
         }
         f0 = x
         f0 = f0 * f0
@@ -35421,6 +36662,97 @@ formula "TgladTetra2" {
                 z = f2
                 y = f1
                 x = f0
+            }
+        }
+    }
+}
+
+formula "TilingIFS" {
+    category "MB3D dIFS"
+    description "Mandelbulb3D formula TilingIFS. A tiling transform to spread objects along the x and y axis,"
+    de difs
+    transform
+    alias "TilingIFS"
+    param o0_z_offset "Z offset" = 0.0 [-2.0, 2.0] 
+    param o1_y_offset "Y offset" = 0.0 [-2.0, 2.0] 
+    param o2_x_offset "X offset" = 0.0 [-2.0, 2.0] 
+    param o3_y_size "Y size" = 2.0 [-2.0, 6.0] 
+    param o4_x_size "X size" = 2.0 [-2.0, 6.0] 
+    param o5_ty_offset "TY offset" = 0.0 [-2.0, 2.0] 
+    param o6_tx_offset "TX offset" = 0.0 [-2.0, 2.0] 
+    param o7_xzy_instead_zyx "XZY instead ZYX" = 1.0 [-1.0, 3.0] int
+    init {
+        let k68 = round(o7_xzy_instead_zyx)
+        let k64 = o6_tx_offset
+        let k56 = o5_ty_offset
+        let k48 = o4_x_size
+        let k40 = o3_y_size
+        let k32 = o2_x_offset
+        let k24 = o1_y_offset
+        let k16 = o0_z_offset
+    }
+    iter {
+        let ft = 0.0
+        let cfl = 0.0
+        let r_eax = 0.0
+        let r_edx = 0.0
+        let x0l = 0.0
+        let x0h = 0.0
+        let x2l = 0.0
+        let x2h = 0.0
+        let x3l = 0.0
+        let x3h = 0.0
+        let tw0 = 0.0
+        let tw1 = 0.0
+        r_eax = k68
+        r_eax = (r_eax - 2.0 * floor(r_eax / 2.0))
+        r_eax = r_eax * 8.0
+        cfl = sel(8.0 < r_eax, 1.0, 0.0)
+        r_edx = 8.0 - r_eax
+        r_edx = r_edx * 2.0
+        x0l = sel(r_eax == 0.0, x, y)
+        x0h = sel(r_eax == 0.0, y, z)
+        x3l = sel(r_edx == 0.0, x, z)
+        x3h = 0.0
+        ft = x0h - k24
+        x0l = x0l - k32
+        x0h = ft
+        ft = x0h / k40
+        x0l = x0l / k48
+        x0h = ft
+        x3l = x3l - k16
+        ft = sel(fract(x0h) == 0.5 && fract(floor(x0h + 0.5) * 0.5) != 0.0, floor(x0h + 0.5) - 1.0, floor(x0h + 0.5))
+        x2l = sel(fract(x0l) == 0.5 && fract(floor(x0l + 0.5) * 0.5) != 0.0, floor(x0l + 0.5) - 1.0, floor(x0l + 0.5))
+        x2h = ft
+        tw0 = x3l
+        if r_edx == 0.0 {
+            x = tw0
+        } else {
+            if r_edx == 16.0 {
+                z = tw0
+            }
+        }
+        ft = x2h
+        x2l = x2l
+        x2h = ft
+        ft = x0h - x2h
+        x0l = x0l - x2l
+        x0h = ft
+        ft = x0h * k40
+        x0l = x0l * k48
+        x0h = ft
+        ft = x0h + k56
+        x0l = x0l + k64
+        x0h = ft
+        tw0 = x0l
+        tw1 = x0h
+        if r_eax == 0.0 {
+            x = tw0
+            y = tw1
+        } else {
+            if r_eax == 8.0 {
+                y = tw0
+                z = tw1
             }
         }
     }
@@ -41642,6 +42974,9 @@ formula "_IntPowRotateC" {
         let x5h = 0.0
         let x6l = 0.0
         let x6h = 0.0
+        let m24 = 0.0
+        let m28 = 0.0
+        let m32 = 0.0
         x6l = 0.0
         x6h = (-0.0)
         x0l = cx
@@ -41739,10 +43074,12 @@ formula "_IntPowRotateC" {
                             x0l = x0l + x0h
                             x0h = ft
                             if r_edx <= 2.0 {
+                                m32 = 616.0
                             } else {
                                 x3l = x1l
                                 x3h = x1h
                                 if r_edx < 4.0 {
+                                    m32 = 616.0
                                 } else {
                                     x4l = x0l
                                     x4h = x0h
@@ -41763,6 +43100,7 @@ formula "_IntPowRotateC" {
                                     x0h = ft
                                     if r_edx < 8.0 {
                                         if r_edx < 6.0 {
+                                            m32 = 643.0
                                         } else {
                                             x1l = x4l
                                             x1h = x4h
@@ -41779,6 +43117,7 @@ formula "_IntPowRotateC" {
                                             ft = x2l + x2h
                                             x0l = x0l + x0h
                                             x0h = ft
+                                            m32 = 678.0
                                         }
                                     } else {
                                         x1l = x0l
@@ -41797,6 +43136,7 @@ formula "_IntPowRotateC" {
                                         x0l = x0l + x0h
                                         x0h = ft
                                         if r_edx < 10.0 {
+                                            m32 = 657.0
                                         } else {
                                             x1l = x4l
                                             x1h = x4h
@@ -41813,6 +43153,7 @@ formula "_IntPowRotateC" {
                                             ft = x2l + x2h
                                             x0l = x0l + x0h
                                             x0h = ft
+                                            m32 = 678.0
                                         }
                                     }
                                 }
@@ -41835,6 +43176,7 @@ formula "_IntPowRotateC" {
                                     ft = x2l + x2h
                                     x0l = x0l + x0h
                                     x0h = ft
+                                    m32 = 691.0
                                 }
                             }
                             if r_ecx == 0.0 {
@@ -41859,6 +43201,7 @@ formula "_IntPowRotateC" {
                             ft = x1h
                             x1l = x1h
                             x1h = ft
+                            m28 = 568.0
                         } else {
                             cz = x0h
                             ft = x1l
@@ -41896,10 +43239,12 @@ formula "_IntPowRotateC" {
                             x0l = x0l + x0h
                             x0h = ft
                             if r_edx <= 2.0 {
+                                m32 = 616.0
                             } else {
                                 x3l = x1l
                                 x3h = x1h
                                 if r_edx < 4.0 {
+                                    m32 = 616.0
                                 } else {
                                     x4l = x0l
                                     x4h = x0h
@@ -41920,6 +43265,7 @@ formula "_IntPowRotateC" {
                                     x0h = ft
                                     if r_edx < 8.0 {
                                         if r_edx < 6.0 {
+                                            m32 = 643.0
                                         } else {
                                             x1l = x4l
                                             x1h = x4h
@@ -41936,6 +43282,7 @@ formula "_IntPowRotateC" {
                                             ft = x2l + x2h
                                             x0l = x0l + x0h
                                             x0h = ft
+                                            m32 = 678.0
                                         }
                                     } else {
                                         x1l = x0l
@@ -41954,6 +43301,7 @@ formula "_IntPowRotateC" {
                                         x0l = x0l + x0h
                                         x0h = ft
                                         if r_edx < 10.0 {
+                                            m32 = 657.0
                                         } else {
                                             x1l = x4l
                                             x1h = x4h
@@ -41970,6 +43318,7 @@ formula "_IntPowRotateC" {
                                             ft = x2l + x2h
                                             x0l = x0l + x0h
                                             x0h = ft
+                                            m32 = 678.0
                                         }
                                     }
                                 }
@@ -41992,6 +43341,7 @@ formula "_IntPowRotateC" {
                                     ft = x2l + x2h
                                     x0l = x0l + x0h
                                     x0h = ft
+                                    m32 = 691.0
                                 }
                             }
                             if r_ecx == 0.0 {
@@ -42016,6 +43366,7 @@ formula "_IntPowRotateC" {
                             ft = x1h
                             x1l = x1h
                             x1h = ft
+                            m28 = 496.0
                         }
                     } else {
                         x5l = x0l
@@ -42052,10 +43403,12 @@ formula "_IntPowRotateC" {
                         x0l = x0l + x0h
                         x0h = ft
                         if r_edx <= 2.0 {
+                            m32 = 616.0
                         } else {
                             x3l = x1l
                             x3h = x1h
                             if r_edx < 4.0 {
+                                m32 = 616.0
                             } else {
                                 x4l = x0l
                                 x4h = x0h
@@ -42076,6 +43429,7 @@ formula "_IntPowRotateC" {
                                 x0h = ft
                                 if r_edx < 8.0 {
                                     if r_edx < 6.0 {
+                                        m32 = 643.0
                                     } else {
                                         x1l = x4l
                                         x1h = x4h
@@ -42092,6 +43446,7 @@ formula "_IntPowRotateC" {
                                         ft = x2l + x2h
                                         x0l = x0l + x0h
                                         x0h = ft
+                                        m32 = 678.0
                                     }
                                 } else {
                                     x1l = x0l
@@ -42110,6 +43465,7 @@ formula "_IntPowRotateC" {
                                     x0l = x0l + x0h
                                     x0h = ft
                                     if r_edx < 10.0 {
+                                        m32 = 657.0
                                     } else {
                                         x1l = x4l
                                         x1h = x4h
@@ -42126,6 +43482,7 @@ formula "_IntPowRotateC" {
                                         ft = x2l + x2h
                                         x0l = x0l + x0h
                                         x0h = ft
+                                        m32 = 678.0
                                     }
                                 }
                             }
@@ -42148,6 +43505,7 @@ formula "_IntPowRotateC" {
                                 ft = x2l + x2h
                                 x0l = x0l + x0h
                                 x0h = ft
+                                m32 = 691.0
                             }
                         }
                         if r_ecx == 0.0 {
@@ -42167,6 +43525,7 @@ formula "_IntPowRotateC" {
                         ft = x0h * x5h
                         x0l = x0l * x5l
                         x0h = ft
+                        m28 = 431.0
                     }
                 } else {
                     cx = x0l
@@ -42216,10 +43575,12 @@ formula "_IntPowRotateC" {
                     x0l = x0l + x0h
                     x0h = ft
                     if r_edx <= 2.0 {
+                        m32 = 616.0
                     } else {
                         x3l = x1l
                         x3h = x1h
                         if r_edx < 4.0 {
+                            m32 = 616.0
                         } else {
                             x4l = x0l
                             x4h = x0h
@@ -42240,6 +43601,7 @@ formula "_IntPowRotateC" {
                             x0h = ft
                             if r_edx < 8.0 {
                                 if r_edx < 6.0 {
+                                    m32 = 643.0
                                 } else {
                                     x1l = x4l
                                     x1h = x4h
@@ -42256,6 +43618,7 @@ formula "_IntPowRotateC" {
                                     ft = x2l + x2h
                                     x0l = x0l + x0h
                                     x0h = ft
+                                    m32 = 678.0
                                 }
                             } else {
                                 x1l = x0l
@@ -42274,6 +43637,7 @@ formula "_IntPowRotateC" {
                                 x0l = x0l + x0h
                                 x0h = ft
                                 if r_edx < 10.0 {
+                                    m32 = 657.0
                                 } else {
                                     x1l = x4l
                                     x1h = x4h
@@ -42290,6 +43654,7 @@ formula "_IntPowRotateC" {
                                     ft = x2l + x2h
                                     x0l = x0l + x0h
                                     x0h = ft
+                                    m32 = 678.0
                                 }
                             }
                         }
@@ -42312,6 +43677,7 @@ formula "_IntPowRotateC" {
                             ft = x2l + x2h
                             x0l = x0l + x0h
                             x0h = ft
+                            m32 = 691.0
                         }
                     }
                     if r_ecx == 0.0 {
@@ -42329,6 +43695,7 @@ formula "_IntPowRotateC" {
                     ft = x0l
                     x0h = ft
                     x0l = cx
+                    m28 = 379.0
                 }
             } else {
                 cx = x0h
@@ -42375,10 +43742,12 @@ formula "_IntPowRotateC" {
                 x0l = x0l + x0h
                 x0h = ft
                 if r_edx <= 2.0 {
+                    m32 = 616.0
                 } else {
                     x3l = x1l
                     x3h = x1h
                     if r_edx < 4.0 {
+                        m32 = 616.0
                     } else {
                         x4l = x0l
                         x4h = x0h
@@ -42399,6 +43768,7 @@ formula "_IntPowRotateC" {
                         x0h = ft
                         if r_edx < 8.0 {
                             if r_edx < 6.0 {
+                                m32 = 643.0
                             } else {
                                 x1l = x4l
                                 x1h = x4h
@@ -42415,6 +43785,7 @@ formula "_IntPowRotateC" {
                                 ft = x2l + x2h
                                 x0l = x0l + x0h
                                 x0h = ft
+                                m32 = 678.0
                             }
                         } else {
                             x1l = x0l
@@ -42433,6 +43804,7 @@ formula "_IntPowRotateC" {
                             x0l = x0l + x0h
                             x0h = ft
                             if r_edx < 10.0 {
+                                m32 = 657.0
                             } else {
                                 x1l = x4l
                                 x1h = x4h
@@ -42449,6 +43821,7 @@ formula "_IntPowRotateC" {
                                 ft = x2l + x2h
                                 x0l = x0l + x0h
                                 x0h = ft
+                                m32 = 678.0
                             }
                         }
                     }
@@ -42471,6 +43844,7 @@ formula "_IntPowRotateC" {
                         ft = x2l + x2h
                         x0l = x0l + x0h
                         x0h = ft
+                        m32 = 691.0
                     }
                 }
                 if r_ecx == 0.0 {
@@ -42486,6 +43860,7 @@ formula "_IntPowRotateC" {
                 x1l = x0h
                 x1h = ft
                 x0h = cx
+                m28 = 306.0
             }
         } else {
             x3l = x0l
@@ -42530,10 +43905,12 @@ formula "_IntPowRotateC" {
             x0l = x0l + x0h
             x0h = ft
             if r_edx <= 2.0 {
+                m32 = 616.0
             } else {
                 x3l = x1l
                 x3h = x1h
                 if r_edx < 4.0 {
+                    m32 = 616.0
                 } else {
                     x4l = x0l
                     x4h = x0h
@@ -42554,6 +43931,7 @@ formula "_IntPowRotateC" {
                     x0h = ft
                     if r_edx < 8.0 {
                         if r_edx < 6.0 {
+                            m32 = 643.0
                         } else {
                             x1l = x4l
                             x1h = x4h
@@ -42570,6 +43948,7 @@ formula "_IntPowRotateC" {
                             ft = x2l + x2h
                             x0l = x0l + x0h
                             x0h = ft
+                            m32 = 678.0
                         }
                     } else {
                         x1l = x0l
@@ -42588,6 +43967,7 @@ formula "_IntPowRotateC" {
                         x0l = x0l + x0h
                         x0h = ft
                         if r_edx < 10.0 {
+                            m32 = 657.0
                         } else {
                             x1l = x4l
                             x1h = x4h
@@ -42604,6 +43984,7 @@ formula "_IntPowRotateC" {
                             ft = x2l + x2h
                             x0l = x0l + x0h
                             x0h = ft
+                            m32 = 678.0
                         }
                     }
                 }
@@ -42626,6 +44007,7 @@ formula "_IntPowRotateC" {
                     ft = x2l + x2h
                     x0l = x0l + x0h
                     x0h = ft
+                    m32 = 691.0
                 }
             }
             if r_ecx == 0.0 {
@@ -42639,8 +44021,10 @@ formula "_IntPowRotateC" {
             ft = x0h * x5h
             x0l = x0l * x5l
             x0h = ft
+            m28 = 242.0
         }
         if k24 == 0.0 {
+            m24 = 105.0
         } else {
             r_edx = k28
             r_ebx = k32
@@ -42705,10 +44089,12 @@ formula "_IntPowRotateC" {
                                 x0l = x0l + x0h
                                 x0h = ft
                                 if r_edx <= 2.0 {
+                                    m32 = 616.0
                                 } else {
                                     x3l = x1l
                                     x3h = x1h
                                     if r_edx < 4.0 {
+                                        m32 = 616.0
                                     } else {
                                         x4l = x0l
                                         x4h = x0h
@@ -42729,6 +44115,7 @@ formula "_IntPowRotateC" {
                                         x0h = ft
                                         if r_edx < 8.0 {
                                             if r_edx < 6.0 {
+                                                m32 = 643.0
                                             } else {
                                                 x1l = x4l
                                                 x1h = x4h
@@ -42745,6 +44132,7 @@ formula "_IntPowRotateC" {
                                                 ft = x2l + x2h
                                                 x0l = x0l + x0h
                                                 x0h = ft
+                                                m32 = 678.0
                                             }
                                         } else {
                                             x1l = x0l
@@ -42763,6 +44151,7 @@ formula "_IntPowRotateC" {
                                             x0l = x0l + x0h
                                             x0h = ft
                                             if r_edx < 10.0 {
+                                                m32 = 657.0
                                             } else {
                                                 x1l = x4l
                                                 x1h = x4h
@@ -42779,6 +44168,7 @@ formula "_IntPowRotateC" {
                                                 ft = x2l + x2h
                                                 x0l = x0l + x0h
                                                 x0h = ft
+                                                m32 = 678.0
                                             }
                                         }
                                     }
@@ -42801,6 +44191,7 @@ formula "_IntPowRotateC" {
                                         ft = x2l + x2h
                                         x0l = x0l + x0h
                                         x0h = ft
+                                        m32 = 691.0
                                     }
                                 }
                                 if r_ecx == 0.0 {
@@ -42825,6 +44216,7 @@ formula "_IntPowRotateC" {
                                 ft = x1h
                                 x1l = x1h
                                 x1h = ft
+                                m28 = 568.0
                             } else {
                                 cz = x0h
                                 ft = x1l
@@ -42862,10 +44254,12 @@ formula "_IntPowRotateC" {
                                 x0l = x0l + x0h
                                 x0h = ft
                                 if r_edx <= 2.0 {
+                                    m32 = 616.0
                                 } else {
                                     x3l = x1l
                                     x3h = x1h
                                     if r_edx < 4.0 {
+                                        m32 = 616.0
                                     } else {
                                         x4l = x0l
                                         x4h = x0h
@@ -42886,6 +44280,7 @@ formula "_IntPowRotateC" {
                                         x0h = ft
                                         if r_edx < 8.0 {
                                             if r_edx < 6.0 {
+                                                m32 = 643.0
                                             } else {
                                                 x1l = x4l
                                                 x1h = x4h
@@ -42902,6 +44297,7 @@ formula "_IntPowRotateC" {
                                                 ft = x2l + x2h
                                                 x0l = x0l + x0h
                                                 x0h = ft
+                                                m32 = 678.0
                                             }
                                         } else {
                                             x1l = x0l
@@ -42920,6 +44316,7 @@ formula "_IntPowRotateC" {
                                             x0l = x0l + x0h
                                             x0h = ft
                                             if r_edx < 10.0 {
+                                                m32 = 657.0
                                             } else {
                                                 x1l = x4l
                                                 x1h = x4h
@@ -42936,6 +44333,7 @@ formula "_IntPowRotateC" {
                                                 ft = x2l + x2h
                                                 x0l = x0l + x0h
                                                 x0h = ft
+                                                m32 = 678.0
                                             }
                                         }
                                     }
@@ -42958,6 +44356,7 @@ formula "_IntPowRotateC" {
                                         ft = x2l + x2h
                                         x0l = x0l + x0h
                                         x0h = ft
+                                        m32 = 691.0
                                     }
                                 }
                                 if r_ecx == 0.0 {
@@ -42982,6 +44381,7 @@ formula "_IntPowRotateC" {
                                 ft = x1h
                                 x1l = x1h
                                 x1h = ft
+                                m28 = 496.0
                             }
                         } else {
                             x5l = x0l
@@ -43018,10 +44418,12 @@ formula "_IntPowRotateC" {
                             x0l = x0l + x0h
                             x0h = ft
                             if r_edx <= 2.0 {
+                                m32 = 616.0
                             } else {
                                 x3l = x1l
                                 x3h = x1h
                                 if r_edx < 4.0 {
+                                    m32 = 616.0
                                 } else {
                                     x4l = x0l
                                     x4h = x0h
@@ -43042,6 +44444,7 @@ formula "_IntPowRotateC" {
                                     x0h = ft
                                     if r_edx < 8.0 {
                                         if r_edx < 6.0 {
+                                            m32 = 643.0
                                         } else {
                                             x1l = x4l
                                             x1h = x4h
@@ -43058,6 +44461,7 @@ formula "_IntPowRotateC" {
                                             ft = x2l + x2h
                                             x0l = x0l + x0h
                                             x0h = ft
+                                            m32 = 678.0
                                         }
                                     } else {
                                         x1l = x0l
@@ -43076,6 +44480,7 @@ formula "_IntPowRotateC" {
                                         x0l = x0l + x0h
                                         x0h = ft
                                         if r_edx < 10.0 {
+                                            m32 = 657.0
                                         } else {
                                             x1l = x4l
                                             x1h = x4h
@@ -43092,6 +44497,7 @@ formula "_IntPowRotateC" {
                                             ft = x2l + x2h
                                             x0l = x0l + x0h
                                             x0h = ft
+                                            m32 = 678.0
                                         }
                                     }
                                 }
@@ -43114,6 +44520,7 @@ formula "_IntPowRotateC" {
                                     ft = x2l + x2h
                                     x0l = x0l + x0h
                                     x0h = ft
+                                    m32 = 691.0
                                 }
                             }
                             if r_ecx == 0.0 {
@@ -43133,6 +44540,7 @@ formula "_IntPowRotateC" {
                             ft = x0h * x5h
                             x0l = x0l * x5l
                             x0h = ft
+                            m28 = 431.0
                         }
                     } else {
                         cx = x0l
@@ -43182,10 +44590,12 @@ formula "_IntPowRotateC" {
                         x0l = x0l + x0h
                         x0h = ft
                         if r_edx <= 2.0 {
+                            m32 = 616.0
                         } else {
                             x3l = x1l
                             x3h = x1h
                             if r_edx < 4.0 {
+                                m32 = 616.0
                             } else {
                                 x4l = x0l
                                 x4h = x0h
@@ -43206,6 +44616,7 @@ formula "_IntPowRotateC" {
                                 x0h = ft
                                 if r_edx < 8.0 {
                                     if r_edx < 6.0 {
+                                        m32 = 643.0
                                     } else {
                                         x1l = x4l
                                         x1h = x4h
@@ -43222,6 +44633,7 @@ formula "_IntPowRotateC" {
                                         ft = x2l + x2h
                                         x0l = x0l + x0h
                                         x0h = ft
+                                        m32 = 678.0
                                     }
                                 } else {
                                     x1l = x0l
@@ -43240,6 +44652,7 @@ formula "_IntPowRotateC" {
                                     x0l = x0l + x0h
                                     x0h = ft
                                     if r_edx < 10.0 {
+                                        m32 = 657.0
                                     } else {
                                         x1l = x4l
                                         x1h = x4h
@@ -43256,6 +44669,7 @@ formula "_IntPowRotateC" {
                                         ft = x2l + x2h
                                         x0l = x0l + x0h
                                         x0h = ft
+                                        m32 = 678.0
                                     }
                                 }
                             }
@@ -43278,6 +44692,7 @@ formula "_IntPowRotateC" {
                                 ft = x2l + x2h
                                 x0l = x0l + x0h
                                 x0h = ft
+                                m32 = 691.0
                             }
                         }
                         if r_ecx == 0.0 {
@@ -43295,6 +44710,7 @@ formula "_IntPowRotateC" {
                         ft = x0l
                         x0h = ft
                         x0l = cx
+                        m28 = 379.0
                     }
                 } else {
                     cx = x0h
@@ -43341,10 +44757,12 @@ formula "_IntPowRotateC" {
                     x0l = x0l + x0h
                     x0h = ft
                     if r_edx <= 2.0 {
+                        m32 = 616.0
                     } else {
                         x3l = x1l
                         x3h = x1h
                         if r_edx < 4.0 {
+                            m32 = 616.0
                         } else {
                             x4l = x0l
                             x4h = x0h
@@ -43365,6 +44783,7 @@ formula "_IntPowRotateC" {
                             x0h = ft
                             if r_edx < 8.0 {
                                 if r_edx < 6.0 {
+                                    m32 = 643.0
                                 } else {
                                     x1l = x4l
                                     x1h = x4h
@@ -43381,6 +44800,7 @@ formula "_IntPowRotateC" {
                                     ft = x2l + x2h
                                     x0l = x0l + x0h
                                     x0h = ft
+                                    m32 = 678.0
                                 }
                             } else {
                                 x1l = x0l
@@ -43399,6 +44819,7 @@ formula "_IntPowRotateC" {
                                 x0l = x0l + x0h
                                 x0h = ft
                                 if r_edx < 10.0 {
+                                    m32 = 657.0
                                 } else {
                                     x1l = x4l
                                     x1h = x4h
@@ -43415,6 +44836,7 @@ formula "_IntPowRotateC" {
                                     ft = x2l + x2h
                                     x0l = x0l + x0h
                                     x0h = ft
+                                    m32 = 678.0
                                 }
                             }
                         }
@@ -43437,6 +44859,7 @@ formula "_IntPowRotateC" {
                             ft = x2l + x2h
                             x0l = x0l + x0h
                             x0h = ft
+                            m32 = 691.0
                         }
                     }
                     if r_ecx == 0.0 {
@@ -43452,6 +44875,7 @@ formula "_IntPowRotateC" {
                     x1l = x0h
                     x1h = ft
                     x0h = cx
+                    m28 = 306.0
                 }
             } else {
                 x3l = x0l
@@ -43496,10 +44920,12 @@ formula "_IntPowRotateC" {
                 x0l = x0l + x0h
                 x0h = ft
                 if r_edx <= 2.0 {
+                    m32 = 616.0
                 } else {
                     x3l = x1l
                     x3h = x1h
                     if r_edx < 4.0 {
+                        m32 = 616.0
                     } else {
                         x4l = x0l
                         x4h = x0h
@@ -43520,6 +44946,7 @@ formula "_IntPowRotateC" {
                         x0h = ft
                         if r_edx < 8.0 {
                             if r_edx < 6.0 {
+                                m32 = 643.0
                             } else {
                                 x1l = x4l
                                 x1h = x4h
@@ -43536,6 +44963,7 @@ formula "_IntPowRotateC" {
                                 ft = x2l + x2h
                                 x0l = x0l + x0h
                                 x0h = ft
+                                m32 = 678.0
                             }
                         } else {
                             x1l = x0l
@@ -43554,6 +44982,7 @@ formula "_IntPowRotateC" {
                             x0l = x0l + x0h
                             x0h = ft
                             if r_edx < 10.0 {
+                                m32 = 657.0
                             } else {
                                 x1l = x4l
                                 x1h = x4h
@@ -43570,6 +44999,7 @@ formula "_IntPowRotateC" {
                                 ft = x2l + x2h
                                 x0l = x0l + x0h
                                 x0h = ft
+                                m32 = 678.0
                             }
                         }
                     }
@@ -43592,6 +45022,7 @@ formula "_IntPowRotateC" {
                         ft = x2l + x2h
                         x0l = x0l + x0h
                         x0h = ft
+                        m32 = 691.0
                     }
                 }
                 if r_ecx == 0.0 {
@@ -43605,7 +45036,9 @@ formula "_IntPowRotateC" {
                 ft = x0h * x5h
                 x0l = x0l * x5l
                 x0h = ft
+                m28 = 242.0
             }
+            m24 = 122.0
         }
         if k36 == 0.0 {
         } else {
@@ -43672,10 +45105,12 @@ formula "_IntPowRotateC" {
                                 x0l = x0l + x0h
                                 x0h = ft
                                 if r_edx <= 2.0 {
+                                    m32 = 616.0
                                 } else {
                                     x3l = x1l
                                     x3h = x1h
                                     if r_edx < 4.0 {
+                                        m32 = 616.0
                                     } else {
                                         x4l = x0l
                                         x4h = x0h
@@ -43696,6 +45131,7 @@ formula "_IntPowRotateC" {
                                         x0h = ft
                                         if r_edx < 8.0 {
                                             if r_edx < 6.0 {
+                                                m32 = 643.0
                                             } else {
                                                 x1l = x4l
                                                 x1h = x4h
@@ -43712,6 +45148,7 @@ formula "_IntPowRotateC" {
                                                 ft = x2l + x2h
                                                 x0l = x0l + x0h
                                                 x0h = ft
+                                                m32 = 678.0
                                             }
                                         } else {
                                             x1l = x0l
@@ -43730,6 +45167,7 @@ formula "_IntPowRotateC" {
                                             x0l = x0l + x0h
                                             x0h = ft
                                             if r_edx < 10.0 {
+                                                m32 = 657.0
                                             } else {
                                                 x1l = x4l
                                                 x1h = x4h
@@ -43746,6 +45184,7 @@ formula "_IntPowRotateC" {
                                                 ft = x2l + x2h
                                                 x0l = x0l + x0h
                                                 x0h = ft
+                                                m32 = 678.0
                                             }
                                         }
                                     }
@@ -43768,6 +45207,7 @@ formula "_IntPowRotateC" {
                                         ft = x2l + x2h
                                         x0l = x0l + x0h
                                         x0h = ft
+                                        m32 = 691.0
                                     }
                                 }
                                 if r_ecx == 0.0 {
@@ -43792,6 +45232,7 @@ formula "_IntPowRotateC" {
                                 ft = x1h
                                 x1l = x1h
                                 x1h = ft
+                                m28 = 568.0
                             } else {
                                 cz = x0h
                                 ft = x1l
@@ -43829,10 +45270,12 @@ formula "_IntPowRotateC" {
                                 x0l = x0l + x0h
                                 x0h = ft
                                 if r_edx <= 2.0 {
+                                    m32 = 616.0
                                 } else {
                                     x3l = x1l
                                     x3h = x1h
                                     if r_edx < 4.0 {
+                                        m32 = 616.0
                                     } else {
                                         x4l = x0l
                                         x4h = x0h
@@ -43853,6 +45296,7 @@ formula "_IntPowRotateC" {
                                         x0h = ft
                                         if r_edx < 8.0 {
                                             if r_edx < 6.0 {
+                                                m32 = 643.0
                                             } else {
                                                 x1l = x4l
                                                 x1h = x4h
@@ -43869,6 +45313,7 @@ formula "_IntPowRotateC" {
                                                 ft = x2l + x2h
                                                 x0l = x0l + x0h
                                                 x0h = ft
+                                                m32 = 678.0
                                             }
                                         } else {
                                             x1l = x0l
@@ -43887,6 +45332,7 @@ formula "_IntPowRotateC" {
                                             x0l = x0l + x0h
                                             x0h = ft
                                             if r_edx < 10.0 {
+                                                m32 = 657.0
                                             } else {
                                                 x1l = x4l
                                                 x1h = x4h
@@ -43903,6 +45349,7 @@ formula "_IntPowRotateC" {
                                                 ft = x2l + x2h
                                                 x0l = x0l + x0h
                                                 x0h = ft
+                                                m32 = 678.0
                                             }
                                         }
                                     }
@@ -43925,6 +45372,7 @@ formula "_IntPowRotateC" {
                                         ft = x2l + x2h
                                         x0l = x0l + x0h
                                         x0h = ft
+                                        m32 = 691.0
                                     }
                                 }
                                 if r_ecx == 0.0 {
@@ -43949,6 +45397,7 @@ formula "_IntPowRotateC" {
                                 ft = x1h
                                 x1l = x1h
                                 x1h = ft
+                                m28 = 496.0
                             }
                         } else {
                             x5l = x0l
@@ -43985,10 +45434,12 @@ formula "_IntPowRotateC" {
                             x0l = x0l + x0h
                             x0h = ft
                             if r_edx <= 2.0 {
+                                m32 = 616.0
                             } else {
                                 x3l = x1l
                                 x3h = x1h
                                 if r_edx < 4.0 {
+                                    m32 = 616.0
                                 } else {
                                     x4l = x0l
                                     x4h = x0h
@@ -44009,6 +45460,7 @@ formula "_IntPowRotateC" {
                                     x0h = ft
                                     if r_edx < 8.0 {
                                         if r_edx < 6.0 {
+                                            m32 = 643.0
                                         } else {
                                             x1l = x4l
                                             x1h = x4h
@@ -44025,6 +45477,7 @@ formula "_IntPowRotateC" {
                                             ft = x2l + x2h
                                             x0l = x0l + x0h
                                             x0h = ft
+                                            m32 = 678.0
                                         }
                                     } else {
                                         x1l = x0l
@@ -44043,6 +45496,7 @@ formula "_IntPowRotateC" {
                                         x0l = x0l + x0h
                                         x0h = ft
                                         if r_edx < 10.0 {
+                                            m32 = 657.0
                                         } else {
                                             x1l = x4l
                                             x1h = x4h
@@ -44059,6 +45513,7 @@ formula "_IntPowRotateC" {
                                             ft = x2l + x2h
                                             x0l = x0l + x0h
                                             x0h = ft
+                                            m32 = 678.0
                                         }
                                     }
                                 }
@@ -44081,6 +45536,7 @@ formula "_IntPowRotateC" {
                                     ft = x2l + x2h
                                     x0l = x0l + x0h
                                     x0h = ft
+                                    m32 = 691.0
                                 }
                             }
                             if r_ecx == 0.0 {
@@ -44100,6 +45556,7 @@ formula "_IntPowRotateC" {
                             ft = x0h * x5h
                             x0l = x0l * x5l
                             x0h = ft
+                            m28 = 431.0
                         }
                     } else {
                         cx = x0l
@@ -44149,10 +45606,12 @@ formula "_IntPowRotateC" {
                         x0l = x0l + x0h
                         x0h = ft
                         if r_edx <= 2.0 {
+                            m32 = 616.0
                         } else {
                             x3l = x1l
                             x3h = x1h
                             if r_edx < 4.0 {
+                                m32 = 616.0
                             } else {
                                 x4l = x0l
                                 x4h = x0h
@@ -44173,6 +45632,7 @@ formula "_IntPowRotateC" {
                                 x0h = ft
                                 if r_edx < 8.0 {
                                     if r_edx < 6.0 {
+                                        m32 = 643.0
                                     } else {
                                         x1l = x4l
                                         x1h = x4h
@@ -44189,6 +45649,7 @@ formula "_IntPowRotateC" {
                                         ft = x2l + x2h
                                         x0l = x0l + x0h
                                         x0h = ft
+                                        m32 = 678.0
                                     }
                                 } else {
                                     x1l = x0l
@@ -44207,6 +45668,7 @@ formula "_IntPowRotateC" {
                                     x0l = x0l + x0h
                                     x0h = ft
                                     if r_edx < 10.0 {
+                                        m32 = 657.0
                                     } else {
                                         x1l = x4l
                                         x1h = x4h
@@ -44223,6 +45685,7 @@ formula "_IntPowRotateC" {
                                         ft = x2l + x2h
                                         x0l = x0l + x0h
                                         x0h = ft
+                                        m32 = 678.0
                                     }
                                 }
                             }
@@ -44245,6 +45708,7 @@ formula "_IntPowRotateC" {
                                 ft = x2l + x2h
                                 x0l = x0l + x0h
                                 x0h = ft
+                                m32 = 691.0
                             }
                         }
                         if r_ecx == 0.0 {
@@ -44262,6 +45726,7 @@ formula "_IntPowRotateC" {
                         ft = x0l
                         x0h = ft
                         x0l = cx
+                        m28 = 379.0
                     }
                 } else {
                     cx = x0h
@@ -44308,10 +45773,12 @@ formula "_IntPowRotateC" {
                     x0l = x0l + x0h
                     x0h = ft
                     if r_edx <= 2.0 {
+                        m32 = 616.0
                     } else {
                         x3l = x1l
                         x3h = x1h
                         if r_edx < 4.0 {
+                            m32 = 616.0
                         } else {
                             x4l = x0l
                             x4h = x0h
@@ -44332,6 +45799,7 @@ formula "_IntPowRotateC" {
                             x0h = ft
                             if r_edx < 8.0 {
                                 if r_edx < 6.0 {
+                                    m32 = 643.0
                                 } else {
                                     x1l = x4l
                                     x1h = x4h
@@ -44348,6 +45816,7 @@ formula "_IntPowRotateC" {
                                     ft = x2l + x2h
                                     x0l = x0l + x0h
                                     x0h = ft
+                                    m32 = 678.0
                                 }
                             } else {
                                 x1l = x0l
@@ -44366,6 +45835,7 @@ formula "_IntPowRotateC" {
                                 x0l = x0l + x0h
                                 x0h = ft
                                 if r_edx < 10.0 {
+                                    m32 = 657.0
                                 } else {
                                     x1l = x4l
                                     x1h = x4h
@@ -44382,6 +45852,7 @@ formula "_IntPowRotateC" {
                                     ft = x2l + x2h
                                     x0l = x0l + x0h
                                     x0h = ft
+                                    m32 = 678.0
                                 }
                             }
                         }
@@ -44404,6 +45875,7 @@ formula "_IntPowRotateC" {
                             ft = x2l + x2h
                             x0l = x0l + x0h
                             x0h = ft
+                            m32 = 691.0
                         }
                     }
                     if r_ecx == 0.0 {
@@ -44419,6 +45891,7 @@ formula "_IntPowRotateC" {
                     x1l = x0h
                     x1h = ft
                     x0h = cx
+                    m28 = 306.0
                 }
             } else {
                 x3l = x0l
@@ -44463,10 +45936,12 @@ formula "_IntPowRotateC" {
                 x0l = x0l + x0h
                 x0h = ft
                 if r_edx <= 2.0 {
+                    m32 = 616.0
                 } else {
                     x3l = x1l
                     x3h = x1h
                     if r_edx < 4.0 {
+                        m32 = 616.0
                     } else {
                         x4l = x0l
                         x4h = x0h
@@ -44487,6 +45962,7 @@ formula "_IntPowRotateC" {
                         x0h = ft
                         if r_edx < 8.0 {
                             if r_edx < 6.0 {
+                                m32 = 643.0
                             } else {
                                 x1l = x4l
                                 x1h = x4h
@@ -44503,6 +45979,7 @@ formula "_IntPowRotateC" {
                                 ft = x2l + x2h
                                 x0l = x0l + x0h
                                 x0h = ft
+                                m32 = 678.0
                             }
                         } else {
                             x1l = x0l
@@ -44521,6 +45998,7 @@ formula "_IntPowRotateC" {
                             x0l = x0l + x0h
                             x0h = ft
                             if r_edx < 10.0 {
+                                m32 = 657.0
                             } else {
                                 x1l = x4l
                                 x1h = x4h
@@ -44537,6 +46015,7 @@ formula "_IntPowRotateC" {
                                 ft = x2l + x2h
                                 x0l = x0l + x0h
                                 x0h = ft
+                                m32 = 678.0
                             }
                         }
                     }
@@ -44559,6 +46038,7 @@ formula "_IntPowRotateC" {
                         ft = x2l + x2h
                         x0l = x0l + x0h
                         x0h = ft
+                        m32 = 691.0
                     }
                 }
                 if r_ecx == 0.0 {
@@ -44572,7 +46052,9 @@ formula "_IntPowRotateC" {
                 ft = x0h * x5h
                 x0l = x0l * x5l
                 x0h = ft
+                m28 = 242.0
             }
+            m24 = 139.0
         }
         x5l = cy
         x5h = 0.0
@@ -48198,6 +49680,107 @@ formula "_Tanh4D" {
         f5 = f5 * f4
         f5 = f5 * k48
         w = f5
+    }
+}
+
+formula "_Transform" {
+    category "MB3D transforms"
+    description "Mandelbulb3D formula _Transform. A general transform to shift, scale and rotate Z and C (by option)."
+    de numeric
+    transform
+    alias "_Transform"
+    param o0_scale "Scale" = 1.0 [-1.0, 3.0] 
+    param o1_x_add "X add" = 0.0 [-2.0, 2.0] 
+    param o2_y_add "Y add" = 0.0 [-2.0, 2.0] 
+    param o3_z_add "Z add" = 0.0 [-2.0, 2.0] 
+    param o4_rotate_x "Rotate X" = 0.0 [-180.0, 180.0] angle
+    param o5_rotate_y "Rotate Y" = 0.0 [-180.0, 180.0] angle
+    param o6_rotate_z "Rotate Z" = 0.0 [-180.0, 180.0] angle
+    param o7_copy_to_c "Copy to C" = 1.0 [-1.0, 3.0] int
+    init {
+        let k116 = round(o7_copy_to_c)
+        let k112 = cos(o4_rotate_x * pi / 180.0) * cos(o5_rotate_y * pi / 180.0)
+        let k104 = cos(o4_rotate_x * pi / 180.0) * sin(o5_rotate_y * pi / 180.0) * sin(o6_rotate_z * pi / 180.0) + sin(o4_rotate_x * pi / 180.0) * cos(o6_rotate_z * pi / 180.0)
+        let k96 = sin(o4_rotate_x * pi / 180.0) * sin(o6_rotate_z * pi / 180.0) - cos(o4_rotate_x * pi / 180.0) * sin(o5_rotate_y * pi / 180.0) * cos(o6_rotate_z * pi / 180.0)
+        let k88 = -sin(o4_rotate_x * pi / 180.0) * cos(o5_rotate_y * pi / 180.0)
+        let k80 = cos(o4_rotate_x * pi / 180.0) * cos(o6_rotate_z * pi / 180.0) - sin(o4_rotate_x * pi / 180.0) * sin(o5_rotate_y * pi / 180.0) * sin(o6_rotate_z * pi / 180.0)
+        let k72 = sin(o4_rotate_x * pi / 180.0) * sin(o5_rotate_y * pi / 180.0) * cos(o6_rotate_z * pi / 180.0) + cos(o4_rotate_x * pi / 180.0) * sin(o6_rotate_z * pi / 180.0)
+        let k64 = sin(o5_rotate_y * pi / 180.0)
+        let k56 = -cos(o5_rotate_y * pi / 180.0) * sin(o6_rotate_z * pi / 180.0)
+        let k48 = cos(o5_rotate_y * pi / 180.0) * cos(o6_rotate_z * pi / 180.0)
+        let k40 = o3_z_add
+        let k32 = o2_y_add
+        let k24 = o1_x_add
+        let k16 = o0_scale
+    }
+    iter {
+        let f0 = 0.0
+        let f1 = 0.0
+        let f2 = 0.0
+        let f3 = 0.0
+        let f4 = 0.0
+        let f5 = 0.0
+        let ft = 0.0
+        f0 = z
+        f0 = f0 + k40
+        f1 = y
+        f1 = f1 + k32
+        f2 = x
+        f2 = f2 + k24
+        f3 = f2
+        f3 = f3 * k96
+        f4 = f1
+        f4 = f4 * k104
+        f3 = f3 + f4
+        f4 = f0
+        f4 = f4 * k112
+        f3 = f3 + f4
+        f4 = f2
+        f4 = f4 * k48
+        f5 = f1
+        f5 = f5 * k56
+        f4 = f4 + f5
+        f5 = f0
+        f5 = f5 * k64
+        f4 = f4 + f5
+        ft = f4
+        f4 = f2
+        f2 = ft
+        f4 = f4 * k72
+        ft = f4
+        f4 = f1
+        f1 = ft
+        f4 = f4 * k80
+        f1 = f1 + f4
+        ft = f3
+        f3 = f0
+        f0 = ft
+        f3 = f3 * k88
+        f1 = f1 + f3
+        f3 = dr
+        f4 = a4
+        f5 = k16
+        f0 = f0 * f5
+        f1 = f1 * f5
+        f2 = f2 * f5
+        f3 = f3 * f5
+        f4 = f4 * f5
+        a4 = f4
+        dr = f3
+        if julia != 0.0 {
+        } else {
+            if k116 == 0.0 {
+            } else {
+                cx = f2
+                f3 = f1
+                cy = f3
+                f3 = f0
+                cz = f3
+            }
+        }
+        x = f2
+        y = f1
+        z = f0
     }
 }
 
@@ -61664,6 +63247,176 @@ formula "loxodrome2IFS" {
             f0 = f0 / k32
         }
         rout = f0
+    }
+}
+
+formula "loxodromeIFS" {
+    category "MB3D dIFS"
+    description "Mandelbulb3D formula loxodromeIFS. Modified version of 'slice' to get a 'loxodrome-like' shape."
+    de difs
+    alias "loxodromeIFS"
+    param o0_angle_max_360 "Angle (max 360)" = 30.0 [-30.0, 90.0] 
+    param o1_scale "Scale" = 2.0 [-2.0, 6.0] 
+    param o2_z_add "Z add" = 0.0 [-2.0, 2.0] 
+    param o3_y_add "Y add" = 0.0 [-2.0, 2.0] 
+    param o4_x_add "X add" = 2.0 [-2.0, 6.0] 
+    param o5_spiral_speed "Spiral speed" = 0.7 [-1.3, 2.7] 
+    param o6_apply_scale_add "Apply scale+add" = 1.0 [-1.0, 3.0] int
+    param o7_repeatangle_max_720 "RepeatAngle (max 720)" = 120.0 [-120.0, 360.0] 
+    param o8_atan_add "Atan Add" = 0.0 [-2.0, 2.0] 
+    param o9_thickness "Thickness" = 0.01 [-1.99, 2.01] 
+    param o10_otraponits "OTrapOnIts" = 0.1 [-1.9, 2.1] 
+    param o11_otrapoffset "OTrapOffset" = 0.1 [-1.9, 2.1] 
+    param o12_otrapsides "OTrapSides" = -0.1 [-2.1, 1.9] 
+    init {
+        let k124 = o12_otrapsides
+        let k116 = o11_otrapoffset
+        let k108 = o10_otraponits
+        let k100 = o9_thickness
+        let k92 = o8_atan_add
+        let k84 = o7_repeatangle_max_720
+        let k76 = round(o6_apply_scale_add)
+        let k72 = o5_spiral_speed
+        let k64 = o4_x_add
+        let k56 = o3_y_add
+        let k48 = o2_z_add
+        let k32 = o1_scale
+        let k24 = o1_scale
+        let k16 = o0_angle_max_360
+    }
+    iter {
+        let f0 = 0.0
+        let f1 = 0.0
+        let f2 = 0.0
+        let fc_a = 0.0
+        let fc_b = 0.0
+        let ft = 0.0
+        let r_edx = 0.0
+        let x0l = 0.0
+        let x0h = 0.0
+        let x1l = 0.0
+        let x1h = 0.0
+        let x5l = 0.0
+        let x5h = 0.0
+        let m12 = 0.0
+        let m16 = 0.0
+        let m24 = 0.0
+        let m32 = 0.0
+        let m40 = 0.0
+        let m8 = 0.0
+        let sv1 = 0.0
+        x0l = x
+        x0h = y
+        x1l = z
+        x1h = 0.0
+        ft = x0h * k24
+        x0l = x0l * k32
+        x0h = ft
+        x1l = x1l * k32
+        ft = x0h + k56
+        x0l = x0l + k64
+        x0h = ft
+        x1l = x1l + k48
+        if k76 == 0.0 {
+        } else {
+            x5l = a0
+            x5h = 0.0
+            x5l = x5l * k32
+            x = x0l
+            y = x0h
+            z = x1l
+            a0 = x5l
+        }
+        m40 = x0l
+        m32 = x0h
+        m24 = x1l
+        f0 = m24
+        f0 = abs(f0)
+        f1 = 0.999999999
+        fc_a = f1
+        fc_b = f0
+        if fc_a >= fc_b {
+            f0 = -f0
+            f1 = 1.0
+            f0 = f0 + f1
+            f1 = k72
+            ft = f1
+            f1 = f0
+            f0 = ft
+            f0 = f0 * log(f1) * 1.4426950408889634
+            sv1 = m24
+            if sv1 >= 0.0 {
+            } else {
+                f0 = -f0
+            }
+            f0 = f0 + k92
+            f1 = cos(f0)
+            f0 = sin(f0)
+            m8 = f1
+            m16 = f0
+            f0 = m40
+            f0 = f0 * m16
+            f1 = m32
+            f1 = f1 * m8
+            f1 = -f1
+            f0 = f0 + f1
+            f1 = m40
+            f1 = f1 * m8
+            f2 = m32
+            f2 = f2 * m16
+            f1 = f1 + f2
+            f0 = atan2(f0, f1)
+            f0 = f0 * 114.591559
+            f0 = f0 / k84
+            f1 = f0
+            m12 = round(f1)
+            f1 = m12
+            f0 = f0 - f1
+            f0 = f0 * k84
+            f0 = abs(f0)
+            f0 = f0 / k16
+            f1 = 1.0
+            f0 = f0 - f1
+            f0 = f0 * k16
+            f0 = f0 * 0.008726646
+            f0 = -f0
+            r_edx = sel(sv1 < 0.0, 2147483648.0, sel(sv1 == 0.0, 0.0, 0.0))
+        } else {
+            f0 = (-0.1)
+            r_edx = 0.0
+            m12 = 0.0
+        }
+        f1 = m40
+        f1 = f1 * f1
+        f2 = m32
+        f2 = f2 * f2
+        f1 = f1 + f2
+        f2 = m24
+        f2 = f2 * f2
+        f1 = f1 + f2
+        f1 = sqrt(f1)
+        f1 = f1 - 1.0
+        f1 = f1 + k100
+        f1 = abs(f1)
+        f1 = f1 - k100
+        fc_a = f1
+        fc_b = f0
+        if fc_a >= fc_b {
+            f0 = f1
+        }
+        if k76 != 0.0 {
+        } else {
+            f0 = f0 / k32
+        }
+        rout = f0
+        f0 = i
+        f0 = f0 * k108
+        f0 = f0 + k116
+        f1 = m12
+        f1 = f1 * k124
+        f0 = f0 + f1
+        f0 = abs(f0)
+        a2 = f0
     }
 }
 

@@ -16,10 +16,11 @@ modern egui interface and import of Mandelbulb3D parameters.
   Quaternion, Folding Int Pow, Amazing Box/Surf, ABox Mod, Kali box, Kaliset, Mandelbox 4D,
   Menger, Sierpinski, Octahedron, kaleidoscopic IFS, hypercomplex, and transforms (rotate,
   scale, folds, inversion, …).
-- **Mandelbulb3D formulas**: 462 of Mandelbulb3D's 497 formulas: machine-code formulas
-  (`.m3f`, dIFS included) and the Pascal-source JIT formulas (also the EM collection) are
-  translated into the formula language (`rmb-cli m3f`) and built in. Each translation is
-  checked against the original code running in an x86 emulator (`tools/m3f-check`).
+- **Mandelbulb3D formulas**: 471 of Mandelbulb3D's 497 formulas plus the built-in ones:
+  machine-code formulas (`.m3f`, dIFS included) and the Pascal-source JIT formulas (also the EM
+  collection) are translated into the formula language (`rmb-cli m3f`) and built in; a few are
+  written by hand (`lib/mb3d_builtin.mbf`). Translations and hand-written versions are checked
+  against the original code running in an x86 emulator (`tools/m3f-check`).
 - **Rendering**: progressive anti-aliasing, up to six lights with soft shadows, ray-traced or
   fast ambient occlusion, sky/ground ambient, gradient coloring (iterations, orbit trap, radius,
   normal), depth fog, glow, depth of field, cutting planes, filmic tone mapping, vignette.
@@ -58,7 +59,7 @@ Linux and macOS), `oidn/` of the source tree, the system library path.
 
 - Not yet translated: formulas that read height maps or images (9), switch the hybrid's
   formulas (5), use random numbers (2) and a few others. Scenes that use them open with the missing slots
-  listed and skipped. 66 of the 80 Mandelbulb3D example parameter files are fully supported.
+  listed and skipped. 76 of the 80 Mandelbulb3D example parameter files are fully supported.
 - Inside rendering (views from within the set) works like Mandelbulb3D's: rays step through the
   set in small steps, so it is slower.
 - Not yet supported from MB3D: interpolation hybrids (imported as alternating), the dIFS "mix"

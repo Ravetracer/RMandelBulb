@@ -9,7 +9,7 @@
 use std::fmt::Write;
 
 use rmb_core::formula::DeKind;
-use rmb_core::formula::lang::{STATE_AUX, STATE_COUNT, STATE_PX, STATE_ROLD, STATE_ROUT};
+use rmb_core::formula::lang::{STATE_AUX, STATE_COUNT, STATE_JULIA, STATE_PX, STATE_ROLD, STATE_ROUT};
 use rmb_core::formula::wgsl::{PRELUDE, emit_iter, state_name};
 use rmb_core::fractal::Program;
 
@@ -53,9 +53,10 @@ fn chain(prog: &Program, k: usize, slot_base: usize, limit: &str, repeat: &str) 
     let _ = writeln!(s, "    var {}: fl = 1.0;\n    var {}: fl = 0.0;", names[8], names[9]);
     let _ = writeln!(s, "    var {}: fl = dot(v, v);\n    var {}: fl = 0.0;", names[STATE_ROUT], names[STATE_ROLD]);
     let _ = writeln!(s, "    let {} = fl(p.x);\n    let {} = fl(p.y);\n    let {} = fl(p.z);", names[STATE_PX], names[STATE_PX + 1], names[STATE_PX + 2]);
-    for name in &names[STATE_AUX..STATE_COUNT] {
+    for name in &names[STATE_AUX..STATE_JULIA] {
         let _ = writeln!(s, "    var {name}: fl = 0.0;");
     }
+    let _ = writeln!(s, "    let {}: fl = select(0.0, 1.0, u.frac.y > 0.5);", names[STATE_JULIA]);
     // dIFS: VaryScale starts at 1.
     let _ = writeln!(s, "    if (DIFS_{k}) {{\n        {} = 1.0;\n    }}\n    out.de = 65535.0;", names[STATE_AUX]);
     let _ = writeln!(s, "    if (NSLOTS_{k} == 0u) {{\n        return out;\n    }}");

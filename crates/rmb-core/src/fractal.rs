@@ -9,7 +9,7 @@
 
 use std::sync::Arc;
 
-use crate::formula::lang::{STATE_AUX, STATE_COUNT, STATE_DR, STATE_ITER, STATE_PX, STATE_ROLD, STATE_ROUT, uses_state};
+use crate::formula::lang::{STATE_AUX, STATE_COUNT, STATE_DR, STATE_ITER, STATE_JULIA, STATE_PX, STATE_ROLD, STATE_ROUT, uses_state};
 use crate::formula::{DeKind, Formula};
 use crate::math::V3;
 use crate::scene::{CombineMode, Cutting, DeMode, Fractal, Slot};
@@ -247,7 +247,8 @@ fn iterate(top: &Program, prog: &Program, regs: &mut [Vec<f64>], p: V3, fixed: O
     }
     st[STATE_ROUT] = v.iter().map(|x| x * x).sum();
     st[STATE_PX..STATE_PX + 3].copy_from_slice(&[p.x, p.y, p.z]);
-    debug_assert_eq!(STATE_AUX + 8, STATE_COUNT);
+    debug_assert_eq!(STATE_AUX + 9, STATE_COUNT);
+    st[STATE_JULIA] = if top.julia { 1.0 } else { 0.0 };
     let mut out = Iterated { state: [0.0; 4], rold: 0.0, dr: 1.0, n: 0, trap: f64::MAX, escaped: false, difs_de: 65535.0 };
     if prog.difs {
         // VaryScale starts at 1; the shapes' distances are divided by it.

@@ -168,6 +168,10 @@ fn reg_index(r: Register) -> Option<usize> {
     })
 }
 
+/// Formulas whose unequal x87 depths after a branch come only from invalid option values
+/// (checked with tools/m3f-check for all valid values).
+const DEPTH_PAD_CHECKED: [&str; 1] = ["ABoxVSShapes"];
+
 const REG_NAMES: [&str; 8] = ["eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi"];
 
 fn lit(v: f64) -> String {
@@ -821,10 +825,12 @@ impl Tx<'_> {
 
     fn merge(&mut self, a: &State, b: &State, arm_a: &mut Vec<S>, arm_b: &mut Vec<S>) -> Res<State> {
         // Different x87 depths: the shallower path (typically an invalid option value) gets
-        // zeros where the other path left values.
+        // zeros where the other path left values. Paths that leave values on top of a
+        // non-empty stack are only accepted for formulas checked against the machine code for
+        // every valid option (the shallower path is then the one for invalid mode numbers).
         let (mut a, mut b) = (a.clone(), b.clone());
         let (da, db) = (a.depth, b.depth);
-        if da != db && da.min(db) != 0 {
+        if da != db && da.min(db) != 0 && !DEPTH_PAD_CHECKED.contains(&self.m.name.as_str()) {
             return Err(format!("x87 stack depth differs after a branch ({da} / {db})"));
         }
         for (s, arm, other) in [(&mut a, &mut *arm_a, db), (&mut b, &mut *arm_b, da)] {
@@ -876,8 +882,32 @@ impl Tx<'_> {
         }
         let keys: HashSet<i64> = a.stack_int.keys().chain(b.stack_int.keys()).copied().collect();
         for k in keys {
-            if a.stack_int.get(&k) != b.stack_int.get(&k) {
-                m.stack_int.remove(&k);
+            let (va, vb) = (a.stack_int.get(&k), b.stack_int.get(&k));
+            if va == vb {
+                continue;
+            }
+            // An integer kept in stack memory (e.g. a counter) with different values in the two
+            // arms becomes a variable, like a register.
+            let data = |v: Option<&IV>| match v {
+                Some(IV::Int(x)) => Some(lit(*x as f64)),
+                Some(IV::Var(s)) => Some(s.clone()),
+                _ => None,
+            };
+            match (data(va), data(vb)) {
+                (Some(ea), Some(eb)) => {
+                    let name = self.stack_var(&stack_name(k));
+                    self.int_stack_vars.insert(name.clone());
+                    if ea != name {
+                        arm_a.push(S::Line(format!("{name} = {ea}")));
+                    }
+                    if eb != name {
+                        arm_b.push(S::Line(format!("{name} = {eb}")));
+                    }
+                    m.stack_int.insert(k, IV::Var(name));
+                }
+                _ => {
+                    m.stack_int.remove(&k);
+                }
             }
         }
         for x in 0..8 {
@@ -946,9 +976,23 @@ impl Tx<'_> {
     }
 
     /// Address of memory operand `ins`: region and byte offset.
+    /// Base register, index register and scale of a memory operand. With scale 1 the roles
+    /// are swapped when only the index register holds a pointer (`[eax+esi-78h]`).
+    fn mem_regs(ins: &Instruction, st: &State) -> (Register, Register, i64) {
+        let (b, i, sc) = (ins.memory_base(), ins.memory_index(), ins.memory_index_scale() as i64);
+        if sc == 1
+            && let (Some(bi), Some(ii)) = (reg_index(b), reg_index(i))
+            && !matches!(st.regs[bi], IV::Ptr(..))
+            && matches!(st.regs[ii], IV::Ptr(..))
+        {
+            return (i, b, 1);
+        }
+        (b, i, sc)
+    }
+
     fn address(&self, ins: &Instruction, st: &State) -> Res<(Region, i64)> {
         let disp = ins.memory_displacement32() as i32 as i64;
-        let base = ins.memory_base();
+        let (base, index, scale) = Self::mem_regs(ins, st);
         if base == Register::None {
             return Err("absolute memory address".into());
         }
@@ -957,10 +1001,10 @@ impl Tx<'_> {
             IV::Ptr(r, o) => (r.clone(), *o),
             other => return Err(format!("memory access through {} which is not a pointer ({other:?})", REG_NAMES[bi])),
         };
-        if ins.memory_index() != Register::None {
-            let ii = reg_index(ins.memory_index()).ok_or("unsupported index register")?;
+        if index != Register::None {
+            let ii = reg_index(index).ok_or("unsupported index register")?;
             match &st.regs[ii] {
-                IV::Int(k) => off += k * ins.memory_index_scale() as i64,
+                IV::Int(k) => off += k * scale,
                 _ => return Err("memory index depends on data (table lookup)".into()),
             }
         }
@@ -979,26 +1023,36 @@ impl Tx<'_> {
     fn read(&mut self, ins: &Instruction, st: &mut State, size: MemorySize, out: &mut Vec<S>) -> Res<Mem> {
         // Table read with a small data index (e.g. an option masked with `and eax, 3`): a
         // selection over the possible entries.
-        if ins.memory_index() != Register::None
-            && let Some(ii) = reg_index(ins.memory_index())
+        let (mbase, mindex, mscale) = Self::mem_regs(ins, st);
+        if mindex != Register::None
+            && let Some(ii) = reg_index(mindex)
             && let (IV::Var(idx), Some(values)) = (st.regs[ii].clone(), st.ranges[ii].clone())
         {
-            let bi = reg_index(ins.memory_base()).ok_or("base register")?;
+            let bi = reg_index(mbase).ok_or("base register")?;
             let IV::Ptr(region, base) = st.regs[bi].clone() else { return Err("table base is not a pointer".into()) };
             let disp = ins.memory_displacement32() as i32 as i64;
-            let scale = ins.memory_index_scale() as i64;
-            let mut vals = Vec::new();
+            // Per value of the index: the lanes read there (one for a float, two for 128 bits).
+            let mut vals: Vec<(i64, Vec<String>)> = Vec::new();
+            let mut wide = false;
             for k in &values {
-                match self.read_at(region.clone(), base + disp + k * scale, size, st, out)? {
-                    Mem::F(s) => vals.push((*k, s)),
+                match self.read_at(region.clone(), base + disp + k * mscale, size, st, out)? {
+                    Mem::F(s) => vals.push((*k, vec![s])),
+                    Mem::X([a, b], [None, None]) => {
+                        wide = true;
+                        vals.push((*k, vec![a, b]));
+                    }
                     _ => return Err("table read of integers".into()),
                 }
             }
-            let mut e = vals.pop().map(|v| v.1).unwrap_or_else(|| "0.0".into());
+            let lanes = if wide { 2 } else { 1 };
+            let mut chain: Vec<String> = vals.pop().map(|v| v.1).unwrap_or_else(|| vec!["0.0".into(); lanes]);
             for (k, v) in vals.into_iter().rev() {
-                e = format!("sel({idx} == {}, {v}, {e})", lit(k as f64));
+                if v.len() != lanes {
+                    return Err("table read of mixed sizes".into());
+                }
+                chain = (0..lanes).map(|l| format!("sel({idx} == {}, {}, {})", lit(k as f64), v[l], chain[l])).collect();
             }
-            return Ok(Mem::F(e));
+            return Ok(if wide { Mem::X([chain[0].clone(), chain[1].clone()], [None, None]) } else { Mem::F(chain.remove(0)) });
         }
         let (region, off) = self.address(ins, st)?;
         self.read_at(region, off, size, st, out)
@@ -1018,6 +1072,8 @@ impl Tx<'_> {
                 (-40, MemorySize::Float64) => Ok(Mem::F("0.0".into())),
                 (64, s) if int_bytes(s).is_some() => Ok(Mem::I(IV::Var("i".into()))),
                 (208, s) if int_bytes(s).is_some() => Ok(Mem::I(IV::Var("a1".into()))),
+                // DoJulia: 1 in Julia mode.
+                (152, s) if int_bytes(s).is_some() => Ok(Mem::I(IV::Var("julia".into()))),
                 (_, MemorySize::Float64 | MemorySize::UInt64 | MemorySize::Int64) => Ok(Mem::F(self.rec_field(off, false)?.into())),
                 (_, MemorySize::Packed128_Float64 | MemorySize::UInt128 | MemorySize::Packed128_UInt64 | MemorySize::Packed128_Float32 | MemorySize::Packed128_Int32 | MemorySize::Packed128_UInt32) => {
                     Ok(Mem::X([self.rec_field(off, false)?.into(), self.rec_field(off + 8, false)?.into()], [None, None]))
@@ -1237,6 +1293,30 @@ impl Tx<'_> {
         Ok(())
     }
 
+    /// `and`/`or`/`xor`/`test` of two small non-negative integer values (low 8 bits) as
+    /// arithmetic on their bits; returns the variable with the result.
+    fn bitwise_data(&mut self, mn: Mnemonic, ea: &str, eb: &str, out: &mut Vec<S>) -> String {
+        for v in ["bwa", "bwb", "bwr", "bwx", "bwy"] {
+            self.stack_vars.insert(v.to_string());
+        }
+        out.push(S::Line(format!("bwa = {ea}")));
+        out.push(S::Line(format!("bwb = {eb}")));
+        out.push(S::Line("bwr = 0.0".into()));
+        for bit in 0..8 {
+            out.push(S::Line("bwx = bwa - 2.0 * floor(bwa * 0.5)".into()));
+            out.push(S::Line("bwy = bwb - 2.0 * floor(bwb * 0.5)".into()));
+            let f = match mn {
+                Mnemonic::Xor => "abs(bwx - bwy)",
+                Mnemonic::Or => "max(bwx, bwy)",
+                _ => "bwx * bwy",
+            };
+            out.push(S::Line(format!("bwr = bwr + {f} * {}", lit((1u32 << bit) as f64))));
+            out.push(S::Line("bwa = floor(bwa * 0.5)".into()));
+            out.push(S::Line("bwb = floor(bwb * 0.5)".into()));
+        }
+        "bwr".to_string()
+    }
+
     fn stack_var(&mut self, name: &str) -> String {
         self.stack_vars.insert(name.to_string());
         name.to_string()
@@ -1245,14 +1325,14 @@ impl Tx<'_> {
     /// Writes a float (or 128-bit lanes) to memory.
     fn write_f(&mut self, ins: &Instruction, st: &mut State, lanes: &[String], out: &mut Vec<S>) -> Res<()> {
         // Table write with a data index of known values: one conditional write per value.
-        if ins.memory_index() != Register::None
-            && let Some(ii) = reg_index(ins.memory_index())
+        let (mbase, mindex, scale) = Self::mem_regs(ins, st);
+        if mindex != Register::None
+            && let Some(ii) = reg_index(mindex)
             && let (IV::Var(idx), Some(values)) = (st.regs[ii].clone(), st.ranges[ii].clone())
         {
-            let bi = reg_index(ins.memory_base()).ok_or("base register")?;
+            let bi = reg_index(mbase).ok_or("base register")?;
             let IV::Ptr(region, base) = st.regs[bi].clone() else { return Err("table base is not a pointer".into()) };
             let disp = ins.memory_displacement32() as i32 as i64;
-            let scale = ins.memory_index_scale() as i64;
             // Values first into temporaries: a lane may refer to a slot being written.
             let tmp: Vec<String> = lanes.iter().enumerate().map(|(k, _)| format!("tw{k}")).collect();
             for (t, v) in tmp.iter().zip(lanes) {
@@ -1497,12 +1577,16 @@ impl Tx<'_> {
                 Mnemonic::Test if ea == eb => st.flags = Flags::Cmp(ea, "0.0".into()),
                 Mnemonic::Test | Mnemonic::And | Mnemonic::Shr | Mnemonic::Sar | Mnemonic::Shl | Mnemonic::Neg | Mnemonic::Not | Mnemonic::Or | Mnemonic::Xor => {
                     // Bit operations on integer data, as floor arithmetic on the (float) value.
-                    let k = match &b {
-                        IV::Int(k) => *k,
+                    let (k, two_data) = match &b {
+                        IV::Int(k) => (*k, false),
+                        _ if matches!(mn, Mnemonic::And | Mnemonic::Or | Mnemonic::Xor | Mnemonic::Test) => (0, true),
                         _ => return Err(format!("{mn:?} with two data operands")),
                     };
                     let v = &ea;
                     let res = match mn {
+                        // Two integer variables (small non-negative values such as counters and
+                        // option bits): bit by bit over the low 8 bits.
+                        _ if two_data => self.bitwise_data(mn, &ea, &eb, out),
                         Mnemonic::Neg => format!("-{v}"),
                         Mnemonic::Not => format!("-{v} - 1.0"),
                         Mnemonic::Shr | Mnemonic::Sar => format!("floor({v} / {})", lit((1u64 << (k & 31)) as f64)),
@@ -1581,8 +1665,12 @@ impl Tx<'_> {
                             let name = format!("r_{}", REG_NAMES[idx]);
                             out.push(S::Line(format!("{name} = {res}")));
                             st.regs[idx] = IV::Var(name.clone());
-                            st.ranges[idx] = match (&st.ranges[idx], &b) {
-                                (Some(vs), IV::Int(k)) => Some(set_map(vs, |v| if matches!(mn, Mnemonic::Add | Mnemonic::Inc) { v + k } else { v - k })),
+                            // Range of the second operand (a register with a known value set).
+                            let rb = (ins.op_count() > 1 && ins.op_kind(1) == OpKind::Register).then(|| reg_index(ins.op_register(1))).flatten().and_then(|r| st.ranges[r].clone());
+                            st.ranges[idx] = match (&st.ranges[idx], &b, &a, rb) {
+                                (Some(vs), IV::Int(k), _, _) => Some(set_map(vs, |v| if matches!(mn, Mnemonic::Add | Mnemonic::Inc) { v + k } else { v - k })),
+                                // Constant plus or minus a value set.
+                                (_, _, IV::Int(k), Some(vs)) if matches!(mn, Mnemonic::Add | Mnemonic::Sub) => Some(set_map(&vs, |v| if mn == Mnemonic::Add { k + v } else { k - v })),
                                 _ => None,
                             };
                             st.flags = Flags::Data(name, cf.clone());
@@ -1594,6 +1682,7 @@ impl Tx<'_> {
                                 st.flags = Flags::Data("a1".into(), cf.clone());
                             } else if region == Region::Stack {
                                 let n = self.stack_var(&stack_name(off));
+                                self.int_stack_vars.insert(n.clone());
                                 out.push(S::Line(format!("{n} = {res}")));
                                 st.stack_int.insert(off, IV::Var(n.clone()));
                                 st.flags = Flags::Data(n, cf.clone());
@@ -2179,6 +2268,25 @@ impl Tx<'_> {
                 let x = Self::xmm_index(ins.op_register(0)).ok_or("xmm")?;
                 let (b, _) = self.xsrc(ins, 1, st, out)?;
                 self.fcompare(st, format!("x{x}l"), b[0].clone(), true, out);
+                Ok(())
+            }
+            // Two doubles to two int32 (round to nearest even, the default MXCSR mode) and back.
+            // The integers stay in the two lanes as whole numbers; only cvtdq2pd reads them.
+            Cvtpd2dq | Cvtdq2pd => {
+                let x = Self::xmm_index(ins.op_register(0)).ok_or("xmm")?;
+                let (src, _) = self.xsrc(ins, 1, st, out)?;
+                let lane = |v: &str| {
+                    if mn == Cvtdq2pd {
+                        v.to_string()
+                    } else {
+                        let r = format!("floor({v} + 0.5)");
+                        format!("sel(fract({v}) == 0.5 && fract({r} * 0.5) != 0.0, {r} - 1.0, {r})")
+                    }
+                };
+                out.push(S::Line(format!("ft = {}", lane(&src[1]))));
+                out.push(S::Line(format!("x{x}l = {}", lane(&src[0]))));
+                out.push(S::Line(format!("x{x}h = ft")));
+                st.xmm_known[x] = [None, None];
                 Ok(())
             }
             Cvtsi2sd => {

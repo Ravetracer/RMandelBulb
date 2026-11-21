@@ -73,17 +73,24 @@ fn check(path: &Path, verbose: bool) -> Outcome {
         // Pascal JIT formula: no machine code to compare with.
         return Outcome::Pascal;
     }
-    let src = match translate(&m) {
-        Ok(t) => t.source,
-        Err(_) => return Outcome::Untranslated,
+    // The translation, or else a hand-written library formula with this MB3D name.
+    let def = match translate(&m).ok().and_then(|t| rmb_core::formula::lang::parse_library(&t.source).ok()) {
+        Some(mut d) => d.remove(0),
+        None => match rmb_core::formula::library().find_alias(&name) {
+            Some(f) => f.def.clone(),
+            None => return Outcome::Untranslated,
+        },
     };
-    let defs = match rmb_core::formula::lang::parse_library(&src) {
-        Ok(d) => d,
-        Err(_) => return Outcome::Untranslated,
-    };
-    let def = &defs[0];
-    let cpu = CpuFormula::compile(def);
-    let values: Vec<f64> = m.options.iter().map(|o| o.default).collect();
+    let cpu = CpuFormula::compile(&def);
+    // M3F_VALUES="v1,v2,…" overrides the option defaults (in option order).
+    let mut values: Vec<f64> = m.options.iter().map(|o| o.default).collect();
+    if let Ok(v) = std::env::var("M3F_VALUES") {
+        for (slot, s) in values.iter_mut().zip(v.split(',')) {
+            if let Ok(x) = s.trim().parse() {
+                *slot = x;
+            }
+        }
+    }
     let consts = cpu.constants(&values);
     let mem = match parameter_memory(&m, &values) {
         Ok(v) => v,
@@ -215,7 +222,7 @@ fn check(path: &Path, verbose: bool) -> Outcome {
                 let our = regs[state_index(field)];
                 if !close(emu_v, our, scale) {
                     if verbose {
-                        eprintln!("{src}");
+                        eprintln!("{def:?}");
                     }
                     return Outcome::Mismatch(format!("{field} (record {off:+}) after iteration {it} at point {point}: original {emu_v:.12e}, translated {our:.12e}"));
                 }

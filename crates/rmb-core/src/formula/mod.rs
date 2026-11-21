@@ -20,6 +20,7 @@ const BUILTIN: &[(&str, &str)] = &[
     ("hypercomplex.mbf", include_str!("lib/hypercomplex.mbf")),
     ("transforms.mbf", include_str!("lib/transforms.mbf")),
     // Mandelbulb3D formulas translated from their machine code (`rmb-cli m3f`).
+    ("mb3d_builtin.mbf", include_str!("lib/mb3d_builtin.mbf")),
     ("mb3d.mbf", include_str!("lib/mb3d.mbf")),
 ];
 
