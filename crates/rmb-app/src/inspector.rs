@@ -62,6 +62,8 @@ impl Inspector {
 
     fn lighting(&mut self, ui: &mut Ui, scene: &mut Scene) {
         let d = rmb_core::scene::Lighting::default();
+        // Placing helpers need the whole scene; they run after the controls.
+        let mut place: Option<Place> = None;
         let l = &mut scene.lighting;
         widgets::section(ui, "Lights", false);
         ui.horizontal_wrapped(|ui| {
@@ -85,17 +87,56 @@ impl Inspector {
             let dl = Light::default();
             widgets::grid(ui, "light", |ui| {
                 widgets::checkbox(ui, "On", "Switch the light on or off", &mut li.enabled);
-                widgets::label(ui, "Type", "Directional: parallel light from a direction. Point: light from a position, falls off with the squared distance.");
-                ui.horizontal(|ui| {
-                    ui.selectable_value(&mut li.kind, LightKind::Directional, "Directional").on_hover_text("Parallel light from a direction");
-                    ui.selectable_value(&mut li.kind, LightKind::Point, "Point").on_hover_text("Light from a position in the scene");
+                widgets::label(
+                    ui,
+                    "Type",
+                    "Directional: parallel light from a direction. Point: light from a position, falls off with the squared distance. Spot: a point light shining into a cone. Area: a glowing rectangle (soft shadows). Line: a glowing tube (soft shadows).",
+                );
+                egui::ComboBox::from_id_salt("light-kind").selected_text(li.kind.label()).show_ui(ui, |ui| {
+                    for k in LightKind::ALL {
+                        ui.selectable_value(&mut li.kind, k, k.label());
+                    }
                 });
                 ui.end_row();
-                if li.kind == LightKind::Point {
+                if li.kind.positional() {
                     let speed = (li.position.length() * 0.002).max(1e-9);
-                    widgets::drag(ui, "X", "Light position", &mut li.position.x, speed, dl.position.x);
-                    widgets::drag(ui, "Y", "Light position", &mut li.position.y, speed, dl.position.y);
-                    widgets::drag(ui, "Z", "Light position", &mut li.position.z, speed, dl.position.z);
+                    let what = if li.kind == LightKind::Line { "Start of the line light" } else { "Light position" };
+                    widgets::drag(ui, "X", what, &mut li.position.x, speed, dl.position.x);
+                    widgets::drag(ui, "Y", what, &mut li.position.y, speed, dl.position.y);
+                    widgets::drag(ui, "Z", what, &mut li.position.z, speed, dl.position.z);
+                    widgets::label(ui, "", "");
+                    ui.horizontal(|ui| {
+                        if ui.small_button("At camera").on_hover_text("Moves the light to the camera (spot and area lights then shine along the view)").clicked() {
+                            place = Some(Place::AtCamera);
+                        }
+                        let (label, tip) = if li.kind == LightKind::Line {
+                            ("Center on view", "Moves the line (same length and direction) over the surface point in the middle of the view")
+                        } else {
+                            ("Aim at view center", "Aims the light at the surface point in the middle of the view")
+                        };
+                        if li.kind != LightKind::Point && ui.small_button(label).on_hover_text(tip).clicked() {
+                            place = Some(Place::AimCenter);
+                        }
+                    });
+                    ui.end_row();
+                    if li.kind != LightKind::Point {
+                        let (name, what) = if li.kind == LightKind::Line { ("End", "Other end of the line light") } else { ("Aim", "The point the light faces") };
+                        let speed = ((li.target - li.position).length().max(li.target.length()) * 0.002).max(1e-6);
+                        widgets::drag(ui, &format!("{name} X"), what, &mut li.target.x, speed, dl.target.x);
+                        widgets::drag(ui, &format!("{name} Y"), what, &mut li.target.y, speed, dl.target.y);
+                        widgets::drag(ui, &format!("{name} Z"), what, &mut li.target.z, speed, dl.target.z);
+                    }
+                    match li.kind {
+                        LightKind::Spot => {
+                            widgets::slider(ui, "Cone angle", "Half angle of the light cone in degrees", &mut li.cone_angle, 0.5..=90.0, dl.cone_angle);
+                            widgets::slider(ui, "Cone edge", "How soft the edge of the cone is (0 = sharp, 1 = fades from the center)", &mut li.cone_softness, 0.0..=1.0, dl.cone_softness);
+                        }
+                        LightKind::Area => {
+                            widgets::slider_log(ui, "Width", "Width of the glowing rectangle in world units (larger: softer shadows)", &mut li.width, 0.0..=100.0, dl.width);
+                            widgets::slider_log(ui, "Height", "Height of the glowing rectangle in world units", &mut li.height, 0.0..=100.0, dl.height);
+                        }
+                        _ => {}
+                    }
                 } else {
                     widgets::checkbox(ui, "Follows camera", "The direction is relative to the view (light moves with the camera); off: fixed in the world", &mut li.camera_relative);
                     widgets::slider(ui, "Azimuth", "Horizontal direction in degrees (0 = from the camera / +x)", &mut li.azimuth, -180.0..=180.0, dl.azimuth);
@@ -113,7 +154,9 @@ impl Inspector {
                 ui.end_row();
                 widgets::slider(ui, "Occlusion", "How much the ambient occlusion darkens this light (0..1)", &mut li.occlusion, 0.0..=1.0, dl.occlusion);
                 widgets::checkbox(ui, "Visible", "The light source itself shows in the image as a glow", &mut li.visible);
-                if li.visible {
+                if li.visible && li.kind == LightKind::Area {
+                    widgets::slider_log(ui, "Glow intensity", "Brightness of the glowing rectangle", &mut li.glow_intensity, 0.0..=100.0, dl.glow_intensity);
+                } else if li.visible {
                     widgets::label(ui, "Glow shape", "Soft: bright core with a soft falloff. Sharp: small spot. Ball: glowing ball that covers what is behind. Halo: transparent halo.");
                     egui::ComboBox::from_id_salt("glow-shape").selected_text(li.glow_shape.label()).show_ui(ui, |ui| {
                         for g in GlowShape::ALL {
@@ -121,13 +164,18 @@ impl Inspector {
                         }
                     });
                     ui.end_row();
-                    let size_tip = if li.kind == LightKind::Point { "Glow radius in world units" } else { "Glow radius in degrees (shows on the background only)" };
+                    let size_tip = match li.kind {
+                        LightKind::Directional => "Glow radius in degrees (shows on the background only)",
+                        LightKind::Area => "Not used: area lights show as their rectangle",
+                        LightKind::Line => "Radius of the glowing tube in world units",
+                        _ => "Glow radius in world units",
+                    };
                     widgets::slider_log(ui, "Glow size", size_tip, &mut li.glow_size, 0.0001..=90.0, dl.glow_size);
                     widgets::slider_log(ui, "Glow intensity", "Brightness of the glow (smaller glows are brighter, like in Mandelbulb3D)", &mut li.glow_intensity, 0.0..=100.0, dl.glow_intensity);
                 }
                 widgets::checkbox(ui, "Shadows", "Cast shadows (costs a shadow ray per sample)", &mut li.shadows);
-                if li.shadows {
-                    widgets::slider(ui, "Softness", "Width of the shadow edges (0 = hard)", &mut li.softness, 0.0..=0.5, dl.softness);
+                if li.shadows && !matches!(li.kind, LightKind::Area | LightKind::Line) {
+                    widgets::slider(ui, "Softness", "Width of the shadow edges (0 = hard; area and line lights get theirs from their size)", &mut li.softness, 0.0..=0.5, dl.softness);
                 }
             });
         }
@@ -173,7 +221,44 @@ impl Inspector {
                 widgets::slider_log(ui, "Radius", "Reach of the occlusion, relative to the view distance", &mut l.ao_radius, 0.002..=2.0, d.ao_radius);
             });
         }
+        if let Some(p) = place {
+            let cam = scene.camera.clone();
+            // The surface point in the middle of the view (else a point ahead).
+            let center = || rmb_core::render::cpu::pick(scene, 0.0, 0.0, 256, 256).map(|(_, h)| h).unwrap_or(cam.position + cam.forward * rmb_core::render::cpu::distance_at_camera(scene).max(0.1) * 2.0);
+            let aim = center();
+            if let Some(li) = scene.lighting.lights.get_mut(self.light) {
+                match p {
+                    Place::AtCamera => {
+                        li.position = cam.position;
+                        if li.kind == LightKind::Line {
+                            let half = (aim - cam.position).length() * 0.2;
+                            li.position = cam.position - cam.right * half;
+                            li.target = cam.position + cam.right * half;
+                        } else {
+                            li.target = aim;
+                        }
+                    }
+                    Place::AimCenter => {
+                        if li.kind == LightKind::Line {
+                            // Keep the length, center the line over the point.
+                            let half = (li.target - li.position) * 0.5;
+                            li.position = aim - half;
+                            li.target = aim + half;
+                        } else {
+                            li.target = aim;
+                        }
+                    }
+                }
+            }
+        }
     }
+}
+
+/// Placing helpers of positional lights.
+#[derive(Clone, Copy)]
+enum Place {
+    AtCamera,
+    AimCenter,
 }
 
 fn camera(ui: &mut Ui, scene: &mut Scene, view: &mut Viewport) {

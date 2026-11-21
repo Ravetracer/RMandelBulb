@@ -11,15 +11,16 @@ pub mod oidn;
 use std::borrow::Cow;
 
 use crate::math::{V3, pcg, unit, v3};
-use crate::scene::Scene;
+use crate::scene::{LightKind, Scene};
 
 /// Light prepared for shading.
 #[derive(Clone, Copy, Debug)]
 pub struct FrameLight {
     /// Direction toward a directional light.
     pub dir: V3,
-    /// Point light: its position (`dir` is unused).
+    /// Positional lights: their position (area lights: the center; line lights: one end).
     pub point: Option<V3>,
+    pub shape: LightShape,
     pub color: [f64; 3],
     pub specular: f64,
     pub shadows: bool,
@@ -27,6 +28,58 @@ pub struct FrameLight {
     pub diffuse: crate::scene::DiffuseCurve,
     pub occlusion: f64,
     pub glow: Option<Glow>,
+}
+
+/// The extent of a positional light.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum LightShape {
+    Directional,
+    Point,
+    /// Shines into the cone around `axis` (unit, away from the light).
+    Spot { axis: V3, cos_outer: f64, cos_inner: f64 },
+    /// Rectangle around the center with the half extents `u`, `v`, emitting toward `n`.
+    Area { n: V3, u: V3, v: V3 },
+    /// Tube from `point` to `end`.
+    Line { end: V3 },
+}
+
+impl FrameLight {
+    /// Area and line lights take two random numbers per shading point (soft shadows build up
+    /// over the samples).
+    pub fn sampled(&self) -> bool {
+        matches!(self.shape, LightShape::Area { .. } | LightShape::Line { .. })
+    }
+
+    /// From the shading point `p`: direction toward the light (for area and line lights toward
+    /// the point picked by `r1`, `r2`), the light's falloff there and the shadow length.
+    pub fn sample(&self, p: V3, r1: f64, r2: f64, max_distance: f64) -> (V3, f64, f64) {
+        let toward = |q: V3| {
+            let v = q - p;
+            let d2 = v.dot(v).max(1e-30);
+            let dist = d2.sqrt();
+            (v * (1.0 / dist), d2, dist)
+        };
+        let Some(c) = self.point else { return (self.dir, 1.0, max_distance) };
+        match self.shape {
+            LightShape::Directional | LightShape::Point => {
+                let (l, d2, dist) = toward(c);
+                (l, 1.0 / d2, dist)
+            }
+            LightShape::Spot { axis, cos_outer, cos_inner } => {
+                let (l, d2, dist) = toward(c);
+                let x = ((-l.dot(axis) - cos_outer) / (cos_inner - cos_outer).max(1e-9)).clamp(0.0, 1.0);
+                (l, x * x * (3.0 - 2.0 * x) / d2, dist)
+            }
+            LightShape::Area { n, u, v } => {
+                let (l, d2, dist) = toward(c + u * (2.0 * r1 - 1.0) + v * (2.0 * r2 - 1.0));
+                ((l), (-l.dot(n)).max(0.0) / d2, dist)
+            }
+            LightShape::Line { end } => {
+                let (l, d2, dist) = toward(c + (end - c) * r1);
+                (l, 1.0 / d2, dist)
+            }
+        }
+    }
 }
 
 /// A visible light source prepared for shading.
@@ -45,7 +98,29 @@ pub struct Glow {
 /// glow covers turns into that much fog; Mandelbulb3D's visible lights).
 #[allow(clippy::too_many_arguments)]
 pub fn light_glow(li: &FrameLight, g: &Glow, o: V3, d: V3, hit_t: Option<f64>, fog: &crate::scene::Fog, near: f64, far: f64) -> Option<([f64; 3], f64, f64)> {
-    let (u, t_light) = match li.point {
+    // Area lights show as their glowing rectangle (front side), covering what is behind.
+    if let (Some(c), LightShape::Area { n, u, v }) = (li.point, li.shape) {
+        let den = d.dot(n);
+        if den >= 0.0 {
+            return None;
+        }
+        let t = (c - o).dot(n) / den;
+        if t <= 0.0 || hit_t.is_some_and(|h| h < t) {
+            return None;
+        }
+        let q = o + d * t - c;
+        if (q.dot(u) / u.dot(u).max(1e-30)).abs() > 1.0 || (q.dot(v) / v.dot(v).max(1e-30)).abs() > 1.0 {
+            return None;
+        }
+        let fl = fog.amount(t, near, far);
+        return Some((g.color.map(|c| c * (1.0 - fl.max(0.0))), 0.0, fl.max(0.0)));
+    }
+    // Line lights glow around the point of the tube nearest to the ray.
+    let point = match (li.point, li.shape) {
+        (Some(a), LightShape::Line { end }) => Some(nearest_on_segment(a, end, o, d)),
+        (p, _) => p,
+    };
+    let (u, t_light) = match point {
         Some(p) => {
             let v = p - o;
             let along = v.dot(d);
@@ -75,12 +150,22 @@ pub fn light_glow(li: &FrameLight, g: &Glow, o: V3, d: V3, hit_t: Option<f64>, f
             (a / g.r2, far)
         }
     };
-    let (transp, flux) = g.shape.shape(u, g.r2, li.point.is_some());
+    let (transp, flux) = g.shape.shape(u, g.r2, point.is_some());
     // Depth fog at the light dims it.
     let fl = fog.amount(t_light, near, far);
     let flux = flux * (1.0 - fl * 0.9);
     let add = g.color.map(|c| c * flux);
     Some((add, if g.additive { 1.0 } else { transp.clamp(0.0, 1.0) }, fl.max(0.0)))
+}
+
+/// The point of the segment `a`..`b` nearest to the ray from `o` along the unit `d`.
+pub fn nearest_on_segment(a: V3, b: V3, o: V3, d: V3) -> V3 {
+    let e = b - a;
+    let w = a - o;
+    let (ee, ed) = (e.dot(e), e.dot(d));
+    let den = ee - ed * ed;
+    let s = if den.abs() < 1e-12 * ee.max(1e-30) { 0.5 } else { ((ed * w.dot(d) - w.dot(e)) / den).clamp(0.0, 1.0) };
+    a + e * s
 }
 
 /// Per-frame values derived from the scene (identical on CPU and GPU).
@@ -108,16 +193,18 @@ impl Frame {
             .take(crate::scene::MAX_LIGHTS)
             .map(|l| FrameLight {
                 dir: l.direction(&scene.camera),
-                point: (l.kind == crate::scene::LightKind::Point).then_some(l.position),
+                point: l.kind.positional().then_some(l.position),
+                shape: light_shape(l),
                 color: [0, 1, 2].map(|k| l.color[k] as f64 * l.intensity),
                 specular: l.specular,
                 shadows: l.shadows,
-                softness: l.softness,
+                // Area and line lights get their soft shadows from sampling.
+                softness: if matches!(l.kind, LightKind::Area | LightKind::Line) { 0.0 } else { l.softness },
                 diffuse: l.diffuse,
                 occlusion: l.occlusion.clamp(0.0, 1.0),
                 glow: l.visible.then(|| Glow {
                     shape: l.glow_shape,
-                    r2: if l.kind == crate::scene::LightKind::Point {
+                    r2: if l.kind.positional() {
                         l.glow_size * l.glow_size
                     } else {
                         1.0 - l.glow_size.to_radians().cos()
@@ -136,6 +223,26 @@ impl Frame {
             lights,
             ambient_up: if scene.lighting.ambient_camera_relative { scene.camera.up } else { v3(0.0, 0.0, 1.0) },
         }
+    }
+}
+
+/// The shape of a light for shading.
+fn light_shape(l: &crate::scene::Light) -> LightShape {
+    let aim = (l.target - l.position).normalize();
+    match l.kind {
+        LightKind::Directional => LightShape::Directional,
+        LightKind::Point => LightShape::Point,
+        LightKind::Spot => {
+            let outer = l.cone_angle.clamp(0.1, 179.0).to_radians();
+            let inner = outer * (1.0 - l.cone_softness.clamp(0.0, 1.0));
+            LightShape::Spot { axis: aim, cos_outer: outer.cos(), cos_inner: inner.cos() }
+        }
+        LightKind::Area => {
+            let side = if aim.z.abs() < 0.99 { aim.cross(v3(0.0, 0.0, 1.0)) } else { aim.cross(v3(1.0, 0.0, 0.0)) }.normalize();
+            let up = side.cross(aim).normalize();
+            LightShape::Area { n: aim, u: side * (0.5 * l.width.max(0.0)), v: up * (0.5 * l.height.max(0.0)) }
+        }
+        LightKind::Line => LightShape::Line { end: l.target },
     }
 }
 
@@ -287,11 +394,49 @@ mod tests {
     use super::*;
     use crate::scene::{Fog, GlowShape};
 
+    fn frame_light(kind: crate::scene::LightKind, edit: impl Fn(&mut crate::scene::Light)) -> FrameLight {
+        let mut s = Scene::default();
+        let mut l = crate::scene::Light { kind, position: v3(0.0, 0.0, 4.0), target: V3::ZERO, ..Default::default() };
+        edit(&mut l);
+        s.lighting.lights = vec![l];
+        Frame::new(&s, 64, 64).lights[0]
+    }
+
+    #[test]
+    fn spot_area_and_line_lights_fall_off_correctly() {
+        use crate::scene::LightKind;
+        // Spot: full inside the cone, nothing outside.
+        let spot = frame_light(LightKind::Spot, |l| {
+            l.cone_angle = 20.0;
+            l.cone_softness = 0.2;
+        });
+        let (dir, a, dist) = spot.sample(V3::ZERO, 0.5, 0.5, 100.0);
+        assert!((dir - v3(0.0, 0.0, 1.0)).length() < 1e-12 && (a - 1.0 / 16.0).abs() < 1e-12 && (dist - 4.0).abs() < 1e-12);
+        assert_eq!(spot.sample(v3(3.0, 0.0, 0.0), 0.5, 0.5, 100.0).1, 0.0);
+        // Area: lights the side it faces only; samples spread over the rectangle.
+        let area = frame_light(LightKind::Area, |l| {
+            l.width = 2.0;
+            l.height = 1.0;
+        });
+        assert!(area.sample(V3::ZERO, 0.5, 0.5, 100.0).1 > 0.0);
+        assert_eq!(area.sample(v3(0.0, 0.0, 8.0), 0.5, 0.5, 100.0).1, 0.0);
+        let (a, b) = (area.sample(V3::ZERO, 0.0, 0.5, 100.0).0, area.sample(V3::ZERO, 1.0, 0.5, 100.0).0);
+        assert!((a - b).length() > 0.4, "corners in different directions");
+        // Line: from one end to the other.
+        let line = frame_light(LightKind::Line, |l| l.target = v3(4.0, 0.0, 4.0));
+        let (d0, _, _) = line.sample(v3(0.0, 0.0, 0.0), 0.0, 0.0, 100.0);
+        let (d1, _, _) = line.sample(v3(0.0, 0.0, 0.0), 1.0, 0.0, 100.0);
+        assert!((d0 - v3(0.0, 0.0, 1.0)).length() < 1e-12 && (d1 - v3(1.0, 0.0, 1.0).normalize()).length() < 1e-12);
+        // The tube glows where the ray passes closest.
+        assert!((nearest_on_segment(v3(0.0, 0.0, 4.0), v3(4.0, 0.0, 4.0), v3(2.0, -5.0, 4.0), v3(0.0, 1.0, 0.0)) - v3(2.0, 0.0, 4.0)).length() < 1e-12);
+    }
+
     #[test]
     fn point_light_glows_unless_hidden() {
         let li = FrameLight {
             dir: v3(0.0, 0.0, 1.0),
             point: Some(v3(0.0, 5.0, 0.0)),
+            shape: LightShape::Point,
             color: [1.0; 3],
             specular: 0.0,
             shadows: false,

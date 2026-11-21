@@ -11,7 +11,7 @@ use crate::math::{V3, v3};
 pub const FORMAT_VERSION: u32 = 1;
 /// Number of formula slots of a hybrid (as in Mandelbulb3D).
 pub const MAX_SLOTS: usize = 6;
-pub const MAX_LIGHTS: usize = 6;
+pub const MAX_LIGHTS: usize = 8;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -364,6 +364,36 @@ pub enum LightKind {
     Directional,
     /// Light from a point (`position`); falls off with the squared distance.
     Point,
+    /// A point light that shines into a cone toward `target`.
+    Spot,
+    /// A glowing rectangle (`width` × `height`) at `position` facing `target`; soft shadows.
+    Area,
+    /// A glowing tube from `position` to `target`; soft shadows.
+    Line,
+}
+
+impl LightKind {
+    pub const ALL: [LightKind; 5] = [LightKind::Directional, LightKind::Point, LightKind::Spot, LightKind::Area, LightKind::Line];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            LightKind::Directional => "Directional",
+            LightKind::Point => "Point",
+            LightKind::Spot => "Spot",
+            LightKind::Area => "Area",
+            LightKind::Line => "Line",
+        }
+    }
+
+    /// The light has a position in the scene.
+    pub fn positional(self) -> bool {
+        self != LightKind::Directional
+    }
+
+    /// Index shared with the GPU kernel.
+    pub fn index(self) -> u32 {
+        self as u32
+    }
 }
 
 /// How the diffuse light depends on the angle between the surface and the light
@@ -467,8 +497,17 @@ impl GlowShape {
 pub struct Light {
     pub enabled: bool,
     pub kind: LightKind,
-    /// Point lights: position in the world.
+    /// Positional lights: position in the world (line lights: one end).
     pub position: V3,
+    /// Spot and area lights: the point they face; line lights: the other end.
+    pub target: V3,
+    /// Spot lights: half angle of the cone in degrees.
+    pub cone_angle: f64,
+    /// Spot lights: share of the cone (from its edge inward) where the light fades (0..1).
+    pub cone_softness: f64,
+    /// Area lights: size of the rectangle in world units.
+    pub width: f64,
+    pub height: f64,
     /// Degrees; with `camera_relative` around the view direction, else world azimuth (from +x).
     pub azimuth: f64,
     /// Degrees above the horizon (or above the view plane).
@@ -497,6 +536,11 @@ impl Default for Light {
             enabled: true,
             kind: LightKind::Directional,
             position: v3(2.0, -2.0, 2.0),
+            target: V3::ZERO,
+            cone_angle: 25.0,
+            cone_softness: 0.3,
+            width: 0.5,
+            height: 0.5,
             azimuth: -35.0,
             elevation: 40.0,
             camera_relative: true,

@@ -66,6 +66,9 @@ struct GLight {
     opts: [f32; 4],
     glow: [f32; 4],
     glow_col: [f32; 4],
+    shape0: [f32; 4],
+    shape1: [f32; 4],
+    shape2: [f32; 4],
 }
 
 #[repr(C)]
@@ -93,7 +96,7 @@ struct Uniforms {
     color2: [f32; 4],
     cuts: [[f32; 4]; 3],
     slots: [[u32; 4]; 8],
-    lights: [GLight; 6],
+    lights: [GLight; rmb_core::scene::MAX_LIGHTS],
     comb: [f32; 4],
     scales: [f32; 4],
     rot4: [[f32; 4]; 4],
@@ -134,10 +137,31 @@ fn uniforms(scene: &Scene, prog: &Program, w: u32, h: u32, fast: bool) -> Unifor
     let cam = &scene.camera;
     let l = &scene.lighting;
     let bg = &scene.background;
-    let mut lights = [GLight::zeroed(); 6];
+    let mut lights = [GLight::zeroed(); rmb_core::scene::MAX_LIGHTS];
     for (g, fl) in lights.iter_mut().zip(&fr.lights) {
         g.dir = v4(fl.point.unwrap_or(fl.dir), fl.specular);
-        g.color = [fl.color[0] as f32, fl.color[1] as f32, fl.color[2] as f32, if fl.point.is_some() { 1.0 } else { 0.0 }];
+        use rmb_core::render::LightShape;
+        // w: the kind (0 directional, 1 point, 2 spot, 3 area, 4 line; above 0.5 positional).
+        let kind = match fl.shape {
+            LightShape::Directional => 0.0,
+            LightShape::Point => 1.0,
+            LightShape::Spot { axis, cos_outer, cos_inner } => {
+                g.shape0 = v4(axis, cos_outer);
+                g.shape1 = [cos_inner as f32, 0.0, 0.0, 0.0];
+                2.0
+            }
+            LightShape::Area { n, u, v } => {
+                g.shape0 = v4(n, 0.0);
+                g.shape1 = v4(u, 0.0);
+                g.shape2 = v4(v, 0.0);
+                3.0
+            }
+            LightShape::Line { end } => {
+                g.shape0 = v4(end, 0.0);
+                4.0
+            }
+        };
+        g.color = [fl.color[0] as f32, fl.color[1] as f32, fl.color[2] as f32, if fl.point.is_some() { kind } else { 0.0 }];
         g.opts = [if fl.shadows { 1.0 } else { 0.0 }, fl.softness as f32, fl.diffuse.index() as f32, fl.occlusion as f32];
         if let Some(gl) = &fl.glow {
             g.glow = [gl.shape.index() as f32 + 1.0, gl.r2 as f32, if gl.additive { 1.0 } else { 0.0 }, 0.0];

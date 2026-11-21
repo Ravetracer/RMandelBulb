@@ -363,3 +363,41 @@ fn animation_frames_render_and_differ() {
     let diff = |x: &[u8], y: &[u8]| x.iter().zip(y).filter(|(p, q)| p != q).count();
     assert!(diff(&frames[0].1, &frames[1].1) > 100 && diff(&frames[1].1, &frames[2].1) > 100);
 }
+
+#[test]
+fn gpu_matches_cpu_with_spot_area_and_line_lights() {
+    use rmb_core::scene::{GlowShape, Light, LightKind};
+    let mut scene = Scene::default();
+    scene.lighting.ao_mode = rmb_core::scene::AoMode::Fast;
+    scene.lighting.lights.truncate(1);
+    scene.lighting.lights[0].intensity = 0.3;
+    let p = |x: f64, y: f64, z: f64| rmb_core::v3(x, y, z);
+    scene.lighting.lights.push(Light { kind: LightKind::Spot, position: p(1.5, -1.5, 1.5), target: rmb_core::V3::ZERO, cone_angle: 18.0, cone_softness: 0.5, intensity: 6.0, color: [1.0, 0.7, 0.4], ..Default::default() });
+    scene.lighting.lights.push(Light {
+        kind: LightKind::Area,
+        position: p(-1.2, -1.6, 1.4),
+        target: rmb_core::V3::ZERO,
+        width: 1.0,
+        height: 0.6,
+        intensity: 5.0,
+        color: [0.4, 0.7, 1.0],
+        visible: true,
+        glow_intensity: 2.0,
+        ..Default::default()
+    });
+    scene.lighting.lights.push(Light {
+        kind: LightKind::Line,
+        position: p(-1.5, 1.2, 1.6),
+        target: p(1.5, 1.2, 1.6),
+        intensity: 3.0,
+        color: [0.6, 1.0, 0.6],
+        visible: true,
+        glow_shape: GlowShape::Ball,
+        glow_size: 0.05,
+        ..Default::default()
+    });
+    // Seen from where the area light is in view.
+    scene.camera.position = p(0.3, -3.6, 2.2);
+    scene.camera.look_at(p(-0.3, 0.0, 0.6), p(0.0, 0.0, 1.0));
+    parity(scene);
+}

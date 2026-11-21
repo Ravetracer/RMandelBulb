@@ -21,7 +21,8 @@ modern egui interface and import of Mandelbulb3D parameters.
   collection) are translated into the formula language (`rmb-cli m3f`) and built in; a few are
   written by hand (`lib/mb3d_builtin.mbf`). Translations and hand-written versions are checked
   against the original code running in an x86 emulator (`tools/m3f-check`).
-- **Rendering**: progressive anti-aliasing, up to six lights with soft shadows, ray-traced or
+- **Rendering**: progressive anti-aliasing, up to eight lights (directional, point, spot, area
+  and line lights; area and line lights give real soft shadows), ray-traced or
   fast ambient occlusion, sky/ground ambient, gradient coloring (iterations, orbit trap, radius,
   normal), depth fog, glow, depth of field, cutting planes, filmic tone mapping, vignette.
 - **Navigation**:

@@ -579,16 +579,13 @@ impl<'a> Shader<'a> {
                 let mut diffuse = amb.map(|a| a * l.ambient * ao);
                 let mut spec = [0.0; 3];
                 for li in &fr.lights {
-                    // Point lights: direction, squared-distance falloff and shadow length.
-                    let (ldir, atten, max_t) = match li.point {
-                        Some(lp) => {
-                            let v = lp - p;
-                            let d2 = v.dot(v).max(1e-30);
-                            let dist = d2.sqrt();
-                            (v * (1.0 / dist), 1.0 / d2, dist)
-                        }
-                        None => (li.dir, 1.0, sc.march.max_distance),
-                    };
+                    // Direction, falloff and shadow length; area and line lights at a random
+                    // point of the light.
+                    let (r1, r2) = if li.sampled() { (rng.next_f64(), rng.next_f64()) } else { (0.5, 0.5) };
+                    let (ldir, atten, max_t) = li.sample(p, r1, r2, sc.march.max_distance);
+                    if atten <= 0.0 {
+                        continue;
+                    }
                     let ndl = n.dot(ldir);
                     let mut df = li.diffuse.apply(ndl);
                     if rr > 0.0 {

@@ -44,7 +44,8 @@
       unnatural movement (steady speed, smoothed recorded speed, "cameraman" pass)
   - [x] Optional: automatic, or as a correction after defining the path over the key frames
   - [ ] Motion blur, audio track
-- [ ] More light sources: spot, point, area, line, …
+- [x] More light sources: spot, point, area, line (up to eight lights; area and line lights
+      sampled per pass for soft shadows, visible as panel and tube)
 - [ ] Lens flares for light sources with extensive options (lens reflections, shape, color,
       size, main flare shape such as anamorphic or standard, …)
   - [ ] Must look professional, not like a cheap implementation

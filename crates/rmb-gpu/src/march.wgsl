@@ -7,10 +7,13 @@ alias fl = f32;
 
 struct GLight {
     dir: vec4<f32>,   // xyz: direction, or the position of a point light; w: specular
-    color: vec4<f32>, // w: point light
+    color: vec4<f32>, // w: kind (0 directional, 1 point, 2 spot, 3 area, 4 line)
     opts: vec4<f32>,  // x: shadows, y: softness, z: diffuse curve, w: occlusion
     glow: vec4<f32>,  // visible light: x: shape + 1 (0 = not visible), y: squared radius, z: additive
     glow_col: vec4<f32>,
+    shape0: vec4<f32>, // spot: axis, cos outer; area: normal; line: other end
+    shape1: vec4<f32>, // spot: x cos inner; area: half width axis
+    shape2: vec4<f32>, // area: half height axis
 }
 
 struct U {
@@ -36,7 +39,7 @@ struct U {
     color2: vec4<f32>,     // saturation, cut count, depth shift, depth reference
     cuts: array<vec4<f32>, 3>,   // axis, position, keep above
     slots: array<vec4<u32>, 8>,  // x: iterations
-    lights: array<GLight, 6>,
+    lights: array<GLight, 8>,
     comb: vec4<f32>,       // DE combination: mode, max iterations 2, repeat from 2, smoothing
     scales: vec4<f32>,     // DE scale of chain 1, chain 2, inside rendering, ray start distance
     rot4: array<vec4<f32>, 4>, // 4D start rotation (rows)
@@ -779,15 +782,91 @@ fn glow_shape(shape: u32, u_: f32, r2_: f32, point: bool) -> vec2<f32> {
     return vec2<f32>(u2 * u2, 7e-3 * (1.0 - u_) / r2);
 }
 
+struct LightSample {
+    dir: vec3<f32>,
+    atten: f32,
+    dist: f32,
+}
+
+// Mirrors FrameLight::sample.
+fn light_sample(i: u32, p: vec3<f32>, r: vec2<f32>) -> LightSample {
+    let li = u.lights[i];
+    var s: LightSample;
+    let kind = u32(li.color.w + 0.5);
+    if (kind == 0u) {
+        s.dir = li.dir.xyz;
+        s.atten = 1.0;
+        s.dist = u.cam_fwd.w;
+        return s;
+    }
+    var q = li.dir.xyz;
+    if (kind == 3u) {
+        q = q + li.shape1.xyz * (2.0 * r.x - 1.0) + li.shape2.xyz * (2.0 * r.y - 1.0);
+    } else if (kind == 4u) {
+        q = q + (li.shape0.xyz - q) * r.x;
+    }
+    let v = q - p;
+    let d2 = max(dot(v, v), 1.0e-30);
+    s.dist = sqrt(d2);
+    s.dir = v / s.dist;
+    s.atten = 1.0 / d2;
+    if (kind == 2u) {
+        let x = clamp((-dot(s.dir, li.shape0.xyz) - li.shape0.w) / max(li.shape1.x - li.shape0.w, 1.0e-9), 0.0, 1.0);
+        s.atten *= x * x * (3.0 - 2.0 * x);
+    } else if (kind == 3u) {
+        s.atten *= max(-dot(s.dir, li.shape0.xyz), 0.0);
+    }
+    return s;
+}
+
+// Mirrors render::nearest_on_segment.
+fn nearest_on_segment(a: vec3<f32>, b: vec3<f32>, o: vec3<f32>, d: vec3<f32>) -> vec3<f32> {
+    let e = b - a;
+    let w = a - o;
+    let ee = dot(e, e);
+    let ed = dot(e, d);
+    let den = ee - ed * ed;
+    var s = 0.5;
+    if (abs(den) >= 1.0e-12 * max(ee, 1.0e-30)) {
+        s = clamp((ed * dot(w, d) - dot(w, e)) / den, 0.0, 1.0);
+    }
+    return a + e * s;
+}
+
 // Mirrors render::light_glow; applies the glow of light `i` to `c`.
 fn light_glow(i: u32, o: vec3<f32>, d: vec3<f32>, hit: bool, hit_t: f32, fog_col: vec3<f32>, c: vec3<f32>) -> vec3<f32> {
     let li = u.lights[i];
     let r2 = li.glow.y;
     let point = li.color.w > 0.5;
+    let kind = u32(li.color.w + 0.5);
+    // Area lights: the glowing rectangle (front side) covers what is behind.
+    if (kind == 3u) {
+        let n = li.shape0.xyz;
+        let den = dot(d, n);
+        if (den >= 0.0) {
+            return c;
+        }
+        let t = dot(li.dir.xyz - o, n) / den;
+        if (t <= 0.0 || (hit && hit_t < t)) {
+            return c;
+        }
+        let q = o + d * t - li.dir.xyz;
+        let su = li.shape1.xyz;
+        let sv = li.shape2.xyz;
+        if (abs(dot(q, su) / max(dot(su, su), 1.0e-30)) > 1.0 || abs(dot(q, sv) / max(dot(sv, sv), 1.0e-30)) > 1.0) {
+            return c;
+        }
+        let fl = max(fog_amount(t), 0.0);
+        return fog_col * fl + li.glow_col.xyz * (1.0 - fl);
+    }
+    var lp = li.dir.xyz;
+    if (kind == 4u) {
+        lp = nearest_on_segment(li.dir.xyz, li.shape0.xyz, o, d);
+    }
     var u_ = 0.0;
     var t_light = u.cam_fwd.w;
     if (point) {
-        let v = li.dir.xyz - o;
+        let v = lp - o;
         let along = dot(v, d);
         if (along < 0.0) {
             return c;
@@ -948,18 +1027,21 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sx: f32, 
         let shin = u.sky.w;
         for (var i = 0u; i < u.size.w; i++) {
             let li = u.lights[i];
-            // Point lights: direction, squared-distance falloff and shadow length.
-            var ldir = li.dir.xyz;
-            var atten = 1.0;
-            var max_l = u.cam_fwd.w;
-            if (li.color.w > 0.5) {
-                let v = li.dir.xyz - p;
-                let d2 = max(dot(v, v), 1.0e-30);
-                let dist = sqrt(d2);
-                ldir = v / dist;
-                atten = 1.0 / d2;
-                max_l = dist;
+            // Direction, falloff and shadow length (mirrors FrameLight::sample); area and line
+            // lights at a random point of the light.
+            var r = vec2<f32>(0.5);
+            if (li.color.w > 2.5) {
+                let r1 = rnd();
+                let r2 = rnd();
+                r = vec2<f32>(r1, r2);
             }
+            let ls = light_sample(i, p, r);
+            if (ls.atten <= 0.0) {
+                continue;
+            }
+            let ldir = ls.dir;
+            let atten = ls.atten;
+            let max_l = ls.dist;
             let ndl = dot(n, ldir);
             let curve = u32(li.opts.z);
             var df = max(ndl, 0.0);
