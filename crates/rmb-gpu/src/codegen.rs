@@ -62,6 +62,11 @@ fn chain(prog: &Program, k: usize, slot_base: usize, limit: &str, repeat: &str) 
     let _ = writeln!(s, "    let limit = select(u32({limit}), fixed_n, use_fixed);\n    let repeat_from = u32({repeat});");
     s.push_str("    var slot = 0u;\n    var count = 0u;\n    var n = 0u;\n    let cap = limit * 8u + 64u;\n    var steps = 0u;\n");
     s.push_str("    loop {\n        if (n >= limit || steps >= cap) {\n            break;\n        }\n        steps += 1u;\n");
+    let _ = writeln!(
+        s,
+        "        let prev_s = vec4<fl>({}, {}, {}, {});\n        let prev_dr = {};",
+        names[0], names[1], names[2], names[3], names[8]
+    );
     let _ = writeln!(s, "        {} = fl(n);\n        {} = {};\n        var transform = false;\n        switch slot {{", names[9], names[STATE_ROLD], names[STATE_ROUT]);
     for (i, sl) in prog.slots.iter().enumerate() {
         let _ = writeln!(s, "            case {i}u: {{ // {}", sl.formula.def.name);
@@ -77,14 +82,15 @@ fn chain(prog: &Program, k: usize, slot_base: usize, limit: &str, repeat: &str) 
         "        if (!transform) {{\n            n += 1u;\n        }}\n        count += 1u;\n        if (count >= u.slots[slot + {slot_base}u].x) {{\n            count = 0u;\n            slot += 1u;\n            if (slot >= NSLOTS_{k}) {{\n                slot = repeat_from;\n            }}\n        }}\n\
          \x20       if (DIFS_{k}) {{\n            if (!transform) {{\n                let de_i = f32({rout} / {a0});\n                if (de_i < out.de) {{\n                    out.de = de_i;\n                    out.trap = f32({a2} * {a2});\n                }}\n            }}\n            continue;\n        }}\n\
          \x20       if (!transform) {{\n            let r2 = f32({x} * {x} + {y} * {y} + {z} * {z} + {w} * {w});\n            out.trap = min(out.trap, r2);\n            {rout} = fl(r2);\n\
-         \x20           if (!use_fixed && !(r2 <= u.march.z)) {{\n                out.escaped = true;\n                break;\n            }}\n        }}\n    }}\n",
+         \x20           if (!use_fixed && !(r2 <= u.march.z)) {{\n                out.escaped = true;\n                if (!is_finite(r2)) {{\n                    {x} = prev_s.x;\n                    {y} = prev_s.y;\n                    {z} = prev_s.z;\n                    {w} = prev_s.w;\n                    {dr} = prev_dr;\n                }}\n                break;\n            }}\n        }}\n    }}\n",
         x = names[0],
         y = names[1],
         z = names[2],
         w = names[3],
         rout = names[STATE_ROUT],
         a0 = names[STATE_AUX],
-        a2 = names[STATE_AUX + 2]
+        a2 = names[STATE_AUX + 2],
+        dr = names[8]
     );
     let _ = writeln!(s, "    out.s = vec4<f32>(f32({}), f32({}), f32({}), f32({}));\n    out.dr = f32({});\n    out.n = n;\n    return out;\n}}", names[0], names[1], names[2], names[3], names[8]);
     s.push_str(&CHAIN_DE.replace("SCALE_K", if k == 1 { "u.scales.x" } else { "u.scales.y" }).replace("_K", &format!("_{k}")));

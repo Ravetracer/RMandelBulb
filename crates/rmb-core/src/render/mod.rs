@@ -59,6 +59,13 @@ impl Frame {
     }
 }
 
+/// Distance from the camera where primary rays start: the near distance; inside rendering
+/// needs a positive one (the step size grows with the distance).
+pub fn start_distance(scene: &Scene) -> f64 {
+    let n = scene.march.near.max(0.0);
+    if scene.fractal.inside { n.max(scene.march.max_distance * 1.0e-4) } else { n }
+}
+
 /// Random number stream of one pixel sample (same sequence on CPU and GPU).
 pub struct Rng(pub u32);
 

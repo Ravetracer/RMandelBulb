@@ -81,3 +81,13 @@ fn every_formula_renders_on_the_gpu() {
         assert_eq!(img.len(), 16 * 16 * 4, "{}", f.def.name);
     }
 }
+
+#[test]
+fn gpu_matches_cpu_inside_rendering() {
+    let mut scene = Scene::default();
+    scene.lighting.ao_mode = rmb_core::scene::AoMode::Fast;
+    scene.fractal.inside = true;
+    scene.camera.position = rmb_core::v3(0.05, -0.1, 0.02);
+    scene.march.max_steps = 600;
+    parity(scene);
+}

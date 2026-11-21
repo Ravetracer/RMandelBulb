@@ -92,7 +92,8 @@ impl<'a> Shader<'a> {
             if d < e {
                 return 0.0;
             }
-            if softness > 0.0 {
+            // Inside rendering: the estimate is a fixed step in the set, not a distance; only hits count.
+            if softness > 0.0 && !self.scene.fractal.inside {
                 res = res.min(d / (softness * t));
             }
             t += (d * self.scene.march.step).max(e);
@@ -109,6 +110,8 @@ impl<'a> Shader<'a> {
         let radius = l.ao_radius * t;
         match l.ao_mode {
             AoMode::Off => 1.0,
+            // The fast samples need distances, which inside rendering does not have.
+            AoMode::Fast if self.scene.fractal.inside => 1.0,
             AoMode::Fast => {
                 let (mut occ, mut w) = (0.0, 1.0);
                 for k in 1..=5 {
@@ -192,7 +195,7 @@ impl<'a> Shader<'a> {
             o = o + cam.right * (r * a.cos()) + cam.up * (r * a.sin());
             d = (focus - o).normalize();
         }
-        let (hit, steps) = self.march(ev, o, d, 0.0, sc.march.max_distance, sc.march.max_steps);
+        let (hit, steps) = self.march(ev, o, d, super::start_distance(sc), sc.march.max_distance, sc.march.max_steps);
         let glow = sc.fog.glow * steps as f64 / sc.march.max_steps.max(1) as f64;
         let mut c = match &hit {
             None => {
@@ -204,7 +207,9 @@ impl<'a> Shader<'a> {
                 let n = self.normal(ev, h.pos, h.eps);
                 let n = if n.dot(d) > 0.0 { -n } else { n };
                 let base = self.gradient(self.color_value(h, n));
-                let p = h.pos + n * (h.eps * 1.5);
+                // Shading point just off the surface; inside rendering puts the surface one
+                // threshold into the solid, so it needs a larger offset.
+                let p = h.pos + n * (h.eps * if sc.fractal.inside { 4.0 } else { 1.5 });
                 let ao = self.ambient_occlusion(ev, p, n, h.t, &mut rng);
                 let l = &sc.lighting;
                 let hemi = n.z * 0.5 + 0.5;
@@ -311,7 +316,7 @@ pub fn pick(scene: &Scene, sx: f64, sy: f64, width: u32, height: u32) -> Option<
     let shader = Shader::new(scene, &prog, width, height);
     let mut ev = prog.evaluator();
     let d = scene.camera.ray_dir(sx, sy, shader.frame.aspect);
-    let (hit, _) = shader.march(&mut ev, scene.camera.position, d, 0.0, scene.march.max_distance, scene.march.max_steps);
+    let (hit, _) = shader.march(&mut ev, scene.camera.position, d, super::start_distance(scene), scene.march.max_distance, scene.march.max_steps);
     hit.map(|h| (h.t, h.pos))
 }
 

@@ -53,6 +53,7 @@ fn close(a: f64, b: f64, scale: f64) -> bool {
 enum Outcome {
     Ok,
     Untranslated,
+    Pascal,
     Mismatch(String),
     Emulator(String),
 }
@@ -68,6 +69,10 @@ fn check(path: &Path, verbose: bool) -> Outcome {
         Ok(m) => m,
         Err(_) => return Outcome::Untranslated,
     };
+    if m.has_source {
+        // Pascal JIT formula: no machine code to compare with.
+        return Outcome::Pascal;
+    }
     let src = match translate(&m) {
         Ok(t) => t.source,
         Err(_) => return Outcome::Untranslated,
@@ -249,12 +254,13 @@ fn main() {
         vec![input]
     };
     files.sort();
-    let (mut ok, mut skip, mut bad, mut err) = (0, 0, 0, 0);
+    let (mut ok, mut skip, mut bad, mut err, mut pascal) = (0, 0, 0, 0, 0);
     for f in &files {
         let name = f.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
         match check(f, verbose && files.len() == 1) {
             Outcome::Ok => ok += 1,
             Outcome::Untranslated => skip += 1,
+            Outcome::Pascal => pascal += 1,
             Outcome::Mismatch(m) => {
                 bad += 1;
                 println!("MISMATCH {name}: {m}");
@@ -265,5 +271,5 @@ fn main() {
             }
         }
     }
-    println!("\n{ok} match, {bad} differ, {err} emulator problems, {skip} not translated (of {})", files.len());
+    println!("\n{ok} match, {bad} differ, {err} emulator problems, {skip} not translated, {pascal} Pascal (not checked) (of {})", files.len());
 }

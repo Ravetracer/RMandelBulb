@@ -252,7 +252,9 @@ impl Viewport {
     /// Distance scale for navigation speeds: the distance estimate at the camera. Inside the
     /// set the estimate is 0; then the last positive value is used, so the camera can move out.
     fn nav_distance(&mut self, scene: &Scene) -> f64 {
-        let d = distance_at_camera(scene);
+        // Inside rendering: the estimate at the camera is a step size, not a distance; use the
+        // distance to the surface ahead.
+        let d = if scene.fractal.inside { pick(scene, 0.0, 0.0, 256, 256).map(|(t, _)| t * 0.5).unwrap_or(0.0) } else { distance_at_camera(scene) };
         if d.is_finite() && d > 1e-14 {
             self.nav_scale = d;
             d
@@ -404,9 +406,9 @@ impl Viewport {
         if !prog_missing.is_empty() {
             y += pill(format!("{}  Formulas not available: {}", crate::icons::WARNING, prog_missing.join(", ")), theme::WARN, y);
         }
-        if distance_at_camera(&doc.scene) <= 0.0 && !doc.scene.fractal.slots.is_empty() {
+        if !doc.scene.fractal.inside && distance_at_camera(&doc.scene) <= 0.0 && !doc.scene.fractal.slots.is_empty() {
             y += pill(
-                format!("{}  The camera is inside the fractal: move out (fly backward, wheel) or use Camera › Reset view", crate::icons::INFO),
+                format!("{}  The camera is inside the fractal: move out (fly backward, wheel), use Camera › Reset view, or turn on Inside rendering", crate::icons::INFO),
                 theme::WARN,
                 y,
             );

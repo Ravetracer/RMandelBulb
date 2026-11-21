@@ -224,6 +224,9 @@ pub struct Fractal {
     pub de_scale: f64,
     /// Rotation of the start point into 4D (XW, YW, ZW planes, degrees; 4D formulas).
     pub rotation_4d: [f64; 3],
+    /// Render the inside of the set: points that escape are solid, the set is empty space
+    /// (Mandelbulb3D's inside rendering, for views from within the fractal).
+    pub inside: bool,
     /// Two formula chains whose distance estimates are combined (Mandelbulb3D's DE
     /// combination): slots before `start` form the first chain, the rest the second.
     pub combine: Option<DeCombine>,
@@ -294,6 +297,7 @@ impl Default for Fractal {
             de_mode: DeMode::Auto,
             de_scale: 1.0,
             rotation_4d: [0.0; 3],
+            inside: false,
             combine: None,
         }
     }
@@ -311,11 +315,13 @@ pub struct March {
     pub max_distance: f64,
     /// Binary search refinement steps at the surface.
     pub refine_steps: u32,
+    /// Rays start at this distance from the camera (near clipping).
+    pub near: f64,
 }
 
 impl Default for March {
     fn default() -> Self {
-        March { detail: 1.0, step: 0.8, max_steps: 400, max_distance: 40.0, refine_steps: 4 }
+        March { detail: 1.0, step: 0.8, max_steps: 400, max_distance: 40.0, refine_steps: 4, near: 0.0 }
     }
 }
 

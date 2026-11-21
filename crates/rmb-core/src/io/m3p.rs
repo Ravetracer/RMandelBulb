@@ -185,6 +185,8 @@ pub fn import_binary(b: &[u8]) -> Result<Import, String> {
     s.camera.position = mid + r2 * (z_start - z_mid - vp_off);
     s.camera.orthonormalize();
     s.march.max_distance = ((z_end - z_start).abs() + vp_off).max(1e-6);
+    // Mandelbulb3D's rays start on a plane in front of the eye.
+    s.march.near = vp_off * 0.999;
 
     // ---- iteration and DE
     let f = &mut s.fractal;
@@ -258,9 +260,8 @@ pub fn import_binary(b: &[u8]) -> Result<Import, String> {
         }
     }
     let (start2, end2, repeat2) = ((hyb2 & 15) as usize, ((hyb2 >> 4) & 15) as usize, ((hyb2 >> 8) & 15) as usize);
-    if r.u8(addon + 2) & 6 != 0 {
-        warnings.push("inside rendering is not supported yet".into());
-    }
+    // Inside rendering: 1 = inside, 2 = inside and outside (decided below by the camera).
+    let inside_mode = (r.u8(addon + 2) >> 1) & 3;
     let end1 = (hyb1 & 15) as usize;
     let repeat1 = (hyb1 >> 4) as usize;
     let lib = crate::formula::library();
@@ -332,6 +333,17 @@ pub fn import_binary(b: &[u8]) -> Result<Import, String> {
             }
         }
         f.slots = slots.into_iter().map(|(_, s)| s).collect();
+    }
+
+    match inside_mode {
+        1 => s.fractal.inside = true,
+        2 => {
+            // Inside and outside: inside rendering when the camera starts in the set.
+            let prog = crate::fractal::Program::new(&s.fractal, &s.cut);
+            let mut ev = prog.evaluator();
+            s.fractal.inside = ev.de(s.camera.position, 1e-9) <= 0.0;
+        }
+        _ => {}
     }
 
     // ---- cutting planes: the half-space between camera and plane is removed

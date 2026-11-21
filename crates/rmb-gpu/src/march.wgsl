@@ -36,7 +36,7 @@ struct U {
     slots: array<vec4<u32>, 8>,  // x: iterations
     lights: array<GLight, 6>,
     comb: vec4<f32>,       // DE combination: mode, max iterations 2, repeat from 2, smoothing
-    scales: vec4<f32>,     // DE scale of chain 1, chain 2
+    scales: vec4<f32>,     // DE scale of chain 1, chain 2, inside rendering, ray start distance
     rot4: array<vec4<f32>, 4>, // 4D start rotation (rows)
 }
 
@@ -118,6 +118,15 @@ fn combine_de(a: Orbit, b: Orbit) -> Orbit {
 fn orbit(p: vec3<f32>, h: f32) -> Orbit {
     var o = fractal_de(p, h);
     var de = max(o.de * u.march.w, 0.0);
+    if (u.scales.z > 0.5) {
+        // Inside rendering (mirrors fractal.rs).
+        let s = 2.0 * h;
+        if (DIFS_1) {
+            de = max(2.0 * s - de, 0.0);
+        } else {
+            de = max(4.0 * s - 3.0 * de, 0.0);
+        }
+    }
     let ncuts = u32(u.color2.y);
     for (var c = 0u; c < ncuts; c++) {
         let cp = u.cuts[c];
@@ -219,7 +228,8 @@ fn soft_shadow(p: vec3<f32>, l: vec3<f32>, eps: f32, softness: f32) -> f32 {
         if (d < e) {
             return 0.0;
         }
-        if (softness > 0.0) {
+        // Inside rendering: the estimate is a fixed step in the set, not a distance; only hits count.
+        if (softness > 0.0 && u.scales.z < 0.5) {
             res = min(res, d / (softness * t));
         }
         t += max(d * u.march.y, e);
@@ -250,6 +260,10 @@ fn ambient_occlusion(p: vec3<f32>, n: vec3<f32>, t: f32) -> f32 {
         mode = 1u;
     }
     if (mode == 0u) {
+        return 1.0;
+    }
+    if (mode == 1u && u.scales.z > 0.5) {
+        // The fast samples need distances, which inside rendering does not have.
         return 1.0;
     }
     if (mode == 1u) {
@@ -342,7 +356,7 @@ fn sample_pixel(px: u32, py: u32, sample: u32) -> vec3<f32> {
         o = o + u.cam_right.xyz * (r * cos(a)) + u.cam_up.xyz * (r * sin(a));
         d = normalize(focus - o);
     }
-    let h = march_ray(o, d, 0.0, u.cam_fwd.w, u.band.z);
+    let h = march_ray(o, d, u.scales.w, u.cam_fwd.w, u.band.z);
     let glow = u.glow.w * f32(h.steps) / f32(max(u.band.z, 1u));
     var c: vec3<f32>;
     if (!h.hit) {
@@ -356,7 +370,7 @@ fn sample_pixel(px: u32, py: u32, sample: u32) -> vec3<f32> {
             n = -n;
         }
         let base = gradient(color_value(h, n, pos));
-        let p = pos + n * (h.eps * 1.5);
+        let p = pos + n * (h.eps * select(1.5, 4.0, u.scales.z > 0.5));
         let ao = ambient_occlusion(p, n, h.t);
         let hemi = n.z * 0.5 + 0.5;
         var diffuse = mix(u.ground.xyz, u.sky.xyz, hemi) * u.ao.w * ao;

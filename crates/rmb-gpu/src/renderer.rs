@@ -134,7 +134,12 @@ fn uniforms(scene: &Scene, prog: &Program, w: u32, h: u32, fast: bool) -> Unifor
     }
     let p2 = prog.part2.as_deref();
     let comb = [prog.combine_mode.index() as f32, p2.map(|p| p.max_iterations).unwrap_or(1) as f32, p2.map(|p| p.repeat_from).unwrap_or(0) as f32, prog.combine_smooth as f32];
-    let scales = [prog.de_scale as f32, p2.map(|p| p.de_scale).unwrap_or(1.0) as f32, 0.0, 0.0];
+    let scales = [
+        prog.de_scale as f32,
+        p2.map(|p| p.de_scale).unwrap_or(1.0) as f32,
+        if prog.inside { 1.0 } else { 0.0 },
+        rmb_core::render::start_distance(scene) as f32,
+    ];
     let rot = prog.rotation_4d.unwrap_or([[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]]);
     let rot4 = rot.map(|r| r.map(|v| v as f32));
     let ao_mode = match l.ao_mode {

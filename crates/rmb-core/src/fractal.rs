@@ -51,6 +51,8 @@ pub struct Program {
     pub part2: Option<Box<Program>>,
     pub combine_mode: CombineMode,
     pub combine_smooth: f64,
+    /// Inside rendering (the estimate is inverted around the surface threshold).
+    pub inside: bool,
 }
 
 /// Result of iterating one point.
@@ -168,6 +170,7 @@ impl Program {
             part2: None,
             combine_mode: CombineMode::Min,
             combine_smooth: 0.0,
+            inside: f.inside,
         }
     }
 
@@ -259,6 +262,7 @@ fn iterate(top: &Program, prog: &Program, regs: &mut [Vec<f64>], p: V3, fixed: O
         steps += 1;
         let s = &prog.slots[slot];
         let regs = &mut regs[slot];
+        let prev = st;
         st[STATE_ROLD] = st[STATE_ROUT];
         st[STATE_ITER] = out.n as f64;
         regs[..STATE_COUNT].copy_from_slice(&st);
@@ -294,6 +298,10 @@ fn iterate(top: &Program, prog: &Program, regs: &mut [Vec<f64>], p: V3, fixed: O
             let inside = r2 <= prog.bailout2;
             if fixed.is_none() && !inside {
                 out.escaped = true;
+                // Overflow in the last step: the estimate uses the state before it.
+                if !r2.is_finite() {
+                    st = prev;
+                }
                 break;
             }
         }
@@ -391,6 +399,13 @@ impl Evaluator<'_> {
             o = combine(prog.combine_mode, prog.combine_smooth, o, o2);
         }
         let mut de = (o.de * prog.scene_de_scale).max(0.0);
+        if prog.inside {
+            // Mandelbulb3D's inside rendering: points in the set step on with four times the
+            // surface threshold (h is half of it); outside, the estimate falls below the
+            // threshold one threshold beyond the boundary.
+            let s = 2.0 * h;
+            de = if prog.difs { 2.0 * s - de } else { 4.0 * s - 3.0 * de }.max(0.0);
+        }
         for &(axis, pos, above) in &prog.cuts {
             let v = [p.x, p.y, p.z][axis];
             de = de.max(if above { pos - v } else { v - pos });

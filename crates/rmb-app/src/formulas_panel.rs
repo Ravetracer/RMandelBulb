@@ -254,6 +254,12 @@ fn iteration(ui: &mut Ui, f: &mut Fractal) {
         widgets::slider(ui, "DE scale", "Multiplies the distance estimate. Lower it if the surface shows holes or noise (overstepping).", &mut f.de_scale, 0.05..=2.0, d.de_scale);
         widgets::slider(ui, "W slice", "Start value of the 4th dimension (4D formulas).", &mut f.w_slice, -2.0..=2.0, d.w_slice);
         widgets::checkbox(ui, "Julia", "Use a fixed constant c for every point instead of the point's position.", &mut f.julia);
+        widgets::checkbox(
+            ui,
+            "Inside",
+            "Render the inside of the set: escaping points are solid, the set is empty space. For views from within the fractal (slower: rays step in small steps).",
+            &mut f.inside,
+        );
         if f.julia {
             for (k, n) in ["Julia X", "Julia Y", "Julia Z", "Julia W"].iter().enumerate() {
                 widgets::drag(ui, n, "Julia constant", &mut f.julia_c[k], 0.002, 0.0);

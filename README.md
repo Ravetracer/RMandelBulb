@@ -46,9 +46,11 @@ cargo build --release -p rmb-app -p rmb-cli
 
 - Not yet translated: formulas that read height maps or images (9), switch the hybrid's
   formulas (5), use random numbers (2) and a few others. Scenes that use them open with the missing slots
-  listed and skipped. 58 of the 80 Mandelbulb3D example parameter files are fully supported.
+  listed and skipped. 66 of the 80 Mandelbulb3D example parameter files are fully supported.
+- Inside rendering (views from within the set) works like Mandelbulb3D's: rays step through the
+  set in small steps, so it is slower.
 - Not yet supported from MB3D: interpolation hybrids (imported as alternating), the dIFS "mix"
-  combination, inside rendering, background images, positional lights.
+  combination, background images, positional lights.
   Lighting and colors are converted approximately.
 - The GPU renders in f32, so very deep zooms need the CPU renderer (`rmb-cli render --cpu`).
 
