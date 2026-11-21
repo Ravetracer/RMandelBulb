@@ -6,12 +6,14 @@
 struct P {
     a: vec4<f32>,    // exposure, gamma, contrast, saturation
     b: vec4<f32>,    // tone map, vignette, display space
-    size: vec4<u32>, // width, height
+    size: vec4<u32>, // width, height, lens flare layer width and height (0: none)
 }
 
 @group(0) @binding(0) var<uniform> p: P;
 @group(0) @binding(1) var<storage, read> accum: array<vec4<f32>>;
 @group(0) @binding(2) var out_tex: texture_storage_2d<rgba8unorm, write>;
+// Lens flares (rmb-core flare.rs), added before the post processing like HdrImage::add_flares.
+@group(0) @binding(3) var<storage, read> flare: array<vec4<f32>>;
 
 fn aces(x: f32) -> f32 {
     return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);
@@ -23,7 +25,13 @@ fn display_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
     let a = accum[gid.y * p.size.x + gid.x];
-    var c = max(a.xyz / max(a.w, 1.0) * exp2(p.a.x), vec3<f32>(0.0));
+    var lin = a.xyz / max(a.w, 1.0);
+    if (p.size.z > 0u && p.size.w > 0u) {
+        let fx = min(gid.x * p.size.z / p.size.x, p.size.z - 1u);
+        let fy = min(gid.y * p.size.w / p.size.y, p.size.w - 1u);
+        lin += flare[fy * p.size.z + fx].xyz;
+    }
+    var c = max(lin * exp2(p.a.x), vec3<f32>(0.0));
     if (p.b.x > 0.5) {
         c = vec3<f32>(aces(c.x), aces(c.y), aces(c.z));
     }

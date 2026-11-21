@@ -189,6 +189,7 @@ impl Inspector {
                     widgets::slider(ui, "Softness", "Width of the shadow edges (0 = hard; area and line lights get theirs from their size)", &mut li.softness, 0.0..=0.5, dl.softness);
                 }
             });
+            lens_flare(ui, &mut li.flare);
         }
         if widgets::section(ui, "Ambient", true) {
             l.ambient = d.ambient;
@@ -263,6 +264,100 @@ impl Inspector {
             }
         }
     }
+}
+
+/// Lens flare settings of a light.
+fn lens_flare(ui: &mut Ui, f: &mut rmb_core::flare::LensFlare) {
+    let d = rmb_core::flare::LensFlare::default();
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("LENS FLARE").size(theme::fs(11.0)).color(theme::TEXT_MUTED));
+        ui.checkbox(&mut f.enabled, "").on_hover_text("Reflections and diffraction of the camera lens around this light (shown when the light is in or near the view and not hidden)");
+        egui::ComboBox::from_id_salt("flare-preset").selected_text("Preset…").show_ui(ui, |ui| {
+            for (name, p) in rmb_core::flare::LensFlare::presets() {
+                if ui.selectable_label(false, name).on_hover_text("Replaces the flare settings with this look").clicked() {
+                    *f = p;
+                }
+            }
+        });
+    });
+    if !f.enabled {
+        return;
+    }
+    widgets::grid(ui, "flare", |ui| {
+        widgets::slider_log(ui, "Intensity", "Brightness of the whole flare", &mut f.intensity, 0.0..=20.0, d.intensity);
+        widgets::color(ui, "Tint", "Multiplies the light's color", &mut f.tint);
+        widgets::label(ui, "Variation", "Seed of the random parts (spikes, ghosts, sparkles, dirt)");
+        ui.horizontal(|ui| {
+            ui.add(egui::DragValue::new(&mut f.seed));
+            if ui.small_button("Shuffle").on_hover_text("Another random arrangement").clicked() {
+                f.seed = rmb_core::math::pcg(f.seed.wrapping_add(1)) % 100000;
+            }
+        });
+        ui.end_row();
+    });
+    let group = |ui: &mut Ui, title: &str, tip: &str, body: &mut dyn FnMut(&mut Ui)| {
+        egui::CollapsingHeader::new(title).id_salt(("flare", title)).show(ui, |ui| body(ui)).header_response.on_hover_text(tip);
+    };
+    group(ui, "Glow", "The bright core and the wide haze around the light", &mut |ui| {
+        widgets::grid(ui, "fl-glow", |ui| {
+            widgets::slider(ui, "Core", "Brightness of the core", &mut f.glow, 0.0..=5.0, d.glow);
+            widgets::slider_log(ui, "Core size", "Size of the core (share of the image height)", &mut f.glow_size, 0.001..=0.5, d.glow_size);
+            widgets::slider(ui, "Haze", "Wide soft glow that lifts the dark parts", &mut f.haze, 0.0..=1.0, d.haze);
+            widgets::slider_log(ui, "Haze size", "Reach of the haze (share of the image height)", &mut f.haze_size, 0.02..=3.0, d.haze_size);
+        });
+    });
+    group(ui, "Star and spikes", "Diffraction star of the aperture and fine random spikes", &mut |ui| {
+        widgets::grid(ui, "fl-rays", |ui| {
+            widgets::slider_u32(ui, "Star rays", "Number of star rays (0 = none; even counts look like real apertures)", &mut f.rays, 0..=32, d.rays);
+            widgets::slider(ui, "Ray brightness", "Brightness of the star rays", &mut f.ray_intensity, 0.0..=3.0, d.ray_intensity);
+            widgets::slider_log(ui, "Ray length", "Length of the rays (share of the image height)", &mut f.ray_length, 0.01..=3.0, d.ray_length);
+            widgets::slider_log(ui, "Ray width", "Thickness of the rays", &mut f.ray_width, 0.1..=10.0, d.ray_width);
+            widgets::slider(ui, "Rotation", "Rotation of the star in degrees", &mut f.ray_rotation, -180.0..=180.0, d.ray_rotation);
+            widgets::slider(ui, "Uneven", "Varies the length, brightness and angle of the rays", &mut f.ray_random, 0.0..=1.0, d.ray_random);
+            widgets::slider_u32(ui, "Spikes", "Number of fine random spikes", &mut f.spikes, 0..=400, d.spikes);
+            widgets::slider(ui, "Spike brightness", "Brightness of the fine spikes", &mut f.spike_intensity, 0.0..=2.0, d.spike_intensity);
+            widgets::slider_log(ui, "Spike length", "Length of the fine spikes (share of the image height)", &mut f.spike_length, 0.01..=3.0, d.spike_length);
+        });
+    });
+    group(ui, "Anamorphic streak", "The long line of anamorphic lenses, with sparkles along it", &mut |ui| {
+        widgets::grid(ui, "fl-streak", |ui| {
+            widgets::slider(ui, "Streak", "Brightness of the streak (0 = none)", &mut f.streak, 0.0..=5.0, d.streak);
+            widgets::slider_log(ui, "Length", "Length of the streak (share of the image height)", &mut f.streak_length, 0.05..=6.0, d.streak_length);
+            widgets::slider_log(ui, "Width", "Thickness of the streak", &mut f.streak_width, 0.1..=10.0, d.streak_width);
+            widgets::color(ui, "Color", "Color of the streak (blue is the classic anamorphic look)", &mut f.streak_color);
+            widgets::slider(ui, "Angle", "Direction of the streak in degrees (0 = horizontal)", &mut f.streak_angle, -90.0..=90.0, d.streak_angle);
+            widgets::slider_u32(ui, "Sparkles", "Small dots along the streak", &mut f.sparkles, 0..=200, d.sparkles);
+            widgets::slider(ui, "Sparkle brightness", "Brightness of the sparkles", &mut f.sparkle_intensity, 0.0..=2.0, d.sparkle_intensity);
+        });
+    });
+    group(ui, "Ghosts", "Reflections of the aperture between the lens elements, on the line from the light through the image center", &mut |ui| {
+        widgets::grid(ui, "fl-ghosts", |ui| {
+            widgets::slider_u32(ui, "Ghosts", "Number of ghosts", &mut f.ghosts, 0..=32, d.ghosts);
+            widgets::slider(ui, "Brightness", "Brightness of the ghosts", &mut f.ghost_intensity, 0.0..=2.0, d.ghost_intensity);
+            widgets::slider_log(ui, "Size", "Size of the ghosts (share of the image height)", &mut f.ghost_size, 0.005..=0.5, d.ghost_size);
+            widgets::slider(ui, "Spread", "How far the ghosts spread along the line", &mut f.ghost_spread, 0.1..=3.0, d.ghost_spread);
+            widgets::slider_u32(ui, "Blades", "Aperture blades: the ghost shape (0 = round)", &mut f.ghost_blades, 0..=12, d.ghost_blades);
+            widgets::slider(ui, "Softness", "Soft or crisp ghost edges", &mut f.ghost_softness, 0.0..=1.0, d.ghost_softness);
+            widgets::slider(ui, "Rings", "Share of hollow ghosts", &mut f.ghost_rings, 0.0..=1.0, d.ghost_rings);
+            widgets::slider(ui, "Coating colors", "0: in the light's color; 1: in the varied tints of lens coatings", &mut f.ghost_colors, 0.0..=1.0, d.ghost_colors);
+            widgets::slider(ui, "Color fringes", "Chromatic aberration at the edges of ghosts and ring", &mut f.chromatic, 0.0..=3.0, d.chromatic);
+        });
+    });
+    group(ui, "Ring", "A halo ring around the light", &mut |ui| {
+        widgets::grid(ui, "fl-ring", |ui| {
+            widgets::slider(ui, "Ring", "Brightness of the ring (0 = none)", &mut f.ring, 0.0..=3.0, d.ring);
+            widgets::slider_log(ui, "Radius", "Radius of the ring (share of the image height)", &mut f.ring_size, 0.01..=2.0, d.ring_size);
+            widgets::slider_log(ui, "Width", "Width of the ring (share of the image height)", &mut f.ring_width, 0.001..=0.3, d.ring_width);
+            widgets::slider(ui, "Rainbow", "0: in the light's color; 1: rainbow colors", &mut f.rainbow, 0.0..=1.0, d.rainbow);
+        });
+    });
+    group(ui, "Lens dirt", "Dust and smudges on the lens that light up near the light", &mut |ui| {
+        widgets::grid(ui, "fl-dirt", |ui| {
+            widgets::slider(ui, "Dirt", "Brightness of the dirt (0 = clean lens)", &mut f.dirt, 0.0..=3.0, d.dirt);
+            widgets::slider(ui, "Reach", "How far from the light the dirt lights up (share of the image height)", &mut f.dirt_reach, 0.05..=3.0, d.dirt_reach);
+        });
+    });
 }
 
 /// Placing helpers of positional lights.

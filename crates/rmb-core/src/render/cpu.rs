@@ -815,6 +815,41 @@ pub fn pick(scene: &Scene, sx: f64, sy: f64, width: u32, height: u32) -> Option<
     hit.map(|h| (h.t, h.pos))
 }
 
+/// Share (0..1) of a small disc around a light that the camera sees past the fractal: rays to
+/// the light's position (`directional`: toward the direction `p`) and to points around it
+/// within `radius` (in units of the view height).
+pub fn light_visibility(scene: &Scene, p: V3, directional: bool, radius: f64) -> f64 {
+    let prog = Program::new(&scene.fractal, &scene.cut);
+    let shader = Shader::new(scene, &prog, 64, 64);
+    let mut ev = prog.evaluator();
+    let cam = &scene.camera;
+    let o = cam.position;
+    let (base, dist) = if directional { (p.normalize(), scene.march.max_distance) } else { ((p - o).normalize(), (p - o).length()) };
+    let spread = radius * 2.0 * cam.tan_half_fov();
+    let (right, up) = {
+        let r = base.cross(cam.up);
+        let r = if r.length() > 1e-9 { r.normalize() } else { cam.right };
+        (r, r.cross(base).normalize())
+    };
+    let mut seen = 0;
+    const N: usize = 13;
+    for k in 0..N {
+        let (ox, oy) = if k == 0 {
+            (0.0, 0.0)
+        } else {
+            let ring = if k <= 6 { 0.5 } else { 1.0 };
+            let a = k as f64 * std::f64::consts::TAU / 6.0 + if k > 6 { 0.5 } else { 0.0 };
+            (ring * a.cos() * spread, ring * a.sin() * spread)
+        };
+        let d = (base + right * ox + up * oy).normalize();
+        let (hit, _, _) = shader.march(&mut ev, o, d, super::start_distance(scene), dist, scene.march.max_steps);
+        if hit.is_none_or(|h| h.t >= dist * 0.999) {
+            seen += 1;
+        }
+    }
+    seen as f64 / N as f64
+}
+
 /// Distance estimate at the camera position (navigation speed).
 pub fn distance_at_camera(scene: &Scene) -> f64 {
     let prog = Program::new(&scene.fractal, &scene.cut);

@@ -326,7 +326,7 @@ impl Export {
                 !ca.load(Ordering::Relaxed)
             })
             .and_then(|img| {
-                let (rgba, outcome) = img.finish(&sc.post);
+                let (rgba, outcome) = img.finish_scene(&sc);
                 let note = if sc.post.denoise { format!(", {}", outcome.describe()) } else { String::new() };
                 rmb_core::io::image::write_png(&path, w, h, &rgba, Some(&sc)).map(|_| (path.clone(), note))
             });

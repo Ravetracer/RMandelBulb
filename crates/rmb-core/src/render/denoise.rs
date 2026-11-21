@@ -77,6 +77,32 @@ impl HdrImage {
     }
 
     /// Denoises if `post` asks for it, then post processes into RGBA8.
+    /// Adds the lens flares of `scene`'s lights (after denoising: they are clean already).
+    pub fn add_flares(&mut self, scene: &crate::Scene) {
+        if let Some(fl) = crate::flare::layer(scene, self.width, self.height) {
+            for (c, f) in self.color.as_chunks_mut::<3>().0.iter_mut().zip(&fl) {
+                for i in 0..3 {
+                    c[i] += f[i];
+                }
+            }
+        }
+    }
+
+    /// Like [`HdrImage::finish`] with the scene's post processing and its lens flares.
+    pub fn finish_scene(mut self, scene: &crate::Scene) -> (Vec<u8>, Outcome) {
+        let post = &scene.post;
+        let outcome = if !post.denoise || post.denoise_blend <= 0.0 {
+            Outcome::Off
+        } else {
+            match self.denoise(post.denoise_blend) {
+                Ok(d) => Outcome::Denoised(d),
+                Err(e) => Outcome::Failed(e),
+            }
+        };
+        self.add_flares(scene);
+        (self.to_rgba8(post), outcome)
+    }
+
     pub fn finish(mut self, post: &Post) -> (Vec<u8>, Outcome) {
         let outcome = if !post.denoise || post.denoise_blend <= 0.0 {
             Outcome::Off

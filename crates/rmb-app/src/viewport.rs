@@ -91,7 +91,15 @@ pub struct Viewport {
     pub light_clicked: bool,
     /// Gizmo handle being dragged.
     gizmo: Option<crate::gizmos::Handle>,
+    /// Lens flare layer being computed, and what the shown one belongs to.
+    flare_job: Option<(FlareKey, mpsc::Receiver<FlareLayer>)>,
+    flare_key: Option<FlareKey>,
 }
+
+/// What a lens flare layer shows: scene and size.
+type FlareKey = (Scene, (u32, u32));
+/// A computed lens flare layer (None: no flare in view).
+type FlareLayer = Option<Vec<[f32; 3]>>;
 
 /// The animation's camera path, drawn over the view.
 pub struct PathOverlay {
@@ -146,6 +154,8 @@ impl Viewport {
             selected_light: 0,
             light_clicked: false,
             gizmo: None,
+            flare_job: None,
+            flare_key: None,
         }
     }
 
@@ -258,6 +268,7 @@ impl Viewport {
         self.render_size = size;
         let preview = self.preview.take();
         let shown = preview.as_ref().map(|p| &p.0).unwrap_or(&doc.scene);
+        self.update_flare(ui.ctx(), shown, size);
         let mut texture = if self.gpu.is_some() { self.update_gpu(frame, shown, size, fast, prefs) } else { self.update_cpu(ui.ctx(), shown, size) };
         if self.show_denoised
             && !fast
@@ -289,6 +300,41 @@ impl Viewport {
         self.hud(ui, rect, doc);
         if !self.paused && (self.navigating() || self.compiling() || self.samples() < prefs.preview_samples) {
             ui.ctx().request_repaint();
+        }
+    }
+
+    /// Keeps the GPU's lens flare layer up to date (computed on a worker thread; the old layer
+    /// stays until the new one is ready).
+    fn update_flare(&mut self, ctx: &egui::Context, scene: &Scene, size: (u32, u32)) {
+        let Some(gpu) = self.gpu.as_mut() else { return };
+        if let Some((key, rx)) = &self.flare_job {
+            match rx.try_recv() {
+                Ok(layer) => {
+                    gpu.set_flare(layer.as_ref().map(|l| (key.1.0, key.1.1, l.as_slice())));
+                    self.flare_key = Some(key.clone());
+                    self.flare_job = None;
+                }
+                Err(mpsc::TryRecvError::Empty) => ctx.request_repaint_after(Duration::from_millis(30)),
+                Err(mpsc::TryRecvError::Disconnected) => self.flare_job = None,
+            }
+        }
+        if !scene.lighting.lights.iter().any(|l| l.enabled && l.flare.enabled) {
+            if self.flare_key.is_some() || self.flare_job.is_some() {
+                gpu.set_flare(None);
+                self.flare_key = None;
+                self.flare_job = None;
+            }
+            return;
+        }
+        if self.flare_job.is_none() && self.flare_key.as_ref().is_none_or(|(s, z)| s != scene || *z != size) {
+            let (tx, rx) = mpsc::channel();
+            let sc = scene.clone();
+            let c = ctx.clone();
+            std::thread::spawn(move || {
+                let _ = tx.send(rmb_core::flare::layer(&sc, size.0, size.1));
+                c.request_repaint();
+            });
+            self.flare_job = Some(((scene.clone(), size), rx));
         }
     }
 
@@ -360,14 +406,14 @@ impl Viewport {
             && let Some(img) = gpu.read_hdr()
         {
             let (tx, rx) = mpsc::channel();
-            let mut post = scene.post.clone();
-            post.denoise = true;
-            if post.denoise_blend <= 0.0 {
-                post.denoise_blend = 1.0;
+            let mut sc = scene.clone();
+            sc.post.denoise = true;
+            if sc.post.denoise_blend <= 0.0 {
+                sc.post.denoise_blend = 1.0;
             }
             let c = ctx.clone();
             std::thread::spawn(move || {
-                let _ = tx.send(img.finish(&post));
+                let _ = tx.send(img.finish_scene(&sc));
                 c.request_repaint();
             });
             self.denoise_job = Some(DenoiseJob { key: (scene.clone(), size, n), rx });

@@ -528,6 +528,8 @@ pub struct Light {
     /// Glow radius: world units for point lights, degrees for directional lights.
     pub glow_size: f64,
     pub glow_intensity: f64,
+    /// Lens flare of this light.
+    pub flare: crate::flare::LensFlare,
 }
 
 impl Default for Light {
@@ -555,6 +557,7 @@ impl Default for Light {
             glow_shape: GlowShape::Soft,
             glow_size: 0.1,
             glow_intensity: 1.0,
+            flare: crate::flare::LensFlare::default(),
         }
     }
 }

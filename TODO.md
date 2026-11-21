@@ -46,10 +46,11 @@
   - [ ] Motion blur, audio track
 - [x] More light sources: spot, point, area, line (up to eight lights; area and line lights
       sampled per pass for soft shadows, visible as panel and tube)
-- [ ] Lens flares for light sources with extensive options (lens reflections, shape, color,
-      size, main flare shape such as anamorphic or standard, …)
-  - [ ] Must look professional, not like a cheap implementation
-  - [ ] Reference images: `../_dev`
+- [x] Lens flares for light sources with extensive options (glow and haze, diffraction star and
+      spikes, anamorphic streak with sparkles, aperture ghosts with coating tints and color
+      fringes, rainbow ring, lens dirt; presets; fade when hidden, in fog or off screen)
+  - [ ] Compare with the reference images in `../_dev` once more after use; possible
+        additions: light rays through fog (god rays), bokeh-textured ghosts, custom ghost layouts
 - [ ] Glowing palette colors that produce a shimmering/glow effect
 - [ ] Palette colors that act as light sources in that color (strength, glow, …)
   - [ ] Like emission in MagicaVoxel:

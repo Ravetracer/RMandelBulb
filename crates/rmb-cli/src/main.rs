@@ -227,7 +227,7 @@ fn render(args: &[String]) -> Result<(), String> {
         eprintln!();
         r
     };
-    let (rgba, denoised) = image.finish(&scene.post);
+    let (rgba, denoised) = image.finish_scene(&scene);
     if scene.post.denoise {
         eprintln!("{}", denoised.describe());
     }

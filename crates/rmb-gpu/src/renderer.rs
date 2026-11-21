@@ -328,6 +328,9 @@ pub struct GpuRenderer {
     lut: wgpu::Buffer,
     /// Mandelbulb3D maps of the scene (march.wgsl `maps`) and their numbers.
     maps: wgpu::Buffer,
+    /// Lens flare layer added before the post processing (RGB + pad per pixel) and its size.
+    flare: wgpu::Buffer,
+    flare_size: (u32, u32),
     map_numbers: Vec<i32>,
     /// Background image file in the maps buffer.
     map_background: String,
@@ -401,6 +404,8 @@ impl GpuRenderer {
             prm: storage_buffer(device, "prm", 1024),
             lut: storage_buffer(device, "lut", ((rmb_core::gradient::LUT_SIZE * 4 + 128) * 16) as u64),
             maps: storage_buffer(device, "maps", 16),
+            flare: storage_buffer(device, "flare", 16),
+            flare_size: (0, 0),
             map_numbers: Vec::new(),
             map_background: String::new(),
             maps_generation: rmb_core::maps::generation(),
@@ -479,7 +484,9 @@ impl GpuRenderer {
             self.map_background = "\u{0}".into();
             self.key = None;
         }
-        let post = post_uniforms(scene, width, height);
+        let mut post = post_uniforms(scene, width, height);
+        post.size[2] = self.flare_size.0;
+        post.size[3] = self.flare_size.1;
         if self.post.is_none_or(|p| bytemuck::bytes_of(&p) != bytemuck::bytes_of(&post)) {
             self.ctx.queue.write_buffer(&self.post_buf, 0, bytemuck::bytes_of(&post));
             self.post = Some(post);
@@ -708,6 +715,31 @@ impl GpuRenderer {
         worked
     }
 
+    /// Sets the lens flare layer added to the image before the post processing (`None`: no
+    /// flares); it is stretched over the image if its size differs.
+    pub fn set_flare(&mut self, layer: Option<(u32, u32, &[[f32; 3]])>) {
+        let size = match layer {
+            Some((w, h, px)) if px.len() == (w * h) as usize && w > 0 && h > 0 => {
+                let data: Vec<[f32; 4]> = px.iter().map(|c| [c[0], c[1], c[2], 0.0]).collect();
+                let bytes = (data.len() * 16) as u64;
+                if self.flare.size() < bytes {
+                    self.flare = storage_buffer(&self.ctx.device, "flare", bytes.next_power_of_two());
+                }
+                self.ctx.queue.write_buffer(&self.flare, 0, bytemuck::cast_slice(&data));
+                (w, h)
+            }
+            _ => (0, 0),
+        };
+        self.flare_size = size;
+        if let Some(mut p) = self.post {
+            p.size[2] = size.0;
+            p.size[3] = size.1;
+            self.ctx.queue.write_buffer(&self.post_buf, 0, bytemuck::bytes_of(&p));
+            self.post = Some(p);
+        }
+        self.dirty_display = true;
+    }
+
     /// Updates the output texture from the accumulation if needed.
     pub fn display(&mut self) {
         if !self.dirty_display {
@@ -727,6 +759,7 @@ impl GpuRenderer {
                 wgpu::BindGroupEntry { binding: 0, resource: self.post_buf.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: t.accum.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&t.view) },
+                wgpu::BindGroupEntry { binding: 3, resource: self.flare.as_entire_binding() },
             ],
         });
         let mut enc = device.create_command_encoder(&Default::default());
@@ -910,7 +943,7 @@ pub fn render_animation(
                 r.hdr_image()
             }
         };
-        let (rgba, _) = image.finish(&scene.post);
+        let (rgba, _) = image.finish_scene(&scene);
         on_frame(f, rgba)?;
         progress((done + 1) as f32 / total);
     }
