@@ -272,7 +272,14 @@ pub enum Stmt {
     If(Expr, Vec<Stmt>, Vec<Stmt>),
     /// `for v in a..b`: counter local, start, end (exclusive), body.
     For(usize, i64, i64, Vec<Stmt>),
+    /// `loop { … }`: repeats until `break` (capped at `LOOP_CAP` rounds).
+    Loop(Vec<Stmt>),
+    Break,
+    Continue,
 }
+
+/// Rounds a `loop` runs at most (a formula must never hang the GPU).
+pub const LOOP_CAP: u32 = 4096;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum DeKind {
@@ -373,6 +380,8 @@ struct Scope<'a> {
     local_names: Vec<String>,
     /// In `init`: top-level `let`s define constants.
     init: bool,
+    /// Nesting depth of loops (`break` / `continue` are allowed inside).
+    loops: usize,
 }
 
 impl Scope<'_> {
@@ -553,14 +562,14 @@ impl Parser {
                     f.params.push(ParamDef { ident, label, default, min, max, kind });
                 }
                 "init" => {
-                    let mut sc = Scope { params: &f.params, derived: Vec::new(), frames: vec![Vec::new()], local_names: Vec::new(), init: true };
+                    let mut sc = Scope { params: &f.params, derived: Vec::new(), frames: vec![Vec::new()], local_names: Vec::new(), init: true, loops: 0 };
                     self.expect("{")?;
                     f.init = self.block_body(&mut sc)?;
                     f.derived = sc.derived;
                     f.init_locals = sc.local_names.len();
                 }
                 "iter" => {
-                    let mut sc = Scope { params: &f.params, derived: f.derived.clone(), frames: vec![Vec::new()], local_names: Vec::new(), init: false };
+                    let mut sc = Scope { params: &f.params, derived: f.derived.clone(), frames: vec![Vec::new()], local_names: Vec::new(), init: false, loops: 0 };
                     self.expect("{")?;
                     f.iter = self.block_body(&mut sc)?;
                     f.locals = sc.local_names;
@@ -623,9 +632,23 @@ impl Parser {
                 self.expect("{")?;
                 sc.frames.push(Vec::new());
                 let VarRef::Local(idx) = sc.declare(&n) else { return self.err("loop counter must be local") };
+                sc.loops += 1;
                 let body = self.block_body(sc);
+                sc.loops -= 1;
                 sc.frames.pop();
                 Ok(Stmt::For(idx, a, b, body?))
+            }
+            "loop" => {
+                sc.loops += 1;
+                let body = self.nested_block(sc);
+                sc.loops -= 1;
+                Ok(Stmt::Loop(body?))
+            }
+            "break" | "continue" => {
+                if sc.loops == 0 {
+                    return self.err(format!("'{name}' outside a loop"));
+                }
+                Ok(if name == "break" { Stmt::Break } else { Stmt::Continue })
             }
             _ => {
                 let target = sc.lookup(&name).ok_or_else(|| LangError { line: self.line(), msg: format!("unknown variable '{name}'") })?;
@@ -792,7 +815,8 @@ pub fn uses_state(stmts: &[Stmt], idx: usize) -> bool {
     stmts.iter().any(|s| match s {
         Stmt::Let(v, e) | Stmt::Assign(v, e) => *v == VarRef::State(idx) || ex(e, idx),
         Stmt::If(c, t, e) => ex(c, idx) || uses_state(t, idx) || uses_state(e, idx),
-        Stmt::For(_, _, _, b) => uses_state(b, idx),
+        Stmt::For(_, _, _, b) | Stmt::Loop(b) => uses_state(b, idx),
+        Stmt::Break | Stmt::Continue => false,
     })
 }
 
@@ -837,6 +861,29 @@ mod tests {
         assert_eq!(lib[0].derived, vec!["s2".to_string()]);
         assert_eq!(lib[0].locals, vec!["r2".to_string(), "k".to_string()]);
         assert_eq!(lib[0].de, DeKind::Linear);
+    }
+
+    #[test]
+    fn loops_break_and_continue() {
+        let src = r#"
+            formula "L" {
+                iter {
+                    let k = 0.0
+                    loop {
+                        k += 1.0
+                        if k < 3.0 { continue }
+                        x += k
+                        if k >= 5.0 { break }
+                    }
+                }
+            }"#;
+        let def = &parse_library(src).unwrap()[0];
+        let cpu = crate::formula::cpu::CpuFormula::compile(def);
+        let mut regs = vec![0.0; cpu.iter_regs];
+        let _ = (cpu.iter)(&mut regs);
+        // x = 3 + 4 + 5
+        assert_eq!(regs[0], 12.0);
+        assert!(parse_library(r#"formula "B" { iter { break } }"#).is_err());
     }
 
     #[test]

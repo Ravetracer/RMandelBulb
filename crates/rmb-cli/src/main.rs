@@ -13,7 +13,7 @@ USAGE:
   rmb-cli convert <scene> -o out.rmb       Import (e.g. a Mandelbulb3D .m3p) and save as .rmb
   rmb-cli info <scene>                     Formulas, camera and import notes
   rmb-cli formulas                         List all formulas
-  rmb-cli m3f <dir|file> [-o out.mbf] [-v] Translate Mandelbulb3D formulas (.m3f) into the formula
+  rmb-cli m3f <dir|file>… [-o out.mbf] [-v] Translate Mandelbulb3D formulas (.m3f) into the formula
                                            language; writes all that translate into one file
 
 <scene> is a .rmb file, a Mandelbulb3D .m3p file, a text file with Mandelbulb3D clipboard
@@ -165,7 +165,7 @@ fn formulas() {
 }
 
 fn m3f(args: &[String]) -> Result<(), String> {
-    let mut input = None;
+    let mut inputs = Vec::new();
     let mut output = None;
     let mut verbose = false;
     let mut it = args.iter();
@@ -173,16 +173,22 @@ fn m3f(args: &[String]) -> Result<(), String> {
         match a.as_str() {
             "-o" => output = it.next().map(PathBuf::from),
             "-v" => verbose = true,
-            s => input = Some(PathBuf::from(s)),
+            s => inputs.push(PathBuf::from(s)),
         }
     }
-    let input = input.ok_or("no folder or file given")?;
-    let mut files: Vec<PathBuf> = if input.is_dir() {
-        std::fs::read_dir(&input).map_err(|e| e.to_string())?.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("m3f"))).collect()
-    } else {
-        vec![input.clone()]
-    };
-    files.sort();
+    if inputs.is_empty() {
+        return Err("no folder or file given".into());
+    }
+    let mut files: Vec<PathBuf> = Vec::new();
+    for input in &inputs {
+        if input.is_dir() {
+            let mut f: Vec<PathBuf> = std::fs::read_dir(input).map_err(|e| e.to_string())?.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("m3f"))).collect();
+            f.sort();
+            files.extend(f);
+        } else {
+            files.push(input.clone());
+        }
+    }
     let mut ok = String::new();
     let (mut n_ok, mut n_fail) = (0, 0);
     let mut reasons: std::collections::BTreeMap<String, Vec<String>> = Default::default();
@@ -190,7 +196,12 @@ fn m3f(args: &[String]) -> Result<(), String> {
         let name = f.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
         let res = rmb_core::formula::m3f::translate_file(f).and_then(|t| match rmb_core::formula::lang::parse_library(&t.source) {
             Ok(_) => Ok(t.source),
-            Err(e) => Err(format!("generated source does not parse: {e}")),
+            Err(e) => {
+                if verbose && files.len() == 1 {
+                    println!("{}", t.source);
+                }
+                Err(format!("generated source does not parse: {e}"))
+            }
         });
         match res {
             Ok(src) => {

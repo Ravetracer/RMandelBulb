@@ -9,7 +9,12 @@ use super::lang::{BinOp, Expr, FormulaDef, Func, STATE_COUNT, Stmt, VarRef};
 
 pub type NumFn = Box<dyn Fn(&[f64]) -> f64 + Send + Sync>;
 pub type BoolFn = Box<dyn Fn(&[f64]) -> bool + Send + Sync>;
-pub type StmtFn = Box<dyn Fn(&mut [f64]) + Send + Sync>;
+/// A compiled statement; returns the control flow: `NEXT`, `BREAK` or `CONTINUE`.
+pub type StmtFn = Box<dyn Fn(&mut [f64]) -> u8 + Send + Sync>;
+
+pub const NEXT: u8 = 0;
+pub const BREAK: u8 = 1;
+pub const CONTINUE: u8 = 2;
 
 /// Register offsets of the three variable classes.
 #[derive(Clone, Copy)]
@@ -61,7 +66,7 @@ impl CpuFormula {
         for (r, p) in regs.iter_mut().zip(params.iter().take(self.n_params)) {
             *r = *p;
         }
-        (self.init)(&mut regs);
+        let _ = (self.init)(&mut regs);
         regs.truncate(self.n_const);
         regs
     }
@@ -70,12 +75,16 @@ impl CpuFormula {
 fn block(stmts: &[Stmt], l: Layout) -> StmtFn {
     let fns: Vec<StmtFn> = stmts.iter().map(|s| stmt(s, l)).collect();
     match fns.len() {
-        0 => Box::new(|_| {}),
-        1 => fns.into_iter().next().unwrap_or_else(|| Box::new(|_| {})),
+        0 => Box::new(|_| NEXT),
+        1 => fns.into_iter().next().unwrap_or_else(|| Box::new(|_| NEXT)),
         _ => Box::new(move |r| {
             for f in &fns {
-                f(r);
+                let flow = f(r);
+                if flow != NEXT {
+                    return flow;
+                }
             }
+            NEXT
         }),
     }
 }
@@ -88,17 +97,14 @@ fn stmt(s: &Stmt, l: Layout) -> StmtFn {
             Box::new(move |r| {
                 let v = e(r);
                 r[k] = v;
+                NEXT
             })
         }
         Stmt::If(c, t, e) => {
             let c = cond(c, l);
             let t = block(t, l);
             if e.is_empty() {
-                Box::new(move |r| {
-                    if c(r) {
-                        t(r)
-                    }
-                })
+                Box::new(move |r| if c(r) { t(r) } else { NEXT })
             } else {
                 let e = block(e, l);
                 Box::new(move |r| if c(r) { t(r) } else { e(r) })
@@ -111,10 +117,26 @@ fn stmt(s: &Stmt, l: Layout) -> StmtFn {
             Box::new(move |r| {
                 for n in a..b {
                     r[k] = n as f64;
-                    body(r);
+                    if body(r) == BREAK {
+                        break;
+                    }
                 }
+                NEXT
             })
         }
+        Stmt::Loop(body) => {
+            let body = block(body, l);
+            Box::new(move |r| {
+                for _ in 0..super::lang::LOOP_CAP {
+                    if body(r) == BREAK {
+                        break;
+                    }
+                }
+                NEXT
+            })
+        }
+        Stmt::Break => Box::new(|_| BREAK),
+        Stmt::Continue => Box::new(|_| CONTINUE),
     }
 }
 

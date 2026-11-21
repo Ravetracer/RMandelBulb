@@ -24,12 +24,14 @@ struct Emitter<'a> {
     f: &'a FormulaDef,
     out: String,
     indent: usize,
+    /// Loops emitted so far (unique counter names).
+    loops: usize,
 }
 
 /// Emits the body of one iteration of `f` (a WGSL block, without braces). `offset` is the index
 /// of the formula's first constant in `prm`.
 pub fn emit_iter(f: &FormulaDef, offset: usize, indent: usize) -> String {
-    let mut e = Emitter { f, out: String::new(), indent };
+    let mut e = Emitter { f, out: String::new(), indent, loops: 0 };
     let mut used = vec![false; f.constant_count()];
     mark_params(&f.iter, &mut used);
     for (k, u) in used.iter().enumerate() {
@@ -65,7 +67,8 @@ fn mark_params(stmts: &[Stmt], used: &mut [bool]) {
                 mark_params(t, used);
                 mark_params(e, used);
             }
-            Stmt::For(_, _, _, b) => mark_params(b, used),
+            Stmt::For(_, _, _, b) | Stmt::Loop(b) => mark_params(b, used),
+            Stmt::Break | Stmt::Continue => {}
         }
     }
 }
@@ -107,6 +110,22 @@ impl Emitter<'_> {
                 }
                 self.line("}");
             }
+            Stmt::Loop(body) => {
+                self.loops += 1;
+                let c = format!("lc{}", self.loops);
+                self.line(&format!("var {c}: u32 = 0u;"));
+                self.line("loop {");
+                self.indent += 1;
+                self.line(&format!("{c} += 1u;"));
+                self.line(&format!("if ({c} > {}u) {{", super::lang::LOOP_CAP));
+                self.line("    break;");
+                self.line("}");
+                self.indent -= 1;
+                self.block(body);
+                self.line("}");
+            }
+            Stmt::Break => self.line("break;"),
+            Stmt::Continue => self.line("continue;"),
             Stmt::For(k, a, b, body) => {
                 let n = self.var(VarRef::Local(*k));
                 let l = format!("for (var {n}: fl = {}; {n} < {}; {n} += 1.0) {{", lit(*a as f64), lit(*b as f64));

@@ -8,6 +8,7 @@
 //! formula-language source by symbolic execution (`x86.rs`). The result compiles for the GPU
 //! and the CPU like any other formula.
 
+mod pascal;
 mod x86;
 
 use std::fmt::Write;
@@ -36,8 +37,12 @@ pub struct M3f {
     pub constants: Vec<u8>,
     pub code: Vec<u8>,
     pub description: String,
-    /// The formula is Pascal source for Mandelbulb3D's JIT compiler (not supported yet).
+    /// The formula is Pascal source for Mandelbulb3D's JIT compiler.
     pub has_source: bool,
+    /// The Pascal source (`[SOURCE]` section).
+    pub source: String,
+    /// Named constants (`.Double name = value` in `[CONSTANTS]`).
+    pub named_constants: Vec<(String, f64)>,
 }
 
 const TYPE_NAMES: [&str; 23] = [
@@ -100,13 +105,20 @@ impl M3f {
                 continue;
             }
             if line.is_empty() {
+                if section == "[SOURCE]" {
+                    m.source.push('\n');
+                }
                 continue;
             }
             match section.as_str() {
                 "[OPTIONS]" => m.option_line(line),
                 "[CONSTANTS]" => m.constant_line(line),
                 "[CODE]" => code_hex.extend(line.chars().filter(|c| c.is_ascii_hexdigit())),
-                "[SOURCE]" => m.has_source = true,
+                "[SOURCE]" => {
+                    m.has_source = true;
+                    m.source.push_str(raw);
+                    m.source.push('\n');
+                }
                 _ => {}
             }
         }
@@ -116,6 +128,8 @@ impl M3f {
         }
         let d = desc.join("\n");
         m.description = d.trim().trim_start_matches("Description:").trim().to_string();
+        // A [SOURCE] section ends at the next section header; drop the header lines kept.
+        m.source = m.source.lines().filter(|l| !l.trim().starts_with('[')).collect::<Vec<_>>().join("\n");
         if m.code.is_empty() && !m.has_source {
             return Err("no [CODE] section".into());
         }
@@ -189,6 +203,13 @@ impl M3f {
     fn constant_line(&mut self, line: &str) {
         let upper = line.trim_start_matches('.').to_uppercase();
         let last = line.rsplit(|c: char| c.is_whitespace() || c == '=').find(|s| !s.is_empty()).unwrap_or("0");
+        if line.starts_with('.')
+            && let Some((lhs, _)) = line.split_once('=')
+            && let Some(name) = lhs.split_whitespace().nth(1)
+        {
+            let v = if upper.starts_with("INT") { parse_int(last) as f64 } else { parse_num(last) };
+            self.named_constants.push((name.to_string(), v));
+        }
         let mut slot = [0u8; 8];
         if upper.starts_with("DOUBLE") {
             slot = parse_num(last).to_le_bytes();
@@ -485,14 +506,16 @@ pub struct Translated {
 
 /// Translates a parsed `.m3f` into formula-language source.
 pub fn translate(m: &M3f) -> Result<Translated, String> {
-    if m.has_source {
-        return Err("Pascal source formula (JIT) is not supported yet".into());
-    }
+
     if m.de_option > 22 {
         return Err(format!("unknown DE option {}", m.de_option));
     }
-    let layout = memory_layout(&m.options);
-    let body = x86::translate(m, &layout)?;
+    let body = if m.has_source {
+        pascal::translate(m)?
+    } else {
+        let layout = memory_layout(&m.options);
+        x86::translate(m, &layout)?
+    };
     let mut s = String::new();
     let category = if m.de_option >= 20 {
         "MB3D dIFS"

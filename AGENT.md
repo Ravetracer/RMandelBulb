@@ -67,7 +67,11 @@ cargo clippy -j 8 --workspace --all-targets
   (`svN`), sign-bit writes become abs/negate/copysign, small-range table reads become `sel`
   chains. dIFS formulas (DEoption 20-22: `esi` = record + 88, `edi` = parameters) translate to
   `de difs`; the hybrid then takes the smallest `rout / a0` (VaryScale) over the iterations.
-  Not supported yet: loops, data-dependent table lookups, map functions, JIT Pascal formulas.
+  Loops become `loop`/`break`/`continue` (natural loops by back edges; registers that change in
+  the loop become variables, found by retrying). Value sets of integer indexes turn table
+  accesses into `sel` / `if` chains. JIT formulas (`[SOURCE]`, Pascal) go through `pascal.rs`.
+  Not supported: map functions, formulas that switch the hybrid's formulas, random numbers.
+- Regenerate from both folders: `rmb-cli m3f ../mb3d/M3Formulas ../mb3d/EM_JIT_M3Formulas -o …`.
 - Regenerate without piping the output into `head`: a closed pipe kills `rmb-cli` before it
   writes the file.
 

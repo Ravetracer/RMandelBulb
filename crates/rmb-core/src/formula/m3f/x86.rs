@@ -45,6 +45,9 @@ enum IV {
     /// Depends on a compare: one value per outcome. The second field names the compare: 0 =
     /// the FPU compare (`fc_a` vs `fc_b`), n = sign test `sv<n>` vs 0.
     Out([i64; OUTCOMES], u32),
+    /// Data in the high 16 bits (the variable holds it unshifted) and per-outcome values in
+    /// the low 16 bits: `shl eax, 16` keeps an integer there while `fnstsw ax` uses ax.
+    HiLo(String, [i64; OUTCOMES], u32),
     Undef,
 }
 
@@ -61,6 +64,8 @@ enum Flags {
     Out([u32; OUTCOMES], u32),
     /// `cmp a, b` on data.
     Cmp(String, String),
+    /// Result of integer arithmetic on data: ZF/SF from the result, CF as a condition if known.
+    Data(String, Option<String>),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -75,14 +80,31 @@ struct State {
     /// FPU status word compare bits (C0, C2, C3) per compare outcome.
     fpu_status: [i64; OUTCOMES],
     /// Known value range of integer data registers (after `and` with a low-bit mask).
-    ranges: [Option<(i64, i64)>; 8],
+    ranges: [Option<Vec<i64>>; 8],
 }
 
 #[derive(Clone, Debug)]
 enum S {
     Line(String),
     If(String, Vec<S>, Vec<S>),
+    Loop(Vec<S>),
 }
+
+/// A loop being translated: its header, its single exit and the canonical state at its entry
+/// (which every `continue` and `break` restores).
+struct LoopCtx {
+    header: usize,
+    exits: Vec<usize>,
+    entry: State,
+    /// Integer stack slots written inside the loop that hold the same variable at every
+    /// `break` so far (they stay known after the loop).
+    exit_stack: Option<BTreeMap<i64, IV>>,
+    /// x87 stack depth at each exit (all `break`s to one exit must agree).
+    exit_depths: Vec<Option<usize>>,
+}
+
+/// Marker error: a loop needs more registers as variables; the loop is translated again.
+const LOOP_RETRY: &str = "@loop-retry";
 
 /// CFG node: an instruction address in a call context.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -98,6 +120,8 @@ struct Cfg {
     index: HashMap<Node, usize>,
     succ: Vec<Vec<usize>>,
     ipdom: Vec<usize>,
+    /// Loop headers and their exit nodes (or why the loop cannot be structured).
+    loops: HashMap<usize, Result<Vec<usize>, String>>,
 }
 
 pub(crate) struct Tx<'a> {
@@ -116,6 +140,10 @@ pub(crate) struct Tx<'a> {
     /// Destination doubles whose low half was copied from another double (integer moves):
     /// destination -> source.
     half_copies: HashMap<String, String>,
+    /// Per loop header: registers and stack slots that change inside the loop.
+    loop_vars: HashMap<usize, HashSet<i64>>,
+    /// Stack variables that hold integers (never read as the bytes of a double).
+    int_stack_vars: HashSet<String>,
 }
 
 fn fmt_ins(i: &Instruction) -> String {
@@ -188,7 +216,7 @@ impl<'a> Tx<'a> {
     }
 
     fn build_cfg(ins: &HashMap<u32, Instruction>, code_len: usize) -> Res<Cfg> {
-        let mut cfg = Cfg { nodes: vec![Node { ctx: vec![u32::MAX], addr: u32::MAX }], index: HashMap::new(), succ: vec![Vec::new()], ipdom: Vec::new() };
+        let mut cfg = Cfg { nodes: vec![Node { ctx: vec![u32::MAX], addr: u32::MAX }], index: HashMap::new(), succ: vec![Vec::new()], ipdom: Vec::new(), loops: HashMap::new() };
         let start = Node { ctx: Vec::new(), addr: 0 };
         cfg.index.insert(start.clone(), 1);
         cfg.nodes.push(start);
@@ -253,8 +281,57 @@ impl<'a> Tx<'a> {
             }
         }
         cfg.ipdom = post_dominators(&cfg.succ)?;
+        cfg.loops = natural_loops(&cfg.succ);
         Ok(cfg)
     }
+}
+
+/// Natural loops: headers (targets of back edges) and their single exit node.
+fn natural_loops(succ: &[Vec<usize>]) -> HashMap<usize, Result<Vec<usize>, String>> {
+    let n = succ.len();
+    // Back edges by depth-first search from the entry (node 1).
+    let mut latches: HashMap<usize, Vec<usize>> = HashMap::new();
+    let mut state = vec![0u8; n]; // 0 new, 1 on stack, 2 done
+    let mut stack = vec![(1usize, 0usize)];
+    state[1] = 1;
+    while let Some((v, k)) = stack.pop() {
+        if k < succ[v].len() {
+            stack.push((v, k + 1));
+            let w = succ[v][k];
+            match state[w] {
+                0 => {
+                    state[w] = 1;
+                    stack.push((w, 0));
+                }
+                1 => latches.entry(w).or_default().push(v),
+                _ => {}
+            }
+        } else {
+            state[v] = 2;
+        }
+    }
+    let mut pred = vec![Vec::new(); n];
+    for (a, ss) in succ.iter().enumerate() {
+        for &b in ss {
+            pred[b].push(a);
+        }
+    }
+    let mut out = HashMap::new();
+    for (h, ls) in latches {
+        let mut body: HashSet<usize> = HashSet::from([h]);
+        let mut todo = ls.clone();
+        while let Some(v) = todo.pop() {
+            if body.insert(v) {
+                todo.extend(pred[v].iter().copied());
+            }
+        }
+        let mut exits: Vec<usize> = body.iter().flat_map(|v| succ[*v].iter().copied()).filter(|w| !body.contains(w)).collect();
+        exits.sort_unstable();
+        exits.dedup();
+        let r = if exits.is_empty() { Err("endless loop".to_string()) } else { Ok(exits) };
+        out.insert(h, r);
+    }
+    out
 }
 
 /// Immediate post-dominators (Cooper/Harvey/Kennedy on the reversed graph, root = EXIT).
@@ -334,7 +411,7 @@ pub(crate) fn translate(m: &M3f, layout: &[MemSlot]) -> Res<String> {
     }
     let ins = Tx::decode_all(&m.code);
     let cfg = Tx::build_cfg(&ins, m.code.len())?;
-    let mut tx = Tx { m, layout, ins, cfg, stack_vars: HashSet::new(), used_slots: BTreeMap::new(), views: 0, view_vars: HashMap::new(), half_copies: HashMap::new() };
+    let mut tx = Tx { m, layout, ins, cfg, stack_vars: HashSet::new(), used_slots: BTreeMap::new(), views: 0, view_vars: HashMap::new(), half_copies: HashMap::new(), loop_vars: HashMap::new(), int_stack_vars: HashSet::new() };
     let mut st = State {
         regs: [
             IV::Ptr(Region::Rec, -32),
@@ -351,7 +428,7 @@ pub(crate) fn translate(m: &M3f, layout: &[MemSlot]) -> Res<String> {
         stack_int: BTreeMap::new(),
         xmm_known: [[None; 2]; 8],
         fpu_status: [0; OUTCOMES],
-        ranges: [None; 8],
+        ranges: Default::default(),
     };
     if m.de_option >= 20 {
         // dIFS convention: esi = record + 88, edi = parameters, no arguments.
@@ -364,7 +441,7 @@ pub(crate) fn translate(m: &M3f, layout: &[MemSlot]) -> Res<String> {
     st.stack_int.insert(8, IV::Ptr(Region::Rec, -8));
     st.stack_int.insert(0, IV::Int(0x7fff_0000));
     let mut path = Vec::new();
-    let body = tx.region(1, EXIT, &mut st, &mut path)?;
+    let (body, _) = tx.region(1, EXIT, &mut st, &mut path, &mut Vec::new(), false)?;
 
     let mut out = String::new();
     if !tx.used_slots.is_empty() {
@@ -388,7 +465,7 @@ pub(crate) fn translate(m: &M3f, layout: &[MemSlot]) -> Res<String> {
     }
     out.push_str("    iter {\n");
     let mut decl: Vec<String> = (0..8).map(|k| format!("f{k}")).collect();
-    decl.extend(["fc_a", "fc_b", "ft"].iter().map(|s| s.to_string()));
+    decl.extend(["fc_a", "fc_b", "ft", "cfl"].iter().map(|s| s.to_string()));
     decl.extend(REG_NAMES.iter().map(|r| format!("r_{r}")));
     for k in 0..8 {
         decl.push(format!("x{k}l"));
@@ -417,6 +494,11 @@ fn render(stmts: &[S], indent: usize) -> String {
             S::Line(l) => {
                 let _ = writeln!(s, "{pad}{l}");
             }
+            S::Loop(b) => {
+                let _ = writeln!(s, "{pad}loop {{");
+                s.push_str(&render(b, indent + 1));
+                let _ = writeln!(s, "{pad}}}");
+            }
             S::If(c, t, e) => {
                 let _ = writeln!(s, "{pad}if {c} {{");
                 s.push_str(&render(t, indent + 1));
@@ -442,14 +524,123 @@ enum Mem {
 }
 
 impl Tx<'_> {
-    fn region(&mut self, mut node: usize, stop: usize, st: &mut State, path: &mut Vec<usize>) -> Res<Vec<S>> {
+    /// Translates from `node` until `stop`. Returns the statements and whether the region
+    /// ended in a return, `break` or `continue` (then `st` is meaningless).
+    fn region(&mut self, mut node: usize, stop: usize, st: &mut State, path: &mut Vec<usize>, loops: &mut Vec<LoopCtx>, mut body_start: bool) -> Res<(Vec<S>, bool)> {
         let mut out = Vec::new();
         let mut steps = 0;
-        while node != stop && node != EXIT {
-            steps += 1;
-            if steps > 50_000 || path.contains(&node) {
-                return Err("loops are not supported yet".into());
+        loop {
+            if let Some(lp) = loops.last() {
+                let exit = lp.exits.iter().position(|e| *e == node);
+                if exit.is_some() || (node == lp.header && !body_start) {
+                    self.loop_fixup(lp.header, &lp.entry, st, &mut out, exit.is_some())?;
+                    if let Some(k) = exit {
+                        let lp = loops.last_mut().ok_or("loop")?;
+                        match lp.exit_depths[k] {
+                            None => lp.exit_depths[k] = Some(st.depth),
+                            Some(d) if d != st.depth => return Err(format!("x87 stack depth differs at a loop exit ({d} / {})", st.depth)),
+                            _ => {}
+                        }
+                    }
+                    let lp = loops.last().ok_or("loop")?;
+                    if exit.is_some() {
+                        // Integer stack slots created in the loop: canonical variables, kept
+                        // after the loop if every exit has them.
+                        let mut kept = BTreeMap::new();
+                        for (off, v) in &st.stack_int {
+                            if lp.entry.stack_int.contains_key(off) {
+                                continue;
+                            }
+                            let name = stack_name(*off);
+                            match v {
+                                IV::Int(k) => out.push(S::Line(format!("{name} = {}", lit(*k as f64)))),
+                                IV::Var(x) if *x != name => out.push(S::Line(format!("{name} = {x}"))),
+                                IV::Var(_) => {}
+                                _ => continue,
+                            }
+                            self.stack_vars.insert(name.clone());
+                            kept.insert(*off, IV::Var(name));
+                        }
+                        let lp = loops.last_mut().ok_or("loop")?;
+                        lp.exit_stack = Some(match lp.exit_stack.take() {
+                            None => kept,
+                            Some(prev) => prev.into_iter().filter(|(k, v)| kept.get(k) == Some(v)).collect(),
+                        });
+                    }
+                    let lp = loops.last().ok_or("loop")?;
+                    if let Some(k) = exit {
+                        if lp.exits.len() > 1 {
+                            out.push(S::Line(format!("lx{} = {}", lp.header, lit(k as f64))));
+                            self.stack_vars.insert(format!("lx{}", lp.header));
+                        }
+                        out.push(S::Line("break".into()));
+                    } else {
+                        out.push(S::Line("continue".into()));
+                    }
+                    return Ok((out, true));
+                }
             }
+            if node == stop && !body_start {
+                return Ok((out, false));
+            }
+            if node == EXIT {
+                return Ok((out, true));
+            }
+            steps += 1;
+            if steps > 50_000 || (path.contains(&node) && !body_start) {
+                return Err("unstructured loop".into());
+            }
+            // Entering a loop.
+            if !body_start && let Some(exits) = self.cfg.loops.get(&node).cloned() {
+                let exits = exits?;
+                let saved = (st.clone(), out.len());
+                let mut tries = 0;
+                let mut exit_depths: Vec<Option<usize>> = Vec::new();
+                loop {
+                    tries += 1;
+                    let entry = self.loop_entry(node, st, &mut out);
+                    loops.push(LoopCtx { header: node, exits: exits.clone(), entry: entry.clone(), exit_stack: None, exit_depths: vec![None; exits.len()] });
+                    let mut body_st = entry.clone();
+                    let r = self.region(node, usize::MAX, &mut body_st, path, loops, true);
+                    let lp = loops.pop();
+                    match r {
+                        Ok((body, _)) => {
+                            out.push(S::Loop(body));
+                            *st = entry;
+                            if let Some(l) = lp {
+                                if let Some(kept) = l.exit_stack {
+                                    st.stack_int.extend(kept);
+                                }
+                                exit_depths = l.exit_depths;
+                            }
+                            break;
+                        }
+                        Err(e) if e == LOOP_RETRY && tries < 16 => {
+                            *st = saved.0.clone();
+                            out.truncate(saved.1);
+                        }
+                        Err(e) => return Err(e),
+                    }
+                }
+                if exits.len() == 1 {
+                    if let Some(Some(d)) = exit_depths.first() {
+                        st.depth = *d;
+                    }
+                    node = exits[0];
+                    continue;
+                }
+                // Several exits: continue on each one up to where they meet.
+                let join = self.cfg.ipdom[node];
+                let header = node;
+                let (stmts, term) = self.exit_chain(header, &exits, &exit_depths, 0, join, st, path, loops)?;
+                out.extend(stmts);
+                if term {
+                    return Ok((out, true));
+                }
+                node = join;
+                continue;
+            }
+            body_start = false;
             let addr = self.cfg.nodes[node].addr;
             let i = *self.ins.get(&addr).ok_or("missing instruction")?;
             let succ = self.cfg.succ[node].clone();
@@ -464,15 +655,18 @@ impl Tx<'_> {
                             path.push(node);
                             let mut st_t = st.clone();
                             let mut st_f = st.clone();
-                            let mut arm_t = self.region(succ[0], join, &mut st_t, path)?;
-                            let mut arm_f = self.region(succ[1], join, &mut st_f, path)?;
+                            let (mut arm_t, term_t) = self.region(succ[0], join, &mut st_t, path, loops, false)?;
+                            let (mut arm_f, term_f) = self.region(succ[1], join, &mut st_f, path, loops, false)?;
                             path.pop();
-                            if join == EXIT {
-                                // Both arms end in a return; no state after this.
-                                out.push(S::If(c, arm_t, arm_f));
-                                return Ok(out);
+                            match (term_t, term_f) {
+                                (true, true) => {
+                                    out.push(S::If(c, arm_t, arm_f));
+                                    return Ok((out, true));
+                                }
+                                (true, false) => *st = st_f,
+                                (false, true) => *st = st_t,
+                                (false, false) => *st = self.merge(&st_t, &st_f, &mut arm_t, &mut arm_f)?,
                             }
-                            *st = self.merge(&st_t, &st_f, &mut arm_t, &mut arm_f)?;
                             out.push(S::If(c, arm_t, arm_f));
                             node = join;
                         }
@@ -494,13 +688,152 @@ impl Tx<'_> {
             }
             node = succ.first().copied().unwrap_or(EXIT);
         }
-        Ok(out)
+    }
+
+    /// The code after a loop with several exits: `if lx == 0 { exit 0 } else if …`, each up to
+    /// `join`. On return `st` is the merged state after the join.
+    #[allow(clippy::too_many_arguments)]
+    fn exit_chain(&mut self, header: usize, exits: &[usize], depths: &[Option<usize>], k: usize, join: usize, st: &mut State, path: &mut Vec<usize>, loops: &mut Vec<LoopCtx>) -> Res<(Vec<S>, bool)> {
+        let entry = st.clone();
+        let mut sa = entry.clone();
+        if let Some(Some(d)) = depths.get(k) {
+            sa.depth = *d;
+        }
+        let (mut a, ta) = self.region(exits[k], join, &mut sa, path, loops, false)?;
+        if k + 1 == exits.len() {
+            *st = sa;
+            return Ok((a, ta));
+        }
+        let mut sb = entry;
+        let (mut b, tb) = self.exit_chain(header, exits, depths, k + 1, join, &mut sb, path, loops)?;
+        let cond = format!("lx{header} == {}", lit(k as f64));
+        let term = match (ta, tb) {
+            (true, true) => true,
+            (true, false) => {
+                *st = sb;
+                false
+            }
+            (false, true) => {
+                *st = sa;
+                false
+            }
+            (false, false) => {
+                *st = self.merge(&sa, &sb, &mut a, &mut b)?;
+                false
+            }
+        };
+        Ok((vec![S::If(cond, a, b)], term))
+    }
+
+    /// Key of a register (0..8) or stack slot (offset + 1000) in `loop_vars`.
+    fn loop_key_reg(r: usize) -> i64 {
+        r as i64
+    }
+
+    fn loop_key_stack(off: i64) -> i64 {
+        off + 100_000
+    }
+
+    /// The canonical state at a loop entry: values that change inside the loop live in
+    /// variables (`r_<reg>`, `m<offset>`); flags and xmm constants are forgotten.
+    fn loop_entry(&mut self, header: usize, st: &State, out: &mut Vec<S>) -> State {
+        let vars = self.loop_vars.get(&header).cloned().unwrap_or_default();
+        let mut e = st.clone();
+        #[allow(clippy::needless_range_loop)]
+        for r in 0..8 {
+            if !vars.contains(&Self::loop_key_reg(r)) {
+                continue;
+            }
+            let name = format!("r_{}", REG_NAMES[r]);
+            match &st.regs[r] {
+                IV::Int(k) => out.push(S::Line(format!("{name} = {}", lit(*k as f64)))),
+                IV::Var(v) if *v != name => out.push(S::Line(format!("{name} = {v}"))),
+                _ => {}
+            }
+            e.regs[r] = IV::Var(name);
+            e.ranges[r] = None;
+        }
+        for (off, v) in st.stack_int.clone() {
+            if !vars.contains(&Self::loop_key_stack(off)) {
+                continue;
+            }
+            let name = self.stack_var(&stack_name(off));
+            match &v {
+                IV::Int(k) => out.push(S::Line(format!("{name} = {}", lit(*k as f64)))),
+                IV::Var(x) if *x != name => out.push(S::Line(format!("{name} = {x}"))),
+                _ => {}
+            }
+            e.stack_int.insert(off, IV::Var(name));
+        }
+        for r in e.regs.iter_mut() {
+            if matches!(r, IV::Out(..)) {
+                *r = IV::Undef;
+            }
+        }
+        e.flags = Flags::None;
+        e.xmm_known = [[None; 2]; 8];
+        e
+    }
+
+    /// Brings the state at a `break` / `continue` back to the loop's entry state.
+    fn loop_fixup(&mut self, header: usize, entry: &State, st: &State, out: &mut Vec<S>, is_break: bool) -> Res<()> {
+        // Only `continue` must restore the depth; exits keep what they leave on the stack.
+        if !is_break && entry.depth != st.depth {
+            return Err(format!("x87 stack depth changes in a loop ({} / {})", entry.depth, st.depth));
+        }
+        let mut need = Vec::new();
+        #[allow(clippy::needless_range_loop)]
+        for r in 0..8 {
+            if entry.regs[r] == st.regs[r] || matches!(entry.regs[r], IV::Undef) {
+                continue;
+            }
+            match (&entry.regs[r], &st.regs[r]) {
+                (IV::Var(name), IV::Int(k)) => out.push(S::Line(format!("{name} = {}", lit(*k as f64)))),
+                (IV::Var(name), IV::Var(v)) => out.push(S::Line(format!("{name} = {v}"))),
+                (IV::Int(_) | IV::Var(_), IV::Int(_) | IV::Var(_) | IV::Undef) => need.push(Self::loop_key_reg(r)),
+                (IV::Ptr(..), _) | (_, IV::Ptr(..)) if r != 0 => return Err(format!("pointer {} changes in a loop", REG_NAMES[r])),
+                _ => {}
+            }
+        }
+        for (off, v) in &entry.stack_int {
+            let cur = st.stack_int.get(off);
+            if cur == Some(v) {
+                continue;
+            }
+            match (v, cur) {
+                (IV::Var(name), Some(IV::Int(k))) => out.push(S::Line(format!("{name} = {}", lit(*k as f64)))),
+                (IV::Var(name), Some(IV::Var(x))) => out.push(S::Line(format!("{name} = {x}"))),
+                (IV::Int(_) | IV::Var(_), _) => need.push(Self::loop_key_stack(*off)),
+                _ => {}
+            }
+        }
+        if !need.is_empty() {
+            let set = self.loop_vars.entry(header).or_default();
+            let before = set.len();
+            set.extend(need);
+            if set.len() > before {
+                return Err(LOOP_RETRY.into());
+            }
+            return Err("loop state cannot be made consistent".into());
+        }
+        Ok(())
     }
 
     fn merge(&mut self, a: &State, b: &State, arm_a: &mut Vec<S>, arm_b: &mut Vec<S>) -> Res<State> {
-        if a.depth != b.depth {
-            return Err(format!("x87 stack depth differs after a branch ({} / {})", a.depth, b.depth));
+        // Different x87 depths: the shallower path (typically an invalid option value) gets
+        // zeros where the other path left values.
+        let (mut a, mut b) = (a.clone(), b.clone());
+        let (da, db) = (a.depth, b.depth);
+        if da != db && da.min(db) != 0 {
+            return Err(format!("x87 stack depth differs after a branch ({da} / {db})"));
         }
+        for (s, arm, other) in [(&mut a, &mut *arm_a, db), (&mut b, &mut *arm_b, da)] {
+            while s.depth < other && s.depth < 8 {
+                arm.push(S::Line(format!("f{} = 0.0", s.depth)));
+                s.depth += 1;
+            }
+        }
+        let (a, b) = (&a, &b);
         let mut m = a.clone();
         #[allow(clippy::needless_range_loop)]
         for r in 0..8 {
@@ -513,6 +846,11 @@ impl Tx<'_> {
                     IV::Int(k) => Some(lit(*k as f64)),
                     IV::Var(s) => Some(s.clone()),
                     IV::Undef => Some("0.0".into()),
+                    // A value per compare outcome becomes data: a selection on the compare.
+                    IV::Out(o, src) => {
+                        let (a, b) = if *src == 0 { ("fc_a".to_string(), "fc_b".to_string()) } else { (format!("sv{src}"), "0.0".to_string()) };
+                        Some(format!("sel({a} < {b}, {}, sel({a} == {b}, {}, {}))", lit(o[1] as f64), lit(o[2] as f64), lit(o[0] as f64)))
+                    }
                     _ => None,
                 }
             };
@@ -553,8 +891,24 @@ impl Tx<'_> {
             m.flags = Flags::None;
         }
         for r in 0..8 {
-            if a.ranges[r] != b.ranges[r] {
-                m.ranges[r] = None;
+            // A plain integer is a set of one value.
+            let set = |s: &State| match &s.regs[r] {
+                IV::Int(k) => Some(vec![*k]),
+                _ => s.ranges[r].clone(),
+            };
+            let (ra, rb) = (set(a), set(b));
+            if a.regs[r] != b.regs[r] || a.ranges[r] != b.ranges[r] {
+                m.ranges[r] = match (&ra, &rb) {
+                    // A register set to different known values in the two arms (merged into a
+                    // variable): it can hold either.
+                    (Some(x), Some(y)) => {
+                        let mut u: Vec<i64> = x.iter().chain(y.iter()).copied().collect();
+                        u.sort_unstable();
+                        u.dedup();
+                        (u.len() <= 16).then_some(u)
+                    }
+                    _ => None,
+                };
             }
         }
         Ok(m)
@@ -627,23 +981,22 @@ impl Tx<'_> {
         // selection over the possible entries.
         if ins.memory_index() != Register::None
             && let Some(ii) = reg_index(ins.memory_index())
-            && let (IV::Var(idx), Some((lo, hi))) = (st.regs[ii].clone(), st.ranges[ii])
-            && hi - lo < 8
+            && let (IV::Var(idx), Some(values)) = (st.regs[ii].clone(), st.ranges[ii].clone())
         {
             let bi = reg_index(ins.memory_base()).ok_or("base register")?;
             let IV::Ptr(region, base) = st.regs[bi].clone() else { return Err("table base is not a pointer".into()) };
             let disp = ins.memory_displacement32() as i32 as i64;
             let scale = ins.memory_index_scale() as i64;
             let mut vals = Vec::new();
-            for k in lo..=hi {
+            for k in &values {
                 match self.read_at(region.clone(), base + disp + k * scale, size, st, out)? {
-                    Mem::F(s) => vals.push(s),
+                    Mem::F(s) => vals.push((*k, s)),
                     _ => return Err("table read of integers".into()),
                 }
             }
-            let mut e = vals.pop().unwrap_or_else(|| "0.0".into());
-            for (k, v) in vals.into_iter().enumerate().rev() {
-                e = format!("sel({idx} == {}, {v}, {e})", lit((lo + k as i64) as f64));
+            let mut e = vals.pop().map(|v| v.1).unwrap_or_else(|| "0.0".into());
+            for (k, v) in vals.into_iter().rev() {
+                e = format!("sel({idx} == {}, {v}, {e})", lit(k as f64));
             }
             return Ok(Mem::F(e));
         }
@@ -663,8 +1016,8 @@ impl Tx<'_> {
                 (48, MemorySize::UInt32 | MemorySize::Int32 | MemorySize::DwordOffset) => Ok(Mem::I(IV::Ptr(Region::PVar, 0))),
                 // RStopD (dIFS: the surface threshold) is not kept per point: reads give 0.
                 (-40, MemorySize::Float64) => Ok(Mem::F("0.0".into())),
-                (64, s) if is_int32(s) => Ok(Mem::I(IV::Var("i".into()))),
-                (208, s) if is_int32(s) => Ok(Mem::I(IV::Var("a1".into()))),
+                (64, s) if int_bytes(s).is_some() => Ok(Mem::I(IV::Var("i".into()))),
+                (208, s) if int_bytes(s).is_some() => Ok(Mem::I(IV::Var("a1".into()))),
                 (_, MemorySize::Float64 | MemorySize::UInt64 | MemorySize::Int64) => Ok(Mem::F(self.rec_field(off, false)?.into())),
                 (_, MemorySize::Packed128_Float64 | MemorySize::UInt128 | MemorySize::Packed128_UInt64 | MemorySize::Packed128_Float32 | MemorySize::Packed128_Int32 | MemorySize::Packed128_UInt32) => {
                     Ok(Mem::X([self.rec_field(off, false)?.into(), self.rec_field(off + 8, false)?.into()], [None, None]))
@@ -672,11 +1025,11 @@ impl Tx<'_> {
                 _ => Err(format!("unsupported read of record offset {off} ({size:?})")),
             },
             Region::Stack => {
-                let name = format!("m{}", -off);
+                let name = stack_name(off);
                 match size {
-                    s if is_int32(s) => Ok(Mem::I(st.stack_int.get(&off).cloned().unwrap_or(IV::Var(self.stack_var(&name))))),
+                    s if int_bytes(s).is_some() => Ok(Mem::I(st.stack_int.get(&off).cloned().unwrap_or(IV::Var(self.stack_var(&name))))),
                     MemorySize::Packed128_Float64 | MemorySize::UInt128 | MemorySize::Packed128_UInt64 => {
-                        let hi = format!("m{}", -(off + 8));
+                        let hi = stack_name(off + 8);
                         Ok(Mem::X([self.stack_var(&name), self.stack_var(&hi)], [None, None]))
                     }
                     _ => Ok(Mem::F(self.stack_var(&name))),
@@ -749,8 +1102,8 @@ impl Tx<'_> {
                     return None;
                 }
                 (0..8).find_map(|k| {
-                    let name = format!("m{}", -(off - k));
-                    (self.stack_vars.contains(&name) && k + n as i64 <= 8).then_some((name, k, false))
+                    let name = stack_name(off - k);
+                    (self.stack_vars.contains(&name) && !self.int_stack_vars.contains(&name) && k + n as i64 <= 8).then_some((name, k, false))
                 })
             }
             Region::PVar if off < 0 => {
@@ -891,7 +1244,36 @@ impl Tx<'_> {
 
     /// Writes a float (or 128-bit lanes) to memory.
     fn write_f(&mut self, ins: &Instruction, st: &mut State, lanes: &[String], out: &mut Vec<S>) -> Res<()> {
+        // Table write with a data index of known values: one conditional write per value.
+        if ins.memory_index() != Register::None
+            && let Some(ii) = reg_index(ins.memory_index())
+            && let (IV::Var(idx), Some(values)) = (st.regs[ii].clone(), st.ranges[ii].clone())
+        {
+            let bi = reg_index(ins.memory_base()).ok_or("base register")?;
+            let IV::Ptr(region, base) = st.regs[bi].clone() else { return Err("table base is not a pointer".into()) };
+            let disp = ins.memory_displacement32() as i32 as i64;
+            let scale = ins.memory_index_scale() as i64;
+            // Values first into temporaries: a lane may refer to a slot being written.
+            let tmp: Vec<String> = lanes.iter().enumerate().map(|(k, _)| format!("tw{k}")).collect();
+            for (t, v) in tmp.iter().zip(lanes) {
+                self.stack_vars.insert(t.clone());
+                out.push(S::Line(format!("{t} = {v}")));
+            }
+            let mut chain: Vec<S> = Vec::new();
+            for k in values.iter().rev() {
+                let mut arm = Vec::new();
+                self.write_f_at(region.clone(), base + disp + k * scale, st, &tmp, &mut arm)?;
+                let cond = format!("{idx} == {}", lit(*k as f64));
+                chain = vec![S::If(cond, arm, chain)];
+            }
+            out.extend(chain);
+            return Ok(());
+        }
         let (region, off) = self.address(ins, st)?;
+        self.write_f_at(region, off, st, lanes, out)
+    }
+
+    fn write_f_at(&mut self, region: Region, off: i64, st: &mut State, lanes: &[String], out: &mut Vec<S>) -> Res<()> {
         for (k, v) in lanes.iter().enumerate() {
             let o = off + 8 * k as i64;
             match region {
@@ -900,7 +1282,7 @@ impl Tx<'_> {
                     out.push(S::Line(format!("{f} = {v}")));
                 }
                 Region::Stack => {
-                    let n = self.stack_var(&format!("m{}", -o));
+                    let n = self.stack_var(&stack_name(o));
                     st.stack_int.remove(&o);
                     out.push(S::Line(format!("{n} = {v}")));
                 }
@@ -962,6 +1344,9 @@ impl Tx<'_> {
                     (Register::AH | Register::BH | Register::CH | Register::DH, IV::Out(o, c)) => IV::Out(o.map(|x| (x >> 8) & 0xff), c),
                     (Register::AL | Register::BL | Register::CL | Register::DL, IV::Out(o, c)) => IV::Out(o.map(|x| x & 0xff), c),
                     (Register::AX | Register::BX | Register::CX | Register::DX, IV::Out(o, c)) => IV::Out(o.map(|x| x & 0xffff), c),
+                    (Register::AH | Register::BH | Register::CH | Register::DH, IV::HiLo(_, o, c)) => IV::Out(o.map(|x| (x >> 8) & 0xff), c),
+                    (Register::AL | Register::BL | Register::CL | Register::DL, IV::HiLo(_, o, c)) => IV::Out(o.map(|x| x & 0xff), c),
+                    (Register::AX | Register::BX | Register::CX | Register::DX, IV::HiLo(_, o, c)) => IV::Out(o.map(|x| x & 0xffff), c),
                     (Register::AH | Register::BH | Register::CH | Register::DH, IV::Int(k)) => IV::Int((k >> 8) & 0xff),
                     (Register::AL | Register::BL | Register::CL | Register::DL, IV::Int(k)) => IV::Int(k & 0xff),
                     (_, v) => v,
@@ -994,6 +1379,8 @@ impl Tx<'_> {
             }
         };
         st.regs[idx] = match (old, v) {
+            (IV::HiLo(v, o, _), IV::Out(n, c)) => IV::HiLo(v, std::array::from_fn(|k| combine(o[k], n[k]) & 0xffff), c),
+            (IV::HiLo(v, o, c), IV::Int(n)) => IV::HiLo(v, o.map(|x| combine(x, n) & 0xffff), c),
             (IV::Out(o, c1), IV::Out(n, c2)) if c1 == c2 => IV::Out(std::array::from_fn(|k| combine(o[k], n[k])), c1),
             (IV::Out(o, c), IV::Int(n)) => IV::Out(o.map(|x| combine(x, n)), c),
             (IV::Int(o), IV::Out(n, c)) => IV::Out(n.map(|x| combine(o, x)), c),
@@ -1024,6 +1411,28 @@ impl Tx<'_> {
                 _ => 32,
             },
         };
+        // `shl r, 16` of data keeps it in the high half; `shr r, 16` brings it back.
+        if ins.op_kind(0) == OpKind::Register && ins.op_count() > 1 && matches!(ins.op_kind(1), OpKind::Immediate8) && ins.immediate(1) == 16 && bits == 32 {
+            let idx = reg_index(ins.op_register(0)).ok_or("register")?;
+            match (mn, st.regs[idx].clone()) {
+                (Mnemonic::Shl, IV::Var(v)) => {
+                    st.regs[idx] = IV::HiLo(v, [0; OUTCOMES], 0);
+                    st.flags = Flags::None;
+                    return Ok(());
+                }
+                (Mnemonic::Shr, IV::HiLo(v, _, _)) => {
+                    let name = format!("r_{}", REG_NAMES[idx]);
+                    if v != name {
+                        out.push(S::Line(format!("{name} = {v}")));
+                    }
+                    st.regs[idx] = IV::Var(name.clone());
+                    st.ranges[idx] = None;
+                    st.flags = Flags::Data(name, None);
+                    return Ok(());
+                }
+                _ => {}
+            }
+        }
         // Bit operations directly on the sign byte / high dword of a double in memory.
         if matches!(mn, Mnemonic::And | Mnemonic::Or | Mnemonic::Xor) && ins.op_kind(0) == OpKind::Memory && ins.op_kind(1) != OpKind::Memory {
             let (region, off) = self.address(ins, st)?;
@@ -1051,6 +1460,11 @@ impl Tx<'_> {
         } else {
             IV::Int(1)
         };
+        if mn == Mnemonic::Xor && ins.op_kind(0) == OpKind::Register && ins.op_kind(1) == OpKind::Register && ins.op_register(0) == ins.op_register(1) {
+            self.set_reg(st, ins.op_register(0), IV::Int(0))?;
+            st.flags = Flags::Out([ZF | PF; OUTCOMES], 0);
+            return Ok(());
+        }
         // Pointer arithmetic.
         if let IV::Ptr(r, o) = &a {
             let k = match &b {
@@ -1062,6 +1476,8 @@ impl Tx<'_> {
                 Mnemonic::Sub => IV::Ptr(r.clone(), o - k),
                 Mnemonic::Inc => IV::Ptr(r.clone(), o + 1),
                 Mnemonic::Dec => IV::Ptr(r.clone(), o - 1),
+                // Stack alignment (`and esp, -16`): offsets are relative, the mask applies to them.
+                Mnemonic::And if *r == Region::Stack => IV::Ptr(r.clone(), o & k),
                 Mnemonic::Cmp | Mnemonic::Test => return Err("compare on a pointer".into()),
                 _ => return Err(format!("{mn:?} on a pointer")),
             };
@@ -1069,11 +1485,6 @@ impl Tx<'_> {
                 self.set_reg(st, ins.op_register(0), nv)?;
             }
             st.flags = Flags::None;
-            return Ok(());
-        }
-        if mn == Mnemonic::Xor && ins.op_kind(0) == OpKind::Register && ins.op_kind(1) == OpKind::Register && ins.op_register(0) == ins.op_register(1) {
-            self.set_reg(st, ins.op_register(0), IV::Int(0))?;
-            st.flags = Flags::Out([ZF | PF; OUTCOMES], 0);
             return Ok(());
         }
         // Data (variables): only compare/test produce conditions; add/sub/inc/dec compute.
@@ -1107,40 +1518,85 @@ impl Tx<'_> {
                         Mnemonic::Or | Mnemonic::Xor if k == 0 => v.clone(),
                         _ => return Err(format!("{mn:?} {k:#x} on data")),
                     };
+                    let never = "0.0 > 1.0".to_string();
+                    let cf = match mn {
+                        Mnemonic::Shr | Mnemonic::Sar if (k & 31) > 0 => {
+                            let (lo, hi) = (lit((1u64 << ((k & 31) - 1)) as f64), lit((1u64 << (k & 31)) as f64));
+                            Some(format!("floor({v} / {lo}) - 2.0 * floor({v} / {hi}) > 0.5"))
+                        }
+                        Mnemonic::Neg => Some(format!("{v} != 0.0")),
+                        Mnemonic::Shl | Mnemonic::Not => None,
+                        _ => Some(never.clone()),
+                    };
+                    // The carry depends on the old value: capture it before the register changes.
+                    let cf = match cf {
+                        Some(c) if c != never => {
+                            out.push(S::Line(format!("cfl = sel({c}, 1.0, 0.0)")));
+                            Some("cfl > 0.5".to_string())
+                        }
+                        c => c,
+                    };
                     if mn == Mnemonic::Test {
-                        st.flags = Flags::Cmp(res, "0.0".into());
+                        st.flags = Flags::Data(res, cf);
                     } else {
-                        let OpKind::Register = ins.op_kind(0) else { return Err(format!("{mn:?} on data in memory")) };
+                        if ins.op_kind(0) == OpKind::Memory {
+                            // Integer in stack memory.
+                            let (region, off) = self.address(ins, st)?;
+                            if region != Region::Stack {
+                                return Err(format!("{mn:?} on data in memory"));
+                            }
+                            let n = self.stack_var(&stack_name(off));
+                            self.int_stack_vars.insert(n.clone());
+                            out.push(S::Line(format!("{n} = {res}")));
+                            st.stack_int.insert(off, IV::Var(n.clone()));
+                            st.flags = Flags::Data(n, cf);
+                            return Ok(());
+                        }
                         let idx = reg_index(ins.op_register(0)).ok_or("register")?;
                         let name = format!("r_{}", REG_NAMES[idx]);
                         out.push(S::Line(format!("{name} = {res}")));
                         st.regs[idx] = IV::Var(name.clone());
-                        st.ranges[idx] = (mn == Mnemonic::And && k > 0 && (k & (k + 1)) == 0).then_some((0, k));
-                        st.flags = Flags::Cmp(name, "0.0".into());
+                        st.ranges[idx] = match (&st.ranges[idx], mn) {
+                            (Some(vs), Mnemonic::And) => Some(set_map(vs, |v| v & k)),
+                            (Some(vs), Mnemonic::Shl) => Some(set_map(vs, |v| v << (k & 31))),
+                            (Some(vs), Mnemonic::Shr | Mnemonic::Sar) => Some(set_map(vs, |v| v >> (k & 31))),
+                            (Some(vs), Mnemonic::Neg) => Some(set_map(vs, |v| -v)),
+                            (None, Mnemonic::And) if k > 0 && (k & (k + 1)) == 0 && k < 16 => Some((0..=k).collect()),
+                            _ => None,
+                        };
+                        st.flags = Flags::Data(name, cf);
                     }
                 }
                 Mnemonic::Add | Mnemonic::Sub | Mnemonic::Inc | Mnemonic::Dec => {
                     let op = if matches!(mn, Mnemonic::Add | Mnemonic::Inc) { "+" } else { "-" };
                     let res = format!("{ea} {op} {eb}");
+                    // Carry: borrow of a subtraction (values are small non-negative integers).
+                    let cf = (mn == Mnemonic::Sub).then(|| {
+                        out.push(S::Line(format!("cfl = sel({ea} < {eb}, 1.0, 0.0)")));
+                        "cfl > 0.5".to_string()
+                    });
                     match ins.op_kind(0) {
                         OpKind::Register => {
                             let idx = reg_index(ins.op_register(0)).ok_or("register")?;
                             let name = format!("r_{}", REG_NAMES[idx]);
                             out.push(S::Line(format!("{name} = {res}")));
                             st.regs[idx] = IV::Var(name.clone());
-                            st.ranges[idx] = None;
-                            st.flags = Flags::Cmp(name, "0.0".into());
+                            st.ranges[idx] = match (&st.ranges[idx], &b) {
+                                (Some(vs), IV::Int(k)) => Some(set_map(vs, |v| if matches!(mn, Mnemonic::Add | Mnemonic::Inc) { v + k } else { v - k })),
+                                _ => None,
+                            };
+                            st.flags = Flags::Data(name, cf.clone());
                         }
                         OpKind::Memory => {
                             let (region, off) = self.address(ins, st)?;
                             if region == Region::Rec && off == 208 {
                                 out.push(S::Line(format!("a1 = {res}")));
-                                st.flags = Flags::Cmp("a1".into(), "0.0".into());
+                                st.flags = Flags::Data("a1".into(), cf.clone());
                             } else if region == Region::Stack {
-                                let n = self.stack_var(&format!("m{}", -off));
+                                let n = self.stack_var(&stack_name(off));
                                 out.push(S::Line(format!("{n} = {res}")));
                                 st.stack_int.insert(off, IV::Var(n.clone()));
-                                st.flags = Flags::Cmp(n, "0.0".into());
+                                st.flags = Flags::Data(n, cf.clone());
                             } else {
                                 return Err("integer arithmetic on memory".into());
                             }
@@ -1293,6 +1749,22 @@ impl Tx<'_> {
                 };
                 Ok(Cond::Expr(format!("{a} {c} {b}")))
             }
+            Flags::Data(res, cf) => {
+                let carry = || cf.clone().ok_or_else(|| format!("carry of an integer operation on data: {}", fmt_ins(ins)));
+                Ok(Cond::Expr(match mn {
+                    Mnemonic::Je => format!("{res} == 0.0"),
+                    Mnemonic::Jne => format!("{res} != 0.0"),
+                    Mnemonic::Js | Mnemonic::Jl => format!("{res} < 0.0"),
+                    Mnemonic::Jns | Mnemonic::Jge => format!("{res} >= 0.0"),
+                    Mnemonic::Jle => format!("{res} <= 0.0"),
+                    Mnemonic::Jg => format!("{res} > 0.0"),
+                    Mnemonic::Jb => carry()?,
+                    Mnemonic::Jae => format!("!({})", carry()?),
+                    Mnemonic::Jbe => format!("{} || {res} == 0.0", carry()?),
+                    Mnemonic::Ja => format!("!({}) && {res} != 0.0", carry()?),
+                    _ => return Err(format!("{mn:?} after an integer operation on data")),
+                }))
+            }
             Flags::None => Err(format!("conditional jump without known flags: {}", fmt_ins(ins))),
         }
     }
@@ -1412,7 +1884,13 @@ impl Tx<'_> {
                         }
                         v => v,
                     };
-                    self.set_reg(st, ins.op_register(0), v)
+                    // Known value sets travel with register copies.
+                    let src_range = if ins.op_kind(1) == OpKind::Register { reg_index(ins.op_register(1)).and_then(|i| st.ranges[i].clone()) } else { None };
+                    self.set_reg(st, ins.op_register(0), v)?;
+                    if let Some(d) = reg_index(ins.op_register(0)) {
+                        st.ranges[d] = src_range;
+                    }
+                    Ok(())
                 } else {
                     let v = self.ival(ins, 1, st, out)?;
                     self.write_i(ins, st, v, out)
@@ -1437,9 +1915,48 @@ impl Tx<'_> {
                 }
             }
             Add | Sub | And | Or | Xor | Cmp | Test | Shr | Shl | Sar | Inc | Dec | Neg | Not => self.alu(ins, st, out),
+            Div if ins.op_kind(0) == OpKind::Register || ins.op_kind(0) == OpKind::Memory => {
+                // Unsigned edx:eax / src with edx = 0: quotient to eax, remainder to edx.
+                if st.regs[2] != IV::Int(0) {
+                    return Err("div with a non-zero edx".into());
+                }
+                let a = self.iv_expr(&st.regs[0].clone())?;
+                let d = self.ival(ins, 0, st, out)?;
+                let d = self.iv_expr(&d)?;
+                out.push(S::Line(format!("cfl = floor({a} / {d})")));
+                out.push(S::Line(format!("r_edx = {a} - {d} * cfl")));
+                out.push(S::Line("r_eax = cfl".into()));
+                st.regs[0] = IV::Var("r_eax".into());
+                st.regs[2] = IV::Var("r_edx".into());
+                st.ranges[0] = None;
+                st.ranges[2] = None;
+                st.flags = Flags::None;
+                Ok(())
+            }
+            Rcl if ins.op_kind(0) == OpKind::Register && ins.op_count() > 1 && ins.immediate(1) == 1 => {
+                // Rotate left through carry by one: r * 2 + CF (data values are small).
+                let idx = reg_index(ins.op_register(0)).ok_or("register")?;
+                let v = self.iv_expr(&st.regs[idx])?;
+                let cf = match &st.flags {
+                    Flags::Data(_, Some(c)) => c.clone(),
+                    Flags::Out(f, _) if f.iter().all(|x| x & CF == f[0] & CF) => {
+                        if f[0] & CF != 0 { "0.0 < 1.0".into() } else { "0.0 > 1.0".into() }
+                    }
+                    _ => return Err("rcl without a known carry".into()),
+                };
+                let name = format!("r_{}", REG_NAMES[idx]);
+                out.push(S::Line(format!("{name} = {v} * 2.0 + sel({cf}, 1.0, 0.0)")));
+                st.regs[idx] = IV::Var(name.clone());
+                st.ranges[idx] = None;
+                st.flags = Flags::Data(name, None);
+                Ok(())
+            }
             Sahf => {
                 let ax = st.regs[0].clone();
-                let IV::Out(o, c) = ax else { return Err("sahf without a status word in ah".into()) };
+                let (o, c) = match ax {
+                    IV::Out(o, c) | IV::HiLo(_, o, c) => (o, c),
+                    _ => return Err("sahf without a status word in ah".into()),
+                };
                 // AH bits 7, 6, 4, 2, 0 -> SF ZF AF PF CF.
                 st.flags = Flags::Out(o.map(|v| {
                     let ah = ((v >> 8) & 0xff) as u32;
@@ -1478,6 +1995,11 @@ impl Tx<'_> {
             Fldlg2 => self.push(st, lit(std::f64::consts::LOG10_2), out),
             Fldl2t => self.push(st, lit(std::f64::consts::LOG2_10), out),
             Fst | Fstp => {
+                // `fstp st(0)` on an empty stack (a pop too many in some formulas) does nothing
+                // on the x87 either.
+                if st.depth == 0 && ins.op_kind(0) == OpKind::Register && Self::st_index(ins.op_register(0)) == Some(0) {
+                    return Ok(());
+                }
                 let v = self.st(st, 0)?;
                 match ins.op_kind(0) {
                     OpKind::Register => {
@@ -1503,7 +2025,8 @@ impl Tx<'_> {
                 if region != Region::Stack {
                     return Err("fist to non-stack memory".into());
                 }
-                let n = self.stack_var(&format!("m{}", -off));
+                let n = self.stack_var(&stack_name(off));
+                self.int_stack_vars.insert(n.clone());
                 out.push(S::Line(format!("{n} = {e}")));
                 st.stack_int.insert(off, IV::Var(n));
                 if mn != Fist {
@@ -1867,6 +2390,20 @@ enum Cond {
     Always,
     Never,
     Expr(String),
+}
+
+/// Variable name of the stack slot at `off` (relative to the stack pointer at entry):
+/// `m<n>` below it, `p<n>` above (arguments).
+fn stack_name(off: i64) -> String {
+    if off <= 0 { format!("m{}", -off) } else { format!("p{off}") }
+}
+
+/// Applies `f` to every value of a set (sorted, without duplicates).
+fn set_map(vs: &[i64], f: impl Fn(i64) -> i64) -> Vec<i64> {
+    let mut out: Vec<i64> = vs.iter().map(|v| f(*v)).collect();
+    out.sort_unstable();
+    out.dedup();
+    out
 }
 
 /// Bytes of an integer memory access.
