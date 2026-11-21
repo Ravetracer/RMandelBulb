@@ -138,9 +138,15 @@ impl Inspector {
             l.shininess = d.shininess;
             l.roughness = d.roughness;
             l.ambient_camera_relative = d.ambient_camera_relative;
+            l.ambient_from_background = d.ambient_from_background;
         }
         widgets::grid(ui, "ambient", |ui| {
             widgets::slider(ui, "Amount", "Light from the surroundings", &mut l.ambient, 0.0..=2.0, d.ambient);
+            if l.ambient_from_background {
+                widgets::label(ui, "Sky and ground", "Not used: the ambient light comes from the background image (Background › Ambient light)");
+                ui.label(RichText::new("from the background image").size(theme::fs(11.0)).color(theme::TEXT_MUTED));
+                ui.end_row();
+            }
             widgets::color(ui, "Sky", "Ambient color from above (+z, or the top of the screen)", &mut l.sky_color);
             widgets::color(ui, "Ground", "Ambient color from below", &mut l.ground_color);
             widgets::checkbox(ui, "Follow camera", "Sky and ground follow the camera's up axis instead of the world z axis (Mandelbulb3D)", &mut l.ambient_camera_relative);
@@ -423,9 +429,17 @@ fn effects(ui: &mut Ui, scene: &mut Scene) {
     });
     if !b.image.is_empty() {
         widgets::grid(ui, "bg-image", |ui| {
-            for (k, axis) in ["X", "Y", "Z"].iter().enumerate() {
-                widgets::slider(ui, &format!("Rotate {axis}"), "Rotation of the background image in degrees", &mut b.image_rotation[k], -180.0..=360.0, db.image_rotation[k]);
+            widgets::slider(ui, "Brightness", "Brightness of the image, and of the ambient light taken from it", &mut b.image_intensity, 0.0..=4.0, db.image_intensity);
+            widgets::checkbox(ui, "Fill the screen", "The image fills the screen instead of surrounding the scene (reflections see it by angle)", &mut b.image_screen);
+            if !b.image_screen {
+                for (k, axis) in ["X", "Y", "Z"].iter().enumerate() {
+                    widgets::slider(ui, &format!("Rotate {axis}"), "Rotation of the background image in degrees", &mut b.image_rotation[k], -180.0..=360.0, db.image_rotation[k]);
+                }
+                widgets::checkbox(ui, "Make spherical", "Squeezes a flat photo toward the poles so it wraps around the scene with less distortion (Mandelbulb3D's \"convert to spherical\")", &mut b.image_spherical);
+                widgets::checkbox(ui, "Blend borders", "Blends the left and right edges into each other, so the panorama has no seam", &mut b.image_fit_border);
             }
+            widgets::checkbox(ui, "Fog on top", "The fog is added on top of the image instead of covering it", &mut b.image_fog_add);
+            widgets::checkbox(ui, "Ambient light", "The image lights the scene: a blurred copy of it replaces the sky and ground colors of the ambient light", &mut scene.lighting.ambient_from_background);
         });
     }
 

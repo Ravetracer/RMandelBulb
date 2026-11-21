@@ -23,6 +23,7 @@ pub fn generation() -> u64 {
 /// Environment variable with an extra folder of maps.
 pub const DIR_ENV: &str = "RMB_MAPS_DIR";
 
+#[derive(Clone)]
 pub struct Map {
     pub number: i32,
     pub width: u32,
@@ -163,6 +164,164 @@ pub fn get(n: i32) -> Option<Arc<Map>> {
     let m = load(n).map(Arc::new);
     cache().write().unwrap_or_else(|e| e.into_inner()).insert(n, m.clone());
     m
+}
+
+/// A background image prepared like Mandelbulb3D's LoadLightMap (`spherical`: "convert to
+/// spherical", `fit_border`: blend the left and right borders) and its 16 × 8 copy for ambient
+/// light (MakeSmallLMimage). Cached.
+pub fn background(name: &str, spherical: bool, fit_border: bool) -> Option<(Arc<Map>, Arc<Map>)> {
+    type Prepared = RwLock<HashMap<(String, bool, bool, u64), Option<(Arc<Map>, Arc<Map>)>>>;
+    static PREPARED: OnceLock<Prepared> = OnceLock::new();
+    let cache = PREPARED.get_or_init(|| RwLock::new(HashMap::new()));
+    let key = (name.to_string(), spherical, fit_border, generation());
+    if let Some(m) = cache.read().unwrap_or_else(|e| e.into_inner()).get(&key) {
+        return m.clone();
+    }
+    let m = get_file(name).map(|m| {
+        let mut big = if spherical { m.to_spherical() } else { (*m).clone() };
+        if fit_border {
+            big.fit_border();
+        }
+        let small = Arc::new(big.ambient_map());
+        (Arc::new(big), small)
+    });
+    cache.write().unwrap_or_else(|e| e.into_inner()).insert(key, m.clone());
+    m
+}
+
+impl Map {
+    /// Mandelbulb3D's "convert to spherical" (SmoothLightMap): every row is squeezed toward the
+    /// center by the cosine of its latitude, with its cubic interpolation (which reads one pixel
+    /// to the right).
+    pub fn to_spherical(&self) -> Map {
+        let (w, h) = (self.width as usize, self.height as usize);
+        let mut out = self.pixels.clone();
+        let sp = (w as f64 - 1.0) * 0.5;
+        let sw = w as f64 - 1.99;
+        for y in 0..h {
+            let v = 2.0 * (y as f64 + 0.5) / h as f64 - 1.0;
+            let s = (1.0 - v * v).max(0.0).sqrt();
+            for x in 0..w {
+                let s2 = ((x as f64 - sp) * s + sp).clamp(0.0, sw.max(0.0));
+                let i = s2.trunc() as usize;
+                let f = s2 - i as f64;
+                let (ff, fff) = (f * f, f * f * f);
+                let wt = [3.0 * ff - 2.0 * f - fff, 3.0 * (fff - 2.0 * ff - f + 2.0), 3.0 * (ff + 2.0 * f - fff), fff - f];
+                out[y * w + x] = [0, 1, 2].map(|c| {
+                    let v: f64 = (0..4).map(|k| self.pixels[y * w + (i + k) % w][c] as f64 * wt[k]).sum();
+                    (v / 6.0).round().clamp(0.0, 255.0) as u8
+                });
+            }
+        }
+        Map { number: self.number, width: self.width, height: self.height, pixels: out }
+    }
+
+    /// Blends the six outer columns of each side into each other (FitLMborder), so the
+    /// panorama has no seam.
+    pub fn fit_border(&mut self) {
+        let (w, h) = (self.width as usize, self.height as usize);
+        if w < 12 {
+            return;
+        }
+        for x in 0..6 {
+            let s2 = 0.5 - 0.5 * (std::f64::consts::FRAC_PI_2 * (x as f64 + 0.5) / 6.0).sin();
+            let s1 = 1.0 - s2;
+            for y in 0..h {
+                let (a, b) = (self.pixels[y * w + x], self.pixels[y * w + w - 1 - x]);
+                let mix = |p: f64, q: f64| [0, 1, 2].map(|c| (a[c] as f64 * p + b[c] as f64 * q).round().clamp(0.0, 255.0) as u8);
+                self.pixels[y * w + x] = mix(s1, s2);
+                self.pixels[y * w + w - 1 - x] = mix(s2, s1);
+            }
+        }
+    }
+
+    /// The 16 × 8 copy for ambient light (MakeSmallLMimage): box averages, then rows widened
+    /// toward the poles.
+    pub fn ambient_map(&self) -> Map {
+        const W: usize = 16;
+        const H: usize = 8;
+        let (bw, bh) = (self.width as usize, self.height as usize);
+        let avg = |s: [f64; 3], n: usize| s.map(|v| (v / n.max(1) as f64).round());
+        // Columns of each row, then rows of each column (the last source pixel is left out).
+        let dx = (bw as f64 - 1.0) / W as f64;
+        let mut tmp = vec![[0.0; 3]; W * bh];
+        for y in 0..bh {
+            let mut x2 = 1;
+            for x in 1..=W {
+                let xe = (dx * x as f64).round() as usize;
+                let (mut s, mut n) = ([0.0; 3], 0);
+                while x2 <= xe {
+                    let p = self.pixels[y * bw + x2 - 1];
+                    for c in 0..3 {
+                        s[c] += p[c] as f64;
+                    }
+                    x2 += 1;
+                    n += 1;
+                }
+                tmp[y * W + x - 1] = avg(s, n);
+            }
+        }
+        let dy = (bh as f64 - 1.0) / H as f64;
+        let mut small = vec![[0.0; 3]; W * H];
+        for x in 0..W {
+            let mut y2 = 1;
+            for y in 1..=H {
+                let ye = (dy * y as f64).round() as usize;
+                let (mut s, mut n) = ([0.0; 3], 0);
+                while y2 <= ye {
+                    let p = tmp[(y2 - 1) * W + x];
+                    for c in 0..3 {
+                        s[c] += p[c];
+                    }
+                    y2 += 1;
+                    n += 1;
+                }
+                small[(y - 1) * W + x] = avg(s, n);
+            }
+        }
+        // Rows near the poles cover less of the sphere: average them over more columns.
+        for y in 0..H {
+            let wd = if y == 0 || y >= H - 1 { W as f64 } else { 2.0 * W as f64 / ((y as f64 * std::f64::consts::PI / (H - 1) as f64).sin() + 1.0) - W as f64 };
+            if wd > 0.5 {
+                let b = wd.round() as i64;
+                let n = -(b / 2);
+                let b = b + n;
+                let row: Vec<[f64; 3]> = small[y * W..(y + 1) * W].to_vec();
+                for x in 0..W as i64 {
+                    let mut s = [0.0; 3];
+                    for x2 in n..=b {
+                        let p = row[((x + x2) & 15) as usize];
+                        for c in 0..3 {
+                            s[c] += p[c];
+                        }
+                    }
+                    small[y * W + x as usize] = avg(s, (b - n + 1) as usize);
+                }
+            }
+        }
+        Map { number: self.number, width: W as u32, height: H as u32, pixels: small.iter().map(|p| p.map(|v| v.clamp(0.0, 255.0) as u8)).collect() }
+    }
+
+    /// Like [`Map::sample_panorama`], clamped in both directions (images in screen
+    /// coordinates).
+    pub fn sample_clamped(&self, u: f64, v: f64) -> [f64; 3] {
+        let (w, h) = (self.width as f64, self.height as f64);
+        let (x, y) = (u.clamp(0.0, 1.0) * w, v.clamp(0.0, 1.0) * h);
+        let (xf, yf) = (x.floor().min(w - 1.0), y.floor().min(h - 1.0));
+        let (wx, wy) = (spline_weights(x - xf), spline_weights(y - yf));
+        let mut out = [0.0; 3];
+        for (j, wyj) in wy.iter().enumerate() {
+            let row = (yf as i64 - 1 + j as i64).clamp(0, self.height as i64 - 1);
+            for (i, wxi) in wx.iter().enumerate() {
+                let col = (xf as i64 - 1 + i as i64).clamp(0, self.width as i64 - 1);
+                let t = self.pixels[(row * self.width as i64 + col) as usize];
+                for c in 0..3 {
+                    out[c] += t[c] as f64 * wxi * wyj;
+                }
+            }
+        }
+        out.map(|v| v / 255.0)
+    }
 }
 
 /// An image by file name (background images): an existing path, or the name in the search

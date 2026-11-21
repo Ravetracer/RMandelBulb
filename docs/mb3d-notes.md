@@ -127,6 +127,24 @@ little-endian.
   +50, +51, +67), u = atan2(v0, v2)·(-1/2π) + 0.5, v = 0.5 - asin(v1)/π, B-spline sampled with
   horizontal wrap and vertical clamp. TBoptions bit 15: screen coordinates instead.
 - The depth fog still blends toward the depth colors (DepthCol/DepthCol2), not the image.
+- Screen coordinates (TBoptions bit 15, bDirectImageCoord): primary rays read the image at the
+  pixel position (GetLightMapPixel without wrap); reflections at x = atan2(v0, v2)/FOVx + 0.5,
+  y = asin(v1)/FOVy + 0.5 of the view-space direction.
+- Brightness sIntensity = 1.04^(Lights[4].AdditionalByteEx − 40) multiplies every image sample.
+- Load options (LoadLightMap): AdditionalOptions bit 7 "convert to spherical" squeezes row y
+  toward the center by s = cos(asin(2(y + 0.5)/H − 1)): pixel x reads (x − c)·s + c with the
+  cubic 1/6·(3f² − 2f − f³, 3(f³ − 2f² − f + 2), 3(f² + 2f − f³), f³ − f) over pixels i..i+3,
+  which samples one pixel to the right (i + 1 + f); bit 4 "fit border" blends the six outer
+  columns of both sides (weights 0.5 ∓ 0.5·sin(π/2·(x + 0.5)/6)); TBoptions bit 19 smooths
+  (not implemented).
+- Ambient light from the image (AdditionalOptions bit 5, bUseSmallBGpicForAmb): a 16 × 8 copy
+  (MakeSmallLMimage: box averages of columns, then rows, leaving out the last source pixel;
+  rows widened toward the poles by 2·16/(sin(y·π/7) + 1) − 16 pixels, the first and last row
+  averaged completely) is read in the direction of the world normal like the background. It
+  replaces the ambient colors (no ambient strength) and blends into the depth color by the fog
+  at infinity f∞ = min(1, 28000·sDepth) (squared with far fog): amb·(1 − f∞) + DepC·f∞; with
+  AdditionalOptions bit 3 (bAddBGlight) amb + DepC·f∞, and the background image is then not
+  covered by the fog either (the fog color is added).
 
 ## Reflections (CalcSR.pas) and interpolation hybrids (formulas.pas)
 

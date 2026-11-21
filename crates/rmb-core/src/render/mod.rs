@@ -217,11 +217,18 @@ pub fn shading_scene(scene: &Scene) -> Cow<'_, Scene> {
 
 /// The background image of `scene` (loaded on first use) and its rotation matrix.
 pub fn background_image(scene: &Scene) -> Option<(std::sync::Arc<crate::maps::Map>, [[f64; 3]; 3])> {
+    background_maps(scene).map(|(m, _, r)| (m, r))
+}
+
+/// The background image as prepared for rendering, its 16 × 8 ambient copy and its rotation.
+pub type BackgroundMaps = (std::sync::Arc<crate::maps::Map>, std::sync::Arc<crate::maps::Map>, [[f64; 3]; 3]);
+
+pub fn background_maps(scene: &Scene) -> Option<BackgroundMaps> {
     let b = &scene.background;
     if b.image.trim().is_empty() {
         return None;
     }
-    crate::maps::get_file(b.image.trim()).map(|m| (m, crate::maps::rotation_matrix(b.image_rotation)))
+    crate::maps::background(b.image.trim(), b.image_spherical, b.image_fit_border).map(|(m, s)| (m, s, crate::maps::rotation_matrix(b.image_rotation)))
 }
 
 /// sRGB value (0..1) to linear light.

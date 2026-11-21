@@ -110,6 +110,7 @@ struct Uniforms {
     cmap2: [f32; 4],
     cmap_rot: [[f32; 4]; 3],
     glass: [f32; 4],
+    bg2: [f32; 4],
 }
 
 #[repr(C)]
@@ -237,6 +238,12 @@ fn uniforms(scene: &Scene, prog: &Program, w: u32, h: u32, fast: bool) -> Unifor
             [0, 1, 2].map(|i| [r[i][0] as f32, r[i][1] as f32, r[i][2] as f32, 0.0])
         },
         glass: [if m.transmission && m.reflection > 0.0 { 1.0 } else { 0.0 }, m.refraction_index as f32, m.absorption as f32, m.scattering as f32],
+        bg2: [
+            bg.image_intensity as f32,
+            if bg.image_screen { 1.0 } else { 0.0 },
+            if l.ambient_from_background { 1.0 } else { 0.0 },
+            if bg.image_fog_add { 1.0 } else { 0.0 },
+        ],
     }
 }
 
@@ -492,15 +499,19 @@ impl GpuRenderer {
     /// Uploads the maps the formulas read (only when the set of map numbers changes).
     fn upload_maps(&mut self, prog: &Program, scene: &Scene) {
         let numbers = prog.map_numbers();
-        let background = format!("{}|{}", scene.background.image.trim(), scene.material.color_map.image.trim());
+        let b = &scene.background;
+        let background = format!("{}|{}|{}|{}", b.image.trim(), b.image_spherical, b.image_fit_border, scene.material.color_map.image.trim());
         // New buffers are zeroed: no maps (count 0) until the first upload.
-        if numbers == self.map_numbers && background == self.map_background && !(numbers.is_empty() && background == "|" && self.maps.size() > 16) {
+        let none = b.image.trim().is_empty() && scene.material.color_map.image.trim().is_empty();
+        if numbers == self.map_numbers && background == self.map_background && !(numbers.is_empty() && none && self.maps.size() > 16) {
             return;
         }
-        // The background image goes in under the number 0xffffffff (march.wgsl).
+        // The background image goes in under the number 0xffffffff, its ambient copy under
+        // 0xfffffffd (march.wgsl).
         let mut maps: Vec<(u32, std::sync::Arc<rmb_core::maps::Map>)> = numbers.iter().filter_map(|n| rmb_core::maps::get(*n).map(|m| (*n as u32, m))).collect();
-        if let Some((m, _)) = rmb_core::render::background_image(scene) {
+        if let Some((m, small, _)) = rmb_core::render::background_maps(scene) {
             maps.push((u32::MAX, m));
+            maps.push((u32::MAX - 2, small));
         }
         if let Some(m) = rmb_core::maps::get_any(&scene.material.color_map.image) {
             maps.push((u32::MAX - 1, m));

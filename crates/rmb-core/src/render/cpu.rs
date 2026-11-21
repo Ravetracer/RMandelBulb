@@ -17,6 +17,8 @@ pub struct Shader<'a> {
     pub lut: Vec<[f32; 3]>,
     pub lut_spec: Vec<[f32; 3]>,
     pub bg_image: Option<(std::sync::Arc<crate::maps::Map>, [[f64; 3]; 3])>,
+    /// The 16 × 8 copy of the background image for ambient light.
+    pub bg_ambient: Option<std::sync::Arc<crate::maps::Map>>,
     /// Color map with its rotation matrix and average color (display values).
     pub color_map: Option<ColorMapData>,
     /// Interior colors (empty: none).
@@ -44,6 +46,7 @@ impl<'a> Shader<'a> {
             lut: crate::gradient::lut(g),
             lut_spec: crate::gradient::lut_specular(g),
             bg_image: super::background_image(scene),
+            bg_ambient: super::background_maps(scene).map(|(_, s, _)| s),
             color_map: crate::maps::get_any(&scene.material.color_map.image).map(|m| {
                 let avg = m.average();
                 (m, crate::maps::rotation_matrix(scene.material.color_map.rotation), avg)
@@ -209,14 +212,31 @@ impl<'a> Shader<'a> {
         }
     }
 
-    /// Background image color in direction `d` (display values in display space, else linear).
-    pub fn background_image(&self, d: V3) -> Option<[f64; 3]> {
+    /// Background image color in direction `d` at screen position `sx`, `sy` (-1..1; images in
+    /// screen coordinates) in display values in display space, else linear.
+    pub fn background_image(&self, d: V3, sx: f64, sy: f64) -> Option<[f64; 3]> {
         let (m, rot) = self.bg_image.as_ref()?;
-        let (u, v) = crate::maps::panorama_uv(rot, d.to_array());
-        let s = m.sample_panorama(u, v);
-        // Map pixels are blue, green, red.
+        let s = if self.scene.background.image_screen {
+            m.sample_clamped((sx + 1.0) * 0.5, (1.0 - sy) * 0.5)
+        } else {
+            let (u, v) = crate::maps::panorama_uv(rot, d.to_array());
+            m.sample_panorama(u, v)
+        };
+        Some(self.image_rgb(s))
+    }
+
+    /// Ambient light from the background image around the normal `n`.
+    pub fn background_ambient(&self, n: V3) -> Option<[f64; 3]> {
+        let (m, (_, rot)) = (self.bg_ambient.as_ref()?, self.bg_image.as_ref()?);
+        let (u, v) = crate::maps::panorama_uv(rot, n.to_array());
+        Some(self.image_rgb(m.sample_panorama(u, v)))
+    }
+
+    /// A background image sample (blue, green, red) as a color with the image brightness.
+    fn image_rgb(&self, s: [f64; 3]) -> [f64; 3] {
         let rgb = [s[2], s[1], s[0]];
-        Some(if self.scene.post.display_space { rgb } else { rgb.map(super::srgb_decode) })
+        let k = self.scene.background.image_intensity;
+        if self.scene.post.display_space { rgb.map(|v| v * k) } else { rgb.map(|v| super::srgb_decode(v) * k) }
     }
 
     /// Background color in direction `d`; `sy` is the screen position (-1 bottom .. 1 top).
@@ -389,7 +409,7 @@ impl<'a> Shader<'a> {
         // Glass scales the diffuse light down by the transparency on every surface a path
         // continues from (Mandelbulb3D's bScaleAmbDiffDown).
         let glass = if m.transmission && amount > 0.0 { amount } else { 0.0 };
-        let first = self.trace(ev, Seg { o, d, t0, max_t: sc.march.max_distance, t_base: 0.0, sy, inside: false, glass }, &mut rng);
+        let first = self.trace(ev, Seg { o, d, t0, max_t: sc.march.max_distance, t_base: 0.0, sx, sy, inside: false, glass }, &mut rng);
         let mut c = first.color;
         // Reflections and transmission (Mandelbulb3D's CalcSR): each part of the path adds the
         // scene it sees, weighted by the reflectance or transmittance of the surfaces before it,
@@ -418,7 +438,8 @@ impl<'a> Shader<'a> {
                     ev.flip = inside;
                 }
                 let syr = (2.0 * dir.dot(cam.up).clamp(-1.0, 1.0).asin() / cam.fov.to_radians()).clamp(-1.0, 1.0);
-                let seg = Seg { o: start - dir * s.t, d: dir, t0: s.t, max_t: s.t + sc.march.max_distance, t_base: s.t, sy: syr, inside, glass: if b + 1 < bounces { glass } else { 0.0 } };
+                let sxr = (dir.dot(cam.right).atan2(dir.dot(cam.forward)) / (fr.tan_half * fr.aspect).atan()).clamp(-1.0, 1.0);
+                let seg = Seg { o: start - dir * s.t, d: dir, t0: s.t, max_t: s.t + sc.march.max_distance, t_base: s.t, sx: sxr, sy: syr, inside, glass: if b + 1 < bounces { glass } else { 0.0 } };
                 let tr = self.trace(ev, seg, &mut rng);
                 if inside {
                     // Absorbed by the color where the ray entered; light scattered on the way.
@@ -504,13 +525,13 @@ impl<'a> Shader<'a> {
 
     /// Traces one part of a path: its color and the surface it hit.
     fn trace(&self, ev: &mut Evaluator, seg: Seg, rng: &mut Rng) -> Traced {
-        let Seg { o, d, t0, max_t, t_base, sy, inside, glass } = seg;
+        let Seg { o, d, t0, max_t, t_base, sx, sy, inside, glass } = seg;
         let sc = self.scene;
         let fr = &self.frame;
         let (hit, _, steps) = self.march(ev, o, d, t0, max_t, sc.march.max_steps);
         let (glow, glow_mix) = sc.fog.glow_at(steps as f64, sc.march.max_steps as f64);
         let grad = self.background(d, sy);
-        let bg = self.background_image(d).unwrap_or(grad);
+        let bg = self.background_image(d, sx, sy).unwrap_or(grad);
         let fog_col = if sc.fog.from_background { grad } else { sc.fog.color.map(|x| x as f64) };
         let (near, far) = (super::start_distance(sc), sc.march.max_distance);
         let albedo: [f64; 3];
@@ -520,7 +541,9 @@ impl<'a> Shader<'a> {
             None => {
                 // Inside glass there is no fog (CalcOpenAir).
                 let f = if inside { 0.0 } else { sc.fog.amount(far, near, far) };
-                let c = [0, 1, 2].map(|k| bg[k] + (fog_col[k] - bg[k]) * f.max(0.0));
+                // The fog can lie on top of a background image instead of covering it.
+                let cover = if sc.background.image_fog_add && self.bg_image.is_some() { 0.0 } else { 1.0 };
+                let c = [0, 1, 2].map(|k| bg[k] * (1.0 - f.max(0.0) * cover) + fog_col[k] * f.max(0.0));
                 albedo = c.map(|v| v.clamp(0.0, 1.0));
                 c
             }
@@ -543,7 +566,17 @@ impl<'a> Shader<'a> {
                 let ao = self.ambient_occlusion(ev, p, n, h.t, rng);
                 let l = &sc.lighting;
                 let hemi = n.dot(fr.ambient_up) * 0.5 + 0.5;
-                let mut diffuse = [0, 1, 2].map(|k| (l.ground_color[k] as f64 + (l.sky_color[k] - l.ground_color[k]) as f64 * hemi) * l.ambient * ao);
+                let amb = match self.background_ambient(n).filter(|_| l.ambient_from_background) {
+                    // The image light blends into the fog color by the fog at infinity
+                    // (PaintThread: bUseSmallBGpicForAmb).
+                    Some(a) => {
+                        let fi = sc.fog.amount(far, near, far).clamp(0.0, 1.0);
+                        let keep = if sc.background.image_fog_add { 1.0 } else { 1.0 - fi };
+                        [0, 1, 2].map(|k| a[k] * keep + fog_col[k] * fi)
+                    }
+                    None => [0, 1, 2].map(|k| l.ground_color[k] as f64 + (l.sky_color[k] - l.ground_color[k]) as f64 * hemi),
+                };
+                let mut diffuse = amb.map(|a| a * l.ambient * ao);
                 let mut spec = [0.0; 3];
                 for li in &fr.lights {
                     // Point lights: direction, squared-distance falloff and shadow length.
@@ -631,8 +664,8 @@ struct Traced {
 }
 
 /// One part of a light path: from `o` along `d`, distances `t0`..`max_t`; fog, glow and
-/// visible lights measure from `t_base`; `sy` is the screen height of the direction for the
-/// background. `inside`: the ray travels inside glass. `glass`: the light amount that scales the
+/// visible lights measure from `t_base`; `sx`, `sy` are the screen position of the direction
+/// for the background. `inside`: the ray travels inside glass. `glass`: the light amount that scales the
 /// diffuse light down by the transparency (0: none).
 #[derive(Clone, Copy)]
 struct Seg {
@@ -641,6 +674,7 @@ struct Seg {
     t0: f64,
     max_t: f64,
     t_base: f64,
+    sx: f64,
     sy: f64,
     inside: bool,
     glass: f64,

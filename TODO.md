@@ -10,8 +10,9 @@
 - [x] Depth of field import (focus distance, aperture)
 - [x] Interpolation hybrids (two formulas blended per iteration)
 - [x] Background images (panorama with MB3D's rotation and B-spline sampling)
-  - [ ] Screen-coordinate images, MB3D's "convert to spherical" on load, ambient light from the
-        image (samples: material colors, Mengerplus for MC)
+  - [x] Screen-coordinate images, "convert to spherical" and border fitting on load, ambient
+        light from the image, image brightness, fog added on top
+  - [ ] Smoothing on load (TBoptions bit 19; no sample uses it)
 - [x] Reflections (MB3D's reflection amount and bounces, weighted by the highlight colors)
 - [x] DE combination "mix" (dIFS measured where the first chain ends; "Dodeca Torus mix")
   - [ ] Unverified: "genQuat helix mix" renders very small

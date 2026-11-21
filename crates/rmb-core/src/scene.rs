@@ -538,6 +538,9 @@ pub struct Lighting {
     /// The sky and ground colors of the ambient light follow the camera's up axis
     /// (Mandelbulb3D) instead of the world z axis.
     pub ambient_camera_relative: bool,
+    /// The ambient light comes from a blurred copy of the background image (around the surface
+    /// normal) instead of the sky and ground colors.
+    pub ambient_from_background: bool,
 }
 
 impl Default for Lighting {
@@ -564,6 +567,7 @@ impl Default for Lighting {
             shininess: 40.0,
             roughness: 0.0,
             ambient_camera_relative: false,
+            ambient_from_background: false,
         }
     }
 }
@@ -773,6 +777,16 @@ pub struct Background {
     pub image: String,
     /// Rotation of the image (degrees about x, y, z; Mandelbulb3D's picture offsets).
     pub image_rotation: [f64; 3],
+    /// Brightness of the image (also of the ambient light taken from it).
+    pub image_intensity: f64,
+    /// Squeeze a flat image into a panorama on load (Mandelbulb3D's "convert to spherical").
+    pub image_spherical: bool,
+    /// Blend the left and right borders on load, so the panorama has no seam.
+    pub image_fit_border: bool,
+    /// The image fills the screen instead of surrounding the scene (reflections see it by angle).
+    pub image_screen: bool,
+    /// The fog is added on top of the image instead of covering it.
+    pub image_fog_add: bool,
 }
 
 impl Default for Background {
@@ -785,6 +799,11 @@ impl Default for Background {
             curve: 1.0,
             image: String::new(),
             image_rotation: [0.0; 3],
+            image_intensity: 1.0,
+            image_spherical: false,
+            image_fit_border: false,
+            image_screen: false,
+            image_fog_add: false,
         }
     }
 }

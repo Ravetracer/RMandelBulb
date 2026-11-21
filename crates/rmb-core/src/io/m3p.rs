@@ -749,14 +749,21 @@ pub fn import_binary(b: &[u8]) -> Result<Import, String> {
         let off = |o: usize| r.u8(light + o) as f64 * 180.0 / 128.0;
         s.background.image = bg_name.clone();
         s.background.image_rotation = [180.0 - off(50), off(51), off(67)];
-        if tb_options & 0x8000 != 0 {
-            warnings.push("the background image uses screen coordinates; shown as a panorama".into());
-        }
-        if add_options & 0x80 != 0 {
-            warnings.push("the background image is not converted to a panorama on load like Mandelbulb3D does".into());
-        }
+        // LoadBackgroundPicT and MakeLightValsFromHeaderLight: brightness 1.04^(Lights[4]
+        // AdditionalByteEx - 40), screen coordinates (TBoptions bit 15), convert to spherical
+        // (AdditionalOptions bit 7), fit border (bit 4), fog added (bit 3), ambient (bit 5).
+        s.background.image_intensity = 1.04f64.powi(r.u8(light + 68 + 4 * 32 + 16) as i32 - 40);
+        s.background.image_screen = tb_options & 0x8000 != 0;
+        s.background.image_spherical = add_options & 0x80 != 0;
+        s.background.image_fit_border = add_options & 0x10 != 0;
+        s.background.image_fog_add = add_options & 0x08 != 0;
         if add_options & 0x20 != 0 {
-            warnings.push("ambient light from the background image is not supported".into());
+            s.lighting.ambient_from_background = true;
+            // The image is the ambient light itself; the sky and ground colors are not used.
+            s.lighting.ambient = light_scale;
+        }
+        if tb_options & 0x80000 != 0 {
+            warnings.push("the background image is not smoothed on load like Mandelbulb3D does".into());
         }
         if crate::maps::get_file(&bg_name).is_none() {
             warnings.push(format!("background image '{bg_name}' not found (set the Mandelbulb3D maps folder in the preferences)"));

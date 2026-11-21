@@ -53,6 +53,7 @@ struct U {
     cmap2: vec4<f32>,      // luminance only, average color
     cmap_rot: array<vec4<f32>, 3>, // rotation of the normal mode (rows)
     glass: vec4<f32>,      // transmission on, refraction index, absorption, scattering
+    bg2: vec4<f32>,        // background image brightness, screen coordinates, ambient from it, fog added
 }
 
 @group(0) @binding(0) var<uniform> u: U;
@@ -160,6 +161,11 @@ fn map_sample(i: i32, x: f32, y: f32, ch: f32) -> f32 {
 // RGB of map `i` at u, v (0..1): wrapped horizontally, clamped vertically (maps.rs
 // sample_panorama; pixels are blue | green << 8 | red << 16).
 fn map_panorama(i: i32, pu: f32, pv: f32) -> vec3<f32> {
+    return map_clamped(i, pu, pv, true);
+}
+
+// Mirrors Map::sample_panorama (`wrap`) and Map::sample_clamped.
+fn map_clamped(i: i32, pu: f32, pv: f32, wrap: bool) -> vec3<f32> {
     let h0 = 1u + 4u * u32(i);
     let w = i32(maps[h0 + 1u]);
     let h = i32(maps[h0 + 2u]);
@@ -174,7 +180,10 @@ fn map_panorama(i: i32, pu: f32, pv: f32) -> vec3<f32> {
     for (var j = 0; j < 4; j++) {
         let yy = clamp(i32(yf) - 1 + j, 0, h - 1);
         for (var k = 0; k < 4; k++) {
-            let xx = (((i32(xf) - 1 + k) % w) + w) % w;
+            var xx = clamp(i32(xf) - 1 + k, 0, w - 1);
+            if (wrap) {
+                xx = (((i32(xf) - 1 + k) % w) + w) % w;
+            }
             let p = maps[base + u32(yy * w + xx)];
             sum += vec3<f32>(f32((p >> 16u) & 255u), f32((p >> 8u) & 255u), f32(p & 255u)) * (wx[k] * wy[j]);
         }
@@ -211,20 +220,40 @@ fn srgb_decode3(c: vec3<f32>) -> vec3<f32> {
 }
 
 // Mirrors Shader::background_image (maps.rs: panorama_uv, sample_panorama).
-fn background_image(d: vec3<f32>) -> vec3<f32> {
+fn background_image(d: vec3<f32>, sx: f32, sy: f32) -> vec3<f32> {
     let i = map_find_u(0xffffffffu);
     if (i < 0) {
         return vec3<f32>(0.0);
     }
-    let l = max(length(d), 1.0e-30);
-    let v = (u.bg_rot[0].xyz * d.x + u.bg_rot[1].xyz * d.y + u.bg_rot[2].xyz * d.z) / l;
-    let pu = atan2(v.x, v.z) * (-0.5 / 3.141592653589793) + 0.5;
-    let pv = 0.5 - asin(clamp(v.y, -1.0, 1.0)) / 3.141592653589793;
-    var rgb = map_panorama(i, pu, pv);
+    if (u.bg2.y > 0.5) {
+        return image_rgb(map_clamped(i, (sx + 1.0) * 0.5, (1.0 - sy) * 0.5, false));
+    }
+    let v = panorama_dir(d);
+    return image_rgb(map_panorama(i, atan2(v.x, v.z) * (-0.5 / 3.141592653589793) + 0.5, 0.5 - asin(clamp(v.y, -1.0, 1.0)) / 3.141592653589793));
+}
+
+// Mirrors Shader::background_ambient (the ambient copy is stored under 0xfffffffd).
+fn background_ambient(n: vec3<f32>) -> vec3<f32> {
+    let i = map_find_u(0xfffffffdu);
+    if (i < 0) {
+        return vec3<f32>(0.0);
+    }
+    let v = panorama_dir(n);
+    return image_rgb(map_panorama(i, atan2(v.x, v.z) * (-0.5 / 3.141592653589793) + 0.5, 0.5 - asin(clamp(v.y, -1.0, 1.0)) / 3.141592653589793));
+}
+
+fn image_rgb(c: vec3<f32>) -> vec3<f32> {
+    var rgb = c;
     if (u.bg_rot[1].w < 0.5) {
         rgb = srgb_decode3(rgb);
     }
-    return rgb;
+    return rgb * u.bg2.x;
+}
+
+// Direction in the image's frame (mirrors maps::panorama_uv).
+fn panorama_dir(d: vec3<f32>) -> vec3<f32> {
+    let l = max(length(d), 1.0e-30);
+    return (u.bg_rot[0].xyz * d.x + u.bg_rot[1].xyz * d.y + u.bg_rot[2].xyz * d.z) / l;
 }
 
 // Mirrors Shader::map_color (the color map is stored under the number 0xfffffffe).
@@ -836,7 +865,7 @@ struct Traced {
 // Mirrors Shader::trace: one ray from `o` along `d` (distances `t0`..`max_t`; fog, glow and
 // visible lights measured from `t_base`; `inside`: inside glass; `glass`: light amount that
 // scales the diffuse light down by the transparency).
-fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sy: f32, inside: bool, glass: f32) -> Traced {
+fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sx: f32, sy: f32, inside: bool, glass: f32) -> Traced {
     var tr: Traced;
     tr.hit = false;
     let h = march_ray(o, d, t0, max_t, u.band.z);
@@ -848,7 +877,7 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sy: f32, 
     let grad = background(d, sy);
     var bg = grad;
     if (u.bg_rot[0].w > 0.5) {
-        bg = background_image(d);
+        bg = background_image(d, sx, sy);
     }
     var fog_col = u.fog.xyz;
     if (u.fog3.y > 0.5) {
@@ -861,7 +890,11 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sy: f32, 
         if (!inside) {
             f = fog_amount(u.cam_fwd.w);
         }
-        c = mix(bg, fog_col, max(f, 0.0));
+        var cover = 1.0;
+        if (u.bg2.w > 0.5 && u.bg_rot[0].w > 0.5) {
+            cover = 0.0;
+        }
+        c = bg * (1.0 - max(f, 0.0) * cover) + fog_col * max(f, 0.0);
         tr.albedo = clamp(c, vec3<f32>(0.0), vec3<f32>(1.0));
     } else {
         let pos = o + d * h.t;
@@ -901,7 +934,16 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sy: f32, 
         let p = pos + n * (h.eps * select(1.5, 4.0, inside_now()));
         let ao = ambient_occlusion(p, n, h.t);
         let hemi = dot(n, u.amb_up.xyz) * 0.5 + 0.5;
-        var diffuse = mix(u.ground.xyz, u.sky.xyz, hemi) * u.ao.w * ao;
+        var amb = mix(u.ground.xyz, u.sky.xyz, hemi);
+        if (u.bg2.z > 0.5 && u.bg_rot[0].w > 0.5) {
+            let fi = clamp(fog_amount(u.cam_fwd.w), 0.0, 1.0);
+            var keep = 1.0 - fi;
+            if (u.bg2.w > 0.5) {
+                keep = 1.0;
+            }
+            amb = background_ambient(n) * keep + fog_col * fi;
+        }
+        var diffuse = amb * u.ao.w * ao;
         var spec = vec3<f32>(0.0);
         let shin = u.sky.w;
         for (var i = 0u; i < u.size.w; i++) {
@@ -1016,7 +1058,7 @@ fn sample_pixel(px: u32, py: u32, sample: u32) -> vec3<f32> {
     }
     // Without reflections (most scenes) a single trace: compiles much faster.
     if (!REFLECT) {
-        let tr = trace(o, d, u.scales.w, u.cam_fwd.w, 0.0, sy, false, 0.0);
+        let tr = trace(o, d, u.scales.w, u.cam_fwd.w, 0.0, sx, sy, false, 0.0);
         aux_albedo = tr.albedo;
         aux_normal = tr.normal;
         return tr.c;
@@ -1030,6 +1072,7 @@ fn sample_pixel(px: u32, py: u32, sample: u32) -> vec3<f32> {
     var t0 = u.scales.w;
     var max_t = u.cam_fwd.w;
     var t_base = 0.0;
+    var sxr = sx;
     var syr = sy;
     let amount = u.glow3.w;
     var bounces = 0u;
@@ -1048,7 +1091,7 @@ fn sample_pixel(px: u32, py: u32, sample: u32) -> vec3<f32> {
         if (b == bounces) {
             g = 0.0;
         }
-        let tr = trace(ro, rd, t0, max_t, t_base, syr, inside, g);
+        let tr = trace(ro, rd, t0, max_t, t_base, sxr, syr, inside, g);
         if (b == 0u) {
             aux_albedo = tr.albedo;
             aux_normal = tr.normal;
@@ -1092,6 +1135,7 @@ fn sample_pixel(px: u32, py: u32, sample: u32) -> vec3<f32> {
         max_t = tr.t + u.cam_fwd.w;
         t_base = tr.t;
         syr = clamp(2.0 * asin(clamp(dot(rd, u.cam_up.xyz), -1.0, 1.0)) / fov, -1.0, 1.0);
+        sxr = clamp(atan2(dot(rd, u.cam_right.xyz), dot(rd, u.cam_fwd.xyz)) / atan(u.cam_pos.w * u.cam_right.w), -1.0, 1.0);
     }
     flip = false;
     return c;

@@ -284,3 +284,55 @@ fn gpu_matches_cpu_with_mandelbulb3d_glass() {
     assert!(scene.material.transmission);
     parity(scene);
 }
+
+/// Writes a 24-bit BMP with a colorful pattern.
+fn write_test_bmp(path: &std::path::Path, w: u32, h: u32) {
+    let row = (w * 3).div_ceil(4) * 4;
+    let size = 54 + row * h;
+    let mut b = Vec::with_capacity(size as usize);
+    b.extend_from_slice(b"BM");
+    for v in [size, 0, 54, 40, w, h] {
+        b.extend_from_slice(&v.to_le_bytes());
+    }
+    b.extend_from_slice(&1u16.to_le_bytes());
+    b.extend_from_slice(&24u16.to_le_bytes());
+    for v in [0u32, row * h, 2835, 2835, 0, 0] {
+        b.extend_from_slice(&v.to_le_bytes());
+    }
+    for y in 0..h {
+        for x in 0..w {
+            let (fx, fy) = (x as f32 / w as f32, y as f32 / h as f32);
+            b.extend_from_slice(&[(255.0 * fy) as u8, (128.0 + 127.0 * (fx * 12.0).sin()) as u8, (255.0 * fx) as u8]);
+        }
+        b.resize(b.len() + (row - w * 3) as usize, 0);
+    }
+    std::fs::write(path, b).expect("write bmp");
+}
+
+#[test]
+fn gpu_matches_cpu_with_background_image_options() {
+    // Ambient light from the image (its 16 × 8 copy), spherical conversion, fitted borders,
+    // brightness, fog on top of the image, screen coordinates, reflections that see the image.
+    use rmb_core::scene::FogMode;
+    let path = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("rmb_bg_test.bmp");
+    write_test_bmp(&path, 96, 48);
+    let mut scene = Scene::default();
+    scene.lighting.ao_mode = rmb_core::scene::AoMode::Fast;
+    scene.post.display_space = true;
+    scene.background.image = path.to_string_lossy().into_owned();
+    scene.background.image_rotation = [10.0, 40.0, 0.0];
+    scene.background.image_intensity = 1.3;
+    scene.background.image_spherical = true;
+    scene.background.image_fit_border = true;
+    scene.background.image_fog_add = true;
+    scene.background.image_screen = true;
+    scene.lighting.ambient_from_background = true;
+    scene.lighting.ambient = 0.8;
+    scene.fog.mode = FogMode::Range;
+    scene.fog.strength = 0.4;
+    scene.material.reflection = 0.5;
+    scene.material.reflection_bounces = 1;
+    let (big, small, _) = rmb_core::render::background_maps(&scene).expect("test image loads");
+    assert_eq!((big.width, big.height, small.width, small.height), (96, 48, 16, 8));
+    parity(scene);
+}
