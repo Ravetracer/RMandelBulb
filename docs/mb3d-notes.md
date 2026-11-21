@@ -118,3 +118,12 @@ little-endian.
   background only. CalcPosLightShape gives the light added (∝ 1/R) and the share of the pixel
   kept; the light is dimmed by 1 - 0.9 · depth fog at its position. Types 2 and 8 add, the others
   blend: pixel · kept + depth color · fog · (1 - kept) + light.
+
+## Background images (FileHandling.LoadBackgroundPicT, ImageProcess.GetLightMapPixelSphere)
+
+- File name at light record +384 (24 chars), searched in the picture, map and other folders.
+- Spherical: the world view direction is multiplied with the transposed `PicRotMatrix`
+  (BuildRotMatrixS(π - PicOffsetX·π/128, PicOffsetY·π/128, PicOffsetZ·π/128); offsets at light
+  +50, +51, +67), u = atan2(v0, v2)·(-1/2π) + 0.5, v = 0.5 - asin(v1)/π, B-spline sampled with
+  horizontal wrap and vertical clamp. TBoptions bit 15: screen coordinates instead.
+- The depth fog still blends toward the depth colors (DepthCol/DepthCol2), not the image.

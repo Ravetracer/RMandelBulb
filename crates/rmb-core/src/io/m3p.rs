@@ -648,8 +648,25 @@ pub fn import_binary(b: &[u8]) -> Result<Import, String> {
         // Lens radius = Ap * focus distance; the scene's lens radius is aperture * focus * 0.1.
         s.dof.aperture = ap * 10.0;
     }
-    if !r.cstr(light + 384, 24).is_empty() {
-        warnings.push(format!("background image '{}' is not supported yet", r.cstr(light + 384, 24)));
+    // ---- background image (spherical; LightVals: BuildRotMatrixS(π - offX·π/128, offY·π/128,
+    // offZ·π/128)); the depth fog keeps the vertical gradient.
+    let bg_name = r.cstr(light + 384, 24);
+    if !bg_name.is_empty() {
+        let off = |o: usize| r.u8(light + o) as f64 * 180.0 / 128.0;
+        s.background.image = bg_name.clone();
+        s.background.image_rotation = [180.0 - off(50), off(51), off(67)];
+        if tb_options & 0x8000 != 0 {
+            warnings.push("the background image uses screen coordinates; shown as a panorama".into());
+        }
+        if add_options & 0x80 != 0 {
+            warnings.push("the background image is not converted to a panorama on load like Mandelbulb3D does".into());
+        }
+        if add_options & 0x20 != 0 {
+            warnings.push("ambient light from the background image is not supported".into());
+        }
+        if crate::maps::get_file(&bg_name).is_none() {
+            warnings.push(format!("background image '{bg_name}' not found (set the Mandelbulb3D maps folder in the preferences)"));
+        }
     }
 
     // ---- notes: authors

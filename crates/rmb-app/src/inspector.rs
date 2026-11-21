@@ -326,6 +326,27 @@ fn effects(ui: &mut Ui, scene: &mut Scene) {
             widgets::slider_log(ui, "Curve", "1: even; above 1: more of the top color; below 1: more of the bottom color", &mut b.curve, 0.1..=10.0, db.curve);
         }
     });
+    ui.horizontal(|ui| {
+        let label = if b.image.is_empty() { "No image".to_string() } else { b.image.clone() };
+        if ui.button("Image…").on_hover_text("Panorama image (latitude/longitude) behind the object; the fog keeps the colors above").clicked()
+            && let Some(p) = rfd::FileDialog::new().add_filter("Image", &["jpg", "jpeg", "png", "bmp"]).pick_file()
+        {
+            b.image = p.display().to_string();
+        }
+        if !b.image.is_empty() && widgets::icon_button(ui, icons::X, "Remove the background image").clicked() {
+            b.image.clear();
+        }
+        let found = b.image.is_empty() || rmb_core::maps::get_file(b.image.trim()).is_some();
+        ui.label(RichText::new(label).size(theme::fs(11.0)).color(if found { theme::TEXT_MUTED } else { theme::WARN }))
+            .on_hover_text(if found { "" } else { "Not found: give the full path or put it in the maps folder (Preferences)" });
+    });
+    if !b.image.is_empty() {
+        widgets::grid(ui, "bg-image", |ui| {
+            for (k, axis) in ["X", "Y", "Z"].iter().enumerate() {
+                widgets::slider(ui, &format!("Rotate {axis}"), "Rotation of the background image in degrees", &mut b.image_rotation[k], -180.0..=360.0, db.image_rotation[k]);
+            }
+        });
+    }
 
     let df = rmb_core::scene::Fog::default();
     let f = &mut scene.fog;

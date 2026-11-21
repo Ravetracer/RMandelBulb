@@ -16,6 +16,7 @@ pub struct Shader<'a> {
     pub frame: Frame,
     pub lut: Vec<[f32; 3]>,
     pub lut_spec: Vec<[f32; 3]>,
+    pub bg_image: Option<(std::sync::Arc<crate::maps::Map>, [[f64; 3]; 3])>,
 }
 
 pub struct Hit {
@@ -29,7 +30,14 @@ pub struct Hit {
 impl<'a> Shader<'a> {
     pub fn new(scene: &'a Scene, prog: &'a Program, width: u32, height: u32) -> Self {
         let g = &scene.material.gradient;
-        Shader { scene, prog, frame: Frame::new(scene, width, height), lut: crate::gradient::lut(g), lut_spec: crate::gradient::lut_specular(g) }
+        Shader {
+            scene,
+            prog,
+            frame: Frame::new(scene, width, height),
+            lut: crate::gradient::lut(g),
+            lut_spec: crate::gradient::lut_specular(g),
+            bg_image: super::background_image(scene),
+        }
     }
 
     /// Surface threshold at ray distance `t`.
@@ -141,6 +149,16 @@ impl<'a> Shader<'a> {
         }
     }
 
+    /// Background image color in direction `d` (display values in display space, else linear).
+    pub fn background_image(&self, d: V3) -> Option<[f64; 3]> {
+        let (m, rot) = self.bg_image.as_ref()?;
+        let (u, v) = crate::maps::panorama_uv(rot, d.to_array());
+        let s = m.sample_panorama(u, v);
+        // Map pixels are blue, green, red.
+        let rgb = [s[2], s[1], s[0]];
+        Some(if self.scene.post.display_space { rgb } else { rgb.map(super::srgb_decode) })
+    }
+
     /// Background color in direction `d`; `sy` is the screen position (-1 bottom .. 1 top).
     pub fn background(&self, d: V3, sy: f64) -> [f64; 3] {
         let b = &self.scene.background;
@@ -230,8 +248,9 @@ impl<'a> Shader<'a> {
         }
         let (hit, _, steps) = self.march(ev, o, d, super::start_distance(sc), sc.march.max_distance, sc.march.max_steps);
         let (glow, glow_mix) = sc.fog.glow_at(steps as f64, sc.march.max_steps as f64);
-        let bg = self.background(d, sy);
-        let fog_col = if sc.fog.from_background { bg } else { sc.fog.color.map(|x| x as f64) };
+        let grad = self.background(d, sy);
+        let bg = self.background_image(d).unwrap_or(grad);
+        let fog_col = if sc.fog.from_background { grad } else { sc.fog.color.map(|x| x as f64) };
         let (near, far) = (super::start_distance(sc), sc.march.max_distance);
         let albedo: [f64; 3];
         let mut normal = V3::ZERO;

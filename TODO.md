@@ -9,7 +9,10 @@
 - [x] Color index like MB3D (smooth iterations from Rout/Rold, start/end sliders, color cycling)
 - [x] Depth of field import (focus distance, aperture)
 - [ ] Interpolation hybrids (currently imported as alternating)
-- [ ] Background images
+- [x] Background images (panorama with MB3D's rotation and B-spline sampling)
+  - [ ] Screen-coordinate images, MB3D's "convert to spherical" on load, ambient light from the
+        image (samples: material colors, Mengerplus for MC)
+- [ ] Reflections (MB3D's reflection amount; mirror spheres in "material colors", "Wada basin")
 - [x] Positional lights (point lights with 1/d² falloff)
 - [x] Specular colors per gradient stop, MB3D's diffuse light functions, lights darkened by AO
 - [x] Dynamic fog on one iteration, AO strength above 1, AO reach like MB3D

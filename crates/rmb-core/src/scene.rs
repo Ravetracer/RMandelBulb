@@ -652,11 +652,24 @@ pub struct Background {
     pub bottom: [f32; 3],
     /// Vertical mode: exponent of the screen position (1 linear, 2 more top color, 0.5 more bottom color).
     pub curve: f64,
+    /// Panorama image (latitude/longitude) shown behind the object instead of the colors; the
+    /// fog keeps using the colors. A path, or a file name in the map folders. Empty: none.
+    pub image: String,
+    /// Rotation of the image (degrees about x, y, z; Mandelbulb3D's picture offsets).
+    pub image_rotation: [f64; 3],
 }
 
 impl Default for Background {
     fn default() -> Self {
-        Background { mode: BackgroundMode::Gradient, top: [0.08, 0.1, 0.16], horizon: [0.32, 0.34, 0.4], bottom: [0.06, 0.06, 0.07], curve: 1.0 }
+        Background {
+            mode: BackgroundMode::Gradient,
+            top: [0.08, 0.1, 0.16],
+            horizon: [0.32, 0.34, 0.4],
+            bottom: [0.06, 0.06, 0.07],
+            curve: 1.0,
+            image: String::new(),
+            image_rotation: [0.0; 3],
+        }
     }
 }
 

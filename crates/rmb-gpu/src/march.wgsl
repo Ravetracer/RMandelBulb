@@ -45,6 +45,7 @@ struct U {
     fog3: vec4<f32>,       // squared, from background, color detail shift
     glow2: vec4<f32>,      // second glow color, w: steps to the second color
     glow3: vec4<f32>,      // glow offset (steps), blend, glow iteration
+    bg_rot: array<vec4<f32>, 3>, // background image rotation rows; [0].w: has image, [1].w: display space
 }
 
 @group(0) @binding(0) var<uniform> u: U;
@@ -97,7 +98,11 @@ fn is_finite(v: f32) -> bool {
 
 // Map lookups (mirror maps.rs): uniform cubic B-spline over the pixels with wrap-around.
 fn map_find(n: f32) -> i32 {
-    let k = u32(max(round(n), 0.0));
+    return map_find_u(u32(max(round(n), 0.0)));
+}
+
+// The background image is stored under the number 0xffffffff.
+fn map_find_u(k: u32) -> i32 {
     let count = maps[0];
     for (var i = 0u; i < count; i++) {
         if (maps[1u + 4u * i] == k) {
@@ -136,6 +141,46 @@ fn map_sample(i: i32, x: f32, y: f32, ch: f32) -> f32 {
         sum += row * wy[j];
     }
     return sum / 255.0;
+}
+
+// Mirrors Shader::background_image (maps.rs: panorama_uv, sample_panorama).
+fn background_image(d: vec3<f32>) -> vec3<f32> {
+    let i = map_find_u(0xffffffffu);
+    if (i < 0) {
+        return vec3<f32>(0.0);
+    }
+    let l = max(length(d), 1.0e-30);
+    let m0 = u.bg_rot[0].xyz;
+    let m1 = u.bg_rot[1].xyz;
+    let m2 = u.bg_rot[2].xyz;
+    let v = (m0 * d.x + m1 * d.y + m2 * d.z) / l;
+    let pu = atan2(v.x, v.z) * (-0.5 / 3.141592653589793) + 0.5;
+    let pv = 0.5 - asin(clamp(v.y, -1.0, 1.0)) / 3.141592653589793;
+    let h0 = 1u + 4u * u32(i);
+    let w = i32(maps[h0 + 1u]);
+    let h = i32(maps[h0 + 2u]);
+    let base = maps[h0 + 3u];
+    let x = clamp(pu, 0.0, 1.0) * f32(w);
+    let y = clamp(pv, 0.0, 1.0) * f32(h);
+    let xf = min(floor(x), f32(w - 1));
+    let yf = min(floor(y), f32(h - 1));
+    let wx = spline_weights(x - xf);
+    let wy = spline_weights(y - yf);
+    var sum = vec3<f32>(0.0);
+    for (var j = 0; j < 4; j++) {
+        let yy = clamp(i32(yf) - 1 + j, 0, h - 1);
+        for (var k = 0; k < 4; k++) {
+            let xx = (((i32(xf) - 1 + k) % w) + w) % w;
+            let p = maps[base + u32(yy * w + xx)];
+            // Pixels are blue | green << 8 | red << 16: as RGB.
+            sum += vec3<f32>(f32((p >> 16u) & 255u), f32((p >> 8u) & 255u), f32(p & 255u)) * (wx[k] * wy[j]);
+        }
+    }
+    var rgb = sum / 255.0;
+    if (u.bg_rot[1].w < 0.5) {
+        rgb = select(pow((rgb + 0.055) / 1.055, vec3<f32>(2.4)), rgb / 12.92, rgb <= vec3<f32>(0.04045));
+    }
+    return rgb;
 }
 
 fn map_xy(n: f32, u_: f32, v_: f32, ch: f32) -> f32 {
@@ -584,10 +629,14 @@ fn sample_pixel(px: u32, py: u32, sample: u32) -> vec3<f32> {
     if (u.glow2.w > 0.0) {
         glow_mix = min(f32(h.glow_steps) / u.glow2.w, 1.0);
     }
-    let bg = background(d, sy);
+    let grad = background(d, sy);
+    var bg = grad;
+    if (u.bg_rot[0].w > 0.5) {
+        bg = background_image(d);
+    }
     var fog_col = u.fog.xyz;
     if (u.fog3.y > 0.5) {
-        fog_col = bg;
+        fog_col = grad;
     }
     var c: vec3<f32>;
     aux_normal = vec3<f32>(0.0);

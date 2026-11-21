@@ -102,6 +102,7 @@ struct Uniforms {
     fog3: [f32; 4],
     glow2: [f32; 4],
     glow3: [f32; 4],
+    bg_rot: [[f32; 4]; 3],
 }
 
 #[repr(C)]
@@ -200,6 +201,12 @@ fn uniforms(scene: &Scene, prog: &Program, w: u32, h: u32, fast: bool) -> Unifor
         fog3: [if fog.squared { 1.0 } else { 0.0 }, if fog.from_background { 1.0 } else { 0.0 }, m.detail_shift as f32, 0.0],
         glow2: c4(fog.glow_color2, fog.glow_mix_steps),
         glow3: [fog.glow_offset as f32, if fog.glow_blend { 1.0 } else { 0.0 }, fog.glow_iteration as f32, 0.0],
+        bg_rot: {
+            let m = rmb_core::maps::rotation_matrix(bg.image_rotation);
+            let has = !bg.image.trim().is_empty() && rmb_core::render::background_image(scene).is_some();
+            let flags = [if has { 1.0 } else { 0.0 }, if scene.post.display_space { 1.0 } else { 0.0 }, 0.0];
+            [0, 1, 2].map(|i| [m[i][0] as f32, m[i][1] as f32, m[i][2] as f32, flags[i]])
+        },
     }
 }
 
@@ -261,6 +268,8 @@ pub struct GpuRenderer {
     /// Mandelbulb3D maps of the scene (march.wgsl `maps`) and their numbers.
     maps: wgpu::Buffer,
     map_numbers: Vec<i32>,
+    /// Background image file in the maps buffer.
+    map_background: String,
     maps_generation: u64,
     target: Option<Target>,
     key: Option<Key>,
@@ -332,6 +341,7 @@ impl GpuRenderer {
             lut: storage_buffer(device, "lut", (rmb_core::gradient::LUT_SIZE * 2 * 16) as u64),
             maps: storage_buffer(device, "maps", 16),
             map_numbers: Vec::new(),
+            map_background: String::new(),
             maps_generation: rmb_core::maps::generation(),
             display_pipeline,
             march_pipeline_layout: device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("march"), bind_group_layouts: &[Some(&march_layout)], immediate_size: 0 }),
@@ -404,6 +414,7 @@ impl GpuRenderer {
         if self.maps_generation != rmb_core::maps::generation() {
             self.maps_generation = rmb_core::maps::generation();
             self.map_numbers.clear();
+            self.map_background = "\u{0}".into();
             self.key = None;
         }
         let post = post_uniforms(scene, width, height);
@@ -427,7 +438,7 @@ impl GpuRenderer {
         if !consts.is_empty() {
             self.ctx.queue.write_buffer(&self.prm, 0, bytemuck::cast_slice(&consts));
         }
-        self.upload_maps(&prog);
+        self.upload_maps(&prog, scene);
         let shade = rmb_core::render::shading_scene(scene);
         let g = &shade.material.gradient;
         let lut: Vec<[f32; 4]> = rmb_core::gradient::lut(g).iter().chain(&rmb_core::gradient::lut_specular(g)).map(|c| [c[0], c[1], c[2], 1.0]).collect();
@@ -440,20 +451,25 @@ impl GpuRenderer {
     }
 
     /// Uploads the maps the formulas read (only when the set of map numbers changes).
-    fn upload_maps(&mut self, prog: &Program) {
+    fn upload_maps(&mut self, prog: &Program, scene: &Scene) {
         let numbers = prog.map_numbers();
+        let background = scene.background.image.trim().to_string();
         // New buffers are zeroed: no maps (count 0) until the first upload.
-        if numbers == self.map_numbers && !(numbers.is_empty() && self.maps.size() > 16) {
+        if numbers == self.map_numbers && background == self.map_background && !(numbers.is_empty() && background.is_empty() && self.maps.size() > 16) {
             return;
         }
-        let maps: Vec<_> = numbers.iter().filter_map(|n| rmb_core::maps::get(*n)).collect();
+        // The background image goes in under the number 0xffffffff (march.wgsl).
+        let mut maps: Vec<(u32, std::sync::Arc<rmb_core::maps::Map>)> = numbers.iter().filter_map(|n| rmb_core::maps::get(*n).map(|m| (*n as u32, m))).collect();
+        if let Some((m, _)) = rmb_core::render::background_image(scene) {
+            maps.push((u32::MAX, m));
+        }
         let mut data: Vec<u32> = vec![maps.len() as u32];
         let mut offset = 1 + 4 * maps.len() as u32;
-        for m in &maps {
-            data.extend_from_slice(&[m.number as u32, m.width, m.height, offset]);
+        for (n, m) in &maps {
+            data.extend_from_slice(&[*n, m.width, m.height, offset]);
             offset += m.width * m.height;
         }
-        for m in &maps {
+        for (_, m) in &maps {
             data.extend(m.pixels.iter().map(|p| p[0] as u32 | (p[1] as u32) << 8 | (p[2] as u32) << 16));
         }
         let bytes = (data.len() * 4) as u64;
@@ -462,6 +478,7 @@ impl GpuRenderer {
         }
         self.ctx.queue.write_buffer(&self.maps, 0, bytemuck::cast_slice(&data));
         self.map_numbers = numbers;
+        self.map_background = background;
     }
 
     fn ensure_target(&mut self, width: u32, height: u32) {

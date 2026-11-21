@@ -37,6 +37,26 @@ impl Map {
         self.pixels[(y.rem_euclid(h) * w + x.rem_euclid(w)) as usize]
     }
 
+    /// Like [`Map::sample`] for `u`, `v` in 0..1, wrapping horizontally and clamping vertically
+    /// (Mandelbulb3D's spherical background images).
+    pub fn sample_panorama(&self, u: f64, v: f64) -> [f64; 3] {
+        let (w, h) = (self.width as f64, self.height as f64);
+        let (x, y) = (u.clamp(0.0, 1.0) * w, v.clamp(0.0, 1.0) * h);
+        let (xf, yf) = (x.floor().min(w - 1.0), y.floor().min(h - 1.0));
+        let (wx, wy) = (spline_weights(x - xf), spline_weights(y - yf));
+        let mut out = [0.0; 3];
+        for (j, wyj) in wy.iter().enumerate() {
+            let row = (yf as i64 - 1 + j as i64).clamp(0, self.height as i64 - 1);
+            for (i, wxi) in wx.iter().enumerate() {
+                let t = self.texel(xf as i64 - 1 + i as i64, row);
+                for c in 0..3 {
+                    out[c] += t[c] as f64 * wxi * wyj;
+                }
+            }
+        }
+        out.map(|v| v / 255.0)
+    }
+
     /// Value at pixel coordinates (`x` in 0..width, `y` in 0..height), B-spline interpolated.
     pub fn sample(&self, x: f64, y: f64) -> [f64; 3] {
         let (xf, yf) = (x.floor(), y.floor());
@@ -122,8 +142,11 @@ pub fn find(n: i32) -> Option<PathBuf> {
 }
 
 fn load(n: i32) -> Option<Map> {
-    let path = find(n)?;
-    let img = image::open(&path).ok()?.to_rgb8();
+    load_path(&find(n)?, n)
+}
+
+fn load_path(path: &std::path::Path, n: i32) -> Option<Map> {
+    let img = image::open(path).ok()?.to_rgb8();
     let (width, height) = img.dimensions();
     if width < 2 || height < 2 {
         return None;
@@ -140,6 +163,40 @@ pub fn get(n: i32) -> Option<Arc<Map>> {
     let m = load(n).map(Arc::new);
     cache().write().unwrap_or_else(|e| e.into_inner()).insert(n, m.clone());
     m
+}
+
+/// An image by file name (background images): an existing path, or the name in the search
+/// folders. Loaded on first use.
+pub fn get_file(name: &str) -> Option<Arc<Map>> {
+    static FILES: OnceLock<RwLock<HashMap<(String, u64), Option<Arc<Map>>>>> = OnceLock::new();
+    let files = FILES.get_or_init(|| RwLock::new(HashMap::new()));
+    let key = (name.to_string(), generation());
+    if let Some(m) = files.read().unwrap_or_else(|e| e.into_inner()).get(&key) {
+        return m.clone();
+    }
+    let p = std::path::Path::new(name);
+    let path = if p.is_file() { Some(p.to_path_buf()) } else { search_dirs().into_iter().map(|d| d.join(name)).find(|f| f.is_file()) };
+    let m = path.and_then(|p| load_path(&p, -1)).map(Arc::new);
+    files.write().unwrap_or_else(|e| e.into_inner()).insert(key, m.clone());
+    m
+}
+
+/// Rotation of a background image (Mandelbulb3D's `BuildRotMatrixS`, angles in degrees).
+pub fn rotation_matrix(deg: [f64; 3]) -> [[f64; 3]; 3] {
+    let [(sx, cx), (sy, cy), (sz, cz)] = deg.map(|a| a.to_radians().sin_cos());
+    [
+        [cy * cz, -cy * sz, sy],
+        [sx * sy * cz + cx * sz, cx * cz - sx * sy * sz, -sx * cy],
+        [sx * sz - cx * sy * cz, cx * sy * sz + sx * cz, cx * cy],
+    ]
+}
+
+/// Image coordinates (0..1) of the world direction `d` for a background image rotated by `m`
+/// (`GetLightMapPixelSphere`: the transposed matrix, then latitude and longitude).
+pub fn panorama_uv(m: &[[f64; 3]; 3], d: [f64; 3]) -> (f64, f64) {
+    let l = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt().max(1e-30);
+    let v = [0, 1, 2].map(|j| (m[0][j] * d[0] + m[1][j] * d[1] + m[2][j] * d[2]) / l);
+    (v[0].atan2(v[2]) * (-0.5 / std::f64::consts::PI) + 0.5, 0.5 - v[1].clamp(-1.0, 1.0).asin() / std::f64::consts::PI)
 }
 
 /// Channel `ch` (0..2) of map `n` at `u`, `v` (0..1, tiled): Mandelbulb3D's direct lookup

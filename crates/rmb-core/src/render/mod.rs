@@ -170,6 +170,20 @@ pub fn shading_scene(scene: &Scene) -> Cow<'_, Scene> {
     Cow::Owned(s)
 }
 
+/// The background image of `scene` (loaded on first use) and its rotation matrix.
+pub fn background_image(scene: &Scene) -> Option<(std::sync::Arc<crate::maps::Map>, [[f64; 3]; 3])> {
+    let b = &scene.background;
+    if b.image.trim().is_empty() {
+        return None;
+    }
+    crate::maps::get_file(b.image.trim()).map(|m| (m, crate::maps::rotation_matrix(b.image_rotation)))
+}
+
+/// sRGB value (0..1) to linear light.
+pub fn srgb_decode(v: f64) -> f64 {
+    if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+}
+
 /// Distance from the camera where primary rays start: the near distance; inside rendering
 /// needs a positive one (the step size grows with the distance).
 pub fn start_distance(scene: &Scene) -> f64 {

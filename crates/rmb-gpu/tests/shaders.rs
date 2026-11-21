@@ -123,6 +123,11 @@ fn gpu_matches_cpu_with_mandelbulb3d_shading() {
     scene.lighting.lights[1].azimuth = 175.0;
     scene.lighting.lights[1].elevation = 5.0;
     scene.lighting.lights[1].glow_size = 15.0;
+    // A panorama background image, if Mandelbulb3D's maps are there.
+    if rmb_core::maps::get_file("1031.jpg").is_some() {
+        scene.background.image = "1031.jpg".into();
+        scene.background.image_rotation = [20.0, 150.0, 10.0];
+    }
     scene.material.color_mode = ColorMode::IterationsRatio;
     scene.material.color_scale = -0.3;
     scene.material.color_offset = 1.7;
