@@ -27,14 +27,11 @@ fn every_formula_compiles_to_valid_wgsl() {
     validate(include_str!("../src/display.wgsl"), "display");
 }
 
-#[test]
-fn gpu_matches_cpu() {
+fn parity(scene: Scene) {
     let Ok(ctx) = rmb_gpu::GpuContext::new_headless() else {
         eprintln!("no GPU, skipped");
         return;
     };
-    let mut scene = Scene::default();
-    scene.lighting.ao_mode = rmb_core::scene::AoMode::Fast;
     let (w, h) = (96, 64);
     let gpu = rmb_gpu::render_blocking(ctx, &scene, w, h, 1, |_| true).expect("gpu render");
     let mut cpu = rmb_core::render::cpu::CpuRenderer::new(scene, w, h);
@@ -46,6 +43,25 @@ fn gpu_matches_cpu() {
     eprintln!("mean abs diff {mean:.2}, {big} channels off by more than 40");
     assert!(mean < 4.0, "mean difference {mean}");
     assert!(big < diff.len() / 50, "{big} large differences");
+}
+
+#[test]
+fn gpu_matches_cpu() {
+    let mut scene = Scene::default();
+    scene.lighting.ao_mode = rmb_core::scene::AoMode::Fast;
+    parity(scene);
+}
+
+#[test]
+fn gpu_matches_cpu_with_de_combination_and_4d_rotation() {
+    let mut scene = Scene::default();
+    scene.lighting.ao_mode = rmb_core::scene::AoMode::Fast;
+    scene.fractal.slots = vec![Slot::new("Mandelbulb"), Slot::new("Quaternion"), Slot::new("Menger sponge")];
+    scene.fractal.julia = true;
+    scene.fractal.julia_c = [-0.2, 0.6, 0.2, 0.1];
+    scene.fractal.rotation_4d = [20.0, 10.0, 5.0];
+    scene.fractal.combine = Some(rmb_core::scene::DeCombine { mode: rmb_core::scene::CombineMode::Smooth, start: 2, repeat_from: 2, max_iterations: 6, smooth: 0.2 });
+    parity(scene);
 }
 
 #[test]

@@ -10,7 +10,7 @@
 
 use crate::gradient::srgb_to_linear;
 use crate::math::{V3, v3};
-use crate::scene::{AoMode, BackgroundMode, ColorMode, ColorStop, Light, Scene, Slot};
+use crate::scene::{AoMode, BackgroundMode, ColorMode, ColorStop, CombineMode, DeCombine, Light, Scene, Slot};
 
 /// Result of an import: the scene and what could not be converted.
 pub struct Import {
@@ -172,8 +172,9 @@ pub fn import_binary(b: &[u8]) -> Result<Import, String> {
     if !(1.0..=170.0).contains(&fov) {
         fov = fov.clamp(1.0, 170.0);
     }
-    if r.u8(148) & 3 != 0 {
-        warnings.push("planar and panorama camera optics are shown as a normal perspective camera".into());
+    // Optic 1 (planar) is the pinhole camera used here; 0 differs slightly toward the corners.
+    if r.u8(148) & 3 == 2 {
+        warnings.push("the panorama camera optic is shown as a normal perspective camera".into());
     }
     let half = (fov.to_radians() * 0.5).tan();
     let vp_off = sw * height as f64 * 0.5 / half;
@@ -191,9 +192,7 @@ pub fn import_binary(b: &[u8]) -> Result<Import, String> {
     f.bailout = r.f64(92).abs().max(1.0);
     f.julia = r.u8(190) != 0;
     f.julia_c = [r.f64(191), r.f64(199), r.f64(207), r.f64(215)];
-    if [r.f64(60), r.f64(68), r.f64(76)].iter().any(|a| a.abs() > 1e-12) {
-        warnings.push("4D rotations (XW, YW, ZW) are not supported yet and were ignored".into());
-    }
+    f.rotation_4d = [r.f64(60).to_degrees(), r.f64(68).to_degrees(), r.f64(76).to_degrees()];
     s.march.detail = r.f32(177).max(0.001);
     let step = r.f32(182);
     s.march.step = if step > 1e-4 { step.min(1.0) } else { 0.5 };
@@ -208,35 +207,75 @@ pub fn import_binary(b: &[u8]) -> Result<Import, String> {
     }
     match hybrid_type {
         1 => warnings.push("interpolation hybrid imported as an alternating hybrid".into()),
-        2 => warnings.push("DE-combination hybrid imported as an alternating hybrid".into()),
         3 => warnings.push("(K/L)IFS hybrid mode is not supported".into()),
         _ => {}
     }
+    // Raw slots: (iterations, formula number, name, option values).
+    let mut raw: Vec<(i32, i32, String, Vec<f64>)> = (0..n_slots)
+        .map(|i| {
+            let o = addon + 8 + i * SLOT;
+            let fnr = r.i32(o + 4);
+            let name = if (0..10).contains(&fnr) { INTERNAL[fnr as usize].to_string() } else { r.cstr(o + 12, 32) };
+            let n_opt = (r.i32(o + 8).clamp(0, 16)) as usize;
+            (r.i32(o), fnr, name, (0..n_opt).map(|k| r.f64(o + 60 + k * 8)).collect())
+        })
+        .collect();
+    let mut hyb1 = r.u8(addon + 5) as u32;
+    let mut hyb2 = r.u16(addon + 6) as u32;
+    let mut bopt3 = r.u8(addon + 3) as u32;
+    let mut max_its2 = r.i32(418 + shift);
+    // Upgrades of older versions (FileHandling.pas): the second iteration limit and the
+    // smoothing distance of the DE combination did not exist yet.
+    if mand_id < 33 {
+        max_its2 = f.max_iterations as i32;
+    }
+    let comb_smooth = if mand_id < 31 { 0.5 } else { r.f32(378) };
+    // Before version 42 the hybrid options were stored differently (FileHandling.pas).
+    if mand_id < 42 && (0..n_slots).all(|i| i < 6) {
+        let vol = r.u8(343).min(5) as u32;
+        let j = (0..6).rev().find(|&k| raw[k].0 != 0).unwrap_or(0);
+        hyb1 = if hybrid_type != 0 { 0 } else { j as u32 | (vol << 4) };
+        hyb2 = 0x151;
+        if hybrid_type == 2 {
+            hyb2 = 1 | ((j as u32) << 4) | (vol.max(1) << 8);
+            raw[0].0 = 1;
+            if !matches!(bopt3, 2 | 6) {
+                let its1 = f.max_iterations as i32;
+                f.max_iterations = max_its2.clamp(1, 10_000) as u32;
+                max_its2 = its1;
+            }
+        } else {
+            bopt3 = 0;
+        }
+        if matches!(bopt3, 2 | 6) {
+            let first = raw.remove(0);
+            raw.insert(j, first);
+            if bopt3 == 6 {
+                bopt3 = 5;
+            }
+            hyb1 = (j as u32).saturating_sub(1) | (vol.saturating_sub(1) << 4);
+            hyb2 = j as u32 | ((j as u32) << 4) | ((j as u32) << 8);
+        }
+    }
+    let (start2, end2, repeat2) = ((hyb2 & 15) as usize, ((hyb2 >> 4) & 15) as usize, ((hyb2 >> 8) & 15) as usize);
     if r.u8(addon + 2) & 6 != 0 {
         warnings.push("inside rendering is not supported yet".into());
     }
-    let hyb1 = r.u8(addon + 5);
     let end1 = (hyb1 & 15) as usize;
     let repeat1 = (hyb1 >> 4) as usize;
     let lib = crate::formula::library();
     let mut slots = Vec::new();
     let mut missing = Vec::new();
-    for i in 0..n_slots {
-        let o = addon + 8 + i * SLOT;
-        if o + SLOT > b.len() + SLOT {
-            break;
-        }
-        let its = r.i32(o);
-        let fnr = r.i32(o + 4);
+    for (i, (its, fnr, name, values)) in raw.into_iter().enumerate() {
         if its <= 0 || fnr < 0 {
             continue;
         }
         if hybrid_type == 0 && i > end1 && end1 > 0 {
             continue;
         }
-        let name = if (0..10).contains(&fnr) { INTERNAL[fnr as usize].to_string() } else { r.cstr(o + 12, 32) };
-        let n_opt = (r.i32(o + 8).clamp(0, 16)) as usize;
-        let values: Vec<f64> = (0..n_opt).map(|k| r.f64(o + 60 + k * 8)).collect();
+        if hybrid_type == 2 && i > end1 && (i < start2 || i > end2) {
+            continue;
+        }
         let iterations = if hybrid_type == 1 { 1 } else { its.min(1000) as u32 };
         let mut slot = Slot { formula: name.clone(), iterations, params: Default::default() };
         match lib.find_alias(&name) {
@@ -265,6 +304,33 @@ pub fn import_binary(b: &[u8]) -> Result<Import, String> {
         warnings.push("no usable formula; using the default Mandelbulb".into());
     } else {
         f.repeat_from = slots.iter().position(|(i, _)| *i >= repeat1).unwrap_or(0);
+        if hybrid_type == 2 {
+            // DE combination: two chains, the second from slot start2 to end2.
+            let start = slots.iter().position(|(i, _)| *i >= start2.max(end1 + 1));
+            if let Some(start) = start.filter(|s| *s > 0) {
+                let ftype = (bopt3 as i32 + 1).clamp(1, 6);
+                let mode = match ftype {
+                    2 => CombineMode::Max,
+                    3 => CombineMode::Subtract,
+                    4 => CombineMode::SmoothLinear,
+                    5 => CombineMode::Smooth,
+                    _ => CombineMode::Min,
+                };
+                if ftype == 6 {
+                    warnings.push("the DE-combination mode 'mix' (dIFS) is shown as a union".into());
+                }
+                let max2 = max_its2;
+                f.combine = Some(DeCombine {
+                    mode,
+                    start,
+                    repeat_from: slots.iter().position(|(i, _)| *i >= repeat2.max(start2)).unwrap_or(start).max(start),
+                    max_iterations: if max2 > 0 { max2.min(10_000) as u32 } else { f.max_iterations },
+                    smooth: comb_smooth.abs().max(1e-6),
+                });
+            } else {
+                warnings.push("DE combination without a second formula chain imported as an alternating hybrid".into());
+            }
+        }
         f.slots = slots.into_iter().map(|(_, s)| s).collect();
     }
 

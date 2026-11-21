@@ -35,6 +35,9 @@ struct U {
     cuts: array<vec4<f32>, 3>,   // axis, position, keep above
     slots: array<vec4<u32>, 8>,  // x: iterations
     lights: array<GLight, 6>,
+    comb: vec4<f32>,       // DE combination: mode, max iterations 2, repeat from 2, smoothing
+    scales: vec4<f32>,     // DE scale of chain 1, chain 2
+    rot4: array<vec4<f32>, 4>, // 4D start rotation (rows)
 }
 
 @group(0) @binding(0) var<uniform> u: U;
@@ -74,45 +77,47 @@ fn is_finite(v: f32) -> bool {
 
 //@ITERATE@
 
-fn orbit(p: vec3<f32>, h: f32) -> Orbit {
-    var o: Orbit;
-    if (NSLOTS == 0u) {
-        o.de = 1.0e10;
+// DE combination of two chains (mirrors fractal::combine).
+fn combine_de(a: Orbit, b: Orbit) -> Orbit {
+    let mode = u32(u.comb.x);
+    let s = max(u.comb.w, 1.0e-12);
+    var o = a;
+    if (b.de < a.de) {
+        o = b;
+    }
+    if (mode == 0u) {
         return o;
     }
-    let it = iterate(p, 0u, false);
-    let r2 = dot(it.s, it.s);
-    let r = sqrt(r2);
-    var de = 0.0;
-    if (DIFS) {
-        de = max(it.de, 0.0);
-    } else if (it.escaped) {
-        if (NUMERIC) {
-            var g = vec3<f32>(0.0);
-            for (var k = 0u; k < 3u; k++) {
-                var q = p;
-                q[k] += h;
-                let o2 = iterate(q, it.n, true);
-                g[k] = (length(o2.s) - r) / h;
-            }
-            let gl = max(length(g), 1.0e-30);
-            if (DE_LINEAR) {
-                de = r / gl;
-            } else {
-                de = 0.5 * r * log(r) / gl;
-            }
-        } else {
-            if (DE_LINEAR) {
-                de = r / abs(it.dr);
-            } else {
-                de = 0.5 * log(r) * r / it.dr;
-            }
+    if (mode == 1u) {
+        if (b.de > a.de) {
+            return b;
         }
+        return a;
     }
-    if (!is_finite(de)) {
-        de = select(0.0, 1.0e-3, it.escaped);
+    if (mode == 2u) {
+        var inv = -b.de;
+        if (b.de <= 0.0) {
+            inv = s;
+        }
+        var r = a;
+        if (inv > a.de) {
+            r.de = inv;
+        }
+        return r;
     }
-    de = max(de * u.march.w, 0.0);
+    if (mode == 3u) {
+        o.de = min(b.de - max(s - a.de, 0.0), a.de - max(s - b.de, 0.0));
+        return o;
+    }
+    let x = max(s - a.de, 0.0);
+    let y = max(s - b.de, 0.0);
+    o.de = min(b.de - x * (s - y) / s, a.de - y * (s - x) / s);
+    return o;
+}
+
+fn orbit(p: vec3<f32>, h: f32) -> Orbit {
+    var o = fractal_de(p, h);
+    var de = max(o.de * u.march.w, 0.0);
     let ncuts = u32(u.color2.y);
     for (var c = 0u; c < ncuts; c++) {
         let cp = u.cuts[c];
@@ -120,10 +125,6 @@ fn orbit(p: vec3<f32>, h: f32) -> Orbit {
         de = max(de, select(v - cp.y, cp.y - v, cp.z > 0.5));
     }
     o.de = de;
-    o.n = it.n;
-    o.r2 = r2;
-    o.trap = it.trap;
-    o.escaped = it.escaped || DIFS;
     return o;
 }
 

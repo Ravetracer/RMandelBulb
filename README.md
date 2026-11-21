@@ -7,7 +7,8 @@ modern egui interface and import of Mandelbulb3D parameters.
 ## Features
 
 - **Hybrid formulas**: up to six formula slots with iteration counts and "repeat from", Julia
-  mode, 4D slice, analytic or numeric distance estimation.
+  mode, 4D slice and rotation, analytic or numeric distance estimation, and Mandelbulb3D's DE
+  combination (two chains joined by union, intersection, subtraction or a smooth blend).
 - **Formula language**: formulas are small text files (`*.mbf`). Each one compiles to WGSL
   for the GPU and to closures for the f64 CPU renderer. User formulas live in
   `~/.config/rmandelbulb3d/formulas`.
@@ -46,8 +47,8 @@ cargo build --release -p rmb-app -p rmb-cli
 - Not yet translated: Pascal-source JIT formulas and about 80 formulas with loops, data-dependent
   table lookups or map/height-map functions. Scenes that use them open with the missing slots
   listed and skipped. 58 of the 80 Mandelbulb3D example parameter files are fully supported.
-- Not yet supported from MB3D: interpolation and DE-combination hybrids (imported as
-  alternating), inside rendering, 4D rotations, background images, positional lights.
+- Not yet supported from MB3D: interpolation hybrids (imported as alternating), the dIFS "mix"
+  combination, inside rendering, background images, positional lights.
   Lighting and colors are converted approximately.
 - The GPU renders in f32, so very deep zooms need the CPU renderer (`rmb-cli render --cpu`).
 

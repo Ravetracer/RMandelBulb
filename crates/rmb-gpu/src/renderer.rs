@@ -91,6 +91,9 @@ struct Uniforms {
     cuts: [[f32; 4]; 3],
     slots: [[u32; 4]; 8],
     lights: [GLight; 6],
+    comb: [f32; 4],
+    scales: [f32; 4],
+    rot4: [[f32; 4]; 4],
 }
 
 #[repr(C)]
@@ -125,9 +128,15 @@ fn uniforms(scene: &Scene, prog: &Program, w: u32, h: u32, fast: bool) -> Unifor
         *c = [*axis as f32, *pos as f32, if *above { 1.0 } else { 0.0 }, 0.0];
     }
     let mut slots = [[0u32; 4]; 8];
-    for (s, ps) in slots.iter_mut().zip(&prog.slots) {
+    let all = prog.slots.iter().chain(prog.part2.iter().flat_map(|p| p.slots.iter()));
+    for (s, ps) in slots.iter_mut().zip(all) {
         s[0] = ps.iterations.max(1);
     }
+    let p2 = prog.part2.as_deref();
+    let comb = [prog.combine_mode.index() as f32, p2.map(|p| p.max_iterations).unwrap_or(1) as f32, p2.map(|p| p.repeat_from).unwrap_or(0) as f32, prog.combine_smooth as f32];
+    let scales = [prog.de_scale as f32, p2.map(|p| p.de_scale).unwrap_or(1.0) as f32, 0.0, 0.0];
+    let rot = prog.rotation_4d.unwrap_or([[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]]);
+    let rot4 = rot.map(|r| r.map(|v| v as f32));
     let ao_mode = match l.ao_mode {
         AoMode::Off => 0.0,
         AoMode::Fast => 1.0,
@@ -141,7 +150,7 @@ fn uniforms(scene: &Scene, prog: &Program, w: u32, h: u32, fast: bool) -> Unifor
         cam_fwd: v4(cam.forward, scene.march.max_distance),
         size: [w, h, 0, fr.lights.len() as u32],
         band: [0, 0, scene.march.max_steps.max(1), scene.march.refine_steps],
-        march: [scene.march.detail as f32, scene.march.step as f32, prog.bailout2.min(3.0e38) as f32, prog.de_scale as f32],
+        march: [scene.march.detail as f32, scene.march.step as f32, prog.bailout2.min(3.0e38) as f32, prog.scene_de_scale as f32],
         frac: [prog.w_slice as f32, if prog.julia { 1.0 } else { 0.0 }, prog.max_iterations as f32, prog.repeat_from as f32],
         julia: prog.julia_c.map(|v| v as f32),
         ao: [ao_mode, l.ao_strength as f32, l.ao_radius as f32, l.ambient as f32],
@@ -158,6 +167,9 @@ fn uniforms(scene: &Scene, prog: &Program, w: u32, h: u32, fast: bool) -> Unifor
         cuts,
         slots,
         lights,
+        comb,
+        scales,
+        rot4,
     }
 }
 

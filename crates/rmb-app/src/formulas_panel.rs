@@ -44,7 +44,12 @@ impl FormulasPanel {
         let mut remove = None;
         let mut swap = None;
         let n = f.slots.len();
+        let split = f.combine.as_ref().map(|c| c.start);
         for i in 0..n {
+            if split == Some(i) && i > 0 {
+                ui.label(RichText::new("CHAIN 2").size(theme::fs(10.0)).color(theme::ACCENT).strong())
+                    .on_hover_text("The slots from here form the second chain of the DE combination (see Two chains below)");
+            }
             let selected = self.selected == i;
             let slot = &mut f.slots[i];
             let known = find(&slot.formula).is_some();
@@ -91,6 +96,16 @@ impl FormulasPanel {
         }
         if let Some(i) = remove {
             f.slots.remove(i);
+            // Keep the second chain on the same formulas.
+            if let Some(c) = f.combine.as_mut() {
+                if i < c.start {
+                    c.start -= 1;
+                    c.repeat_from = c.repeat_from.saturating_sub(1);
+                }
+                if c.start == 0 || c.start >= f.slots.len() {
+                    f.combine = None;
+                }
+            }
             if f.repeat_from >= f.slots.len() {
                 f.repeat_from = f.slots.len().saturating_sub(1);
             }
@@ -243,6 +258,63 @@ fn iteration(ui: &mut Ui, f: &mut Fractal) {
             for (k, n) in ["Julia X", "Julia Y", "Julia Z", "Julia W"].iter().enumerate() {
                 widgets::drag(ui, n, "Julia constant", &mut f.julia_c[k], 0.002, 0.0);
             }
+        }
+        for (k, n) in ["Rotate XW", "Rotate YW", "Rotate ZW"].iter().enumerate() {
+            widgets::slider(ui, n, "Rotates the start point into the 4th dimension (formulas that use w)", &mut f.rotation_4d[k], -180.0..=180.0, 0.0);
+        }
+    });
+    combine(ui, f);
+}
+
+fn combine(ui: &mut Ui, f: &mut Fractal) {
+    widgets::section(ui, "Two chains", false);
+    let mut on = f.combine.is_some();
+    if ui
+        .checkbox(&mut on, "DE combination")
+        .on_hover_text("Splits the slots into two chains with their own iteration limit and combines their distance estimates (union, intersection, subtraction or a smooth blend)")
+        .changed()
+    {
+        f.combine = if on {
+            let start = (f.slots.len() / 2).max(1);
+            Some(rmb_core::scene::DeCombine { start, repeat_from: start, max_iterations: f.max_iterations, ..Default::default() })
+        } else {
+            None
+        };
+    }
+    let n = f.slots.len();
+    let Some(c) = f.combine.as_mut() else { return };
+    if n < 2 {
+        ui.label(RichText::new("Needs at least two slots.").color(theme::WARN));
+        return;
+    }
+    let d = rmb_core::scene::DeCombine::default();
+    widgets::grid(ui, "combine", |ui| {
+        widgets::label(ui, "Combine", "How the two estimates are combined");
+        egui::ComboBox::from_id_salt("combine-mode").selected_text(c.mode.label()).show_ui(ui, |ui| {
+            for m in rmb_core::scene::CombineMode::ALL {
+                ui.selectable_value(&mut c.mode, m, m.label());
+            }
+        });
+        ui.end_row();
+        widgets::label(ui, "Chain 2 from", "First slot of the second chain");
+        egui::ComboBox::from_id_salt("combine-start").width(80.0).selected_text(format!("Slot {}", c.start + 1)).show_ui(ui, |ui| {
+            for i in 1..n {
+                ui.selectable_value(&mut c.start, i, format!("Slot {}", i + 1));
+            }
+        });
+        ui.end_row();
+        c.start = c.start.clamp(1, n - 1);
+        widgets::label(ui, "Repeat from", "The second chain continues with this slot after its last one");
+        egui::ComboBox::from_id_salt("combine-repeat").width(80.0).selected_text(format!("Slot {}", c.repeat_from.max(c.start) + 1)).show_ui(ui, |ui| {
+            for i in c.start..n {
+                ui.selectable_value(&mut c.repeat_from, i, format!("Slot {}", i + 1));
+            }
+        });
+        ui.end_row();
+        c.repeat_from = c.repeat_from.clamp(c.start, n - 1);
+        widgets::slider_u32(ui, "Iterations 2", "Maximum iterations of the second chain", &mut c.max_iterations, 1..=100, d.max_iterations);
+        if matches!(c.mode, rmb_core::scene::CombineMode::SmoothLinear | rmb_core::scene::CombineMode::Smooth | rmb_core::scene::CombineMode::Subtract) {
+            widgets::slider_log(ui, "Blend", "Distance over which the two shapes blend (world units)", &mut c.smooth, 0.0001..=2.0, d.smooth);
         }
     });
 }

@@ -222,6 +222,63 @@ pub struct Fractal {
     pub de_mode: DeMode,
     /// Multiplies the distance estimate (below 1 for formulas that overestimate).
     pub de_scale: f64,
+    /// Rotation of the start point into 4D (XW, YW, ZW planes, degrees; 4D formulas).
+    pub rotation_4d: [f64; 3],
+    /// Two formula chains whose distance estimates are combined (Mandelbulb3D's DE
+    /// combination): slots before `start` form the first chain, the rest the second.
+    pub combine: Option<DeCombine>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum CombineMode {
+    /// Union.
+    #[default]
+    Min,
+    /// Intersection.
+    Max,
+    /// The first chain with the second cut away.
+    Subtract,
+    /// Union with a linear blend over the smoothing distance.
+    SmoothLinear,
+    /// Union with a smooth blend over the smoothing distance.
+    Smooth,
+}
+
+impl CombineMode {
+    pub const ALL: [CombineMode; 5] = [CombineMode::Min, CombineMode::Max, CombineMode::Subtract, CombineMode::SmoothLinear, CombineMode::Smooth];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            CombineMode::Min => "Union (min)",
+            CombineMode::Max => "Intersection (max)",
+            CombineMode::Subtract => "Subtract second",
+            CombineMode::SmoothLinear => "Union, linear blend",
+            CombineMode::Smooth => "Union, smooth blend",
+        }
+    }
+
+    pub fn index(self) -> u32 {
+        self as u32
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DeCombine {
+    pub mode: CombineMode,
+    /// First slot of the second chain.
+    pub start: usize,
+    /// The second chain repeats from this slot (absolute slot index).
+    pub repeat_from: usize,
+    pub max_iterations: u32,
+    /// Blend distance of the smooth modes (world units).
+    pub smooth: f64,
+}
+
+impl Default for DeCombine {
+    fn default() -> Self {
+        DeCombine { mode: CombineMode::Min, start: 1, repeat_from: 1, max_iterations: 12, smooth: 0.05 }
+    }
 }
 
 impl Default for Fractal {
@@ -236,6 +293,8 @@ impl Default for Fractal {
             w_slice: 0.0,
             de_mode: DeMode::Auto,
             de_scale: 1.0,
+            rotation_4d: [0.0; 3],
+            combine: None,
         }
     }
 }

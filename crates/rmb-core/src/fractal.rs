@@ -4,14 +4,15 @@
 //!
 //! A `Program` is what both renderers iterate: the active slots with their formulas and
 //! constants. The GPU renderer generates its shader from `signature()`-equal programs once and
-//! uploads `constants` whenever parameters change.
+//! uploads `constants` whenever parameters change. With a DE combination the program has a
+//! second part (its own slots, iteration limit and estimate); the two estimates are combined.
 
 use std::sync::Arc;
 
-use crate::formula::lang::{STATE_AUX, STATE_COUNT, STATE_DR, STATE_ITER, STATE_PX, STATE_ROLD, STATE_ROUT};
+use crate::formula::lang::{STATE_AUX, STATE_COUNT, STATE_DR, STATE_ITER, STATE_PX, STATE_ROLD, STATE_ROUT, uses_state};
 use crate::formula::{DeKind, Formula};
 use crate::math::V3;
-use crate::scene::{Cutting, DeMode, Fractal};
+use crate::scene::{CombineMode, Cutting, DeMode, Fractal, Slot};
 
 pub struct ProgramSlot {
     pub formula: Arc<Formula>,
@@ -34,13 +35,22 @@ pub struct Program {
     pub numeric: bool,
     /// Distance-estimated IFS hybrid (any dIFS formula in it).
     pub difs: bool,
+    /// DE multiplier of this part's formulas (weighted by their iteration counts).
     pub de_scale: f64,
-    /// Parameters and `init` constants of all slots, concatenated.
+    /// DE multiplier of the scene (applied once, after combining).
+    pub scene_de_scale: f64,
+    /// Parameters and `init` constants of all slots (both parts), concatenated.
     pub constants: Vec<f64>,
     /// Cutting planes: (axis, position, keep_above).
     pub cuts: Vec<(usize, f64, bool)>,
     /// Formulas of the scene that are not in the library.
     pub missing: Vec<String>,
+    /// Start point rotation into 4D (rows of a 4x4 matrix), if any formula uses w.
+    pub rotation_4d: Option<[[f64; 4]; 4]>,
+    /// Second chain of a DE combination.
+    pub part2: Option<Box<Program>>,
+    pub combine_mode: CombineMode,
+    pub combine_smooth: f64,
 }
 
 /// Result of iterating one point.
@@ -55,13 +65,57 @@ pub struct Orbit {
     pub escaped: bool,
 }
 
+/// Mandelbulb3D's 4D start rotation: Z(Y(X)) with X in the xw, Y in the yw, Z in the zw plane.
+fn rotation_matrix_4d(deg: [f64; 3]) -> [[f64; 4]; 4] {
+    let mut m = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]];
+    for (axis, a) in deg.iter().enumerate() {
+        let (s, c) = a.to_radians().sin_cos();
+        let mut r = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]];
+        r[axis][axis] = c;
+        r[3][3] = c;
+        r[axis][3] = -s;
+        r[3][axis] = s;
+        let mut out = [[0.0; 4]; 4];
+        for (i, row) in out.iter_mut().enumerate() {
+            for (j, v) in row.iter_mut().enumerate() {
+                *v = (0..4).map(|k| r[i][k] * m[k][j]).sum();
+            }
+        }
+        m = out;
+    }
+    m
+}
+
 impl Program {
     pub fn new(f: &Fractal, cut: &Cutting) -> Program {
+        let split = f.combine.as_ref().map(|c| c.start.clamp(1, f.slots.len().max(1))).filter(|s| *s < f.slots.len());
+        let end1 = split.unwrap_or(f.slots.len());
+        let mut p = Self::build(f, &f.slots[..end1], 0, f.repeat_from, f.max_iterations, 0);
+        if let (Some(start), Some(c)) = (split, f.combine.as_ref()) {
+            let mut p2 = Self::build(f, &f.slots[start..], start, c.repeat_from, c.max_iterations, p.constants.len());
+            p.constants.append(&mut p2.constants);
+            p.missing.append(&mut p2.missing);
+            p.combine_mode = c.mode;
+            p.combine_smooth = c.smooth;
+            if !p2.slots.is_empty() {
+                p.part2 = Some(Box::new(p2));
+            }
+        }
+        p.cuts = cut.planes().iter().enumerate().filter(|(_, pl)| pl.enabled).map(|(a, pl)| (a, pl.position, pl.keep_above)).collect();
+        let uses_w = |prog: &Program| prog.slots.iter().any(|s| uses_state(&s.formula.def.iter, 3));
+        if f.rotation_4d.iter().any(|a| *a != 0.0) && (uses_w(&p) || p.part2.as_deref().is_some_and(uses_w)) {
+            p.rotation_4d = Some(rotation_matrix_4d(f.rotation_4d));
+        }
+        p
+    }
+
+    /// One chain: `slots` start at absolute slot index `first`; `repeat_from` is absolute.
+    fn build(f: &Fractal, slots_in: &[Slot], first: usize, repeat_abs: usize, max_iterations: u32, const_base: usize) -> Program {
         let mut slots = Vec::new();
         let mut constants = Vec::new();
         let mut missing = Vec::new();
         let mut repeat_from = None;
-        for (i, s) in f.slots.iter().enumerate() {
+        for (i, s) in slots_in.iter().enumerate() {
             if s.iterations == 0 {
                 continue;
             }
@@ -69,11 +123,11 @@ impl Program {
                 missing.push(s.formula.clone());
                 continue;
             };
-            if i >= f.repeat_from && repeat_from.is_none() {
+            if first + i >= repeat_abs && repeat_from.is_none() {
                 repeat_from = Some(slots.len());
             }
             let values: Vec<f64> = formula.def.params.iter().map(|p| s.value(p)).collect();
-            let offset = constants.len();
+            let offset = const_base + constants.len();
             constants.extend(formula.cpu.constants(&values));
             slots.push(ProgramSlot { transform: formula.def.transform, formula, iterations: s.iterations, offset });
         }
@@ -94,12 +148,10 @@ impl Program {
             wsum += s.formula.def.de_scale * s.iterations as f64;
             wn += s.iterations as f64;
         }
-        let formula_scale = if wn > 0.0 { wsum / wn } else { 1.0 };
-        let cuts = cut.planes().iter().enumerate().filter(|(_, p)| p.enabled).map(|(a, p)| (a, p.position, p.keep_above)).collect();
         Program {
             repeat_from: repeat_from.unwrap_or(0).min(slots.len().saturating_sub(1)),
             slots,
-            max_iterations: f.max_iterations.max(1),
+            max_iterations: max_iterations.max(1),
             bailout2: f.bailout * f.bailout,
             julia: f.julia,
             julia_c: f.julia_c,
@@ -107,10 +159,15 @@ impl Program {
             de_kind,
             numeric: numeric && !difs,
             difs,
-            de_scale: f.de_scale * formula_scale,
+            de_scale: if wn > 0.0 { wsum / wn } else { 1.0 },
+            scene_de_scale: f.de_scale,
             constants,
-            cuts,
+            cuts: Vec::new(),
             missing,
+            rotation_4d: None,
+            part2: None,
+            combine_mode: CombineMode::Min,
+            combine_smooth: 0.0,
         }
     }
 
@@ -118,26 +175,36 @@ impl Program {
         self.slots.is_empty()
     }
 
-    /// Identifies the generated shader: formulas per slot and the DE variant. Parameter values
-    /// are not part of it.
+    /// Identifies the generated shader: formulas per slot and the DE variant of each part, and
+    /// whether the 4D rotation is used. Parameter values are not part of it.
     pub fn signature(&self) -> String {
-        let mut s: String = self.slots.iter().map(|sl| format!("{}|{}|", sl.formula.def.name, sl.formula.source)).collect();
-        s.push_str(&format!("{:?}{}", self.de_kind, self.numeric));
+        let part = |p: &Program| -> String {
+            let mut s: String = p.slots.iter().map(|sl| format!("{}|{}|", sl.formula.def.name, sl.formula.source)).collect();
+            s.push_str(&format!("{:?}{}{}", p.de_kind, p.numeric, p.difs));
+            s
+        };
+        let mut s = part(self);
+        if let Some(p2) = &self.part2 {
+            s.push_str("||");
+            s.push_str(&part(p2));
+        }
+        s.push_str(if self.rotation_4d.is_some() { "|r4" } else { "" });
         s
     }
 
     pub fn evaluator(&self) -> Evaluator<'_> {
-        let regs = self
-            .slots
-            .iter()
-            .map(|s| {
-                let mut r = vec![0.0; s.formula.cpu.iter_regs];
-                let n = s.formula.def.constant_count();
-                r[STATE_COUNT..STATE_COUNT + n].copy_from_slice(&self.constants[s.offset..s.offset + n]);
-                r
-            })
-            .collect();
-        Evaluator { prog: self, regs }
+        let regs = |p: &Program| -> Vec<Vec<f64>> {
+            p.slots
+                .iter()
+                .map(|s| {
+                    let mut r = vec![0.0; s.formula.cpu.iter_regs];
+                    let n = s.formula.def.constant_count();
+                    r[STATE_COUNT..STATE_COUNT + n].copy_from_slice(&self.constants[s.offset..s.offset + n]);
+                    r
+                })
+                .collect()
+        };
+        Evaluator { prog: self, regs: regs(self), regs2: self.part2.as_deref().map(regs).unwrap_or_default() }
     }
 }
 
@@ -145,6 +212,7 @@ impl Program {
 pub struct Evaluator<'a> {
     prog: &'a Program,
     regs: Vec<Vec<f64>>,
+    regs2: Vec<Vec<f64>>,
 }
 
 struct Iterated {
@@ -157,124 +225,178 @@ struct Iterated {
     difs_de: f64,
 }
 
-impl Evaluator<'_> {
-    fn iterate(&mut self, p: V3, fixed: Option<u32>) -> Iterated {
-        let prog = self.prog;
-        let mut st = [0.0; STATE_COUNT];
-        st[..9].copy_from_slice(&[p.x, p.y, p.z, prog.w_slice, p.x, p.y, p.z, prog.w_slice, 1.0]);
-        if prog.julia {
-            st[4..8].copy_from_slice(&prog.julia_c);
+/// Iterates `p` through the chain `prog`. `top` holds the shared settings (Julia, 4D rotation).
+fn iterate(top: &Program, prog: &Program, regs: &mut [Vec<f64>], p: V3, fixed: Option<u32>) -> Iterated {
+    let mut st = [0.0; STATE_COUNT];
+    let mut v = [p.x, p.y, p.z, top.w_slice];
+    if let Some(m) = &top.rotation_4d {
+        let src = [p.x, p.y, p.z, 0.0];
+        for (i, row) in m.iter().enumerate() {
+            v[i] = (0..4).map(|k| row[k] * src[k]).sum();
         }
-        st[STATE_ROUT] = p.x * p.x + p.y * p.y + p.z * p.z + prog.w_slice * prog.w_slice;
-        st[STATE_PX..STATE_PX + 3].copy_from_slice(&[p.x, p.y, p.z]);
-        debug_assert_eq!(STATE_AUX + 8, STATE_COUNT);
-        let mut out = Iterated { state: [0.0; 4], dr: 1.0, n: 0, trap: f64::MAX, escaped: false, difs_de: 65535.0 };
-        if prog.difs {
-            // VaryScale starts at 1; the shapes' distances are divided by it.
-            st[STATE_AUX] = 1.0;
-        }
-        if prog.slots.is_empty() {
-            return out;
-        }
-        let limit = fixed.unwrap_or(prog.max_iterations);
-        let (mut slot, mut count) = (0usize, 0u32);
-        // Transforms do not count as iterations; the step cap ends chains of only transforms.
-        let cap = limit.saturating_mul(8).saturating_add(64);
-        let mut steps = 0u32;
-        while out.n < limit && steps < cap {
-            steps += 1;
-            let s = &prog.slots[slot];
-            let regs = &mut self.regs[slot];
-            st[STATE_ROLD] = st[STATE_ROUT];
-            st[STATE_ITER] = out.n as f64;
-            regs[..STATE_COUNT].copy_from_slice(&st);
-            (s.formula.cpu.iter)(regs);
-            st.copy_from_slice(&regs[..STATE_COUNT]);
-            if !s.transform {
-                out.n += 1;
-            }
-            count += 1;
-            if count >= s.iterations {
-                count = 0;
-                slot += 1;
-                if slot >= prog.slots.len() {
-                    slot = prog.repeat_from;
-                }
-            }
-            if prog.difs {
-                if !s.transform {
-                    let de = st[STATE_ROUT] / st[STATE_AUX];
-                    if de < out.difs_de {
-                        out.difs_de = de;
-                        // Coloring: the value the shape left in Dfree1 (a2).
-                        out.trap = st[STATE_AUX + 2] * st[STATE_AUX + 2];
-                    }
-                }
-                continue;
-            }
-            if !s.transform {
-                let r2 = st[0] * st[0] + st[1] * st[1] + st[2] * st[2] + st[3] * st[3];
-                out.trap = out.trap.min(r2);
-                st[STATE_ROUT] = r2;
-                // NaN counts as escaped (it never comes back): `inside` is false for NaN.
-                let inside = r2 <= prog.bailout2;
-                if fixed.is_none() && !inside {
-                    out.escaped = true;
-                    break;
-                }
-            }
-        }
-        out.state.copy_from_slice(&st[..4]);
-        out.dr = st[STATE_DR];
-        out
     }
+    st[..9].copy_from_slice(&[v[0], v[1], v[2], v[3], v[0], v[1], v[2], v[3], 1.0]);
+    if top.julia {
+        st[4..8].copy_from_slice(&top.julia_c);
+    }
+    st[STATE_ROUT] = v.iter().map(|x| x * x).sum();
+    st[STATE_PX..STATE_PX + 3].copy_from_slice(&[p.x, p.y, p.z]);
+    debug_assert_eq!(STATE_AUX + 8, STATE_COUNT);
+    let mut out = Iterated { state: [0.0; 4], dr: 1.0, n: 0, trap: f64::MAX, escaped: false, difs_de: 65535.0 };
+    if prog.difs {
+        // VaryScale starts at 1; the shapes' distances are divided by it.
+        st[STATE_AUX] = 1.0;
+    }
+    if prog.slots.is_empty() {
+        return out;
+    }
+    let limit = fixed.unwrap_or(prog.max_iterations);
+    let (mut slot, mut count) = (0usize, 0u32);
+    // Transforms do not count as iterations; the step cap ends chains of only transforms.
+    let cap = limit.saturating_mul(8).saturating_add(64);
+    let mut steps = 0u32;
+    while out.n < limit && steps < cap {
+        steps += 1;
+        let s = &prog.slots[slot];
+        let regs = &mut regs[slot];
+        st[STATE_ROLD] = st[STATE_ROUT];
+        st[STATE_ITER] = out.n as f64;
+        regs[..STATE_COUNT].copy_from_slice(&st);
+        (s.formula.cpu.iter)(regs);
+        st.copy_from_slice(&regs[..STATE_COUNT]);
+        if !s.transform {
+            out.n += 1;
+        }
+        count += 1;
+        if count >= s.iterations {
+            count = 0;
+            slot += 1;
+            if slot >= prog.slots.len() {
+                slot = prog.repeat_from;
+            }
+        }
+        if prog.difs {
+            if !s.transform {
+                let de = st[STATE_ROUT] / st[STATE_AUX];
+                if de < out.difs_de {
+                    out.difs_de = de;
+                    // Coloring: the value the shape left in Dfree1 (a2).
+                    out.trap = st[STATE_AUX + 2] * st[STATE_AUX + 2];
+                }
+            }
+            continue;
+        }
+        if !s.transform {
+            let r2 = st[0] * st[0] + st[1] * st[1] + st[2] * st[2] + st[3] * st[3];
+            out.trap = out.trap.min(r2);
+            st[STATE_ROUT] = r2;
+            // NaN counts as escaped (it never comes back): `inside` is false for NaN.
+            let inside = r2 <= prog.bailout2;
+            if fixed.is_none() && !inside {
+                out.escaped = true;
+                break;
+            }
+        }
+    }
+    out.state.copy_from_slice(&st[..4]);
+    out.dr = st[STATE_DR];
+    out
+}
 
+/// Distance estimate of one chain (before the scene's DE scale and the cutting planes).
+fn chain_orbit(top: &Program, prog: &Program, regs: &mut [Vec<f64>], p: V3, h: f64) -> Orbit {
+    if prog.slots.is_empty() {
+        return Orbit { de: 1.0e10, ..Orbit::default() };
+    }
+    let it = iterate(top, prog, regs, p, None);
+    let r2 = it.state.iter().map(|v| v * v).sum::<f64>();
+    let r = r2.sqrt();
+    let mut de = if prog.difs {
+        it.difs_de.max(0.0)
+    } else if !it.escaped {
+        0.0
+    } else if prog.numeric {
+        let mut g = [0.0; 3];
+        for (k, gk) in g.iter_mut().enumerate() {
+            let mut q = p;
+            match k {
+                0 => q.x += h,
+                1 => q.y += h,
+                _ => q.z += h,
+            }
+            let o = iterate(top, prog, regs, q, Some(it.n));
+            *gk = (o.state.iter().map(|v| v * v).sum::<f64>().sqrt() - r) / h;
+        }
+        let gl = (g[0] * g[0] + g[1] * g[1] + g[2] * g[2]).sqrt().max(1e-30);
+        match prog.de_kind {
+            DeKind::Linear => r / gl,
+            _ => 0.5 * r * r.ln() / gl,
+        }
+    } else {
+        match prog.de_kind {
+            DeKind::Linear => r / it.dr.abs(),
+            _ => 0.5 * r.ln() * r / it.dr,
+        }
+    };
+    if !de.is_finite() {
+        de = if it.escaped { 1.0e-3 } else { 0.0 };
+    }
+    Orbit { de: de * prog.de_scale, iterations: it.n, r2, dr: it.dr, trap: it.trap, escaped: it.escaped || prog.difs }
+}
+
+/// Combines the estimates of the two chains (Mandelbulb3D's DE combination).
+pub fn combine(mode: CombineMode, smooth: f64, a: Orbit, b: Orbit) -> Orbit {
+    let s = smooth.max(1e-12);
+    match mode {
+        CombineMode::Min => {
+            if b.de < a.de {
+                b
+            } else {
+                a
+            }
+        }
+        CombineMode::Max => {
+            if b.de > a.de {
+                b
+            } else {
+                a
+            }
+        }
+        // Inside the second chain counts as outside: its estimate becomes the distance into it.
+        CombineMode::Subtract => {
+            let inv = if b.de <= 0.0 { s } else { -b.de };
+            if inv > a.de { Orbit { de: inv, ..a } } else { a }
+        }
+        CombineMode::SmoothLinear => {
+            let de = (b.de - (s - a.de).max(0.0)).min(a.de - (s - b.de).max(0.0));
+            if b.de < a.de { Orbit { de, ..b } } else { Orbit { de, ..a } }
+        }
+        CombineMode::Smooth => {
+            let x = (s - a.de).max(0.0);
+            let y = (s - b.de).max(0.0);
+            let de = (b.de - x * (s - y) / s).min(a.de - y * (s - x) / s);
+            if b.de < a.de { Orbit { de, ..b } } else { Orbit { de, ..a } }
+        }
+    }
+}
+
+impl Evaluator<'_> {
     /// Iterates `p` and estimates its distance to the surface. `h` is the offset of the
     /// numerical gradient (about the surface threshold).
     pub fn orbit(&mut self, p: V3, h: f64) -> Orbit {
         let prog = self.prog;
-        if prog.slots.is_empty() {
-            return Orbit { de: 1.0e10, ..Orbit::default() };
+        let mut o = chain_orbit(prog, prog, &mut self.regs, p, h);
+        if let Some(p2) = prog.part2.as_deref() {
+            let o2 = chain_orbit(prog, p2, &mut self.regs2, p, h);
+            o = combine(prog.combine_mode, prog.combine_smooth, o, o2);
         }
-        let it = self.iterate(p, None);
-        let r2 = it.state.iter().map(|v| v * v).sum::<f64>();
-        let r = r2.sqrt();
-        let mut de = if prog.difs {
-            it.difs_de.max(0.0)
-        } else if !it.escaped {
-            0.0
-        } else if prog.numeric {
-            let mut g = [0.0; 3];
-            for (k, gk) in g.iter_mut().enumerate() {
-                let mut q = p;
-                match k {
-                    0 => q.x += h,
-                    1 => q.y += h,
-                    _ => q.z += h,
-                }
-                let o = self.iterate(q, Some(it.n));
-                *gk = (o.state.iter().map(|v| v * v).sum::<f64>().sqrt() - r) / h;
-            }
-            let gl = (g[0] * g[0] + g[1] * g[1] + g[2] * g[2]).sqrt().max(1e-30);
-            match prog.de_kind {
-                DeKind::Linear => r / gl,
-                _ => 0.5 * r * r.ln() / gl,
-            }
-        } else {
-            match prog.de_kind {
-                DeKind::Linear => r / it.dr.abs(),
-                _ => 0.5 * r.ln() * r / it.dr,
-            }
-        };
-        if !de.is_finite() {
-            de = if it.escaped { 1.0e-3 } else { 0.0 };
-        }
-        de = (de * prog.de_scale).max(0.0);
+        let mut de = (o.de * prog.scene_de_scale).max(0.0);
         for &(axis, pos, above) in &prog.cuts {
             let v = [p.x, p.y, p.z][axis];
             de = de.max(if above { pos - v } else { v - pos });
         }
-        Orbit { de, iterations: it.n, r2, dr: it.dr, trap: it.trap, escaped: it.escaped || prog.difs }
+        o.de = de;
+        o
     }
 
     pub fn de(&mut self, p: V3, h: f64) -> f64 {

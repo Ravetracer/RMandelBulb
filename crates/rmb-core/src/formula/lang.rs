@@ -778,6 +778,24 @@ impl Parser {
     }
 }
 
+/// True if the statements read or write state register `idx`.
+pub fn uses_state(stmts: &[Stmt], idx: usize) -> bool {
+    fn ex(e: &Expr, idx: usize) -> bool {
+        match e {
+            Expr::Var(VarRef::State(i)) => *i == idx,
+            Expr::Neg(a) | Expr::Not(a) => ex(a, idx),
+            Expr::Bin(_, a, b) => ex(a, idx) || ex(b, idx),
+            Expr::Call(_, args) => args.iter().any(|a| ex(a, idx)),
+            _ => false,
+        }
+    }
+    stmts.iter().any(|s| match s {
+        Stmt::Let(v, e) | Stmt::Assign(v, e) => *v == VarRef::State(idx) || ex(e, idx),
+        Stmt::If(c, t, e) => ex(c, idx) || uses_state(t, idx) || uses_state(e, idx),
+        Stmt::For(_, _, _, b) => uses_state(b, idx),
+    })
+}
+
 pub fn is_bool(e: &Expr) -> bool {
     match e {
         Expr::Not(_) => true,
