@@ -36,8 +36,24 @@ struct CpuJob {
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
+/// What a denoised preview shows: scene, size and sample count.
+type DenoiseKey = (Scene, (u32, u32), u32);
+
+/// A denoised preview being computed.
+struct DenoiseJob {
+    key: DenoiseKey,
+    rx: mpsc::Receiver<(Vec<u8>, rmb_core::render::denoise::Outcome)>,
+}
+
 pub struct Viewport {
     gpu: Option<GpuRenderer>,
+    /// Show the preview through the AI denoiser.
+    pub show_denoised: bool,
+    denoise_job: Option<DenoiseJob>,
+    /// Last denoised preview and what it shows.
+    denoised: Option<(egui::TextureHandle, DenoiseKey)>,
+    /// What the denoiser did last (for the status line).
+    pub denoise_status: Option<String>,
     pub gpu_error: Option<String>,
     texture: Option<(egui::TextureId, u64)>,
     cpu_texture: Option<egui::TextureHandle>,
@@ -73,6 +89,10 @@ impl Viewport {
         };
         Viewport {
             gpu,
+            show_denoised: false,
+            denoise_job: None,
+            denoised: None,
+            denoise_status: None,
             gpu_error,
             texture: None,
             cpu_texture: None,
@@ -155,7 +175,13 @@ impl Viewport {
             full
         };
         self.render_size = size;
-        let texture = if self.gpu.is_some() { self.update_gpu(frame, &doc.scene, size, fast, prefs) } else { self.update_cpu(ui.ctx(), &doc.scene, size) };
+        let mut texture = if self.gpu.is_some() { self.update_gpu(frame, &doc.scene, size, fast, prefs) } else { self.update_cpu(ui.ctx(), &doc.scene, size) };
+        if self.show_denoised
+            && !fast
+            && let Some(t) = self.update_denoised(ui.ctx(), &doc.scene, size, prefs)
+        {
+            texture = Some(t);
+        }
         if let Some(tex) = texture {
             ui.painter().image(tex, rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
         }
@@ -198,6 +224,57 @@ impl Viewport {
             }
         }
         self.texture.map(|t| t.0)
+    }
+
+    /// Denoised preview (GPU only): denoises at 1, 4, 16, 64, … samples and when the preview is
+    /// done, on a worker thread. Returns the texture while it matches the current scene.
+    fn update_denoised(&mut self, ctx: &egui::Context, scene: &Scene, size: (u32, u32), prefs: &Prefs) -> Option<egui::TextureId> {
+        let gpu = self.gpu.as_mut()?;
+        if let Some(job) = &self.denoise_job {
+            match job.rx.try_recv() {
+                Ok((rgba, outcome)) => {
+                    let (w, h) = (job.key.1.0 as usize, job.key.1.1 as usize);
+                    let ci = egui::ColorImage::from_rgba_unmultiplied([w, h], &rgba);
+                    let key = job.key.clone();
+                    match &mut self.denoised {
+                        Some((t, k)) => {
+                            t.set(ci, egui::TextureOptions::LINEAR);
+                            *k = key;
+                        }
+                        None => self.denoised = Some((ctx.load_texture("denoised-preview", ci, egui::TextureOptions::LINEAR), key)),
+                    }
+                    self.denoise_status = Some(outcome.describe());
+                    self.denoise_job = None;
+                }
+                Err(mpsc::TryRecvError::Empty) => ctx.request_repaint_after(Duration::from_millis(50)),
+                Err(mpsc::TryRecvError::Disconnected) => self.denoise_job = None,
+            }
+        }
+        let n = gpu.samples();
+        // The last checkpoint reached: a power of 4, or all samples of the preview.
+        let checkpoint = if n >= prefs.preview_samples.max(1) { n } else if n == 0 { 0 } else { 1 << (2 * (n.ilog2() / 2)) };
+        let have = self.denoised.as_ref().filter(|(_, (s, z, _))| s == scene && *z == size).map_or(0, |(_, (_, _, k))| *k);
+        if checkpoint > 0
+            && have < checkpoint
+            && self.denoise_job.is_none()
+            && !self.paused
+            && gpu.output_size() == Some(size)
+            && let Some(img) = gpu.read_hdr()
+        {
+            let (tx, rx) = mpsc::channel();
+            let mut post = scene.post.clone();
+            post.denoise = true;
+            if post.denoise_blend <= 0.0 {
+                post.denoise_blend = 1.0;
+            }
+            let c = ctx.clone();
+            std::thread::spawn(move || {
+                let _ = tx.send(img.finish(&post));
+                c.request_repaint();
+            });
+            self.denoise_job = Some(DenoiseJob { key: (scene.clone(), size, n), rx });
+        }
+        self.denoised.as_ref().filter(|(_, (s, z, _))| s == scene && *z == size).map(|(t, _)| t.id())
     }
 
     /// CPU fallback: a worker thread renders passes and sends images.

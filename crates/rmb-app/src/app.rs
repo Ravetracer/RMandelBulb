@@ -324,6 +324,15 @@ impl App {
                 m = NavMode::Fly;
             }
             self.view.mode = m;
+            ui.separator();
+            let tip = match rmb_core::render::denoise::available() {
+                Ok(_) => "Show the preview through the AI denoiser (Intel Open Image Denoise). Updates at 1, 4, 16, 64, … samples. Saving denoises only with Effects › Image › Denoise.".to_string(),
+                Err(e) => format!("The denoiser library is not available: {e}. Run python3 tools/fetch_oidn.py or set RMB_OIDN_DIR."),
+            };
+            let enabled = self.view.gpu_context().is_some();
+            if ui.add_enabled(enabled, egui::Button::selectable(self.view.show_denoised, "Denoised")).on_hover_text(tip).on_disabled_hover_text("Needs the GPU renderer").clicked() {
+                self.view.show_denoised = !self.view.show_denoised;
+            }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let label = if self.export.busy() { format!("{}  Exporting…", icons::EXPORT) } else { format!("{}  Export", icons::EXPORT) };
@@ -357,6 +366,12 @@ impl App {
                 ui.separator();
                 let conv = v.converged_after.map(|d| format!(" · done in {:.1} s", d.as_secs_f64())).unwrap_or_default();
                 ui.label(small(format!("{} spp{conv}", v.samples()))).on_hover_text("Samples per pixel of the preview");
+                if v.show_denoised
+                    && let Some(d) = &v.denoise_status
+                {
+                    ui.separator();
+                    ui.label(small(d.clone())).on_hover_text("What the denoiser did for the preview");
+                }
                 if let Some((sx, sy)) = v.hover {
                     ui.separator();
                     ui.label(small(format!("{sx:+.3}, {sy:+.3}")));

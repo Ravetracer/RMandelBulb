@@ -37,10 +37,4 @@
 - [ ] Palette colors that act as light sources in that color (strength, glow, …)
 - [ ] Loading 3D objects into the scene (standard formats, Blender, …)
 - [ ] Textures instead of colors, or as masks over the colors with layer blend modes
-- [ ] AI denoiser from RWildFire (Intel Open Image Denoise, loaded at runtime). Feasible:
-  - Reuse RWildFire's `rwf-core/src/render/oidn.rs` (runtime FFI wrapper, own code; needs
-    relicensing from LGPL-3.0+ to this project's LGPL-2.1+) and `tools/fetch_oidn.py`
-  - Denoise the linear HDR accumulation before post processing (OIDN `hdr` mode)
-  - Helper images come for free from the ray marcher: albedo (gradient color of the first hit)
-    and normals; the GPU kernel needs two more accumulation buffers for them
-  - Noise sources it removes: ray-traced AO, soft shadows, DOF, few samples
+- [x] AI denoiser (Intel Open Image Denoise, from RWildFire) with albedo and normal helper images

@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 use bytemuck::{Pod, Zeroable};
 use rmb_core::fractal::Program;
 use rmb_core::render::Frame;
+use rmb_core::render::denoise::HdrImage;
 use rmb_core::scene::{AoMode, BackgroundMode, FogMode, Post, Scene};
 
 /// A wgpu device + queue pair.
@@ -218,6 +219,8 @@ struct Target {
     width: u32,
     height: u32,
     accum: wgpu::Buffer,
+    /// Denoiser helper images (albedo, normal; two vec4 per pixel).
+    aux: wgpu::Buffer,
     output: wgpu::Texture,
     view: wgpu::TextureView,
 }
@@ -300,6 +303,7 @@ impl GpuRenderer {
                 entry(1, storage(true)),
                 entry(2, storage(true)),
                 entry(3, storage(false)),
+                entry(4, storage(false)),
             ],
         });
         let device_error = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
@@ -431,7 +435,8 @@ impl GpuRenderer {
         });
         let view = output.create_view(&Default::default());
         let accum = storage_buffer(device, "accum", width as u64 * height as u64 * 16);
-        self.target = Some(Target { width, height, accum, output, view });
+        let aux = storage_buffer(device, "aux", width as u64 * height as u64 * 32);
+        self.target = Some(Target { width, height, accum, aux, output, view });
         self.generation += 1;
         self.samples = 0;
         self.row = 0;
@@ -508,7 +513,7 @@ impl GpuRenderer {
             return false;
         }
         let (Some(t), Some(mut un)) = (self.target.as_ref(), self.uniforms) else { return false };
-        let (accum, width, height) = (t.accum.clone(), t.width, t.height);
+        let (accum, aux, width, height) = (t.accum.clone(), t.aux.clone(), t.width, t.height);
         let Some(pipeline) = self.current_pipeline().cloned() else { return false };
         let device = self.ctx.device.clone();
         let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -519,6 +524,7 @@ impl GpuRenderer {
                 wgpu::BindGroupEntry { binding: 1, resource: self.prm.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 2, resource: self.lut.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 3, resource: accum.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 4, resource: aux.as_entire_binding() },
             ],
         });
         let start = Instant::now();
@@ -604,6 +610,23 @@ impl GpuRenderer {
         }
     }
 
+    /// Reads the averaged image and the denoiser's helper images back (blocking).
+    pub fn read_hdr(&mut self) -> Option<HdrImage> {
+        let t = self.target.as_ref()?;
+        let n = (t.width * t.height) as usize;
+        let accum = read_buffer_f32(&self.ctx, &t.accum, n * 4)?;
+        let aux = read_buffer_f32(&self.ctx, &t.aux, n * 8)?;
+        let mut img = HdrImage { width: t.width, height: t.height, color: Vec::with_capacity(n * 3), albedo: Vec::with_capacity(n * 3), normal: Vec::with_capacity(n * 3) };
+        for i in 0..n {
+            let a = &accum[i * 4..i * 4 + 4];
+            let k = 1.0 / a[3].max(1.0);
+            img.color.extend(a[..3].iter().map(|v| v * k));
+            img.albedo.extend(aux[i * 8..i * 8 + 3].iter().map(|v| v * k));
+            img.normal.extend(aux[i * 8 + 4..i * 8 + 7].iter().map(|v| v * k));
+        }
+        Some(img)
+    }
+
     /// Reads the displayed image back as tightly packed RGBA8 (blocking).
     pub fn read_rgba8(&mut self) -> Option<Vec<u8>> {
         self.dirty_display = true;
@@ -628,6 +651,22 @@ fn compile(device: &wgpu::Device, layout: &wgpu::PipelineLayout, src: &str) -> C
         Some(err) => Err(format!("shader compilation failed: {err}")),
         None => Ok(pipeline),
     }
+}
+
+/// Reads the first `count` floats of a storage buffer (blocking).
+fn read_buffer_f32(ctx: &GpuContext, buffer: &wgpu::Buffer, count: usize) -> Option<Vec<f32>> {
+    let size = (count * 4) as u64;
+    let device = &ctx.device;
+    let staging = device.create_buffer(&wgpu::BufferDescriptor { label: Some("readback"), size, usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+    let mut enc = device.create_command_encoder(&Default::default());
+    enc.copy_buffer_to_buffer(buffer, 0, &staging, 0, size);
+    ctx.queue.submit(Some(enc.finish()));
+    let slice = staging.slice(..);
+    slice.map_async(wgpu::MapMode::Read, |_| {});
+    let _ = device.poll(wgpu::PollType::wait_indefinitely());
+    let out = bytemuck::cast_slice::<u8, f32>(&slice.get_mapped_range().ok()?).to_vec();
+    staging.unmap();
+    Some(out)
 }
 
 /// Reads an RGBA8 texture back as tightly packed RGBA8 (blocking).
@@ -663,7 +702,19 @@ pub fn read_texture_rgba8(ctx: &GpuContext, texture: &wgpu::Texture, w: u32, h: 
 
 /// Renders `scene` at `width` × `height` with `samples` passes (blocking, headless use).
 /// `progress` gets the completed fraction and returns false to cancel.
-pub fn render_blocking(ctx: GpuContext, scene: &Scene, width: u32, height: u32, samples: u32, mut progress: impl FnMut(f32) -> bool) -> Result<Vec<u8>, String> {
+pub fn render_blocking(ctx: GpuContext, scene: &Scene, width: u32, height: u32, samples: u32, progress: impl FnMut(f32) -> bool) -> Result<Vec<u8>, String> {
+    let mut r = render_to(ctx, scene, width, height, samples, progress)?;
+    r.read_rgba8().ok_or_else(|| "reading the image back failed".to_string())
+}
+
+/// [`render_blocking`] that returns the averaged image with the denoiser's helper images
+/// (finish it with [`HdrImage::finish`]).
+pub fn render_blocking_hdr(ctx: GpuContext, scene: &Scene, width: u32, height: u32, samples: u32, progress: impl FnMut(f32) -> bool) -> Result<HdrImage, String> {
+    let mut r = render_to(ctx, scene, width, height, samples, progress)?;
+    r.read_hdr().ok_or_else(|| "reading the image back failed".to_string())
+}
+
+fn render_to(ctx: GpuContext, scene: &Scene, width: u32, height: u32, samples: u32, mut progress: impl FnMut(f32) -> bool) -> Result<GpuRenderer, String> {
     let mut r = GpuRenderer::new(ctx);
     r.set_scene(scene, width, height, false);
     r.wait_for_pipeline()?;
@@ -678,5 +729,5 @@ pub fn render_blocking(ctx: GpuContext, scene: &Scene, width: u32, height: u32, 
             return Err("cancelled".into());
         }
     }
-    r.read_rgba8().ok_or_else(|| "reading the image back failed".to_string())
+    Ok(r)
 }

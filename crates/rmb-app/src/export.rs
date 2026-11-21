@@ -17,7 +17,7 @@ use crate::{theme, widgets};
 struct Job {
     progress: Arc<AtomicU32>,
     cancel: Arc<AtomicBool>,
-    rx: mpsc::Receiver<Result<PathBuf, String>>,
+    rx: mpsc::Receiver<Result<(PathBuf, String), String>>,
     started: Instant,
 }
 
@@ -54,8 +54,8 @@ impl Export {
         let mut finished = None;
         if let Some(job) = &self.job {
             match job.rx.try_recv() {
-                Ok(Ok(p)) => {
-                    let msg = format!("Saved {} ({:.1} s)", p.display(), job.started.elapsed().as_secs_f64());
+                Ok(Ok((p, note))) => {
+                    let msg = format!("Saved {} ({:.1} s{note})", p.display(), job.started.elapsed().as_secs_f64());
                     self.message = Some(msg.clone());
                     finished = Some(msg);
                     self.job = None;
@@ -154,11 +154,15 @@ impl Export {
         sc.height = h;
         let (pr, ca) = (progress.clone(), cancel.clone());
         std::thread::spawn(move || {
-            let res = rmb_gpu::render_blocking(ctx, &sc, w, h, n, |p| {
+            let res = rmb_gpu::render_blocking_hdr(ctx, &sc, w, h, n, |p| {
                 pr.store(p.to_bits(), Ordering::Relaxed);
                 !ca.load(Ordering::Relaxed)
             })
-            .and_then(|rgba| rmb_core::io::image::write_png(&path, w, h, &rgba, Some(&sc)).map(|_| path.clone()));
+            .and_then(|img| {
+                let (rgba, outcome) = img.finish(&sc.post);
+                let note = if sc.post.denoise { format!(", {}", outcome.describe()) } else { String::new() };
+                rmb_core::io::image::write_png(&path, w, h, &rgba, Some(&sc)).map(|_| (path.clone(), note))
+            });
             let _ = tx.send(res);
         });
         self.message = None;

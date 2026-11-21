@@ -208,6 +208,11 @@ impl<'a> Shader<'a> {
 
     /// Linear radiance of one sample of pixel (`px`, `py`).
     pub fn sample(&self, ev: &mut Evaluator, px: u32, py: u32, sample: u32) -> [f64; 3] {
+        self.sample_aux(ev, px, py, sample).color
+    }
+
+    /// One sample of pixel (`px`, `py`) with the denoiser's helper values.
+    pub fn sample_aux(&self, ev: &mut Evaluator, px: u32, py: u32, sample: u32) -> Sample {
         let sc = self.scene;
         let fr = &self.frame;
         let cam = &sc.camera;
@@ -228,10 +233,14 @@ impl<'a> Shader<'a> {
         let bg = self.background(d, sy);
         let fog_col = if sc.fog.from_background { bg } else { sc.fog.color.map(|x| x as f64) };
         let (near, far) = (super::start_distance(sc), sc.march.max_distance);
+        let albedo: [f64; 3];
+        let mut normal = V3::ZERO;
         let mut c = match &hit {
             None => {
                 let f = sc.fog.amount(far, near, far);
-                [0, 1, 2].map(|k| bg[k] + (fog_col[k] - bg[k]) * f.max(0.0))
+                let c = [0, 1, 2].map(|k| bg[k] + (fog_col[k] - bg[k]) * f.max(0.0));
+                albedo = c.map(|v| v.clamp(0.0, 1.0));
+                c
             }
             Some(h) => {
                 let n = self.normal(ev, h.pos, h.eps);
@@ -276,6 +285,8 @@ impl<'a> Shader<'a> {
                 }
                 let lit = [0, 1, 2].map(|k| base[k] * diffuse[k] + spec[k] * spec_col[k]);
                 let f = sc.fog.amount(h.t, near, far);
+                albedo = [0, 1, 2].map(|k| (base[k] * (1.0 - f) + fog_col[k] * f.max(0.0)).clamp(0.0, 1.0));
+                normal = n;
                 [0, 1, 2].map(|k| lit[k] * (1.0 - f) + fog_col[k] * f.max(0.0))
             }
         };
@@ -292,8 +303,15 @@ impl<'a> Shader<'a> {
                 *ck += glow_col[k] * glow;
             }
         }
-        c
+        Sample { color: c, albedo, normal }
     }
+}
+
+/// One pixel sample: radiance and the denoiser's helper values (albedo, world normal).
+pub struct Sample {
+    pub color: [f64; 3],
+    pub albedo: [f64; 3],
+    pub normal: V3,
 }
 
 /// Light left by the occlusion `occ` (0..1) at `strength`: linear up to 1, above 1 it bends
@@ -324,13 +342,16 @@ pub struct CpuRenderer {
     width: u32,
     height: u32,
     accum: Vec<[f64; 3]>,
+    /// Summed albedo and normal per pixel.
+    aux: Vec<[f64; 6]>,
     samples: u32,
 }
 
 impl CpuRenderer {
     pub fn new(scene: Scene, width: u32, height: u32) -> Self {
         let prog = Program::new(&scene.fractal, &scene.cut);
-        CpuRenderer { scene, prog, width, height, accum: vec![[0.0; 3]; (width * height) as usize], samples: 0 }
+        let n = (width * height) as usize;
+        CpuRenderer { scene, prog, width, height, accum: vec![[0.0; 3]; n], aux: vec![[0.0; 6]; n], samples: 0 }
     }
 
     pub fn samples(&self) -> u32 {
@@ -346,18 +367,34 @@ impl CpuRenderer {
         let shader = Shader::new(&sc, &self.prog, self.width, self.height);
         let (w, sample) = (self.width, self.samples);
         let prog = &self.prog;
-        self.accum.par_chunks_mut(w as usize).enumerate().for_each_init(
+        self.accum.par_chunks_mut(w as usize).zip(self.aux.par_chunks_mut(w as usize)).enumerate().for_each_init(
             || prog.evaluator(),
-            |ev, (y, row)| {
-                for (x, acc) in row.iter_mut().enumerate() {
-                    let c = shader.sample(ev, x as u32, y as u32, sample);
+            |ev, (y, (row, aux_row))| {
+                for (x, (acc, aux)) in row.iter_mut().zip(aux_row.iter_mut()).enumerate() {
+                    let s = shader.sample_aux(ev, x as u32, y as u32, sample);
+                    let n = s.normal.to_array();
                     for k in 0..3 {
-                        acc[k] += c[k];
+                        acc[k] += s.color[k];
+                        aux[k] += s.albedo[k];
+                        aux[k + 3] += n[k];
                     }
                 }
             },
         );
         self.samples += 1;
+    }
+
+    /// The averaged image with the denoiser's helper images.
+    pub fn hdr_image(&self) -> super::denoise::HdrImage {
+        let n = self.samples.max(1) as f64;
+        let mut img = super::denoise::HdrImage { width: self.width, height: self.height, color: Vec::new(), albedo: Vec::new(), normal: Vec::new() };
+        for (a, x) in self.accum.iter().zip(&self.aux) {
+            img.color.extend(a.iter().map(|v| (v / n) as f32));
+            img.albedo.extend(x[..3].iter().map(|v| (v / n) as f32));
+            // Averaged, not renormalized: OIDN takes shorter normals where hits and misses mix.
+            img.normal.extend(x[3..].iter().map(|v| (v / n) as f32));
+        }
+        img
     }
 
     /// The image as 8-bit RGBA after post processing.

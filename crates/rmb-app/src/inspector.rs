@@ -391,6 +391,14 @@ fn effects(ui: &mut Ui, scene: &mut Scene) {
         widgets::slider(ui, "Contrast", "", &mut p.contrast, 0.5..=2.0, dp.contrast);
         widgets::slider(ui, "Saturation", "", &mut p.saturation, 0.0..=2.0, dp.saturation);
         widgets::slider(ui, "Vignette", "Darkens the corners", &mut p.vignette, 0.0..=1.0, dp.vignette);
+        let note = match rmb_core::render::denoise::available() {
+            Ok(p) => format!("Intel Open Image Denoise on saved images (and the \"Denoised\" preview). Library: {}", p.display()),
+            Err(e) => format!("Intel Open Image Denoise on saved images. Not available: {e}. Run python3 tools/fetch_oidn.py or set RMB_OIDN_DIR."),
+        };
+        widgets::checkbox(ui, "Denoise", &note, &mut p.denoise);
+        if p.denoise {
+            widgets::slider(ui, "Denoise amount", "1: only the denoised image; less mixes the original back in (keeps grain and fine detail)", &mut p.denoise_blend, 0.0..=1.0, dp.denoise_blend);
+        }
         widgets::checkbox(
             ui,
             "Display space",

@@ -10,6 +10,7 @@ RMandelbulb3D command line
 
 USAGE:
   rmb-cli render <scene> [-o out.png] [-W width] [-H height] [-s samples] [--cpu] [-t threads]
+                 [--denoise [blend] | --no-denoise]
   rmb-cli convert <scene> -o out.rmb       Import (e.g. a Mandelbulb3D .m3p) and save as .rmb
   rmb-cli info <scene>                     Formulas, camera and import notes
   rmb-cli formulas                         List all formulas
@@ -18,7 +19,10 @@ USAGE:
 
 <scene> is a .rmb file, a Mandelbulb3D .m3p file, a text file with Mandelbulb3D clipboard
 parameters, or a PNG rendered by RMandelbulb3D. Width and height default to the scene's;
-giving only one keeps the aspect ratio. Rendering uses the GPU unless --cpu is given.";
+giving only one keeps the aspect ratio. Rendering uses the GPU unless --cpu is given.
+--denoise runs the AI denoiser (Intel Open Image Denoise; blend 0..1, default 1) whatever the
+scene says, --no-denoise skips it. The library is loaded at runtime: RMB_OIDN_DIR, next to the
+executable (lib/ on Linux), ./oidn (python3 tools/fetch_oidn.py) or the system.";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -54,11 +58,13 @@ struct Opts {
     samples: u32,
     cpu: bool,
     threads: Option<usize>,
+    /// Denoiser override: on with a blend, or off.
+    denoise: Option<Option<f64>>,
 }
 
 fn parse(args: &[String]) -> Result<Opts, String> {
-    let mut o = Opts { input: None, output: None, width: None, height: None, samples: 64, cpu: false, threads: None };
-    let mut it = args.iter();
+    let mut o = Opts { input: None, output: None, width: None, height: None, samples: 64, cpu: false, threads: None, denoise: None };
+    let mut it = args.iter().peekable();
     while let Some(a) = it.next() {
         let mut val = |name: &str| it.next().cloned().ok_or_else(|| format!("{name} needs a value"));
         match a.as_str() {
@@ -68,6 +74,14 @@ fn parse(args: &[String]) -> Result<Opts, String> {
             "-s" => o.samples = val("-s")?.parse().map_err(|_| "bad sample count")?,
             "-t" => o.threads = Some(val("-t")?.parse().map_err(|_| "bad thread count")?),
             "--cpu" => o.cpu = true,
+            "--denoise" => {
+                let blend = it.peek().and_then(|v| v.parse::<f64>().ok());
+                if blend.is_some() {
+                    it.next();
+                }
+                o.denoise = Some(Some(blend.unwrap_or(1.0)));
+            }
+            "--no-denoise" => o.denoise = Some(None),
             s if s.starts_with('-') => return Err(format!("unknown option '{s}'")),
             s => o.input = Some(PathBuf::from(s)),
         }
@@ -82,7 +96,15 @@ fn load(o: &Opts) -> Result<rmb_core::Scene, String> {
 
 fn render(args: &[String]) -> Result<(), String> {
     let o = parse(args)?;
-    let scene = load(&o)?;
+    let mut scene = load(&o)?;
+    match o.denoise {
+        Some(Some(blend)) => {
+            scene.post.denoise = true;
+            scene.post.denoise_blend = blend.clamp(0.0, 1.0);
+        }
+        Some(None) => scene.post.denoise = false,
+        None => {}
+    }
     let (w, h) = match (o.width, o.height) {
         (Some(w), Some(h)) => (w, h),
         (Some(w), None) => (w, ((w as f64) / scene.aspect()).round().max(1.0) as u32),
@@ -95,7 +117,7 @@ fn render(args: &[String]) -> Result<(), String> {
         eprintln!("warning: formulas not available: {}", prog.missing.join(", "));
     }
     let start = std::time::Instant::now();
-    let rgba = if o.cpu {
+    let image = if o.cpu {
         if let Some(t) = o.threads {
             let _ = rayon::ThreadPoolBuilder::new().num_threads(t).build_global();
         }
@@ -105,12 +127,12 @@ fn render(args: &[String]) -> Result<(), String> {
             eprint!("\rsample {}/{}", i + 1, o.samples);
         }
         eprintln!();
-        r.rgba8()
+        r.hdr_image()
     } else {
         let ctx = rmb_gpu::GpuContext::new_headless()?;
         eprintln!("GPU: {}", ctx.adapter_name);
         let mut last = 0;
-        let r = rmb_gpu::render_blocking(ctx, &scene, w, h, o.samples, |p| {
+        let r = rmb_gpu::render_blocking_hdr(ctx, &scene, w, h, o.samples, |p| {
             let pct = (p * 100.0) as u32;
             if pct != last {
                 last = pct;
@@ -121,6 +143,10 @@ fn render(args: &[String]) -> Result<(), String> {
         eprintln!();
         r
     };
+    let (rgba, denoised) = image.finish(&scene.post);
+    if scene.post.denoise {
+        eprintln!("{}", denoised.describe());
+    }
     rmb_core::io::image::write_png(&out, w, h, &rgba, Some(&scene))?;
     eprintln!("{} ({w} x {h}, {} samples, {:.1} s)", out.display(), o.samples, start.elapsed().as_secs_f64());
     Ok(())

@@ -596,6 +596,7 @@ pub fn import_binary(b: &[u8]) -> Result<Import, String> {
         tone_map: false,
         vignette: 0.0,
         display_space: !sqr_mode,
+        ..Post::default()
     };
 
     // ---- depth of field (DOF.pas): blur radius in pixels = Ap * (z - z_sharp) / pixel size(z)

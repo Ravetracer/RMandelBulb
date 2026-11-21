@@ -50,6 +50,11 @@ struct U {
 // Surface colors at 0..255, highlight colors at 256..511.
 @group(0) @binding(2) var<storage, read> lut: array<vec4<f32>>;
 @group(0) @binding(3) var<storage, read_write> accum: array<vec4<f32>>;
+// Denoiser helper images per pixel: [2 i] albedo, [2 i + 1] world normal (summed like accum).
+@group(0) @binding(4) var<storage, read_write> aux: array<vec4<f32>>;
+
+var<private> aux_albedo: vec3<f32>;
+var<private> aux_normal: vec3<f32>;
 
 struct Orbit {
     de: f32,
@@ -441,9 +446,11 @@ fn sample_pixel(px: u32, py: u32, sample: u32) -> vec3<f32> {
         fog_col = bg;
     }
     var c: vec3<f32>;
+    aux_normal = vec3<f32>(0.0);
     if (!h.hit) {
         let f = fog_amount(u.cam_fwd.w);
         c = mix(bg, fog_col, max(f, 0.0));
+        aux_albedo = clamp(c, vec3<f32>(0.0), vec3<f32>(1.0));
     } else {
         let pos = o + d * h.t;
         var n = surface_normal(pos, h.eps);
@@ -505,6 +512,8 @@ fn sample_pixel(px: u32, py: u32, sample: u32) -> vec3<f32> {
         let lit = base * diffuse + spec * cols.spec;
         let f = fog_amount(h.t);
         c = lit * (1.0 - f) + fog_col * max(f, 0.0);
+        aux_albedo = clamp(base * (1.0 - f) + fog_col * max(f, 0.0), vec3<f32>(0.0), vec3<f32>(1.0));
+        aux_normal = n;
     }
     let glow_col = mix(u.glow.xyz, u.glow2.xyz, glow_mix);
     if (u.glow3.y > 0.5) {
@@ -529,7 +538,11 @@ fn march_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = py * u.size.x + px;
     if (u.size.z == 0u) {
         accum[idx] = vec4<f32>(c, 1.0);
+        aux[2u * idx] = vec4<f32>(aux_albedo, 0.0);
+        aux[2u * idx + 1u] = vec4<f32>(aux_normal, 0.0);
     } else {
         accum[idx] += vec4<f32>(c, 1.0);
+        aux[2u * idx] += vec4<f32>(aux_albedo, 0.0);
+        aux[2u * idx + 1u] += vec4<f32>(aux_normal, 0.0);
     }
 }

@@ -42,6 +42,18 @@ cargo build --release -p rmb-app -p rmb-cli
 ./target/release/rmb-cli render params.m3p -o out.png -W 1920 -s 128
 ```
 
+## Denoiser
+
+Intel Open Image Denoise (OIDN 2.5) cleans up the noise of ray-traced occlusion, soft shadows
+and depth of field, so far fewer samples are needed. It gets the averaged image before post
+processing plus helper images from the ray marcher (surface color and normal of the first hit),
+runs on NVIDIA (CUDA) or AMD (HIP) GPUs or the CPU, and is applied to saved images when
+Effects › Image › Denoise is on (`rmb-cli render --denoise [blend]` / `--no-denoise`). "Denoised"
+in the toolbar shows the preview through it. The library is loaded at runtime, so the program
+builds and runs without it: `python3 tools/fetch_oidn.py` downloads the official release
+(SHA-256 checked) into `oidn/`. Search order: `RMB_OIDN_DIR`, next to the executable (`lib/` on
+Linux and macOS), `oidn/` of the source tree, the system library path.
+
 ## Status and limits
 
 - Not yet translated: formulas that read height maps or images (9), switch the hybrid's

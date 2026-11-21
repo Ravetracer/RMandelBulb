@@ -716,11 +716,15 @@ pub struct Post {
     /// Shade with the colors as shown (gamma encoded) instead of linear light, like
     /// Mandelbulb3D. The output gamma then is relative to 2.2.
     pub display_space: bool,
+    /// Run the AI denoiser (Intel Open Image Denoise) on finished images.
+    pub denoise: bool,
+    /// Share of the denoised image (1 = only denoised, 0 = original).
+    pub denoise_blend: f64,
 }
 
 impl Default for Post {
     fn default() -> Self {
-        Post { exposure: 0.0, gamma: 2.2, contrast: 1.0, saturation: 1.0, tone_map: true, vignette: 0.15, display_space: false }
+        Post { exposure: 0.0, gamma: 2.2, contrast: 1.0, saturation: 1.0, tone_map: true, vignette: 0.15, display_space: false, denoise: false, denoise_blend: 1.0 }
     }
 }
 

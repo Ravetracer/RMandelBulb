@@ -52,6 +52,14 @@ cargo clippy -j 8 --workspace --all-targets
   MB3D's camera starts rays on a plane; the import converts it to a pinhole camera at the
   point where those rays converge.
 
+## Denoiser
+
+- `render/oidn.rs` (runtime-loaded OIDN, from RWildFire) and `render/denoise.rs` (`HdrImage`:
+  averaged color + albedo + normal, `finish` = denoise then `post_process`). Final images (CLI,
+  export, "Denoised" preview) go through `HdrImage::finish`; the GPU reads its accumulation and
+  the `aux` buffer (binding 4: albedo, normal per pixel) back with `read_hdr`.
+- `python3 tools/fetch_oidn.py` fills `oidn/` (gitignored) for development.
+
 ## Mandelbulb3D formulas
 
 - `docs/mb3d-notes.md`: parameter format, record layout, calling convention.

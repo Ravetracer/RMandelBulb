@@ -5,4 +5,4 @@
 pub mod codegen;
 pub mod renderer;
 
-pub use renderer::{GpuContext, GpuRenderer, read_texture_rgba8, render_blocking};
+pub use renderer::{GpuContext, GpuRenderer, read_texture_rgba8, render_blocking, render_blocking_hdr};

@@ -137,3 +137,29 @@ fn gpu_matches_cpu_with_mandelbulb3d_shading() {
     }
     parity(scene);
 }
+
+#[test]
+fn hdr_readback_matches_display_and_cpu_helper_images() {
+    let Ok(ctx) = rmb_gpu::GpuContext::new_headless() else {
+        eprintln!("no GPU, skipped");
+        return;
+    };
+    let mut scene = Scene::default();
+    scene.lighting.ao_mode = rmb_core::scene::AoMode::Fast;
+    let (w, h) = (96, 64);
+    // The HDR image post processed on the CPU equals the GPU display pass.
+    let shown = rmb_gpu::render_blocking(ctx.clone(), &scene, w, h, 1, |_| true).expect("gpu render");
+    let img = rmb_gpu::render_blocking_hdr(ctx, &scene, w, h, 1, |_| true).expect("gpu render");
+    let mine = img.to_rgba8(&scene.post);
+    let worst = shown.iter().zip(&mine).map(|(a, b)| (*a as i32 - *b as i32).abs()).max().unwrap();
+    assert!(worst <= 1, "display differs by {worst}");
+    // Albedo and normals agree with the CPU renderer.
+    let mut cpu = rmb_core::render::cpu::CpuRenderer::new(scene, w, h);
+    cpu.render_pass();
+    let c = cpu.hdr_image();
+    for (name, a, b) in [("albedo", &img.albedo, &c.albedo), ("normal", &img.normal, &c.normal)] {
+        let mean = a.iter().zip(b.iter()).map(|(x, y)| (x - y).abs()).sum::<f32>() / a.len() as f32;
+        eprintln!("{name}: mean difference {mean:.4}");
+        assert!(mean < 0.01, "{name} differs by {mean}");
+    }
+}
