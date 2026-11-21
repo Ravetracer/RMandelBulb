@@ -11,9 +11,11 @@ pub mod fractal;
 pub mod gradient;
 pub mod io;
 pub mod maps;
+pub mod mesh;
 pub mod math;
 pub mod render;
 pub mod scene;
+pub mod texture;
 pub mod video;
 
 pub use fractal::Program;

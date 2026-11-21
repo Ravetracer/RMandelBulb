@@ -64,6 +64,12 @@
       variants) and its own material (gradient with transparency/emission, patterns for shapes)
   - [ ] Possible: transform of the main fractal, repetition (infinite grids of an object),
         more primitives (capsule, cone, prism), object fractals with DE combination
-- [ ] Loading 3D objects into the scene (standard formats, Blender, …)
-- [ ] Textures instead of colors, or as masks over the colors with layer blend modes
+- [x] Loading 3D objects into the scene: OBJ (+MTL), STL, PLY, glTF/GLB as composition objects,
+      baked into a signed distance grid (16-bit, up to 256 points per side), with their colors
+  - [ ] Possible: FBX import, smoother shading up close (tricubic sampling or exact triangle
+        distances near the surface), a disk cache of baked models, normal maps of glTF models
+- [x] Texture layers instead of colors, or as masks over the colors with layer blend modes
+      (color, bump and glow layers; triplanar, planar, spherical, cylindrical, orbit mapping)
+  - [ ] Possible: alpha channel masks, normal maps, roughness/specular layers, texture
+        animation (offset over time)
 - [x] AI denoiser (Intel Open Image Denoise, from RWildFire) with albedo and normal helper images

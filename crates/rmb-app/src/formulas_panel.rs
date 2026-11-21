@@ -5,7 +5,7 @@
 //! operation and material.
 
 use egui::{Color32, RichText, Ui};
-use rmb_core::compose::{BoolOp, MAX_OBJECTS, ObjectMaterial, Pattern, Primitive, SceneObject, Shape, Transform};
+use rmb_core::compose::{BoolOp, MAX_OBJECTS, ModelRef, ObjectMaterial, Pattern, Primitive, SceneObject, Shape, Transform};
 use rmb_core::formula::{ParamKind, find, library};
 use rmb_core::scene::{ColorMode, DeMode, Fractal, MAX_SLOTS, Scene, Slot};
 
@@ -22,6 +22,11 @@ impl FormulasPanel {
     pub fn show(&mut self, ui: &mut Ui, scene: &mut Scene, selected: &mut Option<usize>) {
         if selected.is_some_and(|k| k >= scene.objects.len()) {
             *selected = None;
+        }
+        // Models that bake in the background show up when they are done.
+        let baking = scene.objects.iter().any(|o| matches!(&o.shape, Shape::Model(m) if matches!(rmb_core::mesh::request(&m.path, &m.options), rmb_core::mesh::Status::Baking(_))));
+        if baking {
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(150));
         }
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             let before = *selected;
@@ -75,6 +80,12 @@ impl FormulasPanel {
                                 add = Some(primitive_object(p, ahead));
                             }
                         }
+                        ui.separator();
+                        if ui.button("3D model…").on_hover_text("A 3D model file (OBJ, STL, PLY, glTF/GLB; from Blender: File › Export › glTF 2.0 or Wavefront OBJ)").clicked()
+                            && let Some(p) = rfd::FileDialog::new().add_filter("3D model", &MODEL_FILES).pick_file()
+                        {
+                            add = Some(model_object(&p, ahead));
+                        }
                         if let Some(o) = add {
                             scene.objects.push(o);
                             *selected = Some(scene.objects.len() - 1);
@@ -82,7 +93,7 @@ impl FormulasPanel {
                         }
                     })
                     .response
-                    .on_hover_text("Add an object (fractal or basic shape)");
+                    .on_hover_text("Add an object (fractal, basic shape or 3D model)");
                 });
             });
         });
@@ -105,6 +116,7 @@ impl FormulasPanel {
                 let icon = match o.shape {
                     Shape::Fractal(_) => icons::ATOM,
                     Shape::Primitive(_) => icons::CUBE,
+                    Shape::Model(_) => egui_phosphor::regular::SHAPES,
                 };
                 let badge = match o.op {
                     BoolOp::Union => "+",
@@ -215,9 +227,14 @@ impl FormulasPanel {
                 ui.separator();
                 iteration(ui, f, false);
             }
+            Shape::Model(m) => model_editor(ui, m),
         }
-        let primitive = matches!(o.shape, Shape::Primitive(_));
-        object_material(ui, &mut o.material, primitive, glass);
+        let patterns: &[Pattern] = match o.shape {
+            Shape::Fractal(_) => &[],
+            Shape::Primitive(_) => &Pattern::ALL,
+            Shape::Model(_) => &Pattern::FOR_MODELS,
+        };
+        object_material(ui, &mut o.material, patterns, glass);
     }
 
     fn chain(&mut self, ui: &mut Ui, f: &mut Fractal) {
@@ -483,7 +500,10 @@ fn primitive_params(ui: &mut Ui, p: &mut Primitive) {
 }
 
 /// The material of an object.
-fn object_material(ui: &mut Ui, m: &mut ObjectMaterial, primitive: bool, glass: bool) {
+/// The material of an object. `patterns`: how primitives and models pick their colors (empty:
+/// a fractal, colored by its orbit).
+fn object_material(ui: &mut Ui, m: &mut ObjectMaterial, patterns: &[Pattern], glass: bool) {
+    let primitive = !patterns.is_empty();
     widgets::section(ui, "Material", false);
     ui.checkbox(&mut m.own, "Own colors").on_hover_text("Off: the object uses the main fractal's colors (Color tab)");
     if !m.own {
@@ -494,12 +514,12 @@ fn object_material(ui: &mut Ui, m: &mut ObjectMaterial, primitive: bool, glass: 
         if primitive {
             widgets::label(ui, "Pattern", "How the shape picks its colors from the gradient");
             egui::ComboBox::from_id_salt("obj-pattern").selected_text(m.pattern.label()).show_ui(ui, |ui| {
-                for p in Pattern::ALL {
+                for &p in patterns {
                     ui.selectable_value(&mut m.pattern, p, p.label());
                 }
             });
             ui.end_row();
-            if m.pattern != Pattern::Solid {
+            if !matches!(m.pattern, Pattern::Solid | Pattern::Model) {
                 widgets::slider_log(ui, "Pattern size", "Size of the checker cells, or the height / distance per gradient length", &mut m.pattern_size, 0.001..=100.0, 1.0);
             }
         } else {
@@ -515,6 +535,71 @@ fn object_material(ui: &mut Ui, m: &mut ObjectMaterial, primitive: bool, glass: 
         widgets::slider(ui, "Offset", "Shifts the gradient (with a solid pattern: picks the color)", &mut m.color_offset, -5.0..=5.0, 0.0);
         widgets::checkbox(ui, "Repeat", "Repeat the gradient (else clamp at its ends)", &mut m.repeat);
     });
+    crate::layers::layers_editor(ui, &mut m.layers, "object");
+}
+
+/// File types of 3D models.
+const MODEL_FILES: [&str; 5] = ["obj", "stl", "ply", "gltf", "glb"];
+
+/// A new object for the model file `p`, placed at `pos`.
+fn model_object(p: &std::path::Path, pos: rmb_core::V3) -> SceneObject {
+    let name = p.file_stem().map_or_else(|| "Model".to_string(), |s| s.to_string_lossy().into_owned());
+    SceneObject {
+        name,
+        shape: Shape::Model(ModelRef { path: p.display().to_string(), options: Default::default() }),
+        transform: Transform { position: pos, scale: 0.5, ..Default::default() },
+        material: ObjectMaterial { pattern: Pattern::Model, ..Default::default() },
+        ..Default::default()
+    }
+}
+
+/// File and bake settings of a 3D model, with the bake state.
+fn model_editor(ui: &mut Ui, m: &mut ModelRef) {
+    use rmb_core::mesh::{Status, UpAxis};
+    widgets::section(ui, "3D model", false);
+    ui.horizontal(|ui| {
+        if ui.button("Change…").on_hover_text("Pick another model file").clicked()
+            && let Some(p) = rfd::FileDialog::new().add_filter("3D model", &MODEL_FILES).pick_file()
+        {
+            m.path = p.display().to_string();
+        }
+        let name = std::path::Path::new(&m.path).file_name().map_or_else(|| m.path.clone(), |f| f.to_string_lossy().into_owned());
+        ui.label(name).on_hover_text(m.path.clone());
+    });
+    match rmb_core::mesh::request(&m.path, &m.options) {
+        Status::Ready(v) => {
+            let colors = if v.colors.is_empty() { "no colors" } else { "with colors" };
+            ui.label(RichText::new(format!("Baked: {} × {} × {} grid, {colors}", v.res[0], v.res[1], v.res[2])).size(theme::fs(11.0)).color(theme::TEXT_MUTED))
+                .on_hover_text("The model is turned into a distance grid; detail smaller than one grid cell is rounded off");
+        }
+        Status::Baking(p) => {
+            ui.add(egui::ProgressBar::new(p).show_percentage().text("Baking…")).on_hover_text("Turning the model into a distance grid (it appears when done)");
+        }
+        Status::Failed(e) => {
+            ui.label(RichText::new(e).size(theme::fs(11.0)).color(theme::WARN));
+        }
+    }
+    let o = &mut m.options;
+    widgets::grid(ui, "model", |ui| {
+        widgets::label(ui, "Resolution", "Grid points along the longest side. Higher keeps finer detail but bakes longer and needs more memory (256: about 32 MB)");
+        egui::ComboBox::from_id_salt("model-res").selected_text(o.resolution.to_string()).show_ui(ui, |ui| {
+            for r in [64, 96, 128, 192, 256] {
+                ui.selectable_value(&mut o.resolution, r, r.to_string());
+            }
+        });
+        ui.end_row();
+        widgets::label(ui, "Up axis", "Which axis of the file points up. Auto: Y for glTF and OBJ (Blender's export default), Z for STL and PLY");
+        egui::ComboBox::from_id_salt("model-up").selected_text(format!("{:?}", o.up_axis)).show_ui(ui, |ui| {
+            for a in [UpAxis::Auto, UpAxis::Y, UpAxis::Z] {
+                ui.selectable_value(&mut o.up_axis, a, format!("{a:?}"));
+            }
+        });
+        ui.end_row();
+        widgets::checkbox(ui, "Keep file units", "Off: the model is centered and sized to 2 units (then scaled by the placement). On: the file's own coordinates", &mut o.keep_units);
+    });
+    if o.resolution > 192 {
+        ui.label(RichText::new("High resolutions take a few seconds to bake.").size(theme::fs(11.0)).color(theme::TEXT_MUTED));
+    }
 }
 
 fn iteration(ui: &mut Ui, f: &mut Fractal, main: bool) {

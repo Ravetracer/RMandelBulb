@@ -20,6 +20,9 @@ pub fn march_shader(prog: &Program) -> String {
     let mut s = String::from(PRELUDE);
     let _ = writeln!(s, "const ROTATE_4D: bool = {};", prog.rotation_4d.is_some());
     let _ = writeln!(s, "const REFLECT: bool = {};", prog.reflections);
+    let _ = writeln!(s, "const LAYERS: bool = {};", prog.layers);
+    let _ = writeln!(s, "const BUMP: bool = {};", prog.bump);
+    let _ = writeln!(s, "const MODELS: bool = {};", prog.objects.iter().any(|o| matches!(o.shape, rmb_core::fractal::ObjectShape::Model(_))));
     s.push_str(&chain(prog, "1", &Uni::main(0, "u.frac.z", "u.frac.w", "u.scales.x")));
     match prog.part2.as_deref() {
         Some(p2) => {
@@ -64,6 +67,9 @@ fn objects(prog: &Program) -> String {
             }
             ObjectShape::Primitive(kind, _) => {
                 let _ = writeln!(s, "        b.de = prim_de({kind}u, ob.prim, q) * sc;\n        b.escaped = true;");
+            }
+            ObjectShape::Model(_) => {
+                let _ = writeln!(s, "        b.de = model_de({j}u, q) * sc;\n        b.escaped = true;");
             }
         }
         let _ = writeln!(s, "        let c = combine_op(op, o.de, b.de, ob.inv2.w);\n        if (c.y > 0.5) {{\n            o = b;\n            o.obj = {}u;\n        }}\n        o.de = c.x;\n    }}", j + 1);

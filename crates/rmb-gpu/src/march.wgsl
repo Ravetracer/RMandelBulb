@@ -98,17 +98,115 @@ struct Obj {
     inv0: vec4<f32>,  // inverse rotation rows; w: scale, operation, smoothing
     inv1: vec4<f32>,
     inv2: vec4<f32>,
-    pos: vec4<f32>,
+    pos: vec4<f32>,   // w: material (0 main, k the k-th object's own)
     prim: vec4<f32>,  // primitive parameters
     frac: vec4<f32>,  // fractal: w slice, julia, max iterations, repeat from
     julia: vec4<f32>,
-    misc: vec4<f32>,  // bailout², formula DE scale, DE scale, kind (0 fractal, 1 primitive)
+    misc: vec4<f32>,  // bailout², formula DE scale, DE scale, kind (0 fractal, 1 primitive, 2 model)
     mat: vec4<f32>,   // material: color mode, scale, offset, repeat
     mat2: vec4<f32>,  // saturation, pattern, pattern size, LUT base
     slots: array<vec4<u32>, 2>,
 }
 
 @group(0) @binding(6) var<storage, read> objs: array<Obj>;
+
+// Baked 3D models (rmb-core mesh.rs, filled by renderer.rs): per object j a header of 20
+// words at 20 j: grid points (3), first word of the distances, grid origin (3 f32), spacing
+// (f32), mesh box min (3 f32) and max (3 f32), first word of the colors (0: none), color grid
+// points (3), color spacing (f32). Distances are 16-bit, two per word; colors RGBA8.
+@group(0) @binding(7) var<storage, read> vols: array<u32>;
+
+fn vol_f(i: u32) -> f32 {
+    return bitcast<f32>(vols[i]);
+}
+
+fn vol_dist(off: u32, i: u32) -> f32 {
+    let w = vols[off + i / 2u];
+    let v = bitcast<i32>(w << (16u - (i & 1u) * 16u)) >> 16u;
+    return f32(v) / 32767.0;
+}
+
+// Mirrors mesh::Volume::distance.
+fn model_de(j: u32, q: vec3<f32>) -> f32 {
+    let h = j * 20u;
+    let res = vec3<u32>(vols[h], vols[h + 1u], vols[h + 2u]);
+    if (res.x == 0u) {
+        return 1.0e10;
+    }
+    let mn = vec3<f32>(vol_f(h + 4u), vol_f(h + 5u), vol_f(h + 6u));
+    let voxel = vol_f(h + 7u);
+    let nf = vec3<f32>(res);
+    let hi = mn + (nf - 1.0) * voxel;
+    let g = clamp((q - mn) / voxel, vec3<f32>(0.0), nf - 1.0);
+    let i0 = min(floor(g), nf - 2.0);
+    let f = g - i0;
+    let i = vec3<u32>(i0);
+    let off = vols[h + 3u];
+    let nx = res.x;
+    let nxy = res.x * res.y;
+    let b = i.x + i.y * nx + i.z * nxy;
+    let x00 = mix(vol_dist(off, b), vol_dist(off, b + 1u), f.x);
+    let x10 = mix(vol_dist(off, b + nx), vol_dist(off, b + nx + 1u), f.x);
+    let x01 = mix(vol_dist(off, b + nxy), vol_dist(off, b + nxy + 1u), f.x);
+    let x11 = mix(vol_dist(off, b + nxy + nx), vol_dist(off, b + nxy + nx + 1u), f.x);
+    let d = mix(mix(x00, x10, f.y), mix(x01, x11, f.y), f.z) * 64.0 * voxel;
+    if (any(q < mn) || any(q > hi)) {
+        let lo = vec3<f32>(vol_f(h + 8u), vol_f(h + 9u), vol_f(h + 10u));
+        let up = vec3<f32>(vol_f(h + 11u), vol_f(h + 12u), vol_f(h + 13u));
+        let away = length(q - clamp(q, mn, hi));
+        return max(length(max(max(lo - q, q - up), vec3<f32>(0.0))), d - away);
+    }
+    return d;
+}
+
+fn vol_rgb(off: u32, i: u32) -> vec3<f32> {
+    let w = vols[off + i];
+    return vec3<f32>(f32(w & 255u), f32((w >> 8u) & 255u), f32((w >> 16u) & 255u));
+}
+
+// Mirrors mesh::Volume::color (display values; -1 without colors).
+fn model_rgb(j: u32, q: vec3<f32>) -> vec3<f32> {
+    let h = j * 20u;
+    let off = vols[h + 14u];
+    if (vols[h] == 0u || off == 0u) {
+        return vec3<f32>(-1.0);
+    }
+    let res = vec3<u32>(vols[h + 15u], vols[h + 16u], vols[h + 17u]);
+    let mn = vec3<f32>(vol_f(h + 4u), vol_f(h + 5u), vol_f(h + 6u));
+    let voxel = vol_f(h + 18u);
+    let nf = vec3<f32>(res);
+    let g = clamp((q - mn) / voxel, vec3<f32>(0.0), nf - 1.0);
+    let i0 = min(floor(g), nf - 2.0);
+    let f = g - i0;
+    let i = vec3<u32>(i0);
+    let nx = res.x;
+    let nxy = res.x * res.y;
+    let b = i.x + i.y * nx + i.z * nxy;
+    let x00 = mix(vol_rgb(off, b), vol_rgb(off, b + 1u), f.x);
+    let x10 = mix(vol_rgb(off, b + nx), vol_rgb(off, b + nx + 1u), f.x);
+    let x01 = mix(vol_rgb(off, b + nxy), vol_rgb(off, b + nxy + 1u), f.x);
+    let x11 = mix(vol_rgb(off, b + nxy + nx), vol_rgb(off, b + nxy + nx + 1u), f.x);
+    return mix(mix(x00, x10, f.y), mix(x01, x11, f.y), f.z) / 255.0;
+}
+
+// Mirrors Shader::model_color.
+fn model_color(obj: u32, pos: vec3<f32>, base: vec3<f32>) -> vec3<f32> {
+    if (obj == 0u) {
+        return base;
+    }
+    let ob = objs[obj - 1u];
+    if (ob.misc.w < 1.5 || u32(ob.mat2.y) != 4u) {
+        return base;
+    }
+    let c = model_rgb(obj - 1u, obj_local(obj - 1u, pos));
+    if (c.x < 0.0) {
+        return base;
+    }
+    if (u.bg_rot[1].w < 0.5) {
+        return srgb_decode3(c);
+    }
+    return c;
+}
 
 // Mirrors compose::to_local.
 fn obj_local(j: u32, p: vec3<f32>) -> vec3<f32> {
@@ -198,7 +296,10 @@ fn pattern_value(pattern: u32, size: f32, q: vec3<f32>) -> f32 {
     if (pattern == 2u) {
         return q.z / s;
     }
-    return length(q) / s;
+    if (pattern == 3u) {
+        return length(q) / s;
+    }
+    return 0.0;
 }
 
 // How a material picks its colors (mirrors render::cpu::Mat).
@@ -954,6 +1055,290 @@ fn gradient(obj: u32, v: f32, dist: f32) -> Colors {
     return c;
 }
 
+// Texture layers (mirrors rmb-core texture.rs). Per material m (0 main, k the k-th object's
+// own) 4 layers of 7 entries in `lut` from LUT_LAYERS: [0] mapping (< 0: no more layers),
+// space, blend, target; [1] scale, opacity, strength, mask contrast; [2] offset, image (-1:
+// solid color); [3] color, mask (-1: none); [4..6] rotation rows, [4].w mask invert, [5].w
+// texels per tile.
+const LUT_LAYERS: u32 = 5248u;
+
+fn layer_base(m: u32, i: u32) -> u32 {
+    return LUT_LAYERS + (m * 4u + i) * 7u;
+}
+
+// Layer images are stored under the numbers 0xffffffef - index.
+fn layer_map(idx: f32) -> i32 {
+    if (idx < 0.0) {
+        return -1;
+    }
+    return map_find_u(0xffffffefu - u32(round(idx)));
+}
+
+// Mirrors texture::bilinear.
+fn map_bilinear(i: i32, pu: f32, pv: f32) -> vec3<f32> {
+    let h0 = 1u + 4u * u32(i);
+    let w = i32(maps[h0 + 1u]);
+    let h = i32(maps[h0 + 2u]);
+    let base = maps[h0 + 3u];
+    let x = (pu - floor(pu)) * f32(w) - 0.5;
+    let y = (pv - floor(pv)) * f32(h) - 0.5;
+    let xf = floor(x);
+    let yf = floor(y);
+    let fx = x - xf;
+    let fy = y - yf;
+    var c: array<vec3<f32>, 4>;
+    for (var k = 0; k < 4; k++) {
+        let xx = (((i32(xf) + (k & 1)) % w) + w) % w;
+        let yy = (((i32(yf) + (k >> 1u)) % h) + h) % h;
+        let p = maps[base + u32(yy * w + xx)];
+        c[k] = vec3<f32>(f32((p >> 16u) & 255u), f32((p >> 8u) & 255u), f32(p & 255u));
+    }
+    return mix(mix(c[0], c[1], fx), mix(c[2], c[3], fx), fy) / 255.0;
+}
+
+fn luminance(c: vec3<f32>) -> f32 {
+    return 0.3 * c.x + 0.59 * c.y + 0.11 * c.z;
+}
+
+struct UvSets {
+    a: vec3<f32>,
+    b: vec3<f32>,
+    c: vec3<f32>,
+}
+
+fn layer_rot(b: u32, v: vec3<f32>) -> vec3<f32> {
+    return vec3<f32>(dot(lut[b + 4u].xyz, v), dot(lut[b + 5u].xyz, v), dot(lut[b + 6u].xyz, v));
+}
+
+// Mirrors texture::uv_sets: (u, v, weight) of up to three projections.
+fn uv_sets(b: u32, q: vec3<f32>, n: vec3<f32>, value: f32, trap: f32) -> UvSets {
+    let mapping = u32(lut[b].x);
+    let s = lut[b + 1u].x;
+    let o = lut[b + 2u].xyz;
+    let d = layer_rot(b, q);
+    let a = d * s + o;
+    var r: UvSets;
+    r.b = vec3<f32>(0.0);
+    r.c = vec3<f32>(0.0);
+    let tau = 6.283185307179586;
+    if (mapping == 0u) {
+        let rn = layer_rot(b, n);
+        var w = rn * rn * rn * rn;
+        let sum = w.x + w.y + w.z;
+        if (sum > 1.0e-12) {
+            w = w / sum;
+        } else {
+            w = vec3<f32>(1.0 / 3.0);
+        }
+        r.a = vec3<f32>(a.y, a.z, w.x);
+        r.b = vec3<f32>(a.x, a.z, w.y);
+        r.c = vec3<f32>(a.x, a.y, w.z);
+    } else if (mapping == 1u) {
+        r.a = vec3<f32>(a.x, a.y, 1.0);
+    } else if (mapping == 2u) {
+        r.a = vec3<f32>(a.x, a.z, 1.0);
+    } else if (mapping == 3u) {
+        r.a = vec3<f32>(a.y, a.z, 1.0);
+    } else if (mapping == 4u) {
+        let len = max(length(d), 1.0e-30);
+        r.a = vec3<f32>(atan2(d.y, d.x) / tau * s + o.x, acos(clamp(d.z / len, -1.0, 1.0)) / 3.141592653589793 * s + o.y, 1.0);
+    } else if (mapping == 5u) {
+        r.a = vec3<f32>(atan2(d.y, d.x) / tau * s + o.x, d.z * s + o.y, 1.0);
+    } else {
+        r.a = vec3<f32>(value * s + o.x, sqrt(max(trap, 0.0)) * 4.0 * s + o.y, 1.0);
+    }
+    return r;
+}
+
+// Loops keep one call site of the lookups (smaller shaders compile faster).
+fn sample_sets(i: i32, s: UvSets) -> vec3<f32> {
+    var out = vec3<f32>(0.0);
+    for (var k = 0u; k < 3u; k++) {
+        var t = s.a;
+        if (k == 1u) {
+            t = s.b;
+        } else if (k == 2u) {
+            t = s.c;
+        }
+        if (t.z > 0.0) {
+            out += map_bilinear(i, t.x, t.y) * t.z;
+        }
+    }
+    return out;
+}
+
+// Mirrors texture::layer_at: color (display values) and opacity.
+fn layer_at(b: u32, s: UvSets) -> vec4<f32> {
+    var c = lut[b + 3u].xyz;
+    var a = lut[b + 1u].y;
+    // Pass 0: the image, pass 1: the mask.
+    for (var k = 0u; k < 2u; k++) {
+        let img = layer_map(select(lut[b + 2u].w, lut[b + 3u].w, k == 1u));
+        if (img < 0) {
+            continue;
+        }
+        let v = sample_sets(img, s);
+        if (k == 0u) {
+            c = v;
+        } else {
+            var m = luminance(v);
+            if (lut[b + 4u].w > 0.5) {
+                m = 1.0 - m;
+            }
+            a *= clamp((m - 0.5) * lut[b + 1u].w + 0.5, 0.0, 1.0);
+        }
+    }
+    return vec4<f32>(c, a);
+}
+
+// Mirrors texture::blend.
+fn blend_mode(mode: u32, b: vec3<f32>, s: vec3<f32>) -> vec3<f32> {
+    switch (mode) {
+        case 1u: { return b * s; }
+        case 2u: { return 1.0 - (1.0 - b) * (1.0 - s); }
+        case 3u: { return select(1.0 - 2.0 * (1.0 - b) * (1.0 - s), 2.0 * b * s, b < vec3<f32>(0.5)); }
+        case 4u: { return (1.0 - 2.0 * s) * b * b + 2.0 * s * b; }
+        case 5u: { return b + s; }
+        case 6u: { return max(b - s, vec3<f32>(0.0)); }
+        case 7u: { return min(b, s); }
+        case 8u: { return max(b, s); }
+        case 9u: { return abs(b - s); }
+        case 10u: { return max(s + (luminance(b) - luminance(s)), vec3<f32>(0.0)); }
+        default: { return s; }
+    }
+}
+
+// Duff et al. 2017 (mirrors texture::tangents).
+fn tangent_a(n: vec3<f32>) -> vec3<f32> {
+    let sg = select(-1.0, 1.0, n.z >= 0.0);
+    let a = -1.0 / (sg + n.z);
+    return vec3<f32>(1.0 + sg * n.x * n.x * a, sg * n.x * n.y * a, -sg * n.x);
+}
+
+fn tangent_b(n: vec3<f32>) -> vec3<f32> {
+    let sg = select(-1.0, 1.0, n.z >= 0.0);
+    let a = -1.0 / (sg + n.z);
+    return vec3<f32>(n.x * n.y * a, sg + n.y * n.y * a, -n.y);
+}
+
+struct Layered {
+    base: vec3<f32>,
+    emis: f32,
+}
+
+// Material index and object coordinates of a point on object `obj`, with normal `n`.
+struct LayerSpace {
+    m: u32,
+    q: vec3<f32>,
+    nq: vec3<f32>,
+}
+
+fn layer_space(obj: u32, pos: vec3<f32>, n: vec3<f32>) -> LayerSpace {
+    var r: LayerSpace;
+    r.m = 0u;
+    r.q = pos;
+    r.nq = n;
+    if (obj > 0u) {
+        let ob = objs[obj - 1u];
+        r.m = u32(ob.pos.w);
+        r.q = obj_local(obj - 1u, pos);
+        r.nq = vec3<f32>(dot(ob.inv0.xyz, n), dot(ob.inv1.xyz, n), dot(ob.inv2.xyz, n));
+    }
+    return r;
+}
+
+// Mirrors Shader::apply_layers (color and emission; the bump is bump_layers): the texture
+// layers of the material of object `obj` at `pos` with world normal `n` (zero: unknown).
+fn apply_layers(obj: u32, pos: vec3<f32>, n: vec3<f32>, cv: f32, trap: f32, base: vec3<f32>, emis: f32) -> Layered {
+    var r: Layered;
+    r.base = base;
+    r.emis = emis;
+    let ls = layer_space(obj, pos, n);
+    let decode = u.bg_rot[1].w < 0.5;
+    for (var i = 0u; i < 4u; i++) {
+        let b = layer_base(ls.m, i);
+        if (lut[b].x < 0.0) {
+            break;
+        }
+        let tgt = u32(lut[b].w);
+        if (tgt == 1u) {
+            continue;
+        }
+        let world = lut[b].y > 0.5;
+        let l = layer_at(b, uv_sets(b, select(ls.q, pos, world), select(ls.nq, n, world), cv, trap));
+        if (l.w <= 0.0) {
+            continue;
+        }
+        if (tgt == 2u) {
+            r.emis += lut[b + 1u].z * luminance(l.xyz) * l.w;
+            continue;
+        }
+        var c = l.xyz;
+        if (decode && lut[b + 2u].w >= 0.0) {
+            c = srgb_decode3(c);
+        }
+        r.base = mix(r.base, blend_mode(u32(lut[b].z), r.base, c), l.w);
+    }
+    return r;
+}
+
+// Brightness of layer `b` at `q` (bump height).
+fn layer_height(b: u32, q: vec3<f32>, n: vec3<f32>, cv: f32, trap: f32) -> f32 {
+    return luminance(layer_at(b, uv_sets(b, q, n, cv, trap)).xyz);
+}
+
+// Mirrors texture::bump: the world normal `n` bent by the bump layers.
+fn bump_layers(obj: u32, pos: vec3<f32>, n: vec3<f32>, cv: f32, trap: f32) -> vec3<f32> {
+    let ls = layer_space(obj, pos, n);
+    var nn = n;
+    var bent = false;
+    for (var i = 0u; i < 4u; i++) {
+        let b = layer_base(ls.m, i);
+        if (lut[b].x < 0.0) {
+            break;
+        }
+        if (u32(lut[b].w) != 1u || u32(lut[b].x) == 6u) {
+            continue;
+        }
+        let world = lut[b].y > 0.5;
+        let lq = select(ls.q, pos, world);
+        let ln = select(ls.nq, n, world);
+        if (length(ln) < 0.5) {
+            continue;
+        }
+        let a = layer_at(b, uv_sets(b, lq, ln, cv, trap)).w;
+        if (a <= 0.0) {
+            continue;
+        }
+        let e = 1.0 / (max(abs(lut[b + 1u].x), 1.0e-9) * lut[b + 5u].w);
+        let t1 = tangent_a(ln);
+        let t2 = tangent_b(ln);
+        // The four neighbours in one loop (one call site keeps the shader small).
+        var g = vec2<f32>(0.0);
+        for (var k = 0u; k < 4u; k++) {
+            let dir = select(t1, t2, k >= 2u);
+            let sg = select(1.0, -1.0, (k & 1u) == 1u);
+            let hv = layer_height(b, lq + dir * (e * sg), ln, cv, trap) * sg * 0.5;
+            if (k < 2u) {
+                g.x += hv;
+            } else {
+                g.y += hv;
+            }
+        }
+        var gw = (t1 * g.x + t2 * g.y) * (lut[b + 1u].z * a);
+        if (!world && obj > 0u) {
+            let ob = objs[obj - 1u];
+            gw = ob.inv0.xyz * gw.x + ob.inv1.xyz * gw.y + ob.inv2.xyz * gw.z;
+        }
+        nn = nn - gw;
+        bent = true;
+    }
+    if (!bent) {
+        return n;
+    }
+    return normalize(nn);
+}
+
 // Mirrors Shader::emission_at: emitted radiance for an orbit at `pos`.
 fn emission_at(ob: Orbit, pos: vec3<f32>, eps: f32, t: f32) -> vec3<f32> {
     if (u.interior.x > 0.5 && !ob.escaped && ob.obj == 0u) {
@@ -963,7 +1348,16 @@ fn emission_at(ob: Orbit, pos: vec3<f32>, eps: f32, t: f32) -> vec3<f32> {
     h.orbit = ob;
     h.eps = eps;
     h.t = t;
-    let c = gradient(ob.obj, color_value(h, vec3<f32>(0.0), pos), t);
+    let cv = color_value(h, vec3<f32>(0.0), pos);
+    var c = gradient(ob.obj, cv, t);
+    if (MODELS) {
+        c.base = model_color(ob.obj, pos, c.base);
+    }
+    if (LAYERS) {
+        let l = apply_layers(ob.obj, pos, vec3<f32>(0.0), cv, ob.trap, c.base, c.emis);
+        c.base = l.base;
+        c.emis = l.emis;
+    }
     return c.base * c.emis;
 }
 
@@ -1197,6 +1591,9 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sx: f32, 
         let spec_rough = 1.0 + min(2.0 * rr, 1.0) * (4.0 / max(u.sky.w, 1.0) - 1.0);
         let cv = color_value(h, n, pos);
         var cols = gradient(h.orbit.obj, cv, h.t);
+        if (MODELS) {
+            cols.base = model_color(h.orbit.obj, pos, cols.base);
+        }
         // Interior colors where the orbit did not escape (mirrors Shader::interior_colors).
         if (u.interior.x > 0.5 && !h.orbit.escaped && h.orbit.obj == 0u) {
             var v = clamp(h.orbit.r2 / max(u.march.z, 1.0e-30), 0.0, 1.0);
@@ -1217,6 +1614,15 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sx: f32, 
             cols.trans = 0.0;
             cols.emis = 0.0;
         }
+        if (LAYERS) {
+            let lay = apply_layers(h.orbit.obj, pos, n, cv, h.orbit.trap, cols.base, cols.emis);
+            cols.base = lay.base;
+            cols.emis = lay.emis;
+        }
+        var n_bump = n;
+        if (BUMP) {
+            n_bump = bump_layers(h.orbit.obj, pos, n, cv, h.orbit.trap);
+        }
         if (u.cmap0.x > 0.5 && h.orbit.obj == 0u) {
             cols.base = map_color(h, pos, n, cv, cols.base, rr);
         }
@@ -1224,6 +1630,8 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sx: f32, 
         let p = pos + n * (h.eps * select(1.5, 4.0, inside_now()));
         let aol = ambient_occlusion(p, n, h.t);
         let ao = aol.x;
+        // Lighting uses the bumped normal.
+        n = n_bump;
         let hemi = dot(n, u.amb_up.xyz) * 0.5 + 0.5;
         var amb = mix(u.ground.xyz, u.sky.xyz, hemi);
         if (u.bg2.z > 0.5 && u.bg_rot[0].w > 0.5) {

@@ -132,8 +132,90 @@ struct ObjGpu {
     slots: [[u32; 4]; 2],
 }
 
+/// The baked models of the objects (march.wgsl `vols`: a header of 20 words per object, then
+/// the data).
+fn volumes_gpu(prog: &Program) -> Vec<u32> {
+    use rmb_core::fractal::ObjectShape;
+    let n = prog.objects.len().max(1);
+    let mut out = vec![0u32; 20 * n];
+    for (j, o) in prog.objects.iter().enumerate() {
+        let ObjectShape::Model(Some(v)) = &o.shape else { continue };
+        let h = 20 * j;
+        let f = |x: f64| (x as f32).to_bits();
+        out[h..h + 3].copy_from_slice(&v.res);
+        out[h + 3] = out.len() as u32;
+        for k in 0..3 {
+            out[h + 4 + k] = f(v.min[k]);
+            out[h + 8 + k] = f(v.bounds[0][k]);
+            out[h + 11 + k] = f(v.bounds[1][k]);
+        }
+        out[h + 7] = f(v.voxel);
+        out.extend(v.dist.chunks(2).map(|c| c[0] as u16 as u32 | (c.get(1).copied().unwrap_or(0) as u16 as u32) << 16));
+        if !v.colors.is_empty() {
+            // The color grid shares the distance grid's origin.
+            debug_assert_eq!(v.color_min, v.min);
+            out[h + 14] = out.len() as u32;
+            out[h + 15..h + 18].copy_from_slice(&v.color_res);
+            out[h + 18] = f(v.color_voxel);
+            out.extend(v.colors.iter().map(|c| c[0] as u32 | (c[1] as u32) << 8 | (c[2] as u32) << 16 | (c[3] as u32) << 24));
+        }
+    }
+    out
+}
+
 /// LUT entries before the material blocks of the objects.
 const LUT_OBJECTS: usize = 1152;
+/// LUT entries before the texture layers (march.wgsl `LUT_LAYERS`): after 8 object blocks.
+const LUT_LAYERS: usize = LUT_OBJECTS + 512 * 8;
+
+/// Image files of the texture layers of all materials (march.wgsl `layer_map`: stored in the
+/// maps buffer under 0xffffffef - index).
+fn layer_images(scene: &Scene) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let lists = std::iter::once(&scene.material.layers).chain(scene.objects.iter().map(|o| &o.material.layers));
+    for l in lists.flatten().filter(|l| l.enabled) {
+        for name in [l.image.trim(), l.mask.trim()] {
+            if !name.is_empty() && !out.iter().any(|n| n == name) {
+                out.push(name.to_string());
+            }
+        }
+    }
+    out
+}
+
+/// The texture layers of the main material and the objects' own ones (appended to `lut` at
+/// `LUT_LAYERS`: per material 4 layers of 7 entries, see march.wgsl).
+fn layers_gpu(scene: &Scene, lut: &mut Vec<[f32; 4]>) {
+    let images = layer_images(scene);
+    let index = |m: &Option<std::sync::Arc<rmb_core::maps::Map>>, name: &str| match m {
+        Some(_) => images.iter().position(|n| n == name.trim()).map_or(-1.0, |i| i as f32),
+        None => -1.0,
+    };
+    lut.resize(LUT_LAYERS, [0.0; 4]);
+    let lists = std::iter::once(&scene.material.layers).chain(scene.objects.iter().map(|o| &o.material.layers));
+    for (m, layers) in lists.take(9).enumerate() {
+        let prepared = rmb_core::texture::prepare(layers);
+        for i in 0..rmb_core::texture::MAX_LAYERS {
+            let base = LUT_LAYERS + (m * 4 + i) * 7;
+            lut.resize(base + 7, [0.0; 4]);
+            let Some(p) = prepared.get(i) else {
+                lut[base][0] = -1.0;
+                continue;
+            };
+            let l = &p.layer;
+            let r = p.rot;
+            let texels = p.image.as_ref().map_or(1.0, |m| m.width.max(m.height) as f32);
+            let f = |v: f64| v as f32;
+            lut[base] = [l.mapping.index() as f32, if l.space == rmb_core::texture::Space::World { 1.0 } else { 0.0 }, l.blend.index() as f32, l.target.index() as f32];
+            lut[base + 1] = [f(l.scale), f(l.opacity), f(l.strength), f(l.mask_contrast)];
+            lut[base + 2] = [f(l.offset[0]), f(l.offset[1]), f(l.offset[2]), index(&p.image, &l.image)];
+            lut[base + 3] = [l.color[0], l.color[1], l.color[2], index(&p.mask, &l.mask)];
+            lut[base + 4] = [f(r[0][0]), f(r[0][1]), f(r[0][2]), if l.mask_invert { 1.0 } else { 0.0 }];
+            lut[base + 5] = [f(r[1][0]), f(r[1][1]), f(r[1][2]), texels];
+            lut[base + 6] = [f(r[2][0]), f(r[2][1]), f(r[2][2]), 0.0];
+        }
+    }
+}
 
 /// The object buffer and the LUT blocks of their materials (appended to `lut`).
 fn objects_gpu(scene: &Scene, prog: &Program, lut: &mut Vec<[f32; 4]>) -> Vec<ObjGpu> {
@@ -149,6 +231,7 @@ fn objects_gpu(scene: &Scene, prog: &Program, lut: &mut Vec<[f32; 4]>) -> Vec<Ob
         g.inv[1][3] = o.op as f32;
         g.inv[2][3] = o.smooth as f32;
         g.pos = v4(o.pos, 0.0);
+        g.pos[3] = o.material as f32;
         match &o.shape {
             ObjectShape::Fractal(f) => {
                 g.frac = [f.w_slice as f32, if f.julia { 1.0 } else { 0.0 }, f.max_iterations as f32, f.repeat_from as f32];
@@ -162,6 +245,7 @@ fn objects_gpu(scene: &Scene, prog: &Program, lut: &mut Vec<[f32; 4]>) -> Vec<Ob
                 g.prim = a.map(|v| v as f32);
                 g.misc[3] = 1.0;
             }
+            ObjectShape::Model(_) => g.misc[3] = 2.0,
         }
         // The material: the object's own one (its LUT block), or the main one.
         let base = LUT_OBJECTS + 512 * j;
@@ -339,7 +423,11 @@ fn uniforms(scene: &Scene, prog: &Program, w: u32, h: u32, fast: bool) -> Unifor
         emis: {
             // Emission of the materials in use (the main one and the objects' own ones).
             let own = prog.objects.iter().filter_map(|o| scene.objects.get(o.material.wrapping_sub(1)).filter(|_| o.material > 0));
-            let any = m.gradient.iter().chain(own.flat_map(|so| so.material.gradient.iter())).any(|s| s.emission > 0.0);
+            let own: Vec<_> = own.collect();
+            let glow_layer = |l: &[rmb_core::texture::TextureLayer]| l.iter().any(|l| l.enabled && l.target == rmb_core::texture::Target::Emission);
+            let any = m.gradient.iter().chain(own.iter().flat_map(|so| so.material.gradient.iter())).any(|s| s.emission > 0.0)
+                || glow_layer(&m.layers)
+                || own.iter().any(|so| glow_layer(&so.material.layers));
             let on = |v: f64| if any { v.max(0.0) as f32 } else { 0.0 };
             [on(m.emission_light), m.emission_reach as f32, on(m.emission_glow), m.emission_glow_size as f32]
         },
@@ -411,6 +499,10 @@ pub struct GpuRenderer {
     maps: wgpu::Buffer,
     /// Composed objects (march.wgsl binding 6).
     objs: wgpu::Buffer,
+    /// Baked 3D models (binding 7) and which volumes they hold.
+    vols: wgpu::Buffer,
+    vols_key: Vec<usize>,
+    mesh_generation: u64,
     /// Lens flare layer added before the post processing (RGB + pad per pixel) and its size.
     flare: wgpu::Buffer,
     flare_size: (u32, u32),
@@ -472,6 +564,7 @@ impl GpuRenderer {
                 entry(4, storage(false)),
                 entry(5, storage(true)),
                 entry(6, storage(true)),
+                entry(7, storage(true)),
             ],
         });
         let device_error = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
@@ -489,6 +582,9 @@ impl GpuRenderer {
             lut: storage_buffer(device, "lut", ((rmb_core::gradient::LUT_SIZE * 4 + 128) * 16) as u64),
             maps: storage_buffer(device, "maps", 16),
             objs: storage_buffer(device, "objs", std::mem::size_of::<ObjGpu>() as u64),
+            vols: storage_buffer(device, "vols", 80),
+            vols_key: Vec::new(),
+            mesh_generation: rmb_core::mesh::generation(),
             flare: storage_buffer(device, "flare", 16),
             flare_size: (0, 0),
             map_numbers: Vec::new(),
@@ -577,6 +673,11 @@ impl GpuRenderer {
             self.post = Some(post);
             self.dirty_display = true;
         }
+        // A model finished baking: build the program again (it picks the model up).
+        if self.mesh_generation != rmb_core::mesh::generation() {
+            self.mesh_generation = rmb_core::mesh::generation();
+            self.key = None;
+        }
         if self.key.as_ref() == Some(&key) {
             return;
         }
@@ -594,6 +695,7 @@ impl GpuRenderer {
             self.ctx.queue.write_buffer(&self.prm, 0, bytemuck::cast_slice(&consts));
         }
         self.upload_maps(&prog, scene);
+        self.upload_volumes(&prog);
         let shade = rmb_core::render::shading_scene(scene);
         let g = &shade.material.gradient;
         // Highlight entries carry the transparency in w.
@@ -607,6 +709,7 @@ impl GpuRenderer {
         let (ib, is) = if interior.is_empty() { (vec![[0.0; 3]; 256], vec![[0.0; 3]; 256]) } else { (rmb_core::gradient::lut(interior), rmb_core::gradient::lut_specular(interior)) };
         lut.extend(ib.iter().chain(&is).map(|c| [c[0], c[1], c[2], 1.0]));
         let objs = objects_gpu(&shade, &prog, &mut lut);
+        layers_gpu(&shade, &mut lut);
         let device = self.ctx.device.clone();
         let device = &device;
         let obj_bytes = (objs.len() * std::mem::size_of::<ObjGpu>()) as u64;
@@ -626,13 +729,30 @@ impl GpuRenderer {
         self.row = 0;
     }
 
+    /// Uploads the baked models (only when they change).
+    fn upload_volumes(&mut self, prog: &Program) {
+        use rmb_core::fractal::ObjectShape;
+        let key: Vec<usize> = prog.objects.iter().map(|o| if let ObjectShape::Model(Some(v)) = &o.shape { std::sync::Arc::as_ptr(v) as usize } else { 0 }).collect();
+        if key == self.vols_key && self.vols.size() >= 80 * prog.objects.len().max(1) as u64 {
+            return;
+        }
+        let data = volumes_gpu(prog);
+        let bytes = (data.len() * 4) as u64;
+        if self.vols.size() < bytes {
+            self.vols = storage_buffer(&self.ctx.device, "vols", bytes.next_power_of_two());
+        }
+        self.ctx.queue.write_buffer(&self.vols, 0, bytemuck::cast_slice(&data));
+        self.vols_key = key;
+    }
+
     /// Uploads the maps the formulas read (only when the set of map numbers changes).
     fn upload_maps(&mut self, prog: &Program, scene: &Scene) {
         let numbers = prog.map_numbers();
         let b = &scene.background;
-        let background = format!("{}|{}|{}|{}", b.image.trim(), b.image_spherical, b.image_fit_border, scene.material.color_map.image.trim());
+        let layers = layer_images(scene);
+        let background = format!("{}|{}|{}|{}|{}", b.image.trim(), b.image_spherical, b.image_fit_border, scene.material.color_map.image.trim(), layers.join("|"));
         // New buffers are zeroed: no maps (count 0) until the first upload.
-        let none = b.image.trim().is_empty() && scene.material.color_map.image.trim().is_empty();
+        let none = b.image.trim().is_empty() && scene.material.color_map.image.trim().is_empty() && layers.is_empty();
         if numbers == self.map_numbers && background == self.map_background && !(numbers.is_empty() && none && self.maps.size() > 16) {
             return;
         }
@@ -645,6 +765,11 @@ impl GpuRenderer {
         }
         if let Some(m) = rmb_core::maps::get_any(&scene.material.color_map.image) {
             maps.push((u32::MAX - 1, m));
+        }
+        for (i, name) in layers.iter().enumerate() {
+            if let Some(m) = rmb_core::maps::get_any(name) {
+                maps.push((u32::MAX - 16 - i as u32, m));
+            }
         }
         let mut data: Vec<u32> = vec![maps.len() as u32];
         let mut offset = 1 + 4 * maps.len() as u32;
@@ -773,6 +898,7 @@ impl GpuRenderer {
                 wgpu::BindGroupEntry { binding: 4, resource: aux.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 5, resource: self.maps.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 6, resource: self.objs.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 7, resource: self.vols.as_entire_binding() },
             ],
         });
         let start = Instant::now();
@@ -1014,6 +1140,7 @@ pub fn render_animation(
             return Err("cancelled".into());
         }
         let scene = frame_scene(f);
+        rmb_core::compose::load_models(&scene);
         let image = match gpu.as_mut() {
             Some(r) => {
                 r.set_scene(&scene, width, height, false);
@@ -1050,6 +1177,8 @@ pub fn render_animation(
 }
 
 fn render_to(ctx: GpuContext, scene: &Scene, width: u32, height: u32, samples: u32, mut progress: impl FnMut(f32) -> bool) -> Result<GpuRenderer, String> {
+    // Final renders wait for the 3D models to bake.
+    rmb_core::compose::load_models(scene);
     let mut r = GpuRenderer::new(ctx);
     r.set_scene(scene, width, height, false);
     r.wait_for_pipeline()?;

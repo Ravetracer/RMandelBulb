@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
 //! Scene composition (like Mandelbulber's boolean mode): objects after the main fractal, each a
-//! fractal or a primitive with its own placement, material and boolean operation.
+//! fractal, a primitive or a 3D model with its own placement, material and boolean operation.
 //!
 //! The objects are combined with the scene's distance estimate in list order: union, subtract
 //! or intersect, also smooth (polynomial smooth minimum over the blend distance). An object is
@@ -18,6 +18,23 @@ use crate::scene::{ColorMode, ColorStop, Fractal};
 
 /// Most objects a scene can have besides the main fractal.
 pub const MAX_OBJECTS: usize = 8;
+
+/// Distance of a model that is not baked (yet): far away.
+pub const NO_MODEL: f64 = 1.0e10;
+
+/// Bakes the 3D models of the scene (blocking; renders that must show them call this first).
+/// Returns the models that failed, with the reason.
+pub fn load_models(scene: &crate::Scene) -> Vec<String> {
+    let mut failed = Vec::new();
+    for o in scene.objects.iter().filter(|o| o.enabled) {
+        if let Shape::Model(m) = &o.shape
+            && let Err(e) = crate::mesh::get(&m.path, &m.options)
+        {
+            failed.push(format!("{}: {e}", o.name));
+        }
+    }
+    failed
+}
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -42,6 +59,16 @@ impl Default for SceneObject {
 pub enum Shape {
     Fractal(Box<Fractal>),
     Primitive(Primitive),
+    /// A 3D model file, baked into a distance grid (mesh.rs).
+    Model(ModelRef),
+}
+
+/// A 3D model of the scene: the file and how it is baked.
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ModelRef {
+    pub path: String,
+    pub options: crate::mesh::ModelOptions,
 }
 
 /// Primitive shapes in their own coordinates (z is up).
@@ -267,10 +294,14 @@ pub enum Pattern {
     Height,
     /// With the distance from the object's center.
     Radial,
+    /// 3D models: the colors of the model file (vertex colors, material colors, textures).
+    Model,
 }
 
 impl Pattern {
     pub const ALL: [Pattern; 4] = [Pattern::Solid, Pattern::Checker, Pattern::Height, Pattern::Radial];
+    /// The patterns of 3D models.
+    pub const FOR_MODELS: [Pattern; 5] = [Pattern::Model, Pattern::Solid, Pattern::Checker, Pattern::Height, Pattern::Radial];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -278,6 +309,7 @@ impl Pattern {
             Pattern::Checker => "Checker",
             Pattern::Height => "By height",
             Pattern::Radial => "From the center",
+            Pattern::Model => "Model colors",
         }
     }
 
@@ -297,7 +329,9 @@ pub fn pattern_value(pattern: u32, size: f64, q: V3) -> f64 {
             c.rem_euclid(2.0)
         }
         2 => q.z / s,
-        _ => q.length() / s,
+        3 => q.length() / s,
+        // Model colors (the gradient's offset color where the model has none).
+        _ => 0.0,
     }
 }
 
@@ -316,6 +350,8 @@ pub struct ObjectMaterial {
     pub pattern: Pattern,
     /// Size of the pattern (checker cells, height and radius per gradient length).
     pub pattern_size: f64,
+    /// Texture layers over the colors, bottom first.
+    pub layers: Vec<crate::texture::TextureLayer>,
 }
 
 impl Default for ObjectMaterial {
@@ -329,6 +365,7 @@ impl Default for ObjectMaterial {
             repeat: true,
             pattern: Pattern::Solid,
             pattern_size: 1.0,
+            layers: Vec::new(),
         }
     }
 }

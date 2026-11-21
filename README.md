@@ -46,6 +46,13 @@ modern egui interface and import of Mandelbulb3D parameters.
   sphere, cylinder, torus, water) to the scene, place them with gizmos, combine them by adding,
   cutting away or intersecting (also smoothly), each in its own colors. Ctrl+click selects the
   object under the cursor.
+- **3D models**: OBJ, STL, PLY and glTF/GLB files (Blender exports all of them) as scene
+  objects. They are baked into a distance grid (64 to 256 points along the longest side) and keep
+  their vertex, material and texture colors. Detail finer than one grid cell is rounded off.
+- **Texture layers** (up to four per material): images, or a solid color through a mask image,
+  over the gradient colors with blend modes (multiply, screen, overlay, soft light, …), as bumps
+  or as glow. Triplanar, planar, spherical, cylindrical or orbit mapping, in object or world
+  space.
 - **Emissive colors**: gradient colors can shine by themselves, light their surroundings in
   their color and glow (MagicaVoxel-style emission).
 - **Animation** (Animation button, timeline under the view):

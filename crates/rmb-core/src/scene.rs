@@ -777,6 +777,8 @@ pub struct Material {
     /// Distance from the camera where the depth shift is 0.
     pub depth_reference: f64,
     pub color_map: ColorMap,
+    /// Texture layers over the gradient colors, bottom first.
+    pub layers: Vec<crate::texture::TextureLayer>,
     /// Colors where a ray meets the inside of the fractal (cut planes, camera inside the solid);
     /// empty: the normal gradient. Indexed by the final radius (inside rendering: iterations).
     pub interior: Vec<ColorStop>,
@@ -822,6 +824,7 @@ impl Default for Material {
             depth_shift: 0.0,
             depth_reference: 0.0,
             color_map: ColorMap::default(),
+            layers: Vec::new(),
             interior: Vec::new(),
             interior_scale: 1.0,
             interior_offset: 0.0,

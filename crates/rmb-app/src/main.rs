@@ -13,6 +13,7 @@ mod gizmos;
 mod help;
 mod icons;
 mod inspector;
+mod layers;
 mod prefs;
 mod theme;
 mod timeline;

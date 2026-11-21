@@ -545,6 +545,7 @@ fn mapping(ui: &mut Ui, m: &mut rmb_core::scene::Material, d: &rmb_core::scene::
         }
     });
     emissive(ui, m);
+    crate::layers::layers_editor(ui, &mut m.layers, "main");
     color_map(ui, m);
 }
 
@@ -557,8 +558,9 @@ fn emissive(ui: &mut Ui, m: &mut rmb_core::scene::Material) {
         m.emission_glow = d.emission_glow;
         m.emission_glow_size = d.emission_glow_size;
     }
-    if !m.gradient.iter().any(|s| s.emission > 0.0) {
-        ui.label(RichText::new("Give a gradient color an emission (the sparkle field next to it) to let it shine, light its surroundings and glow.").size(theme::fs(11.5)).color(theme::TEXT_MUTED));
+    let glow_layer = m.layers.iter().any(|l| l.enabled && l.target == rmb_core::texture::Target::Emission);
+    if !glow_layer && !m.gradient.iter().any(|s| s.emission > 0.0) {
+        ui.label(RichText::new("Give a gradient color an emission (the sparkle field next to it) or add a Glow texture layer to let it shine, light its surroundings and glow.").size(theme::fs(11.5)).color(theme::TEXT_MUTED));
         return;
     }
     widgets::grid(ui, "emissive", |ui| {

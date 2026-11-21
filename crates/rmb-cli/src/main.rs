@@ -107,7 +107,11 @@ fn parse(args: &[String]) -> Result<Opts, String> {
 
 fn load(o: &Opts) -> Result<rmb_core::Scene, String> {
     let p = o.input.as_ref().ok_or("no scene file given")?;
-    rmb_core::io::load(p)
+    let scene = rmb_core::io::load(p)?;
+    for e in rmb_core::compose::load_models(&scene) {
+        eprintln!("warning: 3D model not loaded: {e}");
+    }
+    Ok(scene)
 }
 
 /// Applies the denoiser override of the options.

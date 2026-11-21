@@ -484,3 +484,110 @@ fn gpu_matches_cpu_with_composed_objects() {
     assert!(changed > 500, "the objects change only {changed} channels");
     parity(scene);
 }
+
+#[test]
+fn gpu_matches_cpu_with_texture_layers() {
+    use rmb_core::compose::{ObjectMaterial, Primitive, SceneObject, Shape, Transform};
+    use rmb_core::texture::{BlendMode, Mapping, Target, TextureLayer};
+    let path = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("rmb_layer_test.bmp");
+    write_test_bmp(&path, 64, 64);
+    let img = path.to_string_lossy().into_owned();
+    let mut scene = Scene::default();
+    scene.lighting.ao_mode = rmb_core::scene::AoMode::Fast;
+    scene.material.emission_glow = 0.5;
+    scene.material.layers = vec![
+        // The image multiplied over the gradient, projected three ways.
+        TextureLayer { image: img.clone(), blend: BlendMode::Multiply, scale: 1.5, rotation: [0.0, 20.0, 10.0], ..Default::default() },
+        // A solid color painted through the image as a mask.
+        TextureLayer { color: [0.1, 0.8, 0.3], mask: img.clone(), mask_contrast: 3.0, opacity: 0.8, scale: 0.7, ..Default::default() },
+        // Relief from the image.
+        TextureLayer { image: img.clone(), target: Target::Bump, strength: 6.0, scale: 2.0, ..Default::default() },
+        // Glow where the mask is bright.
+        TextureLayer { target: Target::Emission, mask: img.clone(), mask_invert: true, mask_contrast: 4.0, strength: 1.5, mapping: Mapping::Spherical, scale: 3.0, ..Default::default() },
+    ];
+    scene.objects = vec![SceneObject {
+        name: "Ground".into(),
+        shape: Shape::Primitive(Primitive::Plane),
+        transform: Transform { position: rmb_core::v3(0.0, 0.0, -1.1), rotation: [0.0, 0.0, 35.0], ..Default::default() },
+        material: ObjectMaterial {
+            layers: vec![TextureLayer { image: img.clone(), mapping: Mapping::PlanarXY, blend: BlendMode::Overlay, scale: 0.5, ..Default::default() }],
+            ..Default::default()
+        },
+        ..Default::default()
+    }];
+    let cpu = |s: &Scene| {
+        let mut r = rmb_core::render::cpu::CpuRenderer::new(s.clone(), 48, 32);
+        r.render_pass();
+        r.rgba8()
+    };
+    let mut plain = scene.clone();
+    plain.material.layers.clear();
+    plain.objects[0].material.layers.clear();
+    let changed = cpu(&scene).iter().zip(cpu(&plain)).filter(|(a, b)| (**a as i32 - *b as i32).abs() > 8).count();
+    assert!(changed > 500, "the layers change only {changed} channels");
+    parity(scene);
+}
+
+/// Writes a torus as OBJ + MTL with two colored halves (materials "warm" and "cool").
+fn write_test_obj(dir: &std::path::Path) -> std::path::PathBuf {
+    use std::fmt::Write;
+    std::fs::create_dir_all(dir).expect("test dir");
+    std::fs::write(dir.join("t.mtl"), "newmtl warm\nKd 0.9 0.4 0.1\nnewmtl cool\nKd 0.1 0.5 0.9\n").expect("mtl");
+    let (n, m) = (48usize, 16usize);
+    let mut s = String::from("mtllib t.mtl\n");
+    for i in 0..n {
+        for j in 0..m {
+            let (a, b) = (i as f64 / n as f64 * std::f64::consts::TAU, j as f64 / m as f64 * std::f64::consts::TAU);
+            let r = 1.0 + 0.35 * b.cos();
+            let _ = writeln!(s, "v {} {} {}", r * a.cos(), 0.35 * b.sin(), r * a.sin());
+        }
+    }
+    for half in [0, 1] {
+        let _ = writeln!(s, "usemtl {}", if half == 0 { "warm" } else { "cool" });
+        for i in (half * n / 2)..((half + 1) * n / 2) {
+            for j in 0..m {
+                let v = |i: usize, j: usize| (i % n) * m + (j % m) + 1;
+                let _ = writeln!(s, "f {} {} {}", v(i, j), v(i + 1, j), v(i + 1, j + 1));
+                let _ = writeln!(s, "f {} {} {}", v(i, j), v(i + 1, j + 1), v(i, j + 1));
+            }
+        }
+    }
+    let p = dir.join("torus.obj");
+    std::fs::write(&p, s).expect("obj");
+    p
+}
+
+#[test]
+fn gpu_matches_cpu_with_a_3d_model() {
+    use rmb_core::compose::{BoolOp, ModelRef, ObjectMaterial, Pattern, SceneObject, Shape, Transform};
+    let path = write_test_obj(&std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("rmb_model_test"));
+    let model = ModelRef { path: path.to_string_lossy().into_owned(), options: rmb_core::mesh::ModelOptions { resolution: 64, ..Default::default() } };
+    let mut scene = Scene::default();
+    scene.lighting.ao_mode = rmb_core::scene::AoMode::Fast;
+    scene.objects = vec![
+        // The colored ring around the bulb, tilted.
+        SceneObject {
+            name: "Ring".into(),
+            shape: Shape::Model(model.clone()),
+            transform: Transform { rotation: [60.0, 10.0, 30.0], scale: 1.8, ..Default::default() },
+            material: ObjectMaterial { pattern: Pattern::Model, ..Default::default() },
+            ..Default::default()
+        },
+        // The same model cuts into the bulb from the side, smoothly.
+        SceneObject { name: "Cut".into(), op: BoolOp::SmoothSubtract, smooth: 0.1, shape: Shape::Model(model), transform: Transform { position: rmb_core::v3(0.9, -0.5, 0.3), scale: 0.35, ..Default::default() }, ..Default::default() },
+    ];
+    assert!(rmb_core::compose::load_models(&scene).is_empty());
+    let prog = Program::for_scene(&scene);
+    assert!(matches!(&prog.objects[0].shape, rmb_core::fractal::ObjectShape::Model(Some(v)) if !v.colors.is_empty()));
+    validate(&rmb_gpu::codegen::march_shader(&prog), "3D model");
+    let cpu = |s: &Scene| {
+        let mut r = rmb_core::render::cpu::CpuRenderer::new(s.clone(), 48, 32);
+        r.render_pass();
+        r.rgba8()
+    };
+    let mut plain = scene.clone();
+    plain.objects.clear();
+    let changed = cpu(&scene).iter().zip(cpu(&plain)).filter(|(a, b)| (**a as i32 - *b as i32).abs() > 8).count();
+    assert!(changed > 500, "the model changes only {changed} channels");
+    parity(scene);
+}

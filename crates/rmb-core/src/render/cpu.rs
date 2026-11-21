@@ -42,11 +42,13 @@ pub struct Mat {
     /// Primitives: `Pattern::index` and size.
     pub pattern: u32,
     pub pattern_size: f64,
+    /// Texture layers that can be drawn.
+    pub layers: Vec<crate::texture::Prepared>,
 }
 
 impl Mat {
     #[allow(clippy::too_many_arguments)]
-    fn new(g: &[crate::scene::ColorStop], mode: ColorMode, scale: f64, offset: f64, repeat: bool, saturation: f64, pattern: u32, pattern_size: f64) -> Mat {
+    fn new(g: &[crate::scene::ColorStop], mode: ColorMode, scale: f64, offset: f64, repeat: bool, saturation: f64, pattern: u32, pattern_size: f64, layers: &[crate::texture::TextureLayer]) -> Mat {
         Mat {
             lut: crate::gradient::lut(g),
             lut_spec: crate::gradient::lut_specular(g),
@@ -59,16 +61,17 @@ impl Mat {
             saturation,
             pattern,
             pattern_size,
+            layers: crate::texture::prepare(layers),
         }
     }
 
     /// The materials of a scene: the main one, then one per object.
     pub fn of_scene(scene: &Scene) -> Vec<Mat> {
         let m = &scene.material;
-        let mut out = vec![Mat::new(&m.gradient, m.color_mode, m.color_scale, m.color_offset, m.repeat, m.saturation, 0, 1.0)];
+        let mut out = vec![Mat::new(&m.gradient, m.color_mode, m.color_scale, m.color_offset, m.repeat, m.saturation, 0, 1.0, &m.layers)];
         for o in &scene.objects {
             let om = &o.material;
-            out.push(Mat::new(&om.gradient, om.color_mode, om.color_scale, om.color_offset, om.repeat, 1.0, om.pattern.index(), om.pattern_size));
+            out.push(Mat::new(&om.gradient, om.color_mode, om.color_scale, om.color_offset, om.repeat, 1.0, om.pattern.index(), om.pattern_size, &om.layers));
         }
         out
     }
@@ -87,7 +90,8 @@ impl<'a> Shader<'a> {
         let materials = Mat::of_scene(scene);
         // Only materials that are used count for emission.
         let used = |k: usize| k == 0 || prog.objects.iter().any(|o| o.material == k);
-        let emissive = materials.iter().enumerate().any(|(k, m)| used(k) && m.lut_emis.iter().any(|e| *e > 0.0));
+        let glows = |m: &Mat| m.lut_emis.iter().any(|e| *e > 0.0) || m.layers.iter().any(|l| l.layer.target == crate::texture::Target::Emission);
+        let emissive = materials.iter().enumerate().any(|(k, m)| used(k) && glows(m));
         Shader {
             scene,
             prog,
@@ -179,8 +183,59 @@ impl<'a> Shader<'a> {
             return [0.0; 3];
         }
         let h = Hit { t, pos: p, eps, orbit: *orbit, steps: 0 };
-        let (base, _, _, e) = self.gradient(self.material_of(orbit), self.color_value(&h, V3::ZERO), t);
+        let mat = self.material_of(orbit);
+        let cv = self.color_value(&h, V3::ZERO);
+        let (base, _, _, e) = self.gradient(mat, cv, t);
+        let base = self.model_color(&h, mat, base);
+        let (base, e, _) = self.apply_layers(mat, &h, V3::ZERO, cv, base, e);
         base.map(|c| c * e)
+    }
+
+    /// The color of a 3D model at a hit on it (material pattern "Model colors"; else `base`).
+    fn model_color(&self, h: &Hit, mat: usize, base: [f64; 3]) -> [f64; 3] {
+        if mat == 0 || self.materials[mat].pattern != crate::compose::Pattern::Model.index() {
+            return base;
+        }
+        let Some(ob) = (h.orbit.object > 0).then(|| self.prog.objects.get(h.orbit.object as usize - 1)).flatten() else { return base };
+        let crate::fractal::ObjectShape::Model(Some(v)) = &ob.shape else { return base };
+        let q = crate::compose::to_local(&ob.inv, ob.pos, ob.scale, h.pos);
+        match v.color(q.to_array()) {
+            Some(c) if !self.scene.post.display_space => c.map(super::srgb_decode),
+            Some(c) => c,
+            None => base,
+        }
+    }
+
+    /// Where the texture layers of a hit are evaluated (`n`: world normal, zero if unknown).
+    fn layer_coord(&self, h: &Hit, n: V3, cv: f64) -> crate::texture::Coord {
+        let mut c = crate::texture::Coord { obj: h.pos, world: h.pos, n_obj: n, n_world: n, value: cv, trap: h.orbit.trap };
+        if let Some(ob) = (h.orbit.object > 0).then(|| self.prog.objects.get(h.orbit.object as usize - 1)).flatten() {
+            c.obj = crate::compose::to_local(&ob.inv, ob.pos, ob.scale, h.pos);
+            c.n_obj = crate::compose::to_local(&ob.inv, V3::ZERO, 1.0, n);
+        }
+        c
+    }
+
+    /// Applies the texture layers of material `mat`: surface color, emission and the bumped
+    /// normal (unchanged when `n` is zero).
+    #[allow(clippy::too_many_arguments)]
+    fn apply_layers(&self, mat: usize, h: &Hit, n: V3, cv: f64, base: [f64; 3], emis: f64) -> ([f64; 3], f64, V3) {
+        let layers = &self.materials[mat].layers;
+        if layers.is_empty() {
+            return (base, emis, n);
+        }
+        let c = self.layer_coord(h, n, cv);
+        let (col, e) = crate::texture::apply(layers, &c, !self.scene.post.display_space, base, emis);
+        if n == V3::ZERO || !layers.iter().any(|l| l.layer.target == crate::texture::Target::Bump) {
+            return (col, e, n);
+        }
+        let inv = (h.orbit.object > 0).then(|| self.prog.objects.get(h.orbit.object as usize - 1)).flatten().map(|ob| ob.inv);
+        let to_world = |v: V3| match &inv {
+            // The transpose undoes the inverse rotation.
+            Some(m) => v3(m[0][0] * v.x + m[1][0] * v.y + m[2][0] * v.z, m[0][1] * v.x + m[1][1] * v.y + m[2][1] * v.z, m[0][2] * v.x + m[1][2] * v.y + m[2][2] * v.z),
+            None => v,
+        };
+        (col, e, crate::texture::bump(layers, &c, &to_world))
     }
 
     /// Material index of the surface an orbit belongs to.
@@ -372,7 +427,7 @@ impl<'a> Shader<'a> {
         let mut bailout2 = self.prog.bailout2;
         if let Some(ob) = (o.object > 0).then(|| self.prog.objects.get(o.object as usize - 1)).flatten() {
             match &ob.shape {
-                crate::fractal::ObjectShape::Primitive(..) => {
+                crate::fractal::ObjectShape::Primitive(..) | crate::fractal::ObjectShape::Model(_) => {
                     let q = crate::compose::to_local(&ob.inv, ob.pos, ob.scale, hit.pos);
                     return crate::compose::pattern_value(mat.pattern, mat.pattern_size, q);
                 }
@@ -677,16 +732,23 @@ impl<'a> Shader<'a> {
                 let spec_rough = 1.0 + (2.0 * rr).min(1.0) * (4.0 / sc.lighting.shininess.max(1.0) - 1.0);
                 let cv = self.color_value(h, n);
                 let main = h.orbit.object == 0;
+                let mat = self.material_of(&h.orbit);
                 let (base, spec_col, trans, emis) = match self.interior_colors(h, n, h.t).filter(|_| main) {
                     Some((b, s)) => (b, s, 0.0, 0.0),
-                    None => self.gradient(self.material_of(&h.orbit), cv, h.t),
+                    None => {
+                        let (b, s, tr, e) = self.gradient(mat, cv, h.t);
+                        (self.model_color(h, mat, b), s, tr, e)
+                    }
                 };
+                let (base, emis, n_bump) = self.apply_layers(mat, h, n, cv, base, emis);
                 // Color maps belong to the main fractal.
                 let base = if main { self.map_color(h, n, cv, base, rr) } else { base };
                 // Shading point just off the surface; inside rendering puts the surface one
                 // threshold into the solid, so it needs a larger offset.
                 let p = h.pos + n * (h.eps * if ev.inside() { 4.0 } else { 1.5 });
                 let (ao, emitted) = self.ambient_occlusion(ev, p, n, h.t, rng);
+                // Lighting uses the bumped normal.
+                let n = n_bump;
                 let l = &sc.lighting;
                 let hemi = n.dot(fr.ambient_up) * 0.5 + 0.5;
                 let amb = match self.background_ambient(n).filter(|_| l.ambient_from_background) {

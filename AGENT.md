@@ -19,9 +19,9 @@ Open work and wished features: `TODO.md`.
 
 | Path | Content |
 |------|---------|
-| `crates/rmb-core` | `compose.rs` (scene composition: objects, primitives, boolean ops, transforms; mirrored in march.wgsl), `flare.rs` (lens flares: model, presets, screen-space layer added before post processing), `animation.rs` (keyframes, camera path, timing, cameraman smoothing, flight → keyframes), `video.rs` (PNG sequences, movies through ffmpeg), `scene.rs` (model), `formula/` (language `lang.rs`, `cpu.rs` closure compiler, `wgsl.rs` emitter, `lib/*.mbf` built-ins, `m3f/` MB3D machine-code translator, `lib/mb3d.mbf` its generated output), `fractal.rs` (hybrid `Program`, CPU evaluator), `render/` (`cpu.rs` reference renderer, `mod.rs` frame setup and post processing), `io/` (`.rmb` JSON, `m3p.rs` MB3D import, PNG with scene) |
+| `crates/rmb-core` | `compose.rs` (scene composition: objects, primitives, boolean ops, transforms; mirrored in march.wgsl), `mesh.rs` (3D model import and distance grid bake), `texture.rs` (texture layers), `flare.rs` (lens flares: model, presets, screen-space layer added before post processing), `animation.rs` (keyframes, camera path, timing, cameraman smoothing, flight → keyframes), `video.rs` (PNG sequences, movies through ffmpeg), `scene.rs` (model), `formula/` (language `lang.rs`, `cpu.rs` closure compiler, `wgsl.rs` emitter, `lib/*.mbf` built-ins, `m3f/` MB3D machine-code translator, `lib/mb3d.mbf` its generated output), `fractal.rs` (hybrid `Program`, CPU evaluator), `render/` (`cpu.rs` reference renderer, `mod.rs` frame setup and post processing), `io/` (`.rmb` JSON, `m3p.rs` MB3D import, PNG with scene) |
 | `crates/rmb-gpu` | `march.wgsl` (kernel, mirrors `render/cpu.rs`), `codegen.rs` (hybrid `iterate` function), `display.wgsl` (post), `renderer.rs` (progressive bands, async shader compile) |
-| `crates/rmb-app` | egui app: `app.rs`, `viewport.rs` (preview and navigation), `formulas_panel.rs`, `inspector.rs`, `export.rs` (image and animation export), `timeline.rs` (animation panel: keyframes, recording, playback), `gizmos.rs` (light gizmos in the view), `doc.rs` (undo), `prefs.rs`, `theme.rs` (from RWildFire) |
+| `crates/rmb-app` | egui app: `app.rs`, `viewport.rs` (preview and navigation), `formulas_panel.rs` (scene list, object editors), `inspector.rs`, `layers.rs` (texture layer editor), `export.rs` (image and animation export), `timeline.rs` (animation panel: keyframes, recording, playback), `gizmos.rs` (light gizmos in the view), `doc.rs` (undo), `prefs.rs`, `theme.rs` (from RWildFire) |
 | `crates/rmb-cli` | Command line |
 
 ## Build and test
@@ -104,6 +104,22 @@ cargo clippy -j 8 --workspace --all-targets
   blocks of 512 entries from index 1152. Adding objects or changing their formulas / primitive
   type changes the shader signature (recompile); everything else is buffer data.
 - `cargo run --release -p rmb-core --example compose_demo -- out.rmb` writes a demo scene.
+
+## 3D models and texture layers
+
+- `mesh.rs` loads OBJ/STL/PLY/glTF and bakes a signed distance grid (exact triangle distances
+  through a BVH; sign by ray parity along three axes, majority vote) plus a color grid at half
+  resolution. `mesh::request` bakes in the background (cache keyed by file, modification time
+  and options; `generation()` changes when a bake finishes), `compose::load_models` waits for
+  all models of a scene (CLI, exports). GPU: `vols` buffer (binding 7, `volumes_gpu`), sampled
+  by `model_de` / `model_rgb` in march.wgsl exactly like `Volume::distance` / `color`.
+- `texture.rs` holds the layers (mapping, blend modes, bump, emission). GPU: layer parameters
+  in `lut` from `LUT_LAYERS` (4 layers × 7 entries per material), layer images in the `maps`
+  buffer under 0xffffffef − index (`renderer.rs::layer_images`).
+- Compile-time switches keep shaders small: `LAYERS`, `BUMP` and `MODELS` (codegen.rs, from
+  `Program::layers` / `bump` and the model objects) include that code only when the scene uses
+  it. Lookups sit in loops with one call site each (the compiler inlines every call; unrolled
+  lookups tripled the compile time).
 
 ## Lens flares
 

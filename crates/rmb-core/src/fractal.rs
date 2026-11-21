@@ -85,6 +85,10 @@ pub struct Program {
     pub inside: bool,
     /// Objects combined with this fractal (scene composition), in order.
     pub objects: Vec<ObjectProgram>,
+    /// Some material has texture layers / bump layers (the GPU shader includes their code only
+    /// then: it compiles faster without).
+    pub layers: bool,
+    pub bump: bool,
 }
 
 /// An object of the scene composition prepared for evaluation.
@@ -106,6 +110,8 @@ pub enum ObjectShape {
     Fractal(Box<Program>),
     /// `Primitive::index` and parameters.
     Primitive(u32, [f64; 4]),
+    /// A baked 3D model (None while it bakes or when it does not load: no surface).
+    Model(Option<std::sync::Arc<crate::mesh::Volume>>),
 }
 
 /// Result of iterating one point.
@@ -266,6 +272,8 @@ impl Program {
             reflections: false,
             inside: f.inside,
             objects: Vec::new(),
+            layers: false,
+            bump: false,
         }
     }
 
@@ -285,6 +293,10 @@ impl Program {
                     ObjectShape::Fractal(Box::new(op))
                 }
                 Shape::Primitive(pr) => ObjectShape::Primitive(pr.index(), pr.params()),
+                Shape::Model(m) => match crate::mesh::request(&m.path, &m.options) {
+                    crate::mesh::Status::Ready(v) => ObjectShape::Model(Some(v)),
+                    _ => ObjectShape::Model(None),
+                },
             };
             p.objects.push(ObjectProgram {
                 shape,
@@ -295,6 +307,11 @@ impl Program {
                 smooth: o.smooth.max(0.0),
                 material: if o.material.own { i + 1 } else { 0 },
             });
+        }
+        let used = std::iter::once(&scene.material.layers).chain(p.objects.iter().filter(|o| o.material > 0).map(|o| &scene.objects[o.material - 1].material.layers));
+        for l in used.flatten().filter(|l| l.enabled) {
+            p.layers = true;
+            p.bump |= l.target == crate::texture::Target::Bump;
         }
         p
     }
@@ -325,6 +342,8 @@ impl Program {
         s.push_str(if self.blend.is_some() { "|blend" } else { "" });
         s.push_str(if self.reflections { "|refl" } else { "" });
         s.push_str(if self.is_mix() { "|mix" } else { "" });
+        s.push_str(if self.layers { "|layers" } else { "" });
+        s.push_str(if self.bump { "|bump" } else { "" });
         for o in &self.objects {
             match &o.shape {
                 ObjectShape::Fractal(f) => {
@@ -332,6 +351,7 @@ impl Program {
                     s.push_str(&part(f));
                 }
                 ObjectShape::Primitive(k, _) => s.push_str(&format!("|prim:{k}")),
+                ObjectShape::Model(_) => s.push_str("|model"),
             }
         }
         s
@@ -354,7 +374,7 @@ impl Program {
             .iter()
             .map(|o| match &o.shape {
                 ObjectShape::Fractal(f) => regs(f),
-                ObjectShape::Primitive(..) => Vec::new(),
+                ObjectShape::Primitive(..) | ObjectShape::Model(_) => Vec::new(),
             })
             .collect();
         Evaluator { prog: self, regs: regs(self), regs2: self.part2.as_deref().map(regs).unwrap_or_default(), regs_obj, flip: false }
@@ -635,6 +655,7 @@ impl Evaluator<'_> {
                     (d, oo)
                 }
                 ObjectShape::Primitive(kind, a) => (crate::compose::primitive_distance(*kind, *a, q) * ob.scale, Orbit { dr: 1.0, escaped: true, ..Orbit::default() }),
+                ObjectShape::Model(v) => (v.as_ref().map_or(crate::compose::NO_MODEL, |v| v.distance(q.to_array())) * ob.scale, Orbit { dr: 1.0, escaped: true, ..Orbit::default() }),
             };
             let (nd, wins) = crate::compose::combine(ob.op, de, d, ob.smooth);
             de = nd;
