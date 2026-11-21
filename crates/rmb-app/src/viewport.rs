@@ -76,6 +76,28 @@ pub struct Viewport {
     pub hover: Option<(f64, f64)>,
     /// Do not render (an export uses the GPU).
     pub paused: bool,
+    /// An animation frame shown instead of the scene (navigation is off), and whether it is
+    /// rendered fast (playback).
+    pub preview: Option<(Scene, bool, String)>,
+    /// Camera path drawn over the image.
+    pub overlay: Option<PathOverlay>,
+    /// Flight being recorded.
+    pub recording: Option<Recording>,
+}
+
+/// The animation's camera path, drawn over the view.
+pub struct PathOverlay {
+    pub path: Vec<V3>,
+    pub keys: Vec<V3>,
+    pub selected: Option<usize>,
+    /// Position of the frame shown in the timeline.
+    pub current: Option<V3>,
+}
+
+/// A flight being recorded: camera samples with their time.
+pub struct Recording {
+    pub start: Instant,
+    pub samples: Vec<rmb_core::animation::CamSample>,
 }
 
 impl Viewport {
@@ -109,6 +131,9 @@ impl Viewport {
             converged_after: None,
             hover: None,
             paused: false,
+            preview: None,
+            overlay: None,
+            recording: None,
         }
     }
 
@@ -165,9 +190,17 @@ impl Viewport {
         let ppp = ui.ctx().pixels_per_point();
         let full = ((rect.width() * ppp * prefs.preview_percent as f32 / 100.0).round().max(16.0) as u32, (rect.height() * ppp * prefs.preview_percent as f32 / 100.0).round().max(16.0) as u32);
 
-        self.navigate(ui, &resp, rect, doc, prefs);
-
-        let fast = self.navigating();
+        let previewing = self.preview.is_some();
+        if previewing {
+            self.hover = resp.hover_pos().map(|p| Self::screen(rect, p));
+        } else {
+            self.navigate(ui, &resp, rect, doc, prefs);
+        }
+        if let Some(rec) = self.recording.as_mut() {
+            rec.samples.push(rmb_core::animation::CamSample::of(&doc.scene, rec.start.elapsed().as_secs_f64()));
+            ui.ctx().request_repaint();
+        }
+        let fast = self.navigating() || self.preview.as_ref().is_some_and(|p| p.1);
         let size = if fast {
             let s = prefs.navigate_percent.clamp(10, 100) as f32 / 100.0;
             (((full.0 as f32) * s).round().max(16.0) as u32, ((full.1 as f32) * s).round().max(16.0) as u32)
@@ -175,19 +208,25 @@ impl Viewport {
             full
         };
         self.render_size = size;
-        let mut texture = if self.gpu.is_some() { self.update_gpu(frame, &doc.scene, size, fast, prefs) } else { self.update_cpu(ui.ctx(), &doc.scene, size) };
+        let preview = self.preview.take();
+        let shown = preview.as_ref().map(|p| &p.0).unwrap_or(&doc.scene);
+        let mut texture = if self.gpu.is_some() { self.update_gpu(frame, shown, size, fast, prefs) } else { self.update_cpu(ui.ctx(), shown, size) };
         if self.show_denoised
             && !fast
-            && let Some(t) = self.update_denoised(ui.ctx(), &doc.scene, size, prefs)
+            && let Some(t) = self.update_denoised(ui.ctx(), shown, size, prefs)
         {
             texture = Some(t);
         }
+        let camera = shown.camera.clone();
+        let aspect = shown.aspect();
+        self.preview = preview;
         if let Some(tex) = texture {
             ui.painter().image(tex, rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
         }
         if prefs.keep_aspect {
             ui.painter().rect_stroke(rect, 0.0, egui::Stroke::new(1.0, theme::BORDER), egui::StrokeKind::Outside);
         }
+        self.draw_overlay(ui, rect, &camera, aspect);
         self.hud(ui, rect, doc);
         if !self.paused && (self.navigating() || self.compiling() || self.samples() < prefs.preview_samples) {
             ui.ctx().request_repaint();
@@ -462,6 +501,51 @@ impl Viewport {
         }
     }
 
+    /// Draws the animation's camera path, its keyframes and the current frame.
+    fn draw_overlay(&self, ui: &Ui, rect: Rect, cam: &rmb_core::scene::Camera, aspect: f64) {
+        let Some(o) = &self.overlay else { return };
+        let t = cam.tan_half_fov();
+        let project = |p: V3| -> Option<egui::Pos2> {
+            let d = p - cam.position;
+            let z = d.dot(cam.forward);
+            if z <= 1e-9 {
+                return None;
+            }
+            let sx = d.dot(cam.right) / (z * t * aspect);
+            let sy = d.dot(cam.up) / (z * t);
+            (sx.abs() < 4.0 && sy.abs() < 4.0).then(|| pos2(rect.center().x + sx as f32 * rect.width() * 0.5, rect.center().y - sy as f32 * rect.height() * 0.5))
+        };
+        let painter = ui.painter().with_clip_rect(rect);
+        let line = egui::Stroke::new(2.0, Color32::from_rgba_unmultiplied(255, 200, 80, 200));
+        let mut run: Vec<egui::Pos2> = Vec::new();
+        for p in &o.path {
+            match project(*p) {
+                Some(s) => run.push(s),
+                None => {
+                    if run.len() > 1 {
+                        painter.add(egui::Shape::line(std::mem::take(&mut run), line));
+                    }
+                    run.clear();
+                }
+            }
+        }
+        if run.len() > 1 {
+            painter.add(egui::Shape::line(run, line));
+        }
+        for (i, k) in o.keys.iter().enumerate() {
+            if let Some(s) = project(*k) {
+                let sel = o.selected == Some(i);
+                let r = if sel { 6.0 } else { 4.5 };
+                let pts = vec![s + vec2(0.0, -r), s + vec2(r, 0.0), s + vec2(0.0, r), s + vec2(-r, 0.0)];
+                let fill = if sel { theme::ACCENT } else { Color32::from_rgb(255, 200, 80) };
+                painter.add(egui::Shape::convex_polygon(pts, fill, egui::Stroke::new(1.0, Color32::BLACK)));
+            }
+        }
+        if let Some(s) = o.current.and_then(project) {
+            painter.circle(s, 5.0, Color32::WHITE, egui::Stroke::new(1.5, Color32::BLACK));
+        }
+    }
+
     fn hud(&self, ui: &Ui, rect: Rect, doc: &Document) {
         let p = ui.painter();
         let mut y = rect.top() + 10.0;
@@ -473,6 +557,12 @@ impl Viewport {
             p.galley(r.min + vec2(8.0, 4.0), galley, color);
             r.height() + 6.0
         };
+        if let Some(rec) = &self.recording {
+            y += pill(format!("●  Recording flight  {:.1} s  ·  stop in the timeline", rec.start.elapsed().as_secs_f64()), Color32::from_rgb(255, 90, 80), y);
+        }
+        if let Some((_, _, label)) = &self.preview {
+            y += pill(format!("{}  {label}  ·  navigation is off; press Edit in the timeline or click a keyframe", crate::icons::CAMERA), theme::ACCENT, y);
+        }
         if self.compiling() {
             y += pill(format!("{}  Compiling shader…", crate::icons::GEAR), theme::TEXT, y);
         }

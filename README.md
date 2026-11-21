@@ -33,7 +33,20 @@ modern egui interface and import of Mandelbulb3D parameters.
   - Native `.rmb` (JSON).
   - Mandelbulb3D `.m3p` files, and MB3D text parameters pasted with Ctrl+V.
   - PNG export that embeds the scene, so opening the PNG restores it.
-- **CLI**: `rmb-cli render|convert|info|formulas`.
+- **Animation** (Animation button, timeline under the view):
+  - Keyframes are whole scenes. The camera follows a smooth path through them that never
+    overshoots, and every other setting blends between them.
+  - **Record flight**: fly in Fly mode and keyframes are created along the flight.
+  - Three timings:
+    - per keyframe (frames and easing);
+    - as flown (with a smoothed speed);
+    - steady (one even pace, measured relative to the distance to the surface, so zoom
+      flights stay even).
+  - An optional "cameraman" smooths moves and turns. It can also look ahead, level the
+    horizon and bank into turns.
+  - Playback in the view, with the camera path drawn over the image.
+  - Export to MP4 (H.264/H.265), ProRes MOV, WebM, GIF (needs ffmpeg) or PNG images.
+- **CLI**: `rmb-cli render|animate|convert|info|formulas`.
 
 ## Build
 

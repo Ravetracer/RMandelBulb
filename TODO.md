@@ -37,11 +37,13 @@
 
 ## Features
 
-- [ ] Animation rendering into single images or movie formats
-- [ ] Camera tracking with Bezier splines and tweening between key frames
-- [ ] Smoothing of camera paths so every path looks professional, without shaking or
-      unnatural movement
-  - [ ] Optional: automatic, or as a correction after defining the path over the key frames
+- [x] Animation rendering into single images or movie formats (PNG, MP4, ProRes, WebM, GIF)
+- [x] Camera tracking with splines (centripetal Catmull-Rom, quaternion squad) and tweening
+      between key frames; flight recording with automatic keyframes
+- [x] Smoothing of camera paths so every path looks professional, without shaking or
+      unnatural movement (steady speed, smoothed recorded speed, "cameraman" pass)
+  - [x] Optional: automatic, or as a correction after defining the path over the key frames
+  - [ ] Motion blur, audio track
 - [ ] More light sources: spot, point, area, line, …
 - [ ] Lens flares for light sources with extensive options (lens reflections, shape, color,
       size, main flare shape such as anamorphic or standard, …)

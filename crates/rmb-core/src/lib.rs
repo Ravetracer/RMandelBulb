@@ -12,6 +12,7 @@ pub mod maps;
 pub mod math;
 pub mod render;
 pub mod scene;
+pub mod video;
 
 pub use fractal::Program;
 pub use math::{Quat, V3, v3};

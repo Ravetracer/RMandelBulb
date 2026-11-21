@@ -446,6 +446,7 @@ impl GpuRenderer {
         // Only the color space of the post settings changes the shading.
         render_scene.post = Post { display_space: scene.post.display_space, ..Default::default() };
         render_scene.notes.clear();
+        render_scene.animation = None;
         let key = Key { scene: render_scene, width, height, fast };
         // Other map folders: reload the maps and render again.
         if self.maps_generation != rmb_core::maps::generation() {
@@ -829,6 +830,67 @@ pub fn render_blocking(ctx: GpuContext, scene: &Scene, width: u32, height: u32, 
 pub fn render_blocking_hdr(ctx: GpuContext, scene: &Scene, width: u32, height: u32, samples: u32, progress: impl FnMut(f32) -> bool) -> Result<HdrImage, String> {
     let mut r = render_to(ctx, scene, width, height, samples, progress)?;
     r.read_hdr().ok_or_else(|| "reading the image back failed".to_string())
+}
+
+/// Renders the frames `frames` of an animation at `width` × `height` with `samples` passes each
+/// and hands every finished frame (RGBA, post-processed and denoised as its scene says) to
+/// `on_frame`. `frame_scene` gives the scene of a frame. Uses the GPU when `ctx` is given (one
+/// renderer for all frames: shaders compile only when the formulas change), else the CPU.
+/// `progress` gets the finished fraction; `cancel` stops after the current pass.
+#[allow(clippy::too_many_arguments)]
+pub fn render_animation(
+    ctx: Option<GpuContext>,
+    frames: std::ops::Range<usize>,
+    width: u32,
+    height: u32,
+    samples: u32,
+    frame_scene: impl Fn(usize) -> Scene,
+    cancel: &std::sync::atomic::AtomicBool,
+    mut progress: impl FnMut(f32),
+    mut on_frame: impl FnMut(usize, Vec<u8>) -> Result<(), String>,
+) -> Result<(), String> {
+    use std::sync::atomic::Ordering;
+    let samples = samples.max(1);
+    let total = frames.len().max(1) as f32;
+    let mut gpu = ctx.map(GpuRenderer::new);
+    for (done, f) in frames.enumerate() {
+        if cancel.load(Ordering::Relaxed) {
+            return Err("cancelled".into());
+        }
+        let scene = frame_scene(f);
+        let image = match gpu.as_mut() {
+            Some(r) => {
+                r.set_scene(&scene, width, height, false);
+                r.wait_for_pipeline()?;
+                while r.samples() < samples {
+                    r.work(Duration::from_millis(100), samples);
+                    if let Some(e) = r.last_error() {
+                        return Err(e);
+                    }
+                    if cancel.load(Ordering::Relaxed) {
+                        return Err("cancelled".into());
+                    }
+                    progress((done as f32 + (r.samples() as f32 + r.pass_progress()) / samples as f32) / total);
+                }
+                r.read_hdr().ok_or("reading the image back failed")?
+            }
+            None => {
+                let mut r = rmb_core::render::cpu::CpuRenderer::new(scene.clone(), width, height);
+                for i in 0..samples {
+                    if cancel.load(Ordering::Relaxed) {
+                        return Err("cancelled".into());
+                    }
+                    r.render_pass();
+                    progress((done as f32 + (i + 1) as f32 / samples as f32) / total);
+                }
+                r.hdr_image()
+            }
+        };
+        let (rgba, _) = image.finish(&scene.post);
+        on_frame(f, rgba)?;
+        progress((done + 1) as f32 / total);
+    }
+    Ok(())
 }
 
 fn render_to(ctx: GpuContext, scene: &Scene, width: u32, height: u32, samples: u32, mut progress: impl FnMut(f32) -> bool) -> Result<GpuRenderer, String> {

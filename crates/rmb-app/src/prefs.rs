@@ -28,6 +28,8 @@ pub struct Prefs {
     pub invert_y: bool,
     /// Mandelbulb3D's map folder (M3Maps) for formulas that read maps.
     pub maps_dir: Option<PathBuf>,
+    /// The ffmpeg program for movies (None: `ffmpeg` on the search path).
+    pub ffmpeg: Option<PathBuf>,
 }
 
 impl Default for Prefs {
@@ -45,6 +47,7 @@ impl Default for Prefs {
             mouse_speed: 1.0,
             invert_y: false,
             maps_dir: None,
+            ffmpeg: None,
         }
     }
 }

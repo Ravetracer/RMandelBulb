@@ -14,6 +14,7 @@ mod icons;
 mod inspector;
 mod prefs;
 mod theme;
+mod timeline;
 mod viewport;
 mod widgets;
 

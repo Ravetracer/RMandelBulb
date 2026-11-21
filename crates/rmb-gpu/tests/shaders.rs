@@ -336,3 +336,30 @@ fn gpu_matches_cpu_with_background_image_options() {
     assert_eq!((big.width, big.height, small.width, small.height), (96, 48, 16, 8));
     parity(scene);
 }
+
+#[test]
+fn animation_frames_render_and_differ() {
+    use rmb_core::animation::{Animation, AnimationPlan, Keyframe};
+    let Ok(ctx) = rmb_gpu::GpuContext::new_headless() else {
+        eprintln!("no GPU, skipped");
+        return;
+    };
+    let a = Scene::default();
+    let mut b = a.clone();
+    b.camera.position = rmb_core::v3(2.6, -0.8, 1.0);
+    b.camera.look_at(rmb_core::V3::ZERO, rmb_core::v3(0.0, 0.0, 1.0));
+    b.lighting.ambient = 0.6;
+    let anim = Animation { keyframes: vec![Keyframe { scene: a, frames: 2, ..Default::default() }, Keyframe { scene: b, ..Default::default() }], ..Default::default() };
+    let plan = AnimationPlan::new(&anim).expect("plan");
+    assert_eq!(plan.frame_count(), 3);
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    let mut frames = Vec::new();
+    rmb_gpu::render_animation(Some(ctx), 0..3, 48, 32, 1, |f| plan.scene_at(f), &cancel, |_| {}, |f, rgba| {
+        frames.push((f, rgba));
+        Ok(())
+    })
+    .expect("render");
+    assert_eq!(frames.iter().map(|f| f.0).collect::<Vec<_>>(), vec![0, 1, 2]);
+    let diff = |x: &[u8], y: &[u8]| x.iter().zip(y).filter(|(p, q)| p != q).count();
+    assert!(diff(&frames[0].1, &frames[1].1) > 100 && diff(&frames[1].1, &frames[2].1) > 100);
+}

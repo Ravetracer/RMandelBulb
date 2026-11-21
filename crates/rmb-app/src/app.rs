@@ -25,6 +25,7 @@ enum Action {
     Save,
     SaveAs,
     Export,
+    ExportAnimation,
     Undo,
     Redo,
     Copy,
@@ -40,6 +41,7 @@ pub struct App {
     formulas: FormulasPanel,
     inspector: Inspector,
     export: Export,
+    timeline: crate::timeline::Timeline,
     help: Help,
     prefs: Prefs,
     prefs_open: bool,
@@ -64,6 +66,7 @@ impl App {
             formulas: FormulasPanel::default(),
             inspector: Inspector::default(),
             export: Export::new(prefs.export_samples),
+            timeline: crate::timeline::Timeline::default(),
             help: Help::default(),
             prefs,
             prefs_open: false,
@@ -169,6 +172,7 @@ impl App {
                 }
             }
             Action::Export => self.export.open_for(&self.doc.scene, self.doc.path.as_ref()),
+            Action::ExportAnimation => self.export.open_animation(&self.doc.scene, self.doc.path.as_ref()),
             Action::Undo => self.doc.undo(),
             Action::Redo => self.doc.redo(),
             Action::Copy => {
@@ -266,6 +270,11 @@ impl App {
                 if item(ui, "Export image…", "Ctrl+E").clicked() {
                     action = Some(Action::Export);
                 }
+                let has_anim = self.doc.scene.animation.as_ref().is_some_and(|a| !a.keyframes.is_empty());
+                if ui.add_enabled(has_anim, egui::Button::new("Export animation…")).on_disabled_hover_text("Add keyframes in the timeline first").clicked() {
+                    action = Some(Action::ExportAnimation);
+                    ui.close();
+                }
                 ui.separator();
                 if item(ui, "Quit", "Ctrl+Q").clicked() {
                     action = Some(Action::Quit);
@@ -333,6 +342,14 @@ impl App {
             let enabled = self.view.gpu_context().is_some();
             if ui.add_enabled(enabled, egui::Button::selectable(self.view.show_denoised, "Denoised")).on_hover_text(tip).on_disabled_hover_text("Needs the GPU renderer").clicked() {
                 self.view.show_denoised = !self.view.show_denoised;
+            }
+            ui.separator();
+            if ui
+                .selectable_label(self.timeline.open, format!("{}  Animation", egui_phosphor::regular::FILM_STRIP))
+                .on_hover_text("Timeline: keyframes, flight recording, playback and movie export")
+                .clicked()
+            {
+                self.timeline.open = !self.timeline.open;
             }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -440,6 +457,26 @@ impl App {
                     rmb_core::maps::set_dirs(Vec::new());
                 }
             });
+            widgets::section(ui, "Movies", false);
+            let program = rmb_core::video::ffmpeg_program(p.ffmpeg.as_deref());
+            let found = rmb_core::video::ffmpeg_available(&program);
+            let ff_label = match (&p.ffmpeg, found) {
+                (Some(f), true) => format!("ffmpeg: {}", f.display()),
+                (Some(f), false) => format!("ffmpeg not working: {}", f.display()),
+                (None, true) => "ffmpeg found on the search path: animations can be saved as movies.".to_string(),
+                (None, false) => "ffmpeg not found: animations are saved as PNG images. Install ffmpeg or choose the program.".to_string(),
+            };
+            ui.label(RichText::new(ff_label).size(theme::fs(11.5)).color(if found { theme::TEXT_MUTED } else { theme::WARN }));
+            ui.horizontal(|ui| {
+                if ui.button("Choose ffmpeg…").on_hover_text("The ffmpeg program that writes movie files (MP4, MOV, WebM, GIF)").clicked()
+                    && let Some(f) = rfd::FileDialog::new().pick_file()
+                {
+                    p.ffmpeg = Some(f);
+                }
+                if p.ffmpeg.is_some() && ui.button("Clear").on_hover_text("Use ffmpeg from the search path").clicked() {
+                    p.ffmpeg = None;
+                }
+            });
         });
         if self.prefs != before {
             if self.prefs.font_percent != before.font_percent {
@@ -545,6 +582,20 @@ impl eframe::App for App {
         egui::Panel::right("inspector").resizable(true).default_size(340.0).size_range(300.0..=520.0).frame(egui::Frame::new().fill(theme::PANEL).inner_margin(egui::Margin::symmetric(12, 10))).show(ui, |ui| {
             self.inspector.show(ui, &mut self.doc.scene, &mut self.view);
         });
+        if self.timeline.open {
+            let mut act = None;
+            egui::Panel::bottom("timeline").resizable(true).default_size(230.0).size_range(150.0..=420.0).frame(egui::Frame::new().fill(theme::PANEL).inner_margin(egui::Margin::symmetric(12, 8))).show(ui, |ui| {
+                act = self.timeline.show(ui, &mut self.doc, &mut self.view);
+            });
+            match act {
+                Some(crate::timeline::TimelineAction::ExportAnimation) => self.export.open_animation(&self.doc.scene, self.doc.path.as_ref()),
+                Some(crate::timeline::TimelineAction::Message(m)) => self.notify(m),
+                None => {}
+            }
+        } else {
+            self.view.preview = None;
+            self.view.overlay = None;
+        }
         egui::CentralPanel::default().frame(egui::Frame::new().fill(theme::CANVAS)).show(ui, |ui| {
             let paused = self.export.busy();
             self.view.paused = paused;
@@ -553,7 +604,7 @@ impl eframe::App for App {
 
         self.help.show(&ctx);
         self.prefs_window(&ctx);
-        if let Some(msg) = self.export.show(&ctx, &self.doc.scene, self.view.gpu_context(), self.prefs.last_dir.as_ref()) {
+        if let Some(msg) = self.export.show(&ctx, &self.doc.scene, self.view.gpu_context(), self.prefs.last_dir.as_ref(), self.prefs.ffmpeg.as_deref()) {
             if msg.starts_with("Export failed") {
                 self.notify_err(msg);
             } else {
