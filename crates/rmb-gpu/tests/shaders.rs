@@ -62,7 +62,7 @@ fn gpu_matches_cpu_with_de_combination_and_4d_rotation() {
     scene.fractal.julia = true;
     scene.fractal.julia_c = [-0.2, 0.6, 0.2, 0.1];
     scene.fractal.rotation_4d = [20.0, 10.0, 5.0];
-    scene.fractal.combine = Some(rmb_core::scene::DeCombine { mode: rmb_core::scene::CombineMode::Smooth, start: 2, repeat_from: 2, max_iterations: 6, smooth: 0.2 });
+    scene.fractal.combine = Some(rmb_core::scene::DeCombine { mode: rmb_core::scene::CombineMode::Smooth, start: 2, repeat_from: 2, max_iterations: 6, smooth: 0.2, ..Default::default() });
     if rmb_core::maps::get(2).is_some() {
         scene.material.color_map = rmb_core::scene::ColorMap { image: "2".into(), mode: rmb_core::scene::MapMode::Normal, rotation: [30.0, 60.0, 0.0], luminance_only: true, ..Default::default() };
     }
@@ -229,5 +229,19 @@ fn gpu_matches_cpu_with_an_interpolation_hybrid() {
         scene.material.color_map = rmb_core::scene::ColorMap { image: "12".into(), mode: rmb_core::scene::MapMode::Orbit, scale: 2.0, rotation: [0.0, 0.0, 30.0], ..Default::default() };
     }
     assert!(Program::new(&scene.fractal, &scene.cut).blend.is_some());
+    parity(scene);
+}
+
+#[test]
+fn gpu_matches_cpu_with_a_difs_mix() {
+    // Mandelbulb3D's "genQuat helix mix": GeneralQuat transforms, helixIFS measures.
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../mb3d/M3Parameter/genQuat helix mix.m3p");
+    let Ok(bytes) = std::fs::read(&path) else {
+        eprintln!("sample not found, skipped");
+        return;
+    };
+    let mut scene = rmb_core::io::m3p::import_binary(&bytes).expect("import").scene;
+    scene.lighting.ao_mode = rmb_core::scene::AoMode::Fast;
+    assert!(Program::new(&scene.fractal, &scene.cut).is_mix());
     parity(scene);
 }

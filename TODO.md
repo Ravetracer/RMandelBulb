@@ -13,6 +13,8 @@
   - [ ] Screen-coordinate images, MB3D's "convert to spherical" on load, ambient light from the
         image (samples: material colors, Mengerplus for MC)
 - [x] Reflections (MB3D's reflection amount and bounces, weighted by the highlight colors)
+- [x] DE combination "mix" (dIFS measured where the first chain ends; "Dodeca Torus mix")
+  - [ ] Unverified: "genQuat helix mix" renders very small
 - [ ] Transparency / transmission (MB3D's glass: "material colors", "toricaleggs", "Torii")
 - [x] Positional lights (point lights with 1/d² falloff)
 - [x] Specular colors per gradient stop, MB3D's diffuse light functions, lights darkened by AO

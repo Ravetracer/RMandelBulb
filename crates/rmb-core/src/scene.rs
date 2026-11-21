@@ -248,10 +248,13 @@ pub enum CombineMode {
     SmoothLinear,
     /// Union with a smooth blend over the smoothing distance.
     Smooth,
+    /// The first chain transforms the point, the second (a dIFS) measures the distance there
+    /// (Mandelbulb3D's "mix").
+    Mix,
 }
 
 impl CombineMode {
-    pub const ALL: [CombineMode; 5] = [CombineMode::Min, CombineMode::Max, CombineMode::Subtract, CombineMode::SmoothLinear, CombineMode::Smooth];
+    pub const ALL: [CombineMode; 6] = [CombineMode::Min, CombineMode::Max, CombineMode::Subtract, CombineMode::SmoothLinear, CombineMode::Smooth, CombineMode::Mix];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -260,6 +263,7 @@ impl CombineMode {
             CombineMode::Subtract => "Subtract second",
             CombineMode::SmoothLinear => "Union, linear blend",
             CombineMode::Smooth => "Union, smooth blend",
+            CombineMode::Mix => "Mix (chain 1, then dIFS)",
         }
     }
 
@@ -279,11 +283,14 @@ pub struct DeCombine {
     pub max_iterations: u32,
     /// Blend distance of the smooth modes (world units).
     pub smooth: f64,
+    /// Mix mode with a first chain without a linear estimate: the distance is divided by this
+    /// power per iteration of the first chain (Mandelbulb3D's FmixPow).
+    pub mix_pow: f64,
 }
 
 impl Default for DeCombine {
     fn default() -> Self {
-        DeCombine { mode: CombineMode::Min, start: 1, repeat_from: 1, max_iterations: 12, smooth: 0.05 }
+        DeCombine { mode: CombineMode::Min, start: 1, repeat_from: 1, max_iterations: 12, smooth: 0.05, mix_pow: 2.0 }
     }
 }
 

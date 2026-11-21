@@ -74,6 +74,8 @@ pub struct Program {
     pub part2: Option<Box<Program>>,
     pub combine_mode: CombineMode,
     pub combine_smooth: f64,
+    /// Mix mode: distance divisor per iteration of the first chain.
+    pub mix_pow: f64,
     /// Interpolation of the first two slots (weights), see `Fractal::blend`.
     pub blend: Option<[f64; 2]>,
     /// The GPU shader includes the reflection loop (set by the renderer; shaders without it
@@ -152,6 +154,7 @@ impl Program {
             p.missing.append(&mut p2.missing);
             p.combine_mode = c.mode;
             p.combine_smooth = c.smooth;
+            p.mix_pow = c.mix_pow;
             if !p2.slots.is_empty() {
                 p.part2 = Some(Box::new(p2));
             }
@@ -233,6 +236,7 @@ impl Program {
             part2: None,
             combine_mode: CombineMode::Min,
             combine_smooth: 0.0,
+            mix_pow: 2.0,
             blend: None,
             reflections: false,
             inside: f.inside,
@@ -245,6 +249,11 @@ impl Program {
 
     /// Identifies the generated shader: formulas per slot and the DE variant of each part, and
     /// whether the 4D rotation is used. Parameter values are not part of it.
+    /// Mix combination: the second chain is a dIFS measured where the first chain ends.
+    pub fn is_mix(&self) -> bool {
+        self.combine_mode == CombineMode::Mix && self.part2.as_deref().is_some_and(|p| p.difs)
+    }
+
     pub fn signature(&self) -> String {
         let part = |p: &Program| -> String {
             let mut s: String = p.slots.iter().map(|sl| format!("{}|{}|", sl.formula.def.name, sl.formula.source)).collect();
@@ -259,6 +268,7 @@ impl Program {
         s.push_str(if self.rotation_4d.is_some() { "|r4" } else { "" });
         s.push_str(if self.blend.is_some() { "|blend" } else { "" });
         s.push_str(if self.reflections { "|refl" } else { "" });
+        s.push_str(if self.is_mix() { "|mix" } else { "" });
         s
     }
 
@@ -298,6 +308,11 @@ struct Iterated {
 
 /// Iterates `p` through the chain `prog`. `top` holds the shared settings (Julia, 4D rotation).
 fn iterate(top: &Program, prog: &Program, regs: &mut [Vec<f64>], p: V3, fixed: Option<u32>) -> Iterated {
+    iterate_from(top, prog, regs, p, fixed, None)
+}
+
+/// [`iterate`] that starts from `start` instead of the point (the second chain of a mix).
+fn iterate_from(top: &Program, prog: &Program, regs: &mut [Vec<f64>], p: V3, fixed: Option<u32>, start: Option<[f64; 4]>) -> Iterated {
     let mut st = [0.0; STATE_COUNT];
     let mut v = [p.x, p.y, p.z, top.w_slice];
     if let Some(m) = &top.rotation_4d {
@@ -309,6 +324,11 @@ fn iterate(top: &Program, prog: &Program, regs: &mut [Vec<f64>], p: V3, fixed: O
     st[..9].copy_from_slice(&[v[0], v[1], v[2], v[3], v[0], v[1], v[2], v[3], 1.0]);
     if top.julia {
         st[4..8].copy_from_slice(&top.julia_c);
+    }
+    // A mix continues from the first chain's point; the constant stays the original one.
+    if let Some(s) = start {
+        v = s;
+        st[..4].copy_from_slice(&s);
     }
     st[STATE_ROUT] = v.iter().map(|x| x * x).sum();
     st[STATE_PX..STATE_PX + 3].copy_from_slice(&[p.x, p.y, p.z]);
@@ -470,7 +490,8 @@ fn chain_orbit(top: &Program, prog: &Program, regs: &mut [Vec<f64>], p: V3, h: f
 pub fn combine(mode: CombineMode, smooth: f64, a: Orbit, b: Orbit) -> Orbit {
     let s = smooth.max(1e-12);
     match mode {
-        CombineMode::Min => {
+        // Mix without a dIFS second chain: a union.
+        CombineMode::Min | CombineMode::Mix => {
             if b.de < a.de {
                 b
             } else {
@@ -507,10 +528,21 @@ impl Evaluator<'_> {
     /// numerical gradient (about the surface threshold).
     pub fn orbit(&mut self, p: V3, h: f64) -> Orbit {
         let prog = self.prog;
-        let mut o = chain_orbit(prog, prog, &mut self.regs, p, h);
-        if let Some(p2) = prog.part2.as_deref() {
-            let o2 = chain_orbit(prog, p2, &mut self.regs2, p, h);
-            o = combine(prog.combine_mode, prog.combine_smooth, o, o2);
+        let mut o;
+        if let Some(p2) = prog.part2.as_deref().filter(|_| prog.is_mix()) {
+            // Mix: the first chain transforms the point, the dIFS measures the distance there,
+            // scaled back by the first chain's derivative (Calc.pas DEcomb types 6/7).
+            let a = iterate(prog, prog, &mut self.regs, p, None);
+            let b = iterate_from(prog, p2, &mut self.regs2, p, None, Some(a.state));
+            let d = b.difs_de.max(0.0) * p2.de_scale;
+            let de = if prog.de_kind == DeKind::Linear && !prog.difs { d / a.dr.abs().max(1e-30) } else { d * prog.mix_pow.abs().max(1e-30).powf(-1.0 - a.n as f64) };
+            o = Orbit { de, iterations: b.n, r2: a.state.iter().map(|v| v * v).sum(), r2_old: a.rold, dr: a.dr, trap: b.trap, escaped: true };
+        } else {
+            o = chain_orbit(prog, prog, &mut self.regs, p, h);
+            if let Some(p2) = prog.part2.as_deref() {
+                let o2 = chain_orbit(prog, p2, &mut self.regs2, p, h);
+                o = combine(prog.combine_mode, prog.combine_smooth, o, o2);
+            }
         }
         let mut de = (o.de * prog.scene_de_scale).max(0.0);
         if prog.inside {

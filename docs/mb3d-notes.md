@@ -169,3 +169,10 @@ little-endian.
   BuildRotMatrixS(π - a·π/128, b·π/128, c·π/128)); 2 3D sine wrap and 3 three planar projections
   (world position · 1.2^(Ex2 - 30)). Modes 1..3 blend toward the map's average color by the
   roughness. AdditionalOptions bit 2: keep the gradient hue, take the map's luminance.
+
+## DE combination "mix" (Calc.pas, types 6/7)
+
+- The first chain iterates normally (until bailout or max iterations); the dIFS chain then
+  starts from that point (doHybridIFS3DnoVecIni: x, y, z kept, J unchanged, VaryScale 1). Result:
+  dIFS distance / |w| (first chain DEoption 2, 11) or / Deriv1 (5, 6), else · FmixPow^(-1 - its1)
+  (sFmixPow f32 at 104, 2 before version 39).

@@ -47,7 +47,7 @@ struct U {
     glow3: vec4<f32>,      // glow offset (steps), blend, glow iteration, reflection amount
     bg_rot: array<vec4<f32>, 3>, // background image rotation rows; [0].w: has image, [1].w: display space
     blend: vec4<f32>,      // interpolation hybrid weights of slots 1 and 2, smooth normals, roughness
-    interior: vec4<f32>,   // interior colors: on, scale, offset
+    interior: vec4<f32>,   // interior colors: on, scale, offset; w: mix power of the DE combination
     cmap0: vec4<f32>,      // color map: mode + 1 (0 = off), scale, offset x, offset y
     cmap1: vec4<f32>,      // cos, sin of the 2D rotation, iteration scale, iteration offset
     cmap2: vec4<f32>,      // luminance only, average color

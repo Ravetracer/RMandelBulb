@@ -339,10 +339,11 @@ pub fn import_binary(b: &[u8]) -> Result<Import, String> {
                     3 => CombineMode::Subtract,
                     4 => CombineMode::SmoothLinear,
                     5 => CombineMode::Smooth,
+                    6 => CombineMode::Mix,
                     _ => CombineMode::Min,
                 };
-                if ftype == 6 {
-                    warnings.push("the DE-combination mode 'mix' (dIFS) is shown as a union".into());
+                if bopt3 >= 6 {
+                    warnings.push("DE-combination mix with the second chain first is shown with the first chain first".into());
                 }
                 let max2 = max_its2;
                 f.combine = Some(DeCombine {
@@ -351,6 +352,8 @@ pub fn import_binary(b: &[u8]) -> Result<Import, String> {
                     repeat_from: slots.iter().position(|(i, _)| *i >= repeat2.max(start2)).unwrap_or(start).max(start),
                     max_iterations: if max2 > 0 { max2.min(10_000) as u32 } else { f.max_iterations },
                     smooth: comb_smooth.abs().max(1e-6),
+                    // sFmixPow (f32 at 104), 2 before version 39.
+                    mix_pow: Some(r.f32(104)).filter(|v| v.is_finite() && *v != 0.0 && mand_id >= 39).unwrap_or(2.0),
                 });
             } else {
                 warnings.push("DE combination without a second formula chain imported as an alternating hybrid".into());

@@ -24,9 +24,17 @@ pub fn march_shader(prog: &Program) -> String {
     match prog.part2.as_deref() {
         Some(p2) => {
             s.push_str(&chain(p2, 2, prog.slots.len(), "u.comb.y", "u.comb.z"));
-            s.push_str(
-                "\nfn fractal_de(p: vec3<f32>, h: f32) -> Orbit {\n    let a = chain_de_1(p, h);\n    let b = chain_de_2(p, h);\n    return combine_de(a, b);\n}\n",
-            );
+            if prog.is_mix() {
+                // Mix (mirrors fractal.rs Evaluator::orbit): the dIFS from where chain 1 ends.
+                let _ = writeln!(s, "const MIX_LINEAR: bool = {};", prog.de_kind == DeKind::Linear && !prog.difs);
+                s.push_str(
+                    "\nfn fractal_de(p: vec3<f32>, h: f32) -> Orbit {\n    let a = iterate_1(p, 0u, false, vec4<f32>(0.0), false);\n    let b = iterate_2(p, 0u, false, a.s, true);\n    let d = max(b.de, 0.0) * u.scales.y;\n    var o: Orbit;\n    if (MIX_LINEAR) {\n        o.de = d / max(abs(a.dr), 1.0e-30);\n    } else {\n        o.de = d * pow(max(abs(u.interior.w), 1.0e-30), -1.0 - f32(a.n));\n    }\n    o.n = b.n;\n    o.r2 = dot(a.s, a.s);\n    o.r2_old = a.rold;\n    o.trap = b.trap;\n    o.escaped = true;\n    return o;\n}\n",
+                );
+            } else {
+                s.push_str(
+                    "\nfn fractal_de(p: vec3<f32>, h: f32) -> Orbit {\n    let a = chain_de_1(p, h);\n    let b = chain_de_2(p, h);\n    return combine_de(a, b);\n}\n",
+                );
+            }
         }
         None => s.push_str("\nfn fractal_de(p: vec3<f32>, h: f32) -> Orbit {\n    return chain_de_1(p, h);\n}\n"),
     }
@@ -41,7 +49,7 @@ fn chain(prog: &Program, k: usize, slot_base: usize, limit: &str, repeat: &str) 
     let _ = writeln!(s, "const NUMERIC_{k}: bool = {};", prog.numeric);
     let _ = writeln!(s, "const DE_LINEAR_{k}: bool = {};", prog.de_kind == DeKind::Linear);
     let _ = writeln!(s, "const DIFS_{k}: bool = {};", prog.difs);
-    let _ = writeln!(s, "\nfn iterate_{k}(p: vec3<f32>, fixed_n: u32, use_fixed: bool) -> Iterated {{");
+    let _ = writeln!(s, "\nfn iterate_{k}(p: vec3<f32>, fixed_n: u32, use_fixed: bool, start: vec4<f32>, use_start: bool) -> Iterated {{");
     s.push_str("    var out: Iterated;\n    out.trap = 3.0e38;\n    out.escaped = false;\n");
     let names: Vec<String> = (0..STATE_COUNT).map(state_name).collect();
     let _ = writeln!(
@@ -53,6 +61,12 @@ fn chain(prog: &Program, k: usize, slot_base: usize, limit: &str, repeat: &str) 
     let _ = writeln!(s, "    if (u.frac.y > 0.5) {{\n        {} = u.julia.x;\n        {} = u.julia.y;\n        {} = u.julia.z;\n        {} = u.julia.w;\n    }}", names[4], names[5], names[6], names[7]);
     let _ = writeln!(s, "    var {}: fl = 1.0;\n    var {}: fl = 0.0;", names[8], names[9]);
     let _ = writeln!(s, "    var {}: fl = dot(v, v);\n    var {}: fl = 0.0;", names[STATE_ROUT], names[STATE_ROLD]);
+    // A mix continues from the first chain's point; the constant stays the original one.
+    let _ = writeln!(
+        s,
+        "    if (use_start) {{\n        {} = fl(start.x);\n        {} = fl(start.y);\n        {} = fl(start.z);\n        {} = fl(start.w);\n        {} = fl(dot(start, start));\n    }}",
+        names[0], names[1], names[2], names[3], names[STATE_ROUT]
+    );
     let _ = writeln!(s, "    let {} = fl(p.x);\n    let {} = fl(p.y);\n    let {} = fl(p.z);", names[STATE_PX], names[STATE_PX + 1], names[STATE_PX + 2]);
     for name in &names[STATE_AUX..STATE_JULIA] {
         let _ = writeln!(s, "    var {name}: fl = 0.0;");
@@ -125,7 +139,7 @@ fn chain_de_K(p: vec3<f32>, h: f32) -> Orbit {
         o.de = 1.0e10;
         return o;
     }
-    let it = iterate_K(p, 0u, false);
+    let it = iterate_K(p, 0u, false, vec4<f32>(0.0), false);
     let r2 = dot(it.s, it.s);
     let r = sqrt(r2);
     var de = 0.0;
@@ -139,7 +153,7 @@ fn chain_de_K(p: vec3<f32>, h: f32) -> Orbit {
             for (var k = 0u; k < 3u; k++) {
                 var q = p;
                 q[k] += h;
-                let o2 = iterate_K(q, it.n, true);
+                let o2 = iterate_K(q, it.n, true, vec4<f32>(0.0), false);
                 g[k] = (length(o2.s) - r) / h;
             }
             let gl = max(length(g), 1.0e-30);

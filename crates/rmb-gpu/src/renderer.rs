@@ -217,7 +217,7 @@ fn uniforms(scene: &Scene, prog: &Program, w: u32, h: u32, fast: bool) -> Unifor
             let [a, b] = prog.blend.unwrap_or([0.0; 2]);
             [a as f32, b as f32, scene.march.smooth_normals.min(8) as f32, l.roughness as f32]
         },
-        interior: [if m.interior.is_empty() { 0.0 } else { 1.0 }, m.interior_scale as f32, m.interior_offset as f32, 0.0],
+        interior: [if m.interior.is_empty() { 0.0 } else { 1.0 }, m.interior_scale as f32, m.interior_offset as f32, prog.mix_pow as f32],
         cmap0: {
             let on = rmb_core::maps::get_any(&m.color_map.image).is_some();
             let cm = &m.color_map;
