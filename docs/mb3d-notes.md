@@ -54,3 +54,34 @@ little-endian.
 ## Translation status
 
 `rmb-cli m3f ../mb3d/M3Formulas` prints the current count and the reasons for failures.
+
+## Shading (PaintThread.CalcPixelColor2, HeaderTrafos.MakeLightValsFromHeaderLight)
+
+- MB3D shades in display space: colors are 0..255 sRGB values, no linear conversion, no tone
+  mapping (the import sets `post.display_space`). Option "internal gamma 2" (AdditionalOptions
+  bit 0) squares the colors instead (close to a linear workflow with gamma 2).
+- Pixel = ambient + diffuse + specular, then depth fog, then dynamic fog:
+  - ambient = mix(AmbCol, AmbCol2, n_down * 0.5 + 0.5) * AO * (TBpos[8] & 0xFFF) / 90, times the
+    object color; `n_down` is the normal along the camera's down axis (world axis if TBoptions
+    bit 29).
+  - diffuse = object color * sDiff * sum(light color * lamp * cos), sDiff = TBpos[5] * 0.02.
+  - specular = spec color of the stop * sum(light color * lamp * sSpec * (R.L)^p), Phong with
+    p = 2 << (LFunction & 7), sSpec = max(0.004, (TBpos[7] & 0xFFF) * 0.02).
+- Depth buffer: Zpos = 32767 * (1 - u), u = (sqrt(1 + k z) - 1) / (sqrt(1 + k Z) - 1), z the
+  distance from the ray start plane, Z = dZend - dZstart, k = sin(max(fov, 1 rad) / H) / stepWidth.
+- Depth fog: amount = (28000 - Zpos) * TBpos[4] * 0.8e-6 (squared if "far fog", TBoptions bit
+  18; negative amounts brighten); the fog color is the background: DepthCol (top) to DepthCol2
+  (bottom) over the screen height, curve TBoptions >> 30 (0 linear, 1 square, else sqrt).
+- Dynamic fog: amount = (steps - sShad) * sShadGr with sShadGr = (TBpos[6] - 53) * mZstepDiv *
+  0.00065 and sShad = (137 - sqrt(TBpos[3] & 0xFFFF) * 11.3137) * 2.2 / mZstepDiv * 0.28 (other
+  factors with bDFogIt, header 223); color mix(DynFogRGB, DynFogCol2, min(1, steps * mZstepDiv *
+  0.015)); Lights[0].FreeByte bit 0: blend instead of add.
+- Color index (CalcThread, CalcColors): SIgradient = 32767 - (S + dColPlus + VarMul *
+  ln(threshold)) * 32767 / (maxIts + 1), S = n + (ln ln RStop - d) / (d - d_old), d = ln(0.5 ln
+  Rout); gradient position = (SIgradient - start) / (end - start), start/end from TBpos[9]/[10]
+  as ((v + 30) / 90)^2 * 32767 - 10900. VarMul = 0.5 / (ln(power) + 0.03) per analytic formula
+  (0.6 for numeric ones), dColPlus = 0.1 * maxIts (+ a term for boxes). Stops wrap only with
+  color cycling (TBoptions bit 14).
+- DOF (post process, DOF.pas): enabled by bit 0 of byte 181; blur radius in pixels =
+  Ap * (z - zSharp) / pixel size(z), zSharp = sDOFZsharp (164) * Width pixels from the start
+  plane, Ap = sDOFaperture (172) * 0.5 for one pass. Equals a thin lens with radius Ap * focus.

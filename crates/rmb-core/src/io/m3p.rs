@@ -6,11 +6,12 @@
 //! Supported: header versions (MandId) 20 to 45. Formulas are mapped by name to the library
 //! (aliases); unknown formulas stay in the hybrid as missing slots so the user can see them.
 //! The MB3D camera (rays starting on a pixel grid plane) becomes a pinhole camera at the
-//! point where the MB3D rays converge. Lighting and colors are converted approximately.
+//! point where the MB3D rays converge. Shading follows MB3D (see `docs/mb3d-notes.md`).
 
 use crate::gradient::srgb_to_linear;
 use crate::math::{V3, v3};
-use crate::scene::{AoMode, BackgroundMode, ColorMode, ColorStop, CombineMode, DeCombine, Light, Scene, Slot};
+use crate::formula::lang::DeKind;
+use crate::scene::{AoMode, BackgroundMode, ColorMode, ColorStop, CombineMode, DeCombine, FogMode, Light, Post, Scene, Slot};
 
 /// Result of an import: the scene and what could not be converted.
 pub struct Import {
@@ -267,6 +268,8 @@ pub fn import_binary(b: &[u8]) -> Result<Import, String> {
     let lib = crate::formula::library();
     let mut slots = Vec::new();
     let mut missing = Vec::new();
+    // For the color index: (iterations, DE kind, first option value, name) of each used slot.
+    let mut color_info: Vec<(f64, DeKind, f64, String)> = Vec::new();
     for (i, (its, fnr, name, values)) in raw.into_iter().enumerate() {
         if its <= 0 || fnr < 0 {
             continue;
@@ -292,6 +295,9 @@ pub fn import_binary(b: &[u8]) -> Result<Import, String> {
                     }
                 }
                 slot.formula = fm.def.name.clone();
+                if !fm.def.transform {
+                    color_info.push((its as f64, fm.def.de, values.first().copied().unwrap_or(0.0), name.to_lowercase()));
+                }
             }
             None => missing.push(name),
         }
@@ -356,21 +362,31 @@ pub fn import_binary(b: &[u8]) -> Result<Import, String> {
         }
     }
 
-    // ---- lighting (approximate)
+    // ---- lighting and colors: Mandelbulb3D shades with the colors as shown (0..255), so the
+    // scene does the same (display space) and the factors below follow MakeLightValsFromHeaderLight.
     let tb = |k: usize| r.i32(light + 8 + 4 * (k - 3));
-    let diffuse_mul = (tb(5) as f64 * 0.02).clamp(0.0, 5.0);
-    let spec_mul = ((tb(7) & 0xFFF) as f64 * 0.02).max(0.004);
+    let tb_options = r.u32(light + 44);
+    let add_options = r.u8(light + 7);
+    // "Internal gamma of 2": colors are squared, which is close to a linear workflow.
+    let sqr_mode = add_options & 1 != 0;
+    let light_scale = if sqr_mode { 1.5 } else { 1.0 };
+    let soft = |v: f64| if sqr_mode { (v * v + v) * 0.5 } else { v };
+    let s_diff = soft(tb(5) as f64 * 0.02);
+    let s_spec = soft(((tb(7) & 0xFFF) as f64 * 0.02).max(0.004));
     let hs_flags = r.u8(133);
     let mut lights = Vec::new();
-    let mut shininess = 0.0;
+    let mut powers = Vec::new();
     for i in 0..6 {
         let lo = light + 68 + i * 32;
         let opt = r.u8(lo);
-        if opt & 1 != 0 || opt & 2 != 0 {
+        if opt & 3 != 0 {
             continue;
         }
         let func = r.u8(lo + 1);
         let lamp = r.short_float(lo + 2);
+        if lamp <= 0.0 {
+            continue;
+        }
         let color = r.rgb(lo + 4);
         let dir_cam = if opt & 4 != 0 {
             // Positional light: shown as a directional light from its position.
@@ -382,15 +398,19 @@ pub fn import_binary(b: &[u8]) -> Result<Import, String> {
             -v3(lx.sin(), ly.sin(), ly.cos() * lx.cos()).normalize()
         };
         let world = opt & 32 != 0 || opt & 4 != 0;
+        // Phong exponent of the light; the scene's Blinn highlight needs about four times it.
+        let power = (2u32 << (func & 7)) as f64;
+        powers.push(power);
         let mut l = Light {
             color,
-            intensity: (lamp * diffuse_mul).clamp(0.0, 10.0),
-            specular: (spec_mul * 0.5).min(2.0),
+            intensity: (lamp * s_diff * light_scale).clamp(0.0, 20.0),
             shadows: opt & 64 == 0 && hs_flags & (4 << i) != 0,
             softness: 0.02,
             camera_relative: !world,
             ..Light::default()
         };
+        // Specular strength relative to the diffuse one (set after the shininess is known).
+        l.specular = s_spec / s_diff.max(1e-3);
         if world {
             let w = (r0 * dir_cam.x + r1 * dir_cam.y + r2 * dir_cam.z).normalize();
             l.azimuth = w.y.atan2(w.x).to_degrees();
@@ -400,22 +420,29 @@ pub fn import_binary(b: &[u8]) -> Result<Import, String> {
             l.elevation = (-dir_cam.y).clamp(-1.0, 1.0).asin().to_degrees();
             l.azimuth = dir_cam.x.atan2(-dir_cam.z).to_degrees();
         }
-        shininess += (2u32 << (func & 7)) as f64;
         lights.push(l);
     }
     if !lights.is_empty() {
-        s.lighting.shininess = (shininess / lights.len() as f64).clamp(2.0, 256.0);
+        let shin = (4.0 * powers.iter().sum::<f64>() / powers.len() as f64).clamp(2.0, 1024.0);
+        s.lighting.shininess = shin;
+        // The scene scales the highlight by (shininess + 8) / 25; Mandelbulb3D does not.
+        for l in &mut lights {
+            l.specular *= 25.0 / (shin + 8.0);
+        }
         s.lighting.lights = lights;
+    } else {
+        s.lighting.lights.clear();
     }
     s.lighting.sky_color = r.rgb(light + 52);
     s.lighting.ground_color = r.rgb(light + 56);
-    s.lighting.ambient = ((tb(8) & 0xFFF) as f64 / 90.0).clamp(0.0, 3.0);
+    s.lighting.ambient = soft((tb(8) & 0xFFF) as f64 / 90.0) * light_scale;
+    s.lighting.ambient_camera_relative = tb_options & 0x2000_0000 == 0;
     let ao_flags = r.u8(149);
     s.lighting.ao_mode = if ao_flags & 1 != 0 { AoMode::Raytraced } else { AoMode::Off };
     s.lighting.ao_strength = ((tb(11) & 0xFF) as f64 / 53.0).clamp(0.0, 1.0);
-    s.material.specular = 1.0;
 
-    // ---- surface colors: 10 stops, wrapping from the last to the first
+    // ---- surface colors: 10 stops (position 0..32767, diffuse and specular color)
+    let cycling = tb_options & 0x4000 != 0;
     let mut stops: Vec<ColorStop> = (0..10)
         .map(|k| {
             let o = light + 260 + k * 10;
@@ -423,30 +450,152 @@ pub fn import_binary(b: &[u8]) -> Result<Import, String> {
         })
         .collect();
     stops.sort_by(|a, b| a.pos.total_cmp(&b.pos));
-    if let Some(first) = stops.first().cloned() {
-        stops.push(ColorStop { pos: 1.0, color: first.color });
+    // Cycling colors wrap from the last stop to the first, else the last color stays.
+    let end_color = if cycling { stops.first().map(|f| f.color) } else { stops.last().map(|l| l.color) };
+    if let Some(color) = end_color {
+        stops.push(ColorStop { pos: 1.0, color });
     }
     s.material.gradient = stops;
-    s.material.color_mode = if r.u32(light + 44) & (1 << 17) != 0 { ColorMode::OrbitTrap } else { ColorMode::Iterations };
-    s.material.color_scale = 1.0 / s.fractal.max_iterations.max(1) as f64;
-    s.material.color_offset = ((tb(9) + 30) as f64 / 90.0).clamp(0.0, 1.0) * 0.25;
-    s.material.repeat = true;
+    s.material.repeat = cycling;
+    // Specular colors per stop are not supported: their average brightness scales the highlights.
+    let spec_avg = (0..10)
+        .map(|k| {
+            let o = light + 266 + k * 10;
+            (r.u8(o) as f64 + r.u8(o + 1) as f64 + r.u8(o + 2) as f64) / (3.0 * 255.0)
+        })
+        .sum::<f64>()
+        / 10.0;
+    s.material.specular = if sqr_mode { spec_avg * spec_avg } else { spec_avg };
+    if tb_options & (1 << 17) != 0 {
+        s.material.color_mode = ColorMode::OrbitTrap;
+        s.material.color_scale = 1.0 / s.fractal.max_iterations.max(1) as f64;
+        s.material.color_offset = ((tb(9) + 30) as f64 / 90.0).clamp(0.0, 1.0) * 0.25;
+    } else {
+        // Mandelbulb3D's color index (CalcThread, CalcColors):
+        //   index = 32767 - (smooth its + col_plus + var_mul * ln(threshold)) * 32767 / (max its + 1)
+        //   position = (index - start) / (end - start)
+        let slider = |v: i32| ((v + 30) as f64 / 90.0).powi(2) * 32767.0 - 10900.0;
+        let (mut c_start, mut c_end) = (slider(tb(9)), slider(tb(10)));
+        if tb_options & 0x10000 != 0 {
+            let span = c_end - c_start;
+            let (f1, f2) = (r.u8(light + 48) as f64, r.u8(light + 49) as f64);
+            c_end = c_start + span * (f2 - 30.0) / 60.0;
+            c_start += span * (f1 - 30.0) / 60.0;
+        }
+        let mut span = c_end - c_start;
+        if span.abs() < 1e-3 {
+            span = 1e-3f64.copysign(span);
+        }
+        let max_its = s.fractal.combine.as_ref().map_or(s.fractal.max_iterations, |c| c.max_iterations.max(s.fractal.max_iterations));
+        let m = 32767.0 / (max_its as f64 + 1.0);
+        let (mut y1, mut z1, mut box_sum, mut box_its) = (0.0, 0.0, 0.0, 0.0);
+        for (its, de, first, name) in &color_info {
+            if *de == DeKind::Numeric {
+                y1 += its * 0.6;
+                z1 += its;
+            } else if first.abs() > 1.0 {
+                let mut x = first.abs();
+                if x < 1.2 {
+                    x = 1.1 + (x - 1.0).powi(2) * 2.5;
+                }
+                y1 += its * 0.5 / (x.ln() + 0.03);
+                z1 += its;
+            }
+            if *de == DeKind::Linear && name.contains("box") {
+                box_sum += first.abs() * its;
+                box_its += its;
+            }
+        }
+        let var_mul = if z1 > 1e-3 { y1 / z1 } else { 0.6 };
+        let col_plus = if box_its > 0.0 { (box_sum / box_its).powf(0.25) * 40.0 - 49.0 } else { 0.0 } + max_its as f64 * 0.1;
+        s.material.color_mode = ColorMode::IterationsRatio;
+        s.material.color_scale = -m / span;
+        s.material.color_offset = (32767.0 - c_start - m * col_plus) / span;
+        s.material.detail_shift = var_mul;
+    }
 
-    // ---- background and fog: MB3D shows the depth fog colors behind the object
-    let depth_col = r.rgb(light + 60);
-    let depth_col2 = r.rgb(light + 64);
-    s.background.mode = BackgroundMode::Gradient;
-    s.background.top = depth_col;
-    s.background.bottom = depth_col2;
-    s.background.horizon = [0, 1, 2].map(|k| (depth_col[k] + depth_col2[k]) * 0.5);
-    s.fog.color = depth_col;
-    // MB3D's depth fog grows to 28000 * sDepth at the far end of the ray.
-    let far_fog = (tb(4).max(0) as f64 * 0.8e-6 * 28000.0).min(0.98);
-    s.fog.density = -(1.0 - far_fog).ln() / s.march.max_distance;
-    s.fog.glow = ((tb(6) - 53) as f64 / 60.0).clamp(0.0, 4.0);
+    // ---- background and depth fog: the background is the vertical gradient of the depth
+    // colors, and the fog takes that color.
+    s.background.mode = BackgroundMode::Vertical;
+    s.background.top = r.rgb(light + 60);
+    s.background.bottom = r.rgb(light + 64);
+    s.background.horizon = [0, 1, 2].map(|k| (s.background.top[k] + s.background.bottom[k]) * 0.5);
+    s.background.curve = match tb_options >> 30 {
+        0 => 1.0,
+        1 => 2.0,
+        _ => 0.5,
+    };
+    s.fog.color = s.background.top;
+    s.fog.from_background = true;
+    s.fog.mode = FogMode::Range;
+    s.fog.density = 0.0;
+    // Fog amount = (28000 - Zpos) * sDepth, Zpos = 32767 * (1 - u), u the depth buffer curve.
+    let s_depth = tb(4) as f64 * 0.8e-6;
+    s.fog.strength = 32767.0 * s_depth;
+    s.fog.start = 4767.0 / 32767.0;
+    let z_corr = (fov.to_radians().max(1.0) / height as f64).sin();
+    s.fog.curve = ((z_end - z_start) * z_corr / sw).max(0.0);
+    s.fog.squared = tb_options & 0x40000 != 0;
+
+    // ---- dynamic fog (glow along the ray steps)
+    let step_div = s.march.step;
+    let (mut gr, mut off_mul, mut mix_mul, mut base) = (
+        (tb(6) - 53) as f64 * step_div * 0.00065,
+        2.2 / step_div,
+        step_div * 0.015,
+        128.0,
+    );
+    if r.u8(223) > 0 {
+        off_mul *= 0.25;
+        gr *= 4.0;
+        mix_mul *= 4.0;
+    } else {
+        base = 137.0;
+    }
+    let off = (base - ((tb(3) & 0xFFFF) as f64).sqrt() * 11.313708) * off_mul * 0.28;
+    s.fog.glow = gr * s.march.max_steps as f64;
+    s.fog.glow_offset = off.max(0.0);
     s.fog.glow_color = [srgb_to_linear(r.u8(light + 55)), srgb_to_linear(r.u8(light + 59)), srgb_to_linear(r.u8(light + 63))];
-    if r.u8(181) != 0 {
-        warnings.push("depth of field settings are not converted; enable DOF in the Effects tab".into());
+    s.fog.glow_color2 = r.rgb(light + 4);
+    s.fog.glow_mix_steps = if mix_mul > 0.0 { 1.0 / mix_mul } else { 0.0 };
+    let dfog_opts = r.u8(light + 68 + 24) & 3;
+    s.fog.glow_blend = dfog_opts & 1 != 0;
+
+    // ---- output: no tone mapping or vignette; MB3D's gamma slider mixes toward sqrt / square.
+    let g = (tb_options >> 23) & 0x3F;
+    let gamma = match g.cmp(&32) {
+        std::cmp::Ordering::Equal => 2.2,
+        std::cmp::Ordering::Greater => 2.2 * (1.0 + (g as f64 - 32.0) / 31.0),
+        std::cmp::Ordering::Less => 2.2 / (1.0 + (1.0 - g as f64 / 32.0)),
+    };
+    s.post = Post {
+        exposure: 0.0,
+        gamma: if sqr_mode { gamma * 2.0 / 2.2 } else { gamma },
+        contrast: 1.0,
+        saturation: 1.0,
+        tone_map: false,
+        vignette: 0.0,
+        display_space: !sqr_mode,
+    };
+
+    // ---- depth of field (DOF.pas): blur radius in pixels = Ap * (z - z_sharp) / pixel size(z)
+    if r.u8(181) & 1 != 0 {
+        let pa = fov.to_radians() / height as f64;
+        let (z1, z2) = (r.f32(164) * width as f64, r.f32(410 + shift) * width as f64);
+        let (lo, hi) = (z1.min(z2), z1.max(z2));
+        let w = (1.0 + lo * pa) / (1.0 + hi * pa);
+        let sharp = if z2 > 0.0 { (w * hi + lo) / (1.0 + w) } else { z1 };
+        // Blur radius factor per pass (1 to 4 passes); the passes add up like independent blurs.
+        let ap0 = r.f32(172).clamp(0.0001, 2.0);
+        let ap = match (r.u8(181) >> 1) & 3 {
+            0 => ap0 * 0.5,
+            1 => ap0 * 0.5 * (0.3f64.powi(2) + 0.85f64.powi(2)).sqrt(),
+            lp => ap0 / 12.0 * (0..=lp).map(|n| 4f64.powi(n as i32)).sum::<f64>().sqrt(),
+        };
+        s.dof.enabled = true;
+        s.dof.focus_distance = vp_off + sharp.max(0.0) * sw;
+        // Lens radius = Ap * focus distance; the scene's lens radius is aperture * focus * 0.1.
+        s.dof.aperture = ap * 10.0;
     }
     if !r.cstr(light + 384, 24).is_empty() {
         warnings.push(format!("background image '{}' is not supported yet", r.cstr(light + 384, 24)));

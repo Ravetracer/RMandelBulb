@@ -38,6 +38,11 @@ struct U {
     comb: vec4<f32>,       // DE combination: mode, max iterations 2, repeat from 2, smoothing
     scales: vec4<f32>,     // DE scale of chain 1, chain 2, inside rendering, ray start distance
     rot4: array<vec4<f32>, 4>, // 4D start rotation (rows)
+    amb_up: vec4<f32>,     // xyz: ambient sky axis, w: vertical background curve
+    fog2: vec4<f32>,       // fog mode, strength, start, curve
+    fog3: vec4<f32>,       // squared, from background, color detail shift
+    glow2: vec4<f32>,      // second glow color, w: steps to the second color
+    glow3: vec4<f32>,      // glow offset (steps), blend
 }
 
 @group(0) @binding(0) var<uniform> u: U;
@@ -49,12 +54,14 @@ struct Orbit {
     de: f32,
     n: u32,
     r2: f32,
+    r2_old: f32,
     trap: f32,
     escaped: bool,
 }
 
 struct Iterated {
     s: vec4<f32>,
+    rold: f32,
     dr: f32,
     n: u32,
     trap: f32,
@@ -288,9 +295,13 @@ fn ambient_occlusion(p: vec3<f32>, n: vec3<f32>, t: f32) -> f32 {
     return 1.0;
 }
 
-fn background(d: vec3<f32>) -> vec3<f32> {
+fn background(d: vec3<f32>, sy: f32) -> vec3<f32> {
     if (u.bg_top.w < 0.5) {
         return u.bg_top.xyz;
+    }
+    if (u.bg_top.w > 1.5) {
+        let s = pow(clamp((1.0 - sy) * 0.5, 0.0, 1.0), max(u.amb_up.w, 0.01));
+        return mix(u.bg_top.xyz, u.bg_bottom.xyz, s);
     }
     var to = u.bg_top.xyz;
     var e = d.z;
@@ -306,10 +317,23 @@ fn color_value(h: Hit, n: vec3<f32>, pos: vec3<f32>) -> f32 {
     let mode = u32(u.color.x);
     let o = h.orbit;
     if (mode == 0u) {
-        let n_it = f32(o.n);
+        let n_it = f32(o.n) + u.fog3.z * log(h.eps);
         if (o.escaped && o.r2 > 1.0) {
             let lb = log(sqrt(max(u.march.z, 4.0)));
             return n_it - log2(max((0.5 * log(o.r2)) / lb, 1.0e-10));
+        }
+        return n_it;
+    }
+    if (mode == 4u) {
+        let n_it = f32(o.n) + u.fog3.z * log(h.eps);
+        if (o.escaped && o.r2 > 1.0) {
+            let lb = log(log(sqrt(max(u.march.z, 4.0))));
+            let d = log(0.5 * log(o.r2));
+            var dd = 0.6931471805599453;
+            if (o.r2_old > 1.0) {
+                dd = d - log(0.5 * log(o.r2_old));
+            }
+            return n_it + (lb - d) / max(dd, 1.0e-6);
         }
         return n_it;
     }
@@ -336,6 +360,28 @@ fn gradient(v: f32) -> vec3<f32> {
     return mix(lut[0].xyz, base, u.color2.x);
 }
 
+// Mirrors scene::Fog::amount.
+fn fog_amount(t: f32) -> f32 {
+    if (u.fog2.x < 0.5) {
+        return 1.0 - exp(-u.fog.w * t);
+    }
+    if (u.fog2.y == 0.0) {
+        return 0.0;
+    }
+    let near = u.scales.w;
+    let x = clamp((t - near) / max(u.cam_fwd.w - near, 1.0e-30), 0.0, 1.0);
+    let c = max(u.fog2.w, 0.0);
+    var v = x;
+    if (c >= 1.0e-6) {
+        v = (sqrt(1.0 + c * x) - 1.0) / (sqrt(1.0 + c) - 1.0);
+    }
+    var f = min(u.fog2.y * (v - u.fog2.z), 1.0);
+    if (u.fog3.x > 0.5 && f > 0.0) {
+        f = f * f;
+    }
+    return f;
+}
+
 fn sample_pixel(px: u32, py: u32, sample: u32) -> vec3<f32> {
     rng_state = pcg(px ^ pcg(py ^ pcg(sample)));
     var jx = 0.5;
@@ -357,12 +403,20 @@ fn sample_pixel(px: u32, py: u32, sample: u32) -> vec3<f32> {
         d = normalize(focus - o);
     }
     let h = march_ray(o, d, u.scales.w, u.cam_fwd.w, u.band.z);
-    let glow = u.glow.w * f32(h.steps) / f32(max(u.band.z, 1u));
+    let glow = u.glow.w * max(f32(h.steps) - u.glow3.x, 0.0) / f32(max(u.band.z, 1u));
+    var glow_mix = 0.0;
+    if (u.glow2.w > 0.0) {
+        glow_mix = min(f32(h.steps) / u.glow2.w, 1.0);
+    }
+    let bg = background(d, sy);
+    var fog_col = u.fog.xyz;
+    if (u.fog3.y > 0.5) {
+        fog_col = bg;
+    }
     var c: vec3<f32>;
     if (!h.hit) {
-        let bg = background(d);
-        let f = 1.0 - exp(-u.fog.w * u.cam_fwd.w);
-        c = mix(bg, u.fog.xyz, f);
+        let f = fog_amount(u.cam_fwd.w);
+        c = mix(bg, fog_col, max(f, 0.0));
     } else {
         let pos = o + d * h.t;
         var n = surface_normal(pos, h.eps);
@@ -372,7 +426,7 @@ fn sample_pixel(px: u32, py: u32, sample: u32) -> vec3<f32> {
         let base = gradient(color_value(h, n, pos));
         let p = pos + n * (h.eps * select(1.5, 4.0, u.scales.z > 0.5));
         let ao = ambient_occlusion(p, n, h.t);
-        let hemi = n.z * 0.5 + 0.5;
+        let hemi = dot(n, u.amb_up.xyz) * 0.5 + 0.5;
         var diffuse = mix(u.ground.xyz, u.sky.xyz, hemi) * u.ao.w * ao;
         var spec = vec3<f32>(0.0);
         let shin = u.sky.w;
@@ -395,10 +449,15 @@ fn sample_pixel(px: u32, py: u32, sample: u32) -> vec3<f32> {
             spec += li.color.xyz * s * sh;
         }
         let lit = base * diffuse + spec;
-        let f = 1.0 - exp(-u.fog.w * h.t);
-        c = mix(lit, u.fog.xyz, f);
+        let f = fog_amount(h.t);
+        c = lit * (1.0 - f) + fog_col * max(f, 0.0);
     }
-    c += u.glow.xyz * glow;
+    let glow_col = mix(u.glow.xyz, u.glow2.xyz, glow_mix);
+    if (u.glow3.y > 0.5) {
+        c = mix(c, glow_col, clamp(glow, 0.0, 1.0));
+    } else {
+        c += glow_col * glow;
+    }
     return c;
 }
 

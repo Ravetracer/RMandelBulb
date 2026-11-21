@@ -13,6 +13,8 @@ Notes for coding agents (and humans). RMandelbulb3D re-implements Mandelbulb3D (
   Commit messages, code, comments and docs use plain, neutral English.
 - Every control gets a hover text. Actions report what they did, or why they were skipped.
 
+Open work and wished features: `TODO.md`.
+
 ## Layout
 
 | Path | Content |

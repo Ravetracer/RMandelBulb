@@ -6,7 +6,9 @@
 
 pub mod cpu;
 
-use crate::math::{V3, pcg, unit};
+use std::borrow::Cow;
+
+use crate::math::{V3, pcg, unit, v3};
 use crate::scene::Scene;
 
 /// Light prepared for shading.
@@ -29,6 +31,8 @@ pub struct Frame {
     /// Angle covered by one pixel (radians), the base of the surface threshold.
     pub pixel_angle: f64,
     pub lights: Vec<FrameLight>,
+    /// Axis toward the sky color of the ambient light.
+    pub ambient_up: V3,
 }
 
 impl Frame {
@@ -55,8 +59,39 @@ impl Frame {
             tan_half,
             pixel_angle: 2.0 * tan_half / height.max(1) as f64,
             lights,
+            ambient_up: if scene.lighting.ambient_camera_relative { scene.camera.up } else { v3(0.0, 0.0, 1.0) },
         }
     }
+}
+
+/// Linear color to its display (sRGB encoded) value, kept as a float above 1.
+pub fn to_display(v: f32) -> f32 {
+    if v <= 0.003_130_8 { v.max(0.0) * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 }
+}
+
+/// The scene as the shading sees it: with `post.display_space` all colors are converted to
+/// their display values, so lighting works on them like Mandelbulb3D does.
+pub fn shading_scene(scene: &Scene) -> Cow<'_, Scene> {
+    if !scene.post.display_space {
+        return Cow::Borrowed(scene);
+    }
+    let mut s = scene.clone();
+    let c = |x: &mut [f32; 3]| *x = x.map(to_display);
+    for st in &mut s.material.gradient {
+        c(&mut st.color);
+    }
+    for l in &mut s.lighting.lights {
+        c(&mut l.color);
+    }
+    c(&mut s.lighting.sky_color);
+    c(&mut s.lighting.ground_color);
+    c(&mut s.background.top);
+    c(&mut s.background.horizon);
+    c(&mut s.background.bottom);
+    c(&mut s.fog.color);
+    c(&mut s.fog.glow_color);
+    c(&mut s.fog.glow_color2);
+    Cow::Owned(s)
 }
 
 /// Distance from the camera where primary rays start: the near distance; inside rendering
@@ -95,7 +130,8 @@ pub fn post_process(c: [f64; 3], post: &crate::scene::Post, u: f64, v: f64) -> [
     }
     let luma = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
     c = c.map(|x| luma + (x - luma) * post.saturation);
-    let g = 1.0 / post.gamma.max(0.1);
+    // Display space: the values are already gamma encoded.
+    let g = if post.display_space { 2.2 / post.gamma.max(0.1) } else { 1.0 / post.gamma.max(0.1) };
     let (du, dv) = (u - 0.5, v - 0.5);
     let vig = (1.0 - post.vignette * (du * du + dv * dv) * 2.0).max(0.0);
     c.map(|x| {

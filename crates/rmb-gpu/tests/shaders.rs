@@ -91,3 +91,33 @@ fn gpu_matches_cpu_inside_rendering() {
     scene.march.max_steps = 600;
     parity(scene);
 }
+
+#[test]
+fn gpu_matches_cpu_with_mandelbulb3d_shading() {
+    // Display-space shading, range fog from a vertical background, glow with two colors,
+    // camera-relative ambient light and Mandelbulb3D's iteration colors.
+    use rmb_core::scene::{BackgroundMode, ColorMode, FogMode};
+    let mut scene = Scene::default();
+    scene.lighting.ao_mode = rmb_core::scene::AoMode::Fast;
+    scene.lighting.ambient_camera_relative = true;
+    scene.post.display_space = true;
+    scene.post.tone_map = false;
+    scene.background.mode = BackgroundMode::Vertical;
+    scene.background.bottom = [0.8, 0.5, 0.2];
+    scene.background.curve = 2.0;
+    scene.fog.mode = FogMode::Range;
+    scene.fog.strength = 0.8;
+    scene.fog.start = 0.1;
+    scene.fog.curve = 40.0;
+    scene.fog.squared = true;
+    scene.fog.from_background = true;
+    scene.fog.glow = 0.6;
+    scene.fog.glow_offset = 3.0;
+    scene.fog.glow_mix_steps = 40.0;
+    scene.fog.glow_color2 = [1.0, 0.2, 0.1];
+    scene.material.color_mode = ColorMode::IterationsRatio;
+    scene.material.color_scale = -0.3;
+    scene.material.color_offset = 1.7;
+    scene.material.detail_shift = 0.24;
+    parity(scene);
+}

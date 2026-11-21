@@ -5,7 +5,7 @@
 
 struct P {
     a: vec4<f32>,    // exposure, gamma, contrast, saturation
-    b: vec4<f32>,    // tone map, vignette
+    b: vec4<f32>,    // tone map, vignette, display space
     size: vec4<u32>, // width, height
 }
 
@@ -29,7 +29,11 @@ fn display_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     let luma = dot(c, vec3<f32>(0.2126, 0.7152, 0.0722));
     c = luma + (c - luma) * p.a.w;
-    let g = 1.0 / max(p.a.y, 0.1);
+    // Display space: the values are already gamma encoded.
+    var g = 1.0 / max(p.a.y, 0.1);
+    if (p.b.z > 0.5) {
+        g = 2.2 / max(p.a.y, 0.1);
+    }
     let du = (f32(gid.x) + 0.5) / f32(p.size.x) - 0.5;
     let dv = (f32(gid.y) + 0.5) / f32(p.size.y) - 0.5;
     let vig = max(1.0 - p.b.y * (du * du + dv * dv) * 2.0, 0.0);

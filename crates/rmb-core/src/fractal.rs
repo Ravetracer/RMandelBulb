@@ -61,6 +61,8 @@ pub struct Orbit {
     pub de: f64,
     pub iterations: u32,
     pub r2: f64,
+    /// Squared radius before the last iteration.
+    pub r2_old: f64,
     pub dr: f64,
     /// Smallest squared radius along the orbit.
     pub trap: f64,
@@ -220,6 +222,7 @@ pub struct Evaluator<'a> {
 
 struct Iterated {
     state: [f64; 4],
+    rold: f64,
     dr: f64,
     n: u32,
     trap: f64,
@@ -245,7 +248,7 @@ fn iterate(top: &Program, prog: &Program, regs: &mut [Vec<f64>], p: V3, fixed: O
     st[STATE_ROUT] = v.iter().map(|x| x * x).sum();
     st[STATE_PX..STATE_PX + 3].copy_from_slice(&[p.x, p.y, p.z]);
     debug_assert_eq!(STATE_AUX + 8, STATE_COUNT);
-    let mut out = Iterated { state: [0.0; 4], dr: 1.0, n: 0, trap: f64::MAX, escaped: false, difs_de: 65535.0 };
+    let mut out = Iterated { state: [0.0; 4], rold: 0.0, dr: 1.0, n: 0, trap: f64::MAX, escaped: false, difs_de: 65535.0 };
     if prog.difs {
         // VaryScale starts at 1; the shapes' distances are divided by it.
         st[STATE_AUX] = 1.0;
@@ -307,6 +310,7 @@ fn iterate(top: &Program, prog: &Program, regs: &mut [Vec<f64>], p: V3, fixed: O
         }
     }
     out.state.copy_from_slice(&st[..4]);
+    out.rold = st[STATE_ROLD];
     out.dr = st[STATE_DR];
     out
 }
@@ -349,7 +353,7 @@ fn chain_orbit(top: &Program, prog: &Program, regs: &mut [Vec<f64>], p: V3, h: f
     if !de.is_finite() {
         de = if it.escaped { 1.0e-3 } else { 0.0 };
     }
-    Orbit { de: de * prog.de_scale, iterations: it.n, r2, dr: it.dr, trap: it.trap, escaped: it.escaped || prog.difs }
+    Orbit { de: de * prog.de_scale, iterations: it.n, r2, r2_old: it.rold, dr: it.dr, trap: it.trap, escaped: it.escaped || prog.difs }
 }
 
 /// Combines the estimates of the two chains (Mandelbulb3D's DE combination).

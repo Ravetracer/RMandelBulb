@@ -92,7 +92,7 @@ fn chain(prog: &Program, k: usize, slot_base: usize, limit: &str, repeat: &str) 
         a2 = names[STATE_AUX + 2],
         dr = names[8]
     );
-    let _ = writeln!(s, "    out.s = vec4<f32>(f32({}), f32({}), f32({}), f32({}));\n    out.dr = f32({});\n    out.n = n;\n    return out;\n}}", names[0], names[1], names[2], names[3], names[8]);
+    let _ = writeln!(s, "    out.s = vec4<f32>(f32({}), f32({}), f32({}), f32({}));\n    out.rold = f32({});\n    out.dr = f32({});\n    out.n = n;\n    return out;\n}}", names[0], names[1], names[2], names[3], names[STATE_ROLD], names[8]);
     s.push_str(&CHAIN_DE.replace("SCALE_K", if k == 1 { "u.scales.x" } else { "u.scales.y" }).replace("_K", &format!("_{k}")));
     s
 }
@@ -140,6 +140,7 @@ fn chain_de_K(p: vec3<f32>, h: f32) -> Orbit {
     o.de = de * SCALE_K;
     o.n = it.n;
     o.r2 = r2;
+    o.r2_old = it.rold;
     o.trap = it.trap;
     o.escaped = it.escaped || DIFS_K;
     return o;

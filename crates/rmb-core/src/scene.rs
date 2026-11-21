@@ -393,6 +393,9 @@ pub struct Lighting {
     /// Ambient occlusion radius relative to the view distance.
     pub ao_radius: f64,
     pub shininess: f64,
+    /// The sky and ground colors of the ambient light follow the camera's up axis
+    /// (Mandelbulb3D) instead of the world z axis.
+    pub ambient_camera_relative: bool,
 }
 
 impl Default for Lighting {
@@ -417,6 +420,7 @@ impl Default for Lighting {
             ao_strength: 0.9,
             ao_radius: 0.08,
             shininess: 40.0,
+            ambient_camera_relative: false,
         }
     }
 }
@@ -432,10 +436,12 @@ pub enum ColorMode {
     Radius,
     /// Surface normal direction.
     Normal,
+    /// Smooth iteration count interpolated between the last two radii (Mandelbulb3D).
+    IterationsRatio,
 }
 
 impl ColorMode {
-    pub const ALL: [ColorMode; 4] = [ColorMode::Iterations, ColorMode::OrbitTrap, ColorMode::Radius, ColorMode::Normal];
+    pub const ALL: [ColorMode; 5] = [ColorMode::Iterations, ColorMode::IterationsRatio, ColorMode::OrbitTrap, ColorMode::Radius, ColorMode::Normal];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -443,6 +449,7 @@ impl ColorMode {
             ColorMode::OrbitTrap => "Orbit trap",
             ColorMode::Radius => "Radius",
             ColorMode::Normal => "Normal",
+            ColorMode::IterationsRatio => "Iterations (MB3D)",
         }
     }
 
@@ -469,6 +476,9 @@ pub struct Material {
     pub specular: f64,
     /// Amount of the gradient (0 = all surfaces in the first gradient color).
     pub saturation: f64,
+    /// Adds this times the natural log of the surface threshold (world units) to the
+    /// iteration color value; keeps colors steady while zooming (Mandelbulb3D).
+    pub detail_shift: f64,
 }
 
 impl Default for Material {
@@ -481,6 +491,7 @@ impl Default for Material {
             repeat: true,
             specular: 1.0,
             saturation: 1.0,
+            detail_shift: 0.0,
         }
     }
 }
@@ -490,6 +501,8 @@ pub enum BackgroundMode {
     Solid,
     #[default]
     Gradient,
+    /// Top to bottom over the screen height (Mandelbulb3D).
+    Vertical,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -499,28 +512,100 @@ pub struct Background {
     pub top: [f32; 3],
     pub horizon: [f32; 3],
     pub bottom: [f32; 3],
+    /// Vertical mode: exponent of the screen position (1 linear, 2 more top color, 0.5 more bottom color).
+    pub curve: f64,
 }
 
 impl Default for Background {
     fn default() -> Self {
-        Background { mode: BackgroundMode::Gradient, top: [0.08, 0.1, 0.16], horizon: [0.32, 0.34, 0.4], bottom: [0.06, 0.06, 0.07] }
+        Background { mode: BackgroundMode::Gradient, top: [0.08, 0.1, 0.16], horizon: [0.32, 0.34, 0.4], bottom: [0.06, 0.06, 0.07], curve: 1.0 }
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum FogMode {
+    /// Exponential with the distance (`density`).
+    #[default]
+    Exponential,
+    /// Grows over the view range from the near to the far distance (Mandelbulb3D's depth fog).
+    Range,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Fog {
-    /// Depth fog density per world unit (0 = off).
+    pub mode: FogMode,
+    /// Depth fog density per world unit (exponential mode; 0 = off).
     pub density: f64,
+    /// Range mode: fog amount at the far end, relative to `start` (0 = off).
+    pub strength: f64,
+    /// Range mode: position in the range (0..1, after the curve) where the fog starts.
+    pub start: f64,
+    /// Range mode: bends the range like Mandelbulb3D's depth buffer (0 = linear).
+    pub curve: f64,
+    /// Range mode: square the fog amount (less fog near, Mandelbulb3D's "far fog").
+    pub squared: bool,
     pub color: [f32; 3],
-    /// Glow of near misses and long marches (0 = off).
+    /// The fog takes the background color behind each pixel instead of `color`.
+    pub from_background: bool,
+    /// Glow of near misses and long marches (0 = off, below 0 darkens).
     pub glow: f64,
     pub glow_color: [f32; 3],
+    /// Ray steps that give no glow yet.
+    pub glow_offset: f64,
+    /// Second glow color, reached after `glow_mix_steps` ray steps.
+    pub glow_color2: [f32; 3],
+    /// Ray steps until the glow is fully the second color (0 = only the first color).
+    pub glow_mix_steps: f64,
+    /// The glow replaces the color instead of adding to it.
+    pub glow_blend: bool,
 }
 
 impl Default for Fog {
     fn default() -> Self {
-        Fog { density: 0.0, color: [0.32, 0.34, 0.4], glow: 0.0, glow_color: [0.5, 0.7, 1.0] }
+        Fog {
+            mode: FogMode::Exponential,
+            density: 0.0,
+            strength: 0.0,
+            start: 0.0,
+            curve: 0.0,
+            squared: false,
+            color: [0.32, 0.34, 0.4],
+            from_background: false,
+            glow: 0.0,
+            glow_color: [0.5, 0.7, 1.0],
+            glow_offset: 0.0,
+            glow_color2: [0.5, 0.7, 1.0],
+            glow_mix_steps: 0.0,
+            glow_blend: false,
+        }
+    }
+}
+
+impl Fog {
+    /// Fog amount at ray distance `t` (0 = none, 1 = only fog; below 0 brightens like
+    /// Mandelbulb3D's depth fog in front of its start).
+    pub fn amount(&self, t: f64, near: f64, far: f64) -> f64 {
+        match self.mode {
+            FogMode::Exponential => 1.0 - (-self.density * t).exp(),
+            FogMode::Range => {
+                if self.strength == 0.0 {
+                    return 0.0;
+                }
+                let x = ((t - near) / (far - near).max(1e-30)).clamp(0.0, 1.0);
+                let c = self.curve.max(0.0);
+                let u = if c < 1e-6 { x } else { ((1.0 + c * x).sqrt() - 1.0) / ((1.0 + c).sqrt() - 1.0) };
+                let f = (self.strength * (u - self.start)).min(1.0);
+                if self.squared && f > 0.0 { f * f } else { f }
+            }
+        }
+    }
+
+    /// Glow amount and the mix toward the second glow color after `steps` ray steps.
+    pub fn glow_at(&self, steps: f64, max_steps: f64) -> (f64, f64) {
+        let g = self.glow * (steps - self.glow_offset).max(0.0) / max_steps.max(1.0);
+        let mix = if self.glow_mix_steps > 0.0 { (steps / self.glow_mix_steps).min(1.0) } else { 0.0 };
+        (g, mix)
     }
 }
 
@@ -550,11 +635,14 @@ pub struct Post {
     /// Filmic tone mapping (else clamp).
     pub tone_map: bool,
     pub vignette: f64,
+    /// Shade with the colors as shown (gamma encoded) instead of linear light, like
+    /// Mandelbulb3D. The output gamma then is relative to 2.2.
+    pub display_space: bool,
 }
 
 impl Default for Post {
     fn default() -> Self {
-        Post { exposure: 0.0, gamma: 2.2, contrast: 1.0, saturation: 1.0, tone_map: true, vignette: 0.15 }
+        Post { exposure: 0.0, gamma: 2.2, contrast: 1.0, saturation: 1.0, tone_map: true, vignette: 0.15, display_space: false }
     }
 }
 

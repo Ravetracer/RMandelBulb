@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use bytemuck::{Pod, Zeroable};
 use rmb_core::fractal::Program;
 use rmb_core::render::Frame;
-use rmb_core::scene::{AoMode, BackgroundMode, Scene};
+use rmb_core::scene::{AoMode, BackgroundMode, FogMode, Post, Scene};
 
 /// A wgpu device + queue pair.
 #[derive(Clone)]
@@ -94,6 +94,11 @@ struct Uniforms {
     comb: [f32; 4],
     scales: [f32; 4],
     rot4: [[f32; 4]; 4],
+    amb_up: [f32; 4],
+    fog2: [f32; 4],
+    fog3: [f32; 4],
+    glow2: [f32; 4],
+    glow3: [f32; 4],
 }
 
 #[repr(C)]
@@ -148,6 +153,7 @@ fn uniforms(scene: &Scene, prog: &Program, w: u32, h: u32, fast: bool) -> Unifor
         AoMode::Raytraced => 2.0,
     };
     let m = &scene.material;
+    let fog = &scene.fog;
     Uniforms {
         cam_pos: v4(cam.position, fr.tan_half),
         cam_right: v4(cam.right, fr.aspect),
@@ -161,7 +167,14 @@ fn uniforms(scene: &Scene, prog: &Program, w: u32, h: u32, fast: bool) -> Unifor
         ao: [ao_mode, l.ao_strength as f32, l.ao_radius as f32, l.ambient as f32],
         sky: c4(l.sky_color, l.shininess),
         ground: c4(l.ground_color, m.specular),
-        bg_top: c4(bg.top, if bg.mode == BackgroundMode::Gradient { 1.0 } else { 0.0 }),
+        bg_top: c4(
+            bg.top,
+            match bg.mode {
+                BackgroundMode::Solid => 0.0,
+                BackgroundMode::Gradient => 1.0,
+                BackgroundMode::Vertical => 2.0,
+            },
+        ),
         bg_horizon: c4(bg.horizon, 0.0),
         bg_bottom: c4(bg.bottom, 0.0),
         fog: c4(scene.fog.color, scene.fog.density),
@@ -175,6 +188,11 @@ fn uniforms(scene: &Scene, prog: &Program, w: u32, h: u32, fast: bool) -> Unifor
         comb,
         scales,
         rot4,
+        amb_up: v4(fr.ambient_up, bg.curve),
+        fog2: [if fog.mode == FogMode::Range { 1.0 } else { 0.0 }, fog.strength as f32, fog.start as f32, fog.curve as f32],
+        fog3: [if fog.squared { 1.0 } else { 0.0 }, if fog.from_background { 1.0 } else { 0.0 }, m.detail_shift as f32, 0.0],
+        glow2: c4(fog.glow_color2, fog.glow_mix_steps),
+        glow3: [fog.glow_offset as f32, if fog.glow_blend { 1.0 } else { 0.0 }, 0.0, 0.0],
     }
 }
 
@@ -182,7 +200,7 @@ fn post_uniforms(scene: &Scene, w: u32, h: u32) -> PostUniforms {
     let p = &scene.post;
     PostUniforms {
         a: [p.exposure as f32, p.gamma as f32, p.contrast as f32, p.saturation as f32],
-        b: [if p.tone_map { 1.0 } else { 0.0 }, p.vignette as f32, 0.0, 0.0],
+        b: [if p.tone_map { 1.0 } else { 0.0 }, p.vignette as f32, if p.display_space { 1.0 } else { 0.0 }, 0.0],
         size: [w, h, 0, 0],
     }
 }
@@ -360,7 +378,8 @@ impl GpuRenderer {
     pub fn set_scene(&mut self, scene: &Scene, width: u32, height: u32, fast: bool) {
         let (width, height) = (width.max(1), height.max(1));
         let mut render_scene = scene.clone();
-        render_scene.post = Default::default();
+        // Only the color space of the post settings changes the shading.
+        render_scene.post = Post { display_space: scene.post.display_space, ..Default::default() };
         render_scene.notes.clear();
         let key = Key { scene: render_scene, width, height, fast };
         let post = post_uniforms(scene, width, height);
@@ -384,9 +403,10 @@ impl GpuRenderer {
         if !consts.is_empty() {
             self.ctx.queue.write_buffer(&self.prm, 0, bytemuck::cast_slice(&consts));
         }
-        let lut: Vec<[f32; 4]> = rmb_core::gradient::lut(&scene.material.gradient).iter().map(|c| [c[0], c[1], c[2], 1.0]).collect();
+        let shade = rmb_core::render::shading_scene(scene);
+        let lut: Vec<[f32; 4]> = rmb_core::gradient::lut(&shade.material.gradient).iter().map(|c| [c[0], c[1], c[2], 1.0]).collect();
         self.ctx.queue.write_buffer(&self.lut, 0, bytemuck::cast_slice(&lut));
-        self.uniforms = Some(uniforms(scene, &prog, width, height, fast));
+        self.uniforms = Some(uniforms(&shade, &prog, width, height, fast));
         self.request_pipeline(&prog);
         self.key = Some(key);
         self.samples = 0;

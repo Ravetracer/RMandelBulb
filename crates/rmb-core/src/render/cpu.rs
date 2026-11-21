@@ -4,7 +4,7 @@
 
 use rayon::prelude::*;
 
-use super::{Frame, Rng, post_process};
+use super::{Frame, Rng, post_process, shading_scene};
 use crate::fractal::{Evaluator, Orbit, Program};
 use crate::math::{V3, v3};
 use crate::scene::{AoMode, BackgroundMode, ColorMode, Scene};
@@ -134,11 +134,17 @@ impl<'a> Shader<'a> {
         }
     }
 
-    pub fn background(&self, d: V3) -> [f64; 3] {
+    /// Background color in direction `d`; `sy` is the screen position (-1 bottom .. 1 top).
+    pub fn background(&self, d: V3, sy: f64) -> [f64; 3] {
         let b = &self.scene.background;
         let f = |c: [f32; 3]| c.map(|x| x as f64);
         match b.mode {
             BackgroundMode::Solid => f(b.top),
+            BackgroundMode::Vertical => {
+                let s = ((1.0 - sy) * 0.5).clamp(0.0, 1.0).powf(b.curve.max(0.01));
+                let (top, bottom) = (f(b.top), f(b.bottom));
+                [0, 1, 2].map(|k| top[k] + (bottom[k] - top[k]) * s)
+            }
             BackgroundMode::Gradient => {
                 let (from, to, e) = if d.z >= 0.0 { (f(b.horizon), f(b.top), d.z) } else { (f(b.horizon), f(b.bottom), -d.z) };
                 let s = e.clamp(0.0, 1.0).powf(0.6);
@@ -151,10 +157,21 @@ impl<'a> Shader<'a> {
         let o = &hit.orbit;
         match self.scene.material.color_mode {
             ColorMode::Iterations => {
-                let n_it = o.iterations as f64;
+                let n_it = o.iterations as f64 + self.scene.material.detail_shift * hit.eps.ln();
                 if o.escaped && o.r2 > 1.0 {
                     let lb = self.prog.bailout2.max(4.0).sqrt().ln();
                     n_it - ((0.5 * o.r2.ln()) / lb).max(1e-10).log2()
+                } else {
+                    n_it
+                }
+            }
+            ColorMode::IterationsRatio => {
+                let n_it = o.iterations as f64 + self.scene.material.detail_shift * hit.eps.ln();
+                if o.escaped && o.r2 > 1.0 {
+                    let lb = self.prog.bailout2.max(4.0).sqrt().ln().ln();
+                    let d = (0.5 * o.r2.ln()).ln();
+                    let dd = if o.r2_old > 1.0 { d - (0.5 * o.r2_old.ln()).ln() } else { std::f64::consts::LN_2 };
+                    n_it + (lb - d) / dd.max(1e-6)
                 } else {
                     n_it
                 }
@@ -196,12 +213,14 @@ impl<'a> Shader<'a> {
             d = (focus - o).normalize();
         }
         let (hit, steps) = self.march(ev, o, d, super::start_distance(sc), sc.march.max_distance, sc.march.max_steps);
-        let glow = sc.fog.glow * steps as f64 / sc.march.max_steps.max(1) as f64;
+        let (glow, glow_mix) = sc.fog.glow_at(steps as f64, sc.march.max_steps as f64);
+        let bg = self.background(d, sy);
+        let fog_col = if sc.fog.from_background { bg } else { sc.fog.color.map(|x| x as f64) };
+        let (near, far) = (super::start_distance(sc), sc.march.max_distance);
         let mut c = match &hit {
             None => {
-                let bg = self.background(d);
-                let f = 1.0 - (-sc.fog.density * sc.march.max_distance).exp();
-                [0, 1, 2].map(|k| bg[k] + (sc.fog.color[k] as f64 - bg[k]) * f)
+                let f = sc.fog.amount(far, near, far);
+                [0, 1, 2].map(|k| bg[k] + (fog_col[k] - bg[k]) * f.max(0.0))
             }
             Some(h) => {
                 let n = self.normal(ev, h.pos, h.eps);
@@ -212,7 +231,7 @@ impl<'a> Shader<'a> {
                 let p = h.pos + n * (h.eps * if sc.fractal.inside { 4.0 } else { 1.5 });
                 let ao = self.ambient_occlusion(ev, p, n, h.t, &mut rng);
                 let l = &sc.lighting;
-                let hemi = n.z * 0.5 + 0.5;
+                let hemi = n.dot(fr.ambient_up) * 0.5 + 0.5;
                 let mut diffuse = [0, 1, 2].map(|k| (l.ground_color[k] as f64 + (l.sky_color[k] - l.ground_color[k]) as f64 * hemi) * l.ambient * ao);
                 let mut spec = [0.0; 3];
                 for li in &fr.lights {
@@ -232,12 +251,22 @@ impl<'a> Shader<'a> {
                     }
                 }
                 let lit = [0, 1, 2].map(|k| base[k] * diffuse[k] + spec[k]);
-                let f = 1.0 - (-sc.fog.density * h.t).exp();
-                [0, 1, 2].map(|k| lit[k] + (sc.fog.color[k] as f64 - lit[k]) * f)
+                let f = sc.fog.amount(h.t, near, far);
+                [0, 1, 2].map(|k| lit[k] * (1.0 - f) + fog_col[k] * f.max(0.0))
             }
         };
-        for (k, ck) in c.iter_mut().enumerate() {
-            *ck += sc.fog.glow_color[k] as f64 * glow;
+        let g1 = sc.fog.glow_color;
+        let g2 = sc.fog.glow_color2;
+        let glow_col = [0, 1, 2].map(|k| g1[k] as f64 + (g2[k] as f64 - g1[k] as f64) * glow_mix);
+        if sc.fog.glow_blend {
+            let g = glow.clamp(0.0, 1.0);
+            for (k, ck) in c.iter_mut().enumerate() {
+                *ck = *ck * (1.0 - g) + glow_col[k] * g;
+            }
+        } else {
+            for (k, ck) in c.iter_mut().enumerate() {
+                *ck += glow_col[k] * glow;
+            }
         }
         c
     }
@@ -278,7 +307,8 @@ impl CpuRenderer {
     }
 
     pub fn render_pass(&mut self) {
-        let shader = Shader::new(&self.scene, &self.prog, self.width, self.height);
+        let sc = shading_scene(&self.scene);
+        let shader = Shader::new(&sc, &self.prog, self.width, self.height);
         let (w, sample) = (self.width, self.samples);
         let prog = &self.prog;
         self.accum.par_chunks_mut(w as usize).enumerate().for_each_init(

@@ -3,7 +3,7 @@
 //! Right panel: camera, ray marching, light, color, effects and scene notes.
 
 use egui::{RichText, Ui};
-use rmb_core::scene::{AoMode, BackgroundMode, ColorMode, ColorStop, Light, MAX_LIGHTS, Scene};
+use rmb_core::scene::{AoMode, BackgroundMode, ColorMode, ColorStop, FogMode, Light, MAX_LIGHTS, Scene};
 use rmb_core::{V3, v3};
 
 use crate::viewport::{NavMode, Viewport};
@@ -102,12 +102,14 @@ impl Inspector {
             l.sky_color = d.sky_color;
             l.ground_color = d.ground_color;
             l.shininess = d.shininess;
+            l.ambient_camera_relative = d.ambient_camera_relative;
         }
         widgets::grid(ui, "ambient", |ui| {
             widgets::slider(ui, "Amount", "Light from the surroundings", &mut l.ambient, 0.0..=2.0, d.ambient);
-            widgets::color(ui, "Sky", "Ambient color from above (+z)", &mut l.sky_color);
+            widgets::color(ui, "Sky", "Ambient color from above (+z, or the top of the screen)", &mut l.sky_color);
             widgets::color(ui, "Ground", "Ambient color from below", &mut l.ground_color);
-            widgets::slider_log(ui, "Shininess", "Size of the highlights: higher is smaller and sharper", &mut l.shininess, 2.0..=512.0, d.shininess);
+            widgets::checkbox(ui, "Follow camera", "Sky and ground follow the camera's up axis instead of the world z axis (Mandelbulb3D)", &mut l.ambient_camera_relative);
+            widgets::slider_log(ui, "Shininess", "Size of the highlights: higher is smaller and sharper", &mut l.shininess, 2.0..=1024.0, d.shininess);
         });
         if widgets::section(ui, "Ambient occlusion", true) {
             l.ao_mode = d.ao_mode;
@@ -253,8 +255,9 @@ fn color(ui: &mut Ui, scene: &mut Scene) {
             }
         });
         ui.end_row();
-        widgets::slider_log(ui, "Scale", "How fast the colors change with the value", &mut m.color_scale, 0.001..=10.0, d.color_scale);
-        widgets::slider(ui, "Offset", "Shifts the gradient", &mut m.color_offset, 0.0..=1.0, d.color_offset);
+        widgets::slider_log(ui, "Scale", "How fast the colors change with the value (negative reverses the gradient)", &mut m.color_scale, -10.0..=10.0, d.color_scale);
+        widgets::slider(ui, "Offset", "Shifts the gradient", &mut m.color_offset, -5.0..=5.0, d.color_offset);
+        widgets::slider(ui, "Detail shift", "Adds this times the log of the surface threshold to iteration values: keeps colors steady while zooming (Mandelbulb3D)", &mut m.detail_shift, -2.0..=2.0, d.detail_shift);
         widgets::checkbox(ui, "Repeat", "Repeat the gradient (else clamp at its ends)", &mut m.repeat);
         widgets::slider(ui, "Color amount", "0: everything in the first gradient color", &mut m.saturation, 0.0..=1.0, d.saturation);
         widgets::slider(ui, "Specular", "Shininess of the material (all lights)", &mut m.specular, 0.0..=3.0, d.specular);
@@ -267,12 +270,25 @@ fn effects(ui: &mut Ui, scene: &mut Scene) {
     if widgets::section(ui, "Background", true) {
         *b = db.clone();
     }
-    widgets::segmented(ui, &mut b.mode, &[(BackgroundMode::Solid, "Solid", "One color"), (BackgroundMode::Gradient, "Gradient", "Sky gradient: top, horizon, bottom")]);
+    widgets::segmented(
+        ui,
+        &mut b.mode,
+        &[
+            (BackgroundMode::Solid, "Solid", "One color"),
+            (BackgroundMode::Gradient, "Gradient", "Sky gradient: top, horizon, bottom"),
+            (BackgroundMode::Vertical, "Vertical", "Top to bottom over the screen height (Mandelbulb3D)"),
+        ],
+    );
     widgets::grid(ui, "bg", |ui| {
         widgets::color(ui, if b.mode == BackgroundMode::Solid { "Color" } else { "Top" }, "", &mut b.top);
         if b.mode == BackgroundMode::Gradient {
             widgets::color(ui, "Horizon", "", &mut b.horizon);
+        }
+        if b.mode != BackgroundMode::Solid {
             widgets::color(ui, "Bottom", "", &mut b.bottom);
+        }
+        if b.mode == BackgroundMode::Vertical {
+            widgets::slider_log(ui, "Curve", "1: even; above 1: more of the top color; below 1: more of the bottom color", &mut b.curve, 0.1..=10.0, db.curve);
         }
     });
 
@@ -281,11 +297,36 @@ fn effects(ui: &mut Ui, scene: &mut Scene) {
     if widgets::section(ui, "Fog and glow", true) {
         *f = df.clone();
     }
+    widgets::segmented(
+        ui,
+        &mut f.mode,
+        &[
+            (FogMode::Exponential, "Exponential", "Fog grows exponentially with the distance"),
+            (FogMode::Range, "Range", "Fog grows over the view range, from the near to the max distance (Mandelbulb3D's depth fog)"),
+        ],
+    );
     widgets::grid(ui, "fog", |ui| {
-        widgets::slider_log(ui, "Fog density", "Depth fog per unit of distance (0 = off)", &mut f.density, 0.0..=10.0, df.density);
-        widgets::color(ui, "Fog color", "", &mut f.color);
-        widgets::slider(ui, "Glow", "Light along rays that pass close to the surface (Mandelbulb3D's dynamic fog)", &mut f.glow, 0.0..=4.0, df.glow);
+        match f.mode {
+            FogMode::Exponential => {
+                widgets::slider_log(ui, "Fog density", "Depth fog per unit of distance (0 = off)", &mut f.density, 0.0..=10.0, df.density);
+            }
+            FogMode::Range => {
+                widgets::slider(ui, "Fog strength", "Fog amount at the far end (0 = off)", &mut f.strength, 0.0..=5.0, df.strength);
+                widgets::slider(ui, "Fog start", "Where in the range the fog begins (0..1); before it the image gets brighter", &mut f.start, -1.0..=1.0, df.start);
+                widgets::slider_log(ui, "Fog curve", "0: even over the range; higher values put more fog close to the camera", &mut f.curve, 0.0..=100_000.0, df.curve);
+                widgets::checkbox(ui, "Far fog", "Square the fog amount: less fog close by (Mandelbulb3D's far fog)", &mut f.squared);
+            }
+        }
+        widgets::checkbox(ui, "Background color", "The fog takes the background color behind each pixel", &mut f.from_background);
+        if !f.from_background {
+            widgets::color(ui, "Fog color", "", &mut f.color);
+        }
+        widgets::slider(ui, "Glow", "Light along rays that pass close to the surface (Mandelbulb3D's dynamic fog); negative darkens", &mut f.glow, -4.0..=4.0, df.glow);
         widgets::color(ui, "Glow color", "", &mut f.glow_color);
+        widgets::slider_log(ui, "Glow offset", "Ray steps that give no glow yet", &mut f.glow_offset, 0.0..=500.0, df.glow_offset);
+        widgets::slider_log(ui, "Second color after", "Ray steps until the glow has the second color (0 = only the first color)", &mut f.glow_mix_steps, 0.0..=2000.0, df.glow_mix_steps);
+        widgets::color(ui, "Second glow color", "", &mut f.glow_color2);
+        widgets::checkbox(ui, "Cover", "The glow covers the image instead of adding light", &mut f.glow_blend);
     });
 
     let dd = rmb_core::scene::Dof::default();
@@ -327,6 +368,12 @@ fn effects(ui: &mut Ui, scene: &mut Scene) {
         widgets::slider(ui, "Contrast", "", &mut p.contrast, 0.5..=2.0, dp.contrast);
         widgets::slider(ui, "Saturation", "", &mut p.saturation, 0.0..=2.0, dp.saturation);
         widgets::slider(ui, "Vignette", "Darkens the corners", &mut p.vignette, 0.0..=1.0, dp.vignette);
+        widgets::checkbox(
+            ui,
+            "Display space",
+            "Light the colors as shown instead of in linear light, like Mandelbulb3D (stronger colors, harder light). Re-renders. Gamma 2.2 then leaves the image unchanged.",
+            &mut p.display_space,
+        );
     });
 }
 
