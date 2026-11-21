@@ -216,6 +216,10 @@ pub enum Func {
     /// Rounds to 32-bit float precision (Mandelbulb3D's Single options).
     Single,
     Select,
+    /// `mapxy(n, u, v, ch)`: channel `ch` of Mandelbulb3D map `n` at `u`, `v` (0..1, tiled).
+    MapXY,
+    /// `mapsph(n, x, y, z, ch)`: channel `ch` of map `n` in the direction (`x`, `y`, `z`).
+    MapSphere,
 }
 
 impl Func {
@@ -252,6 +256,8 @@ impl Func {
             "sqr" => (Sqr, 1),
             "single" => (Single, 1),
             "sel" => (Select, 3),
+            "mapxy" => (MapXY, 4),
+            "mapsph" => (MapSphere, 5),
             _ => return None,
         })
     }
@@ -821,6 +827,43 @@ pub fn uses_state(stmts: &[Stmt], idx: usize) -> bool {
         Stmt::For(_, _, _, b) | Stmt::Loop(b) => uses_state(b, idx),
         Stmt::Break | Stmt::Continue => false,
     })
+}
+
+/// The map number arguments of all map lookups (`mapxy`, `mapsph`) in `stmts`.
+pub fn map_number_args(stmts: &[Stmt]) -> Vec<Expr> {
+    fn ex(e: &Expr, out: &mut Vec<Expr>) {
+        match e {
+            Expr::Call(f, args) => {
+                if matches!(f, Func::MapXY | Func::MapSphere) {
+                    out.push(args[0].clone());
+                }
+                args.iter().for_each(|a| ex(a, out));
+            }
+            Expr::Neg(a) | Expr::Not(a) => ex(a, out),
+            Expr::Bin(_, a, b) => {
+                ex(a, out);
+                ex(b, out);
+            }
+            _ => {}
+        }
+    }
+    fn st(stmts: &[Stmt], out: &mut Vec<Expr>) {
+        for s in stmts {
+            match s {
+                Stmt::Let(_, e) | Stmt::Assign(_, e) => ex(e, out),
+                Stmt::If(c, t, e) => {
+                    ex(c, out);
+                    st(t, out);
+                    st(e, out);
+                }
+                Stmt::For(_, _, _, b) | Stmt::Loop(b) => st(b, out),
+                Stmt::Break | Stmt::Continue => {}
+            }
+        }
+    }
+    let mut out = Vec::new();
+    st(stmts, &mut out);
+    out
 }
 
 pub fn is_bool(e: &Expr) -> bool {

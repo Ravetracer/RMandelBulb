@@ -216,6 +216,14 @@ pub fn smoothstep(e0: f64, e1: f64, x: f64) -> f64 {
 
 fn call(f: Func, args: &[Expr], l: Layout) -> NumFn {
     use Func::*;
+    if matches!(f, MapXY | MapSphere) {
+        let a: Vec<NumFn> = args.iter().map(|e| num(e, l)).collect();
+        return if f == MapXY {
+            Box::new(move |r| crate::maps::sample_xy(a[0](r), a[1](r), a[2](r), a[3](r)))
+        } else {
+            Box::new(move |r| crate::maps::sample_sphere(a[0](r), a[1](r), a[2](r), a[3](r), a[4](r)))
+        };
+    }
     if f == Select {
         let c = cond(&args[0], l);
         let (a, b) = (num(&args[1], l), num(&args[2], l));

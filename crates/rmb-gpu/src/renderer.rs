@@ -252,6 +252,10 @@ pub struct GpuRenderer {
     post_buf: wgpu::Buffer,
     prm: wgpu::Buffer,
     lut: wgpu::Buffer,
+    /// Mandelbulb3D maps of the scene (march.wgsl `maps`) and their numbers.
+    maps: wgpu::Buffer,
+    map_numbers: Vec<i32>,
+    maps_generation: u64,
     target: Option<Target>,
     key: Option<Key>,
     uniforms: Option<Uniforms>,
@@ -304,6 +308,7 @@ impl GpuRenderer {
                 entry(2, storage(true)),
                 entry(3, storage(false)),
                 entry(4, storage(false)),
+                entry(5, storage(true)),
             ],
         });
         let device_error = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
@@ -319,6 +324,9 @@ impl GpuRenderer {
             post_buf: uniform("post-uniforms", std::mem::size_of::<PostUniforms>()),
             prm: storage_buffer(device, "prm", 1024),
             lut: storage_buffer(device, "lut", (rmb_core::gradient::LUT_SIZE * 2 * 16) as u64),
+            maps: storage_buffer(device, "maps", 16),
+            map_numbers: Vec::new(),
+            maps_generation: rmb_core::maps::generation(),
             display_pipeline,
             march_pipeline_layout: device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("march"), bind_group_layouts: &[Some(&march_layout)], immediate_size: 0 }),
             march_layout,
@@ -386,6 +394,12 @@ impl GpuRenderer {
         render_scene.post = Post { display_space: scene.post.display_space, ..Default::default() };
         render_scene.notes.clear();
         let key = Key { scene: render_scene, width, height, fast };
+        // Other map folders: reload the maps and render again.
+        if self.maps_generation != rmb_core::maps::generation() {
+            self.maps_generation = rmb_core::maps::generation();
+            self.map_numbers.clear();
+            self.key = None;
+        }
         let post = post_uniforms(scene, width, height);
         if self.post.is_none_or(|p| bytemuck::bytes_of(&p) != bytemuck::bytes_of(&post)) {
             self.ctx.queue.write_buffer(&self.post_buf, 0, bytemuck::bytes_of(&post));
@@ -407,6 +421,7 @@ impl GpuRenderer {
         if !consts.is_empty() {
             self.ctx.queue.write_buffer(&self.prm, 0, bytemuck::cast_slice(&consts));
         }
+        self.upload_maps(&prog);
         let shade = rmb_core::render::shading_scene(scene);
         let g = &shade.material.gradient;
         let lut: Vec<[f32; 4]> = rmb_core::gradient::lut(g).iter().chain(&rmb_core::gradient::lut_specular(g)).map(|c| [c[0], c[1], c[2], 1.0]).collect();
@@ -416,6 +431,31 @@ impl GpuRenderer {
         self.key = Some(key);
         self.samples = 0;
         self.row = 0;
+    }
+
+    /// Uploads the maps the formulas read (only when the set of map numbers changes).
+    fn upload_maps(&mut self, prog: &Program) {
+        let numbers = prog.map_numbers();
+        // New buffers are zeroed: no maps (count 0) until the first upload.
+        if numbers == self.map_numbers && !(numbers.is_empty() && self.maps.size() > 16) {
+            return;
+        }
+        let maps: Vec<_> = numbers.iter().filter_map(|n| rmb_core::maps::get(*n)).collect();
+        let mut data: Vec<u32> = vec![maps.len() as u32];
+        let mut offset = 1 + 4 * maps.len() as u32;
+        for m in &maps {
+            data.extend_from_slice(&[m.number as u32, m.width, m.height, offset]);
+            offset += m.width * m.height;
+        }
+        for m in &maps {
+            data.extend(m.pixels.iter().map(|p| p[0] as u32 | (p[1] as u32) << 8 | (p[2] as u32) << 16));
+        }
+        let bytes = (data.len() * 4) as u64;
+        if self.maps.size() < bytes {
+            self.maps = storage_buffer(&self.ctx.device, "maps", bytes.next_power_of_two());
+        }
+        self.ctx.queue.write_buffer(&self.maps, 0, bytemuck::cast_slice(&data));
+        self.map_numbers = numbers;
     }
 
     fn ensure_target(&mut self, width: u32, height: u32) {
@@ -525,6 +565,7 @@ impl GpuRenderer {
                 wgpu::BindGroupEntry { binding: 2, resource: self.lut.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 3, resource: accum.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 4, resource: aux.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 5, resource: self.maps.as_entire_binding() },
             ],
         });
         let start = Instant::now();

@@ -202,6 +202,8 @@ impl Emitter<'_> {
                     Sqr => "sqr_",
                     Single => return format!("fl(f32({}))", a[0]),
                     Select => return format!("select({}, {}, {})", a[2], a[1], a[0]),
+                    MapXY => return format!("fl(map_xy(f32({}), f32({}), f32({}), f32({})))", a[0], a[1], a[2], a[3]),
+                    MapSphere => return format!("fl(map_sph(f32({}), f32({}), f32({}), f32({}), f32({})))", a[0], a[1], a[2], a[3], a[4]),
                 };
                 // Typed first argument: abstract literals alone would make e.g. `abs(2.0)` abstract.
                 format!("{name}(fl({}){})", a[0], a[1..].iter().map(|s| format!(", {s}")).collect::<String>())

@@ -22,6 +22,29 @@ pub struct ProgramSlot {
     pub transform: bool,
 }
 
+/// Value of a constant expression over a slot's parameters and `init` constants.
+fn const_value(e: &crate::formula::lang::Expr, consts: &[f64]) -> Option<f64> {
+    use crate::formula::lang::{BinOp, Expr, Func, VarRef};
+    Some(match e {
+        Expr::Num(v) => *v,
+        Expr::Var(VarRef::Param(k)) => *consts.get(*k)?,
+        Expr::Neg(a) => -const_value(a, consts)?,
+        Expr::Bin(op, a, b) => {
+            let (a, b) = (const_value(a, consts)?, const_value(b, consts)?);
+            match op {
+                BinOp::Add => a + b,
+                BinOp::Sub => a - b,
+                BinOp::Mul => a * b,
+                BinOp::Div => a / b,
+                _ => return None,
+            }
+        }
+        Expr::Call(Func::Round, a) => const_value(&a[0], consts)?.round(),
+        Expr::Call(Func::Floor, a) => const_value(&a[0], consts)?.floor(),
+        _ => return None,
+    })
+}
+
 pub struct Program {
     pub slots: Vec<ProgramSlot>,
     /// Slot the chain continues with after the last one (index into `slots`).
@@ -91,6 +114,29 @@ fn rotation_matrix_4d(deg: [f64; 3]) -> [[f64; 4]; 4] {
 }
 
 impl Program {
+    /// Numbers of the Mandelbulb3D maps the formulas read (both chains). A map number that is
+    /// not a constant expression counts every whole parameter value of its slot.
+    pub fn map_numbers(&self) -> Vec<i32> {
+        let mut out = Vec::new();
+        for s in self.slots.iter().chain(self.part2.iter().flat_map(|p| p.slots.iter())) {
+            let args = crate::formula::lang::map_number_args(&s.formula.def.iter);
+            if args.is_empty() {
+                continue;
+            }
+            let n = s.formula.def.constant_count();
+            let consts = &self.constants[s.offset.min(self.constants.len())..(s.offset + n).min(self.constants.len())];
+            for a in &args {
+                match const_value(a, consts) {
+                    Some(v) => out.push(v.round() as i32),
+                    None => out.extend(consts.iter().filter(|v| v.fract() == 0.0 && (0.0..100_000.0).contains(*v)).map(|v| *v as i32)),
+                }
+            }
+        }
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+
     pub fn new(f: &Fractal, cut: &Cutting) -> Program {
         let split = f.combine.as_ref().map(|c| c.start.clamp(1, f.slots.len().max(1))).filter(|s| *s < f.slots.len());
         let end1 = split.unwrap_or(f.slots.len());

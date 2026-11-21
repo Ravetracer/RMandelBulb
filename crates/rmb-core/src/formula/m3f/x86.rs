@@ -254,6 +254,8 @@ impl<'a> Tx<'a> {
                     ctx.push(i.next_ip32());
                     next.push(Some(Node { ctx, addr: target_ok(i.near_branch32())? }));
                 }
+                // Calls through the record's map function pointers: translated as map lookups.
+                FlowControl::IndirectCall => next.push(Some(Node { ctx: node.ctx.clone(), addr: i.next_ip32() })),
                 FlowControl::Return => {
                     if let Some((&ret, rest)) = node.ctx.split_last() {
                         next.push(Some(Node { ctx: rest.to_vec(), addr: ret }));
@@ -1293,6 +1295,45 @@ impl Tx<'_> {
         Ok(())
     }
 
+    /// `call [record+352]` (`PMapFunc`, spherical map lookup) or `call [record+356]`
+    /// (`PMapFunc2`, direct x/y lookup): `eax` points to the input vector, `edx` holds the map
+    /// number, `ecx` points to the three result doubles (channels blue, green, red).
+    fn map_call(&mut self, ins: &Instruction, st: &mut State, out: &mut Vec<S>) -> Res<()> {
+        if ins.op_kind(0) != OpKind::Memory {
+            return Err("call to an unknown function".into());
+        }
+        let sphere = match self.address(ins, st)? {
+            (Region::Rec, 352) => true,
+            (Region::Rec, 356) => false,
+            (r, o) => return Err(format!("call through {r:?}{o:+}")),
+        };
+        let IV::Ptr(in_region, in_off) = st.regs[0].clone() else { return Err("map lookup input is not a pointer".into()) };
+        let IV::Ptr(out_region, out_off) = st.regs[1].clone() else { return Err("map lookup result is not a pointer".into()) };
+        let n = self.iv_expr(&st.regs[2].clone())?;
+        let mut args = Vec::new();
+        for k in 0..if sphere { 3 } else { 2 } {
+            match self.read_at(in_region.clone(), in_off + 8 * k, MemorySize::Float64, st, out)? {
+                Mem::F(e) => args.push(e),
+                _ => return Err("map lookup input".into()),
+            }
+        }
+        // Inputs first into temporaries: the result may overwrite them.
+        let (func, a) = if sphere { ("mapsph", args.join(", ")) } else { ("mapxy", args.join(", ")) };
+        let tmp: Vec<String> = (0..3).map(|c| format!("mp{c}")).collect();
+        for (c, t) in tmp.iter().enumerate() {
+            self.stack_vars.insert(t.clone());
+            out.push(S::Line(format!("{t} = {func}({n}, {a}, {})", lit(c as f64))));
+        }
+        self.write_f_at(out_region, out_off, st, &tmp, out)?;
+        // The function may change eax, ecx and edx (register convention).
+        for r in [0, 1, 2] {
+            st.regs[r] = IV::Undef;
+            st.ranges[r] = None;
+        }
+        st.flags = Flags::None;
+        Ok(())
+    }
+
     /// `and`/`or`/`xor`/`test` of two small non-negative integer values (low 8 bits) as
     /// arithmetic on their bits; returns the variable with the result.
     fn bitwise_data(&mut self, mn: Mnemonic, ea: &str, eb: &str, out: &mut Vec<S>) -> String {
@@ -1925,6 +1966,7 @@ impl Tx<'_> {
         let mn = ins.mnemonic();
         match mn {
             Nop | Fnop | Wait | Ffree | Ffreep | Fninit | Fnclex | Fldcw | Fnstcw | Emms | Cld => Ok(()),
+            Call => self.map_call(ins, st, out),
             // ---------------------------------------------------------------- integer
             Push => {
                 let v = self.ival(ins, 0, st, out).unwrap_or(IV::Undef);

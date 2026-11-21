@@ -86,6 +86,10 @@ cargo clippy -j 8 --workspace --all-targets
   .m3f's name, so hand-written versions are checked too; `M3F_VALUES="v1,v2,…"` sets the option
   values (default: the file's defaults). `cargo run -p rmb-core --example m3f_disasm -- f.m3f`
   prints the machine code.
+- Map formulas: `call [record+352]` (spherical) / `[record+356]` (direct x/y) become
+  `mapsph(n, x, y, z, ch)` / `mapxy(n, u, v, ch)` (`rmb-core/src/maps.rs`; GPU: `maps` buffer,
+  binding 5, filled from `Program::map_numbers`). `m3f-check` answers these calls with the same
+  sampling (emulator hook), so it checks the translation, not the sampling itself.
 - Regenerate from both folders: `rmb-cli m3f ../mb3d/M3Formulas ../mb3d/EM_JIT_M3Formulas -o …`.
 - Regenerate without piping the output into `head`: a closed pipe kills `rmb-cli` before it
   writes the file.

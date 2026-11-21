@@ -26,6 +26,8 @@ pub struct Prefs {
     /// Mouse sensitivity of orbit and look.
     pub mouse_speed: f64,
     pub invert_y: bool,
+    /// Mandelbulb3D's map folder (M3Maps) for formulas that read maps.
+    pub maps_dir: Option<PathBuf>,
 }
 
 impl Default for Prefs {
@@ -42,6 +44,7 @@ impl Default for Prefs {
             formula_dir: None,
             mouse_speed: 1.0,
             invert_y: false,
+            maps_dir: None,
         }
     }
 }

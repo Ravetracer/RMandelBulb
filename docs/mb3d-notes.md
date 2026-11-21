@@ -96,3 +96,13 @@ little-endian.
   kinds search in levels up to about the image size.
 - Dynamic fog on iteration (byte 223 = N > 0): only ray steps whose DE evaluation ended after
   N iterations count.
+
+## Maps (Calc.pas, maps/Maps.pas)
+
+- Map `n` is the file `<n>.jpg|png|bmp|jpeg|pgm` (or `<n><non-digit>…`) in the M3Maps folder.
+  Pixels are kept as Windows bitmap bytes: channel 0 = blue, 1 = green, 2 = red (0..255).
+- `PMapFunc` (record +352, `GetMapPixelSphereSpline`): u = atan2(x, y) · (-1/2π) + 0.5,
+  v = 0.5 - asin(z)/π of the normalized vector; `PMapFunc2` (+356, `GetMapPixelDirectXYspline`):
+  u, v = fract of the two inputs. Both sample with `SplineIpolMap`: uniform cubic B-spline
+  (`MakeSplineCoeff`) over the 4×4 pixels around (u·width, v·height), wrapping at the edges,
+  result / 255. Call convention: eax = input vector, edx = map number, ecx = 3 result doubles.

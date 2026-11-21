@@ -19,7 +19,7 @@
       point light; MB3D's screen-space AO probably darkens more)
 - [x] Missing formulas of the samples: Bulbox and Aexion C (built-in), Amazing Surf 2,
       GeneralQuat (by hand), Mandalex, _Transform, TilingIFS, ABoxVSShapes (translator)
-- [ ] Height map / image formulas (9; 4 samples: dIFS heart shrub ×2, dIFS shrub, Insect Menger)
+- [x] Height map / image formulas (9; Mandelbulb3D maps with its B-spline sampling, CPU and GPU)
 - [ ] `_Cond*` formulas that switch the hybrid's formulas (5)
 - [ ] Check "material colors" and "Nothing left but bones" (render empty, no reference renders)
 

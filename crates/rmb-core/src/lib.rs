@@ -7,6 +7,7 @@ pub mod formula;
 pub mod fractal;
 pub mod gradient;
 pub mod io;
+pub mod maps;
 pub mod math;
 pub mod render;
 pub mod scene;

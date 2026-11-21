@@ -53,6 +53,10 @@ struct U {
 // Denoiser helper images per pixel: [2 i] albedo, [2 i + 1] world normal (summed like accum).
 @group(0) @binding(4) var<storage, read_write> aux: array<vec4<f32>>;
 
+// Mandelbulb3D maps (rmb-core maps.rs): [0] count; per map i at 1 + 4 i: number, width,
+// height, offset of its pixels (u32: blue | green << 8 | red << 16, top row first).
+@group(0) @binding(5) var<storage, read> maps: array<u32>;
+
 var<private> aux_albedo: vec3<f32>;
 var<private> aux_normal: vec3<f32>;
 
@@ -87,6 +91,76 @@ struct Hit {
 
 fn is_finite(v: f32) -> bool {
     return (bitcast<u32>(v) & 0x7fffffffu) < 0x7f800000u;
+}
+
+// Map lookups (mirror maps.rs): uniform cubic B-spline over the pixels with wrap-around.
+fn map_find(n: f32) -> i32 {
+    let k = u32(max(round(n), 0.0));
+    let count = maps[0];
+    for (var i = 0u; i < count; i++) {
+        if (maps[1u + 4u * i] == k) {
+            return i32(i);
+        }
+    }
+    return -1;
+}
+
+fn spline_weights(t: f32) -> vec4<f32> {
+    let w3 = t * t * t / 6.0;
+    let w0 = 1.0 / 6.0 + 0.5 * t * (t - 1.0) - w3;
+    let w2 = t + w0 - 2.0 * w3;
+    return vec4<f32>(w0, 1.0 - w0 - w2 - w3, w2, w3);
+}
+
+fn map_sample(i: i32, x: f32, y: f32, ch: f32) -> f32 {
+    let h0 = 1u + 4u * u32(i);
+    let w = i32(maps[h0 + 1u]);
+    let h = i32(maps[h0 + 2u]);
+    let base = maps[h0 + 3u];
+    let xf = floor(x);
+    let yf = floor(y);
+    let wx = spline_weights(x - xf);
+    let wy = spline_weights(y - yf);
+    let shift = u32(clamp(round(ch), 0.0, 2.0)) * 8u;
+    var sum = 0.0;
+    for (var j = 0; j < 4; j++) {
+        let yy = (((i32(yf) - 1 + j) % h) + h) % h;
+        var row = 0.0;
+        for (var k = 0; k < 4; k++) {
+            let xx = (((i32(xf) - 1 + k) % w) + w) % w;
+            let p = maps[base + u32(yy * w + xx)];
+            row += f32((p >> shift) & 255u) * wx[k];
+        }
+        sum += row * wy[j];
+    }
+    return sum / 255.0;
+}
+
+fn map_xy(n: f32, u_: f32, v_: f32, ch: f32) -> f32 {
+    let i = map_find(n);
+    if (i < 0) {
+        return 0.0;
+    }
+    let h0 = 1u + 4u * u32(i);
+    return map_sample(i, (u_ - floor(u_)) * f32(maps[h0 + 1u]), (v_ - floor(v_)) * f32(maps[h0 + 2u]), ch);
+}
+
+fn map_sph(n: f32, x: f32, y: f32, z: f32, ch: f32) -> f32 {
+    let i = map_find(n);
+    if (i < 0) {
+        return 0.0;
+    }
+    let h0 = 1u + 4u * u32(i);
+    let l = sqrt(x * x + y * y + z * z);
+    var d = vec3<f32>(0.0);
+    if (l > 0.0) {
+        d = vec3<f32>(x, y, z) / l;
+    }
+    let u_ = atan2(d.x, d.y) * (-0.5 / 3.141592653589793) + 0.5;
+    let v_ = 0.5 - asin(clamp(d.z, -1.0, 1.0)) / 3.141592653589793;
+    let mw = f32(maps[h0 + 1u]);
+    let mh = f32(maps[h0 + 2u]);
+    return map_sample(i, clamp(u_ * mw, 0.0, mw), clamp(v_ * mh, 0.0, mh), ch);
 }
 
 //@ITERATE@

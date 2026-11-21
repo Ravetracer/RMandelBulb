@@ -1082,6 +1082,8 @@ dependencies = [
  "num-traits",
  "png",
  "tiff",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]
@@ -2216,6 +2218,7 @@ name = "rmb-core"
 version = "0.1.0"
 dependencies = [
  "iced-x86",
+ "image",
  "libloading",
  "png",
  "rayon",

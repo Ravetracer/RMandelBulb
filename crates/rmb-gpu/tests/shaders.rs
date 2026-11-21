@@ -163,3 +163,21 @@ fn hdr_readback_matches_display_and_cpu_helper_images() {
         assert!(mean < 0.01, "{name} differs by {mean}");
     }
 }
+
+#[test]
+fn gpu_matches_cpu_with_a_height_map() {
+    // Mandelbulb3D's "dIFS heart shrub": HeightMapIFS reads map 10 (from ../mb3d/M3Maps).
+    if rmb_core::maps::get(10).is_none() {
+        eprintln!("map 10 not found, skipped");
+        return;
+    }
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../mb3d/M3Parameter/dIFS heart shrub.m3p");
+    let Ok(bytes) = std::fs::read(&path) else {
+        eprintln!("sample not found, skipped");
+        return;
+    };
+    let mut scene = rmb_core::io::m3p::import_binary(&bytes).expect("import").scene;
+    scene.lighting.ao_mode = rmb_core::scene::AoMode::Fast;
+    assert!(Program::new(&scene.fractal, &scene.cut).map_numbers().contains(&10));
+    parity(scene);
+}

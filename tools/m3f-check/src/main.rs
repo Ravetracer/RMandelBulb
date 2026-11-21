@@ -20,6 +20,9 @@ const DATA: u64 = 0x0010_0000;
 const REC: u64 = DATA + 0x1100;
 const PVAR: u64 = DATA + 0x8000;
 const STACK_TOP: u64 = DATA + 0xF_0000;
+/// Stand-ins for Mandelbulb3D's map functions (record +352 spherical, +356 direct x/y).
+const MAP_SPHERE: u64 = MAGIC + 0x100;
+const MAP_XY: u64 = MAGIC + 0x200;
 
 /// Record offsets compared after each iteration (doubles), and the integer field bFirstIt.
 const COMPARED: [i64; 16] = [-56, -32, -24, -16, -8, 24, 32, 40, 56, 192, 200, 216, 224, 232, 240, 248];
@@ -120,6 +123,33 @@ fn check(path: &Path, verbose: bool) -> Outcome {
                 SlotKind::I32 => emu.mem_write(a, &(*v as i32).to_le_bytes())?,
             }
         }
+        // Map functions: computed with rmb-core's map sampling, then `ret`.
+        emu.add_code_hook(MAP_SPHERE, MAP_XY, |uc, addr, _| {
+            let r = |uc: &Unicorn<()>, reg| uc.reg_read(reg).unwrap_or(0);
+            let (inp, n, outp, esp) = (r(uc, RegisterX86::EAX), r(uc, RegisterX86::EDX) as i32, r(uc, RegisterX86::ECX), r(uc, RegisterX86::ESP));
+            let rd = |uc: &Unicorn<()>, a: u64| {
+                let mut b = [0u8; 8];
+                let _ = uc.mem_read(a, &mut b);
+                f64::from_le_bytes(b)
+            };
+            let v = [rd(uc, inp), rd(uc, inp + 8), rd(uc, inp + 16)];
+            let res: Vec<f64> = (0..3)
+                .map(|c| {
+                    if addr == MAP_SPHERE {
+                        rmb_core::maps::sample_sphere(n as f64, v[0], v[1], v[2], c as f64)
+                    } else {
+                        rmb_core::maps::sample_xy(n as f64, v[0], v[1], c as f64)
+                    }
+                })
+                .collect();
+            for (k, x) in res.iter().enumerate() {
+                let _ = uc.mem_write(outp + 8 * k as u64, &x.to_le_bytes());
+            }
+            let mut ret = [0u8; 4];
+            let _ = uc.mem_read(esp, &mut ret);
+            let _ = uc.reg_write(RegisterX86::ESP, esp + 4);
+            let _ = uc.reg_write(RegisterX86::EIP, u32::from_le_bytes(ret) as u64);
+        })?;
         // SSE on: CR4.OSFXSR | OSXMMEXCPT, CR0.MP, no EM.
         let cr0 = emu.reg_read(RegisterX86::CR0)?;
         emu.reg_write(RegisterX86::CR0, (cr0 & !4) | 2)?;
@@ -168,6 +198,8 @@ fn check(path: &Path, verbose: bool) -> Outcome {
             set(&mut regs, "a0", 1.0);
         }
         put32(&mut rec, 48, (PVAR as u32).to_le_bytes());
+        put32(&mut rec, 352, (MAP_SPHERE as u32).to_le_bytes());
+        put32(&mut rec, 356, (MAP_XY as u32).to_le_bytes());
         put32(&mut rec, 68, 60i32.to_le_bytes());
         put32(&mut rec, 72, (256.0f32).to_le_bytes());
         for it in 0..4i32 {

@@ -57,6 +57,7 @@ impl App {
         if let Some(d) = &prefs.formula_dir {
             rmb_core::formula::load_user_formulas(d);
         }
+        rmb_core::maps::set_dirs(prefs.maps_dir.iter().cloned().collect());
         let mut app = App {
             doc: Document::new(Scene::default()),
             view: Viewport::new(cc.wgpu_render_state.as_ref()),
@@ -419,6 +420,24 @@ impl App {
                     if let Some(d) = &p.formula_dir {
                         rmb_core::formula::load_user_formulas(d);
                     }
+                }
+            });
+            widgets::section(ui, "Maps", false);
+            let maps_label = match &p.maps_dir {
+                Some(d) => format!("Mandelbulb3D maps (height maps and other images formulas read) from {}", d.display()),
+                None => "Mandelbulb3D maps: set the M3Maps folder of Mandelbulb3D for formulas that read maps (also RMB_MAPS_DIR or a maps folder next to the program).".to_string(),
+            };
+            ui.label(RichText::new(maps_label).size(theme::fs(11.5)).color(theme::TEXT_MUTED));
+            ui.horizontal(|ui| {
+                if ui.button("Choose folder…").on_hover_text("Mandelbulb3D's M3Maps folder (files named by their number, e.g. 10.jpg)").clicked()
+                    && let Some(d) = rfd::FileDialog::new().pick_folder()
+                {
+                    p.maps_dir = Some(d);
+                    rmb_core::maps::set_dirs(p.maps_dir.iter().cloned().collect());
+                }
+                if p.maps_dir.is_some() && ui.button("Clear").on_hover_text("Use only the default folders").clicked() {
+                    p.maps_dir = None;
+                    rmb_core::maps::set_dirs(Vec::new());
                 }
             });
         });
