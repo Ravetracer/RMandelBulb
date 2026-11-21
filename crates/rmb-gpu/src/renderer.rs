@@ -117,6 +117,79 @@ struct Uniforms {
     emis: [f32; 4],
 }
 
+/// A composed object (march.wgsl `Obj`).
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct ObjGpu {
+    inv: [[f32; 4]; 3],
+    pos: [f32; 4],
+    prim: [f32; 4],
+    frac: [f32; 4],
+    julia: [f32; 4],
+    misc: [f32; 4],
+    mat: [f32; 4],
+    mat2: [f32; 4],
+    slots: [[u32; 4]; 2],
+}
+
+/// LUT entries before the material blocks of the objects.
+const LUT_OBJECTS: usize = 1152;
+
+/// The object buffer and the LUT blocks of their materials (appended to `lut`).
+fn objects_gpu(scene: &Scene, prog: &Program, lut: &mut Vec<[f32; 4]>) -> Vec<ObjGpu> {
+    use rmb_core::fractal::ObjectShape;
+    let m = &scene.material;
+    let mut out = Vec::new();
+    for (j, o) in prog.objects.iter().enumerate() {
+        let mut g = ObjGpu::zeroed();
+        for r in 0..3 {
+            g.inv[r] = [o.inv[r][0] as f32, o.inv[r][1] as f32, o.inv[r][2] as f32, 0.0];
+        }
+        g.inv[0][3] = o.scale as f32;
+        g.inv[1][3] = o.op as f32;
+        g.inv[2][3] = o.smooth as f32;
+        g.pos = v4(o.pos, 0.0);
+        match &o.shape {
+            ObjectShape::Fractal(f) => {
+                g.frac = [f.w_slice as f32, if f.julia { 1.0 } else { 0.0 }, f.max_iterations as f32, f.repeat_from as f32];
+                g.julia = f.julia_c.map(|v| v as f32);
+                g.misc = [f.bailout2 as f32, f.de_scale as f32, f.scene_de_scale as f32, 0.0];
+                for (i, s) in f.slots.iter().take(8).enumerate() {
+                    g.slots[i / 4][i % 4] = s.iterations.max(1);
+                }
+            }
+            ObjectShape::Primitive(_, a) => {
+                g.prim = a.map(|v| v as f32);
+                g.misc[3] = 1.0;
+            }
+        }
+        // The material: the object's own one (its LUT block), or the main one.
+        let base = LUT_OBJECTS + 512 * j;
+        lut.resize(base, [0.0; 4]);
+        match scene.objects.get(o.material.wrapping_sub(1)).filter(|_| o.material > 0) {
+            Some(so) => {
+                let om = &so.material;
+                let gr = &om.gradient;
+                lut.extend(rmb_core::gradient::lut(gr).iter().zip(rmb_core::gradient::lut_emission(gr)).map(|(c, e)| [c[0], c[1], c[2], e]));
+                lut.extend(rmb_core::gradient::lut_specular(gr).iter().zip(rmb_core::gradient::lut_transparency(gr)).map(|(c, t)| [c[0], c[1], c[2], t]));
+                g.mat = [om.color_mode.index() as f32, om.color_scale as f32, om.color_offset as f32, if om.repeat { 1.0 } else { 0.0 }];
+                g.mat2 = [1.0, om.pattern.index() as f32, om.pattern_size as f32, base as f32];
+            }
+            None => {
+                lut.resize(base + 512, [0.0; 4]);
+                g.mat = [m.color_mode.index() as f32, m.color_scale as f32, m.color_offset as f32, if m.repeat { 1.0 } else { 0.0 }];
+                g.mat2 = [m.saturation as f32, 0.0, 1.0, 0.0];
+            }
+        }
+        out.push(g);
+    }
+    if out.is_empty() {
+        // The buffer must not be empty.
+        out.push(ObjGpu::zeroed());
+    }
+    out
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct PostUniforms {
@@ -264,7 +337,9 @@ fn uniforms(scene: &Scene, prog: &Program, w: u32, h: u32, fast: bool) -> Unifor
         },
         glass: [if m.transmission && m.reflection > 0.0 { 1.0 } else { 0.0 }, m.refraction_index as f32, m.absorption as f32, m.scattering as f32],
         emis: {
-            let any = m.gradient.iter().any(|s| s.emission > 0.0);
+            // Emission of the materials in use (the main one and the objects' own ones).
+            let own = prog.objects.iter().filter_map(|o| scene.objects.get(o.material.wrapping_sub(1)).filter(|_| o.material > 0));
+            let any = m.gradient.iter().chain(own.flat_map(|so| so.material.gradient.iter())).any(|s| s.emission > 0.0);
             let on = |v: f64| if any { v.max(0.0) as f32 } else { 0.0 };
             [on(m.emission_light), m.emission_reach as f32, on(m.emission_glow), m.emission_glow_size as f32]
         },
@@ -334,6 +409,8 @@ pub struct GpuRenderer {
     lut: wgpu::Buffer,
     /// Mandelbulb3D maps of the scene (march.wgsl `maps`) and their numbers.
     maps: wgpu::Buffer,
+    /// Composed objects (march.wgsl binding 6).
+    objs: wgpu::Buffer,
     /// Lens flare layer added before the post processing (RGB + pad per pixel) and its size.
     flare: wgpu::Buffer,
     flare_size: (u32, u32),
@@ -394,6 +471,7 @@ impl GpuRenderer {
                 entry(3, storage(false)),
                 entry(4, storage(false)),
                 entry(5, storage(true)),
+                entry(6, storage(true)),
             ],
         });
         let device_error = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
@@ -410,6 +488,7 @@ impl GpuRenderer {
             prm: storage_buffer(device, "prm", 1024),
             lut: storage_buffer(device, "lut", ((rmb_core::gradient::LUT_SIZE * 4 + 128) * 16) as u64),
             maps: storage_buffer(device, "maps", 16),
+            objs: storage_buffer(device, "objs", std::mem::size_of::<ObjGpu>() as u64),
             flare: storage_buffer(device, "flare", 16),
             flare_size: (0, 0),
             map_numbers: Vec::new(),
@@ -527,6 +606,18 @@ impl GpuRenderer {
         let interior = &shade.material.interior;
         let (ib, is) = if interior.is_empty() { (vec![[0.0; 3]; 256], vec![[0.0; 3]; 256]) } else { (rmb_core::gradient::lut(interior), rmb_core::gradient::lut_specular(interior)) };
         lut.extend(ib.iter().chain(&is).map(|c| [c[0], c[1], c[2], 1.0]));
+        let objs = objects_gpu(&shade, &prog, &mut lut);
+        let device = self.ctx.device.clone();
+        let device = &device;
+        let obj_bytes = (objs.len() * std::mem::size_of::<ObjGpu>()) as u64;
+        if self.objs.size() < obj_bytes {
+            self.objs = storage_buffer(device, "objs", obj_bytes.next_power_of_two());
+        }
+        self.ctx.queue.write_buffer(&self.objs, 0, bytemuck::cast_slice(&objs));
+        let lut_bytes = (lut.len() * 16) as u64;
+        if self.lut.size() < lut_bytes {
+            self.lut = storage_buffer(device, "lut", lut_bytes.next_power_of_two());
+        }
         self.ctx.queue.write_buffer(&self.lut, 0, bytemuck::cast_slice(&lut));
         self.uniforms = Some(uniforms(&shade, &prog, width, height, fast));
         self.request_pipeline(&prog);
@@ -681,6 +772,7 @@ impl GpuRenderer {
                 wgpu::BindGroupEntry { binding: 3, resource: accum.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 4, resource: aux.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 5, resource: self.maps.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 6, resource: self.objs.as_entire_binding() },
             ],
         });
         let start = Instant::now();

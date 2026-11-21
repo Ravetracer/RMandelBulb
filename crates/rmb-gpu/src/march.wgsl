@@ -89,6 +89,153 @@ struct Orbit {
     r2_old: f32,
     trap: f32,
     escaped: bool,
+    // The object that forms the surface: 0 the main fractal, k the k-th composed object.
+    obj: u32,
+}
+
+// A composed object (rmb-core compose.rs, filled by renderer.rs).
+struct Obj {
+    inv0: vec4<f32>,  // inverse rotation rows; w: scale, operation, smoothing
+    inv1: vec4<f32>,
+    inv2: vec4<f32>,
+    pos: vec4<f32>,
+    prim: vec4<f32>,  // primitive parameters
+    frac: vec4<f32>,  // fractal: w slice, julia, max iterations, repeat from
+    julia: vec4<f32>,
+    misc: vec4<f32>,  // bailout², formula DE scale, DE scale, kind (0 fractal, 1 primitive)
+    mat: vec4<f32>,   // material: color mode, scale, offset, repeat
+    mat2: vec4<f32>,  // saturation, pattern, pattern size, LUT base
+    slots: array<vec4<u32>, 2>,
+}
+
+@group(0) @binding(6) var<storage, read> objs: array<Obj>;
+
+// Mirrors compose::to_local.
+fn obj_local(j: u32, p: vec3<f32>) -> vec3<f32> {
+    let ob = objs[j];
+    let d = p - ob.pos.xyz;
+    return vec3<f32>(dot(ob.inv0.xyz, d), dot(ob.inv1.xyz, d), dot(ob.inv2.xyz, d)) / ob.inv0.w;
+}
+
+// Mirrors compose::primitive_distance.
+fn prim_de(kind: u32, a: vec4<f32>, q: vec3<f32>) -> f32 {
+    if (kind == 0u) {
+        return q.z;
+    }
+    if (kind == 1u) {
+        let r = max(a.w, 0.0);
+        let hs = max(a.xyz * 0.5 - vec3<f32>(r), vec3<f32>(0.0));
+        let d = abs(q) - hs;
+        return length(max(d, vec3<f32>(0.0))) + min(max(d.x, max(d.y, d.z)), 0.0) - r;
+    }
+    if (kind == 2u) {
+        return length(q) - a.x;
+    }
+    if (kind == 3u) {
+        let r = max(a.z, 0.0);
+        let dx = length(q.xy) - max(a.x - r, 0.0);
+        let dz = abs(q.z) - max(a.y * 0.5 - r, 0.0);
+        return min(max(dx, dz), 0.0) + length(max(vec2<f32>(dx, dz), vec2<f32>(0.0))) - r;
+    }
+    if (kind == 4u) {
+        let xy = length(q.xy) - a.x;
+        return length(vec2<f32>(xy, q.z)) - a.y;
+    }
+    // Water: three octaves of waves at turning directions.
+    let len = max(a.y, 1.0e-6);
+    let angle = radians(a.w);
+    var hgt = 0.0;
+    var slope = 0.0;
+    for (var i = 0; i < 3; i++) {
+        let f = exp2(f32(i));
+        let dir = angle + f32(i) * 1.1;
+        let k = 6.283185307179586 * f / len;
+        let amp = a.x / f;
+        hgt += amp * sin(k * (q.x * cos(dir) + q.y * sin(dir)) + a.z * (1.0 + 0.3 * f32(i)));
+        slope += amp * k;
+    }
+    return (q.z - hgt) / sqrt(1.0 + slope * slope);
+}
+
+// Mirrors compose::combine: x the combined distance, y 1 when the object forms the surface.
+fn combine_op(op: u32, a: f32, b: f32, k_in: f32) -> vec2<f32> {
+    let k = max(k_in, 1.0e-12);
+    if (op == 0u) {
+        return vec2<f32>(min(a, b), select(0.0, 1.0, b < a));
+    }
+    if (op == 1u) {
+        return vec2<f32>(max(a, -b), select(0.0, 1.0, -b > a));
+    }
+    if (op == 2u) {
+        return vec2<f32>(max(a, b), select(0.0, 1.0, b > a));
+    }
+    var x = a;
+    var y = b;
+    var sign = 1.0;
+    if (op == 4u) {
+        x = -a;
+        sign = -1.0;
+    } else if (op == 5u) {
+        x = -a;
+        y = -b;
+        sign = -1.0;
+    }
+    let h = clamp(0.5 + 0.5 * (y - x) / k, 0.0, 1.0);
+    let d = y + (x - y) * h - k * h * (1.0 - h);
+    return vec2<f32>(sign * d, select(0.0, 1.0, h < 0.5));
+}
+
+// Mirrors compose::pattern_value.
+fn pattern_value(pattern: u32, size: f32, q: vec3<f32>) -> f32 {
+    let s = max(abs(size), 1.0e-9);
+    if (pattern == 0u) {
+        return 0.0;
+    }
+    if (pattern == 1u) {
+        let c = floor(q.x / s) + floor(q.y / s) + floor(q.z / s + 0.5);
+        return c - 2.0 * floor(c / 2.0);
+    }
+    if (pattern == 2u) {
+        return q.z / s;
+    }
+    return length(q) / s;
+}
+
+// How a material picks its colors (mirrors render::cpu::Mat).
+struct MatS {
+    mode: u32,
+    scale: f32,
+    offset: f32,
+    rep: bool,
+    sat: f32,
+    pattern: u32,
+    psize: f32,
+    base: u32,
+}
+
+fn mat_of(obj: u32) -> MatS {
+    var m: MatS;
+    if (obj == 0u) {
+        m.mode = u32(u.color.x);
+        m.scale = u.color.y;
+        m.offset = u.color.z;
+        m.rep = u.color.w > 0.5;
+        m.sat = u.color2.x;
+        m.pattern = 0u;
+        m.psize = 1.0;
+        m.base = 0u;
+        return m;
+    }
+    let ob = objs[obj - 1u];
+    m.mode = u32(ob.mat.x);
+    m.scale = ob.mat.y;
+    m.offset = ob.mat.z;
+    m.rep = ob.mat.w > 0.5;
+    m.sat = ob.mat2.x;
+    m.pattern = u32(ob.mat2.y);
+    m.psize = ob.mat2.z;
+    m.base = u32(ob.mat2.w);
+    return m;
 }
 
 struct Iterated {
@@ -403,7 +550,10 @@ fn combine_de(a: Orbit, b: Orbit) -> Orbit {
 
 fn orbit(p: vec3<f32>, h: f32) -> Orbit {
     var o = fractal_de(p, h);
-    var de = max(o.de * u.march.w, 0.0);
+    o.de = max(o.de * u.march.w, 0.0);
+    // Scene composition: the objects in order.
+    o = compose_objects(p, h, o);
+    var de = o.de;
     if (inside_now()) {
         // Inside rendering (mirrors fractal.rs).
         let s = 2.0 * h;
@@ -734,12 +884,22 @@ fn background(d: vec3<f32>, sy: f32) -> vec3<f32> {
 }
 
 fn color_value(h: Hit, n: vec3<f32>, pos: vec3<f32>) -> f32 {
-    let mode = u32(u.color.x);
     let o = h.orbit;
+    let ms = mat_of(o.obj);
+    let mode = ms.mode;
+    // Objects: primitives by their pattern, fractals with their own bailout.
+    var bail2 = u.march.z;
+    if (o.obj > 0u) {
+        let ob = objs[o.obj - 1u];
+        if (ob.misc.w > 0.5) {
+            return pattern_value(ms.pattern, ms.psize, obj_local(o.obj - 1u, pos));
+        }
+        bail2 = ob.misc.x;
+    }
     if (mode == 0u) {
         let n_it = f32(o.n) + u.fog3.z * log(h.eps);
         if (o.escaped && o.r2 > 1.0) {
-            let lb = log(sqrt(max(u.march.z, 4.0)));
+            let lb = log(sqrt(max(bail2, 4.0)));
             return n_it - log2(max((0.5 * log(o.r2)) / lb, 1.0e-10));
         }
         return n_it;
@@ -747,7 +907,7 @@ fn color_value(h: Hit, n: vec3<f32>, pos: vec3<f32>) -> f32 {
     if (mode == 4u) {
         let n_it = f32(o.n) + u.fog3.z * log(h.eps);
         if (o.escaped && o.r2 > 1.0) {
-            let lb = log(log(sqrt(max(u.march.z, 4.0))));
+            let lb = log(log(sqrt(max(bail2, 4.0))));
             let d = log(0.5 * log(o.r2));
             var dd = 0.6931471805599453;
             if (o.r2_old > 1.0) {
@@ -773,19 +933,21 @@ struct Colors {
     emis: f32,
 }
 
-fn gradient(v: f32, dist: f32) -> Colors {
-    var t = v * u.color.y + u.color.z + u.color2.z * (dist - u.color2.w);
-    if (u.color.w > 0.5) {
+// Colors of the material of object `obj` (mirrors Shader::gradient).
+fn gradient(obj: u32, v: f32, dist: f32) -> Colors {
+    let ms = mat_of(obj);
+    var t = v * ms.scale + ms.offset + u.color2.z * (dist - u.color2.w);
+    if (ms.rep) {
         t = t - floor(t);
     } else {
         t = clamp(t, 0.0, 1.0);
     }
     let x = t * 255.0;
-    let i = min(u32(floor(x)), 254u);
-    let f = x - f32(i);
+    let i = min(u32(floor(x)), 254u) + ms.base;
+    let f = x - f32(i - ms.base);
     let base = mix(lut[i].xyz, lut[i + 1u].xyz, f);
     var c: Colors;
-    c.base = mix(lut[0].xyz, base, u.color2.x);
+    c.base = mix(lut[ms.base].xyz, base, ms.sat);
     c.spec = mix(lut[i + 256u].xyz, lut[i + 257u].xyz, f);
     c.trans = mix(lut[i + 256u].w, lut[i + 257u].w, f);
     c.emis = mix(lut[i].w, lut[i + 1u].w, f);
@@ -794,14 +956,14 @@ fn gradient(v: f32, dist: f32) -> Colors {
 
 // Mirrors Shader::emission_at: emitted radiance for an orbit at `pos`.
 fn emission_at(ob: Orbit, pos: vec3<f32>, eps: f32, t: f32) -> vec3<f32> {
-    if (u.interior.x > 0.5 && !ob.escaped) {
+    if (u.interior.x > 0.5 && !ob.escaped && ob.obj == 0u) {
         return vec3<f32>(0.0);
     }
     var h: Hit;
     h.orbit = ob;
     h.eps = eps;
     h.t = t;
-    let c = gradient(color_value(h, vec3<f32>(0.0), pos), t);
+    let c = gradient(ob.obj, color_value(h, vec3<f32>(0.0), pos), t);
     return c.base * c.emis;
 }
 
@@ -1034,9 +1196,9 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sx: f32, 
         let rr = nr.w * u.blend.w;
         let spec_rough = 1.0 + min(2.0 * rr, 1.0) * (4.0 / max(u.sky.w, 1.0) - 1.0);
         let cv = color_value(h, n, pos);
-        var cols = gradient(cv, h.t);
+        var cols = gradient(h.orbit.obj, cv, h.t);
         // Interior colors where the orbit did not escape (mirrors Shader::interior_colors).
-        if (u.interior.x > 0.5 && !h.orbit.escaped) {
+        if (u.interior.x > 0.5 && !h.orbit.escaped && h.orbit.obj == 0u) {
             var v = clamp(h.orbit.r2 / max(u.march.z, 1.0e-30), 0.0, 1.0);
             if (u.scales.z > 0.5) {
                 v = color_value(h, n, pos) / (u.frac.z + 1.0);
@@ -1055,7 +1217,7 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sx: f32, 
             cols.trans = 0.0;
             cols.emis = 0.0;
         }
-        if (u.cmap0.x > 0.5) {
+        if (u.cmap0.x > 0.5 && h.orbit.obj == 0u) {
             cols.base = map_color(h, pos, n, cv, cols.base, rr);
         }
         let base = cols.base;

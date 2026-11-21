@@ -426,3 +426,61 @@ fn gpu_matches_cpu_with_emissive_colors() {
     assert!(changed > 100, "emission changes only {changed} channels");
     parity(scene);
 }
+
+#[test]
+fn gpu_matches_cpu_with_composed_objects() {
+    use rmb_core::compose::{BoolOp, ObjectMaterial, Pattern, Primitive, SceneObject, Shape, Transform};
+    use rmb_core::scene::{ColorStop, Fractal, Slot};
+    let mut scene = Scene::default();
+    scene.lighting.ao_mode = rmb_core::scene::AoMode::Fast;
+    let p = |x: f64, y: f64, z: f64| rmb_core::v3(x, y, z);
+    let mut box_frac = Fractal { slots: vec![Slot::new("Amazing Box")], max_iterations: 10, bailout: 16.0, ..Default::default() };
+    box_frac.de_mode = rmb_core::scene::DeMode::Linear;
+    let two = |a: [f32; 3], b: [f32; 3]| vec![ColorStop::new(0.0, a), ColorStop::new(1.0, b)];
+    let mut emissive = two([0.2, 0.6, 1.0], [1.0, 0.4, 0.1]);
+    emissive[0].emission = 1.5;
+    scene.objects = vec![
+        // A second fractal, moved, turned and shrunk, in its own colors.
+        SceneObject {
+            name: "Box".into(),
+            shape: Shape::Fractal(Box::new(box_frac)),
+            transform: Transform { position: p(1.4, 0.4, 0.2), rotation: [10.0, 25.0, 40.0], scale: 0.25 },
+            material: ObjectMaterial { gradient: emissive, color_scale: 0.3, ..Default::default() },
+            ..Default::default()
+        },
+        // Checkered ground below the bulb.
+        SceneObject {
+            name: "Ground".into(),
+            shape: Shape::Primitive(Primitive::Plane),
+            transform: Transform { position: p(0.0, 0.0, -1.1), ..Default::default() },
+            material: ObjectMaterial { gradient: two([0.9, 0.9, 0.85], [0.15, 0.15, 0.2]), pattern: Pattern::Checker, pattern_size: 0.5, repeat: false, ..Default::default() },
+            ..Default::default()
+        },
+        // A sphere carved out of the bulb, a torus melted onto it, water in the back.
+        SceneObject { name: "Cut".into(), op: BoolOp::Subtract, shape: Shape::Primitive(Primitive::Sphere { radius: 0.5 }), transform: Transform { position: p(0.6, -0.6, 0.6), ..Default::default() }, ..Default::default() },
+        SceneObject {
+            name: "Ring".into(),
+            op: BoolOp::SmoothUnion,
+            smooth: 0.2,
+            shape: Shape::Primitive(Primitive::Torus { major: 0.9, minor: 0.08 }),
+            transform: Transform { rotation: [70.0, 0.0, 30.0], ..Default::default() },
+            material: ObjectMaterial { own: false, ..Default::default() },
+            ..Default::default()
+        },
+        SceneObject { name: "Sea".into(), shape: Shape::Primitive(Primitive::Water { amplitude: 0.03, wavelength: 0.4, phase: 1.0, angle: 30.0 }), transform: Transform { position: p(0.0, 3.0, -0.9), ..Default::default() }, ..Default::default() },
+    ];
+    let prog = Program::for_scene(&scene);
+    assert_eq!(prog.objects.len(), 5);
+    assert!(prog.missing.is_empty(), "{:?}", prog.missing);
+    validate(&rmb_gpu::codegen::march_shader(&prog), "composed objects");
+    let cpu = |s: &Scene| {
+        let mut r = rmb_core::render::cpu::CpuRenderer::new(s.clone(), 48, 32);
+        r.render_pass();
+        r.rgba8()
+    };
+    let mut plain = scene.clone();
+    plain.objects.clear();
+    let changed = cpu(&scene).iter().zip(cpu(&plain)).filter(|(a, b)| (**a as i32 - *b as i32).abs() > 8).count();
+    assert!(changed > 500, "the objects change only {changed} channels");
+    parity(scene);
+}

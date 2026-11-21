@@ -20,10 +20,10 @@ pub fn march_shader(prog: &Program) -> String {
     let mut s = String::from(PRELUDE);
     let _ = writeln!(s, "const ROTATE_4D: bool = {};", prog.rotation_4d.is_some());
     let _ = writeln!(s, "const REFLECT: bool = {};", prog.reflections);
-    s.push_str(&chain(prog, 1, 0, "u.frac.z", "u.frac.w"));
+    s.push_str(&chain(prog, "1", &Uni::main(0, "u.frac.z", "u.frac.w", "u.scales.x")));
     match prog.part2.as_deref() {
         Some(p2) => {
-            s.push_str(&chain(p2, 2, prog.slots.len(), "u.comb.y", "u.comb.z"));
+            s.push_str(&chain(p2, "2", &Uni::main(prog.slots.len(), "u.comb.y", "u.comb.z", "u.scales.y")));
             if prog.is_mix() {
                 // Mix (mirrors fractal.rs Evaluator::orbit): the dIFS from where chain 1 ends.
                 let _ = writeln!(s, "const MIX_LINEAR: bool = {};", prog.de_kind == DeKind::Linear && !prog.difs);
@@ -38,12 +38,89 @@ pub fn march_shader(prog: &Program) -> String {
         }
         None => s.push_str("\nfn fractal_de(p: vec3<f32>, h: f32) -> Orbit {\n    return chain_de_1(p, h);\n}\n"),
     }
+    s.push_str(&objects(prog));
     TEMPLATE.replace("//@ITERATE@", &s)
 }
 
-/// `iterate_<k>` and `chain_de_<k>` of one chain whose slots start at `slot_base` in the
-/// uniform slot table; `limit` / `repeat` are the uniform expressions of its settings.
-fn chain(prog: &Program, k: usize, slot_base: usize, limit: &str, repeat: &str) -> String {
+/// The composed objects (mirrors fractal.rs Evaluator::orbit): a chain per fractal object and
+/// `compose_objects`, which folds them into the estimate in order.
+fn objects(prog: &Program) -> String {
+    use rmb_core::fractal::ObjectShape;
+    let mut s = String::new();
+    for (j, o) in prog.objects.iter().enumerate() {
+        if let ObjectShape::Fractal(f) = &o.shape {
+            s.push_str(&chain(f, &format!("o{j}"), &Uni::object(j)));
+        }
+    }
+    s.push_str("\nfn compose_objects(p: vec3<f32>, h: f32, o_in: Orbit) -> Orbit {\n    var o = o_in;\n");
+    for (j, o) in prog.objects.iter().enumerate() {
+        let _ = writeln!(s, "    {{\n        let ob = objs[{j}];\n        let q = obj_local({j}u, p);\n        let sc = ob.inv0.w;\n        let op = u32(ob.inv1.w);\n        var b: Orbit;");
+        match &o.shape {
+            ObjectShape::Fractal(_) => {
+                let _ = writeln!(
+                    s,
+                    "        b = chain_de_o{j}(q, h / sc);\n        b.de = max(b.de * ob.misc.z, 0.0) * sc;\n        // A fractal has no distance inside; cutting with it needs one.\n        if (b.de <= 0.0 && (op == 1u || op == 4u)) {{\n            b.de = -2.0 * h;\n        }}"
+                );
+            }
+            ObjectShape::Primitive(kind, _) => {
+                let _ = writeln!(s, "        b.de = prim_de({kind}u, ob.prim, q) * sc;\n        b.escaped = true;");
+            }
+        }
+        let _ = writeln!(s, "        let c = combine_op(op, o.de, b.de, ob.inv2.w);\n        if (c.y > 0.5) {{\n            o = b;\n            o.obj = {}u;\n        }}\n        o.de = c.x;\n    }}", j + 1);
+    }
+    s.push_str("    return o;\n}\n");
+    s
+}
+
+/// Where a chain reads its settings: WGSL expressions (uniforms for the main fractal, the
+/// object buffer for composed objects). `slot_iter` is the iteration count of slot `slot`.
+struct Uni {
+    wslice: String,
+    julia_on: String,
+    julia: String,
+    limit: String,
+    repeat: String,
+    bail2: String,
+    slot_iter: String,
+    scale: String,
+    rot4: &'static str,
+}
+
+impl Uni {
+    /// A chain of the main fractal whose slots start at `slot_base` in the uniform slot table.
+    fn main(slot_base: usize, limit: &str, repeat: &str, scale: &str) -> Uni {
+        Uni {
+            wslice: "u.frac.x".into(),
+            julia_on: "u.frac.y > 0.5".into(),
+            julia: "u.julia".into(),
+            limit: limit.into(),
+            repeat: repeat.into(),
+            bail2: "u.march.z".into(),
+            slot_iter: format!("u.slots[slot + {slot_base}u].x"),
+            scale: scale.into(),
+            rot4: "ROTATE_4D",
+        }
+    }
+
+    /// The fractal of composed object `j` (settings in `objs[j]`).
+    fn object(j: usize) -> Uni {
+        Uni {
+            wslice: format!("objs[{j}].frac.x"),
+            julia_on: format!("objs[{j}].frac.y > 0.5"),
+            julia: format!("objs[{j}].julia"),
+            limit: format!("objs[{j}].frac.z"),
+            repeat: format!("objs[{j}].frac.w"),
+            bail2: format!("objs[{j}].misc.x"),
+            slot_iter: format!("objs[{j}].slots[slot / 4u][slot % 4u]"),
+            scale: format!("objs[{j}].misc.y"),
+            rot4: "false",
+        }
+    }
+}
+
+/// `iterate_<k>` and `chain_de_<k>` of one chain.
+fn chain(prog: &Program, k: &str, cfg: &Uni) -> String {
+    let (limit, repeat) = (cfg.limit.as_str(), cfg.repeat.as_str());
     let mut s = String::new();
     let _ = writeln!(s, "\nconst NSLOTS_{k}: u32 = {}u;", prog.slots.len());
     let _ = writeln!(s, "const NUMERIC_{k}: bool = {};", prog.numeric);
@@ -54,11 +131,13 @@ fn chain(prog: &Program, k: usize, slot_base: usize, limit: &str, repeat: &str) 
     let names: Vec<String> = (0..STATE_COUNT).map(state_name).collect();
     let _ = writeln!(
         s,
-        "    var v = vec4<fl>(fl(p.x), fl(p.y), fl(p.z), fl(u.frac.x));\n    if (ROTATE_4D) {{\n        let q = vec4<fl>(fl(p.x), fl(p.y), fl(p.z), 0.0);\n        v = vec4<fl>(dot(vec4<fl>(u.rot4[0]), q), dot(vec4<fl>(u.rot4[1]), q), dot(vec4<fl>(u.rot4[2]), q), dot(vec4<fl>(u.rot4[3]), q));\n    }}"
+        "    var v = vec4<fl>(fl(p.x), fl(p.y), fl(p.z), fl({}));\n    if ({}) {{\n        let q = vec4<fl>(fl(p.x), fl(p.y), fl(p.z), 0.0);\n        v = vec4<fl>(dot(vec4<fl>(u.rot4[0]), q), dot(vec4<fl>(u.rot4[1]), q), dot(vec4<fl>(u.rot4[2]), q), dot(vec4<fl>(u.rot4[3]), q));\n    }}",
+        cfg.wslice, cfg.rot4
     );
     let _ = writeln!(s, "    var {}: fl = v.x;\n    var {}: fl = v.y;\n    var {}: fl = v.z;\n    var {}: fl = v.w;", names[0], names[1], names[2], names[3]);
     let _ = writeln!(s, "    var {}: fl = v.x;\n    var {}: fl = v.y;\n    var {}: fl = v.z;\n    var {}: fl = v.w;", names[4], names[5], names[6], names[7]);
-    let _ = writeln!(s, "    if (u.frac.y > 0.5) {{\n        {} = u.julia.x;\n        {} = u.julia.y;\n        {} = u.julia.z;\n        {} = u.julia.w;\n    }}", names[4], names[5], names[6], names[7]);
+    let (jo, j) = (&cfg.julia_on, &cfg.julia);
+    let _ = writeln!(s, "    if ({jo}) {{\n        {} = {j}.x;\n        {} = {j}.y;\n        {} = {j}.z;\n        {} = {j}.w;\n    }}", names[4], names[5], names[6], names[7]);
     let _ = writeln!(s, "    var {}: fl = 1.0;\n    var {}: fl = 0.0;", names[8], names[9]);
     let _ = writeln!(s, "    var {}: fl = dot(v, v);\n    var {}: fl = 0.0;", names[STATE_ROUT], names[STATE_ROLD]);
     // A mix continues from the first chain's point; the constant stays the original one.
@@ -71,14 +150,14 @@ fn chain(prog: &Program, k: usize, slot_base: usize, limit: &str, repeat: &str) 
     for name in &names[STATE_AUX..STATE_JULIA] {
         let _ = writeln!(s, "    var {name}: fl = 0.0;");
     }
-    let _ = writeln!(s, "    let {}: fl = select(0.0, 1.0, u.frac.y > 0.5);", names[STATE_JULIA]);
+    let _ = writeln!(s, "    let {}: fl = select(0.0, 1.0, {jo});", names[STATE_JULIA]);
     // dIFS: VaryScale starts at 1.
     let _ = writeln!(s, "    if (DIFS_{k}) {{\n        {} = 1.0;\n    }}\n    out.de = 65535.0;", names[STATE_AUX]);
     let _ = writeln!(s, "    if (NSLOTS_{k} == 0u) {{\n        return out;\n    }}");
     let _ = writeln!(s, "    let limit = select(u32({limit}), fixed_n, use_fixed);\n    let repeat_from = u32({repeat});");
     s.push_str("    var n = 0u;\n");
     // Interpolation hybrid (mirrors fractal.rs): both formulas from the same point, blended.
-    let blend = k == 1 && prog.blend.is_some() && prog.slots.len() >= 2;
+    let blend = k == "1" && prog.blend.is_some() && prog.slots.len() >= 2;
     if blend {
         let (x, y, z, w, dr, rout, rold, it) = (&names[0], &names[1], &names[2], &names[3], &names[8], &names[STATE_ROUT], &names[STATE_ROLD], &names[9]);
         let _ = writeln!(s, "    loop {{\n        if (n >= limit) {{\n            break;\n        }}\n        {rold} = {rout};\n        {it} = fl(n);");
@@ -110,10 +189,10 @@ fn chain(prog: &Program, k: usize, slot_base: usize, limit: &str, repeat: &str) 
     s.push_str("            default: {}\n        }\n");
     let _ = write!(
         s,
-        "        if (!transform) {{\n            n += 1u;\n        }}\n        count += 1u;\n        if (count >= u.slots[slot + {slot_base}u].x) {{\n            count = 0u;\n            slot += 1u;\n            if (slot >= NSLOTS_{k}) {{\n                slot = repeat_from;\n            }}\n        }}\n\
+        "        if (!transform) {{\n            n += 1u;\n        }}\n        count += 1u;\n        if (count >= {slot_iter}) {{\n            count = 0u;\n            slot += 1u;\n            if (slot >= NSLOTS_{k}) {{\n                slot = repeat_from;\n            }}\n        }}\n\
          \x20       if (DIFS_{k}) {{\n            if (!transform) {{\n                let de_i = f32({rout} / {a0});\n                if (de_i < out.de) {{\n                    out.de = de_i;\n                    out.trap = f32({a2} * {a2});\n                }}\n            }}\n            continue;\n        }}\n\
          \x20       if (!transform) {{\n            let r2 = f32({x} * {x} + {y} * {y} + {z} * {z} + {w} * {w});\n            out.trap = min(out.trap, r2);\n            {rout} = fl(r2);\n\
-         \x20           if (!use_fixed && !(r2 <= u.march.z)) {{\n                out.escaped = true;\n                if (!is_finite(r2)) {{\n                    {x} = prev_s.x;\n                    {y} = prev_s.y;\n                    {z} = prev_s.z;\n                    {w} = prev_s.w;\n                    {dr} = prev_dr;\n                }}\n                break;\n            }}\n        }}\n    }}\n",
+         \x20           if (!use_fixed && !(r2 <= {bail2})) {{\n                out.escaped = true;\n                if (!is_finite(r2)) {{\n                    {x} = prev_s.x;\n                    {y} = prev_s.y;\n                    {z} = prev_s.z;\n                    {w} = prev_s.w;\n                    {dr} = prev_dr;\n                }}\n                break;\n            }}\n        }}\n    }}\n",
         x = names[0],
         y = names[1],
         z = names[2],
@@ -121,13 +200,15 @@ fn chain(prog: &Program, k: usize, slot_base: usize, limit: &str, repeat: &str) 
         rout = names[STATE_ROUT],
         a0 = names[STATE_AUX],
         a2 = names[STATE_AUX + 2],
-        dr = names[8]
+        dr = names[8],
+        slot_iter = cfg.slot_iter,
+        bail2 = cfg.bail2,
     );
     if blend {
         s.push_str("    }\n");
     }
     let _ = writeln!(s, "    out.s = vec4<f32>(f32({}), f32({}), f32({}), f32({}));\n    out.rold = f32({});\n    out.dr = f32({});\n    out.n = n;\n    return out;\n}}", names[0], names[1], names[2], names[3], names[STATE_ROLD], names[8]);
-    s.push_str(&CHAIN_DE.replace("SCALE_K", if k == 1 { "u.scales.x" } else { "u.scales.y" }).replace("_K", &format!("_{k}")));
+    s.push_str(&CHAIN_DE.replace("SCALE_K", &cfg.scale).replace("_K", &format!("_{k}")));
     s
 }
 
