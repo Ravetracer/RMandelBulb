@@ -31,6 +31,9 @@ pub struct Scene {
     pub cut: Cutting,
     /// Free text (author, notes, where it was imported from).
     pub notes: String,
+    /// Keyframe animation (keyframe scenes have none).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub animation: Option<crate::animation::Animation>,
 }
 
 impl Default for Scene {
@@ -50,6 +53,7 @@ impl Default for Scene {
             post: Post::default(),
             cut: Cutting::default(),
             notes: String::new(),
+            animation: None,
         }
     }
 }
@@ -100,6 +104,20 @@ impl Camera {
         self.forward = f;
         self.right = r;
         self.up = r.cross(f).normalize();
+    }
+
+    /// Orientation as a quaternion (x → right, y → forward, z → up).
+    pub fn orientation(&self) -> crate::math::Quat {
+        crate::math::Quat::from_basis(self.right, self.forward, self.up)
+    }
+
+    /// Sets the orientation from a quaternion (see [`Camera::orientation`]).
+    pub fn set_orientation(&mut self, q: crate::math::Quat) {
+        let (r, f, u) = q.normalize().basis();
+        self.right = r;
+        self.forward = f;
+        self.up = u;
+        self.orthonormalize();
     }
 
     /// Re-orthonormalizes the basis (after many incremental rotations).

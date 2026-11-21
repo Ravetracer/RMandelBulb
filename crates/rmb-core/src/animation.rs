@@ -1,0 +1,957 @@
+// SPDX-License-Identifier: LGPL-2.1-or-later
+
+//! Keyframe animation: keyframes are whole scenes; every number blends between them.
+//!
+//! The camera follows its own path: a centripetal Catmull-Rom spline through the keyframe
+//! positions (no overshoot, no loops) and a quaternion spline (squad) for the orientation.
+//! Frames are spread over that path by one of three timings: frame counts per keyframe, the
+//! times of a recorded flight (with a smoothed speed profile), or a steady pace measured as
+//! perceived speed (movement relative to the distance to the surface, plus turning).
+//! An optional "cameraman" pass then low-passes position and orientation per frame (zero
+//! phase, ends held), can turn the view toward the direction of travel, level the horizon and
+//! bank into turns.
+//!
+//! Everything else in the scene blends with a monotone cubic (no overshoot) through the
+//! keyframe values: the scenes are blended as JSON, numbers interpolated (integers rounded,
+//! some magnitudes on a log scale), everything else held from the keyframe before.
+
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+use crate::math::{Quat, V3};
+use crate::scene::Scene;
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Animation {
+    pub fps: f64,
+    pub keyframes: Vec<Keyframe>,
+    pub timing: Timing,
+    /// Steady timing: length of the animation in seconds.
+    pub length_s: f64,
+    /// Steady timing: seconds to speed up at the start and to slow down at the end.
+    pub ease_in_s: f64,
+    pub ease_out_s: f64,
+    /// Recorded timing: the speed is smoothed over this many seconds (0: as flown).
+    pub speed_smoothing_s: f64,
+    /// Steady timing: measure speed relative to the distance to the surface (slower close to
+    /// it, as it feels), else in world units.
+    pub surface_relative: bool,
+    pub camera: CameraSmoothing,
+    /// The raw recorded flight (kept to create the keyframes again).
+    pub recording: Vec<CamSample>,
+    /// Allowed deviation from the flight when keyframes are created from it.
+    pub key_tolerance: f64,
+}
+
+impl Default for Animation {
+    fn default() -> Self {
+        Animation {
+            fps: 30.0,
+            keyframes: Vec::new(),
+            timing: Timing::Keyframes,
+            length_s: 10.0,
+            ease_in_s: 1.0,
+            ease_out_s: 1.0,
+            speed_smoothing_s: 1.0,
+            surface_relative: true,
+            camera: CameraSmoothing::default(),
+            recording: Vec::new(),
+            key_tolerance: 0.05,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Keyframe {
+    pub scene: Scene,
+    /// Keyframe timing: frames from this keyframe to the next.
+    pub frames: u32,
+    /// Keyframe timing: how the frames to the next keyframe are spread.
+    pub easing: Easing,
+    /// Time in the recorded flight (seconds from its start).
+    pub time_s: Option<f64>,
+}
+
+impl Default for Keyframe {
+    fn default() -> Self {
+        Keyframe { scene: Scene::default(), frames: 60, easing: Easing::Linear, time_s: None }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum Easing {
+    /// Even steps (the path still bends smoothly through the keyframe).
+    #[default]
+    Linear,
+    /// Starts and stops slowly.
+    Smooth,
+    EaseIn,
+    EaseOut,
+}
+
+impl Easing {
+    pub const ALL: [Easing; 4] = [Easing::Linear, Easing::Smooth, Easing::EaseIn, Easing::EaseOut];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Easing::Linear => "Even",
+            Easing::Smooth => "Slow in and out",
+            Easing::EaseIn => "Slow start",
+            Easing::EaseOut => "Slow end",
+        }
+    }
+
+    pub fn apply(self, t: f64) -> f64 {
+        let t = t.clamp(0.0, 1.0);
+        match self {
+            Easing::Linear => t,
+            Easing::Smooth => t * t * (3.0 - 2.0 * t),
+            Easing::EaseIn => t * t,
+            Easing::EaseOut => 1.0 - (1.0 - t) * (1.0 - t),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum Timing {
+    /// Frame counts and easing per keyframe.
+    #[default]
+    Keyframes,
+    /// The times of the recorded flight, with a smoothed speed.
+    Recorded,
+    /// One steady pace over the whole length.
+    Steady,
+}
+
+impl Timing {
+    pub const ALL: [Timing; 3] = [Timing::Keyframes, Timing::Recorded, Timing::Steady];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Timing::Keyframes => "Per keyframe",
+            Timing::Recorded => "As flown",
+            Timing::Steady => "Steady",
+        }
+    }
+}
+
+/// The "cameraman": smoothing of the camera per frame.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CameraSmoothing {
+    pub on: bool,
+    /// Low-pass window of the position (seconds).
+    pub position_s: f64,
+    /// Low-pass window of the orientation (seconds).
+    pub rotation_s: f64,
+    /// 0..1: turns the view toward the direction of travel.
+    pub look_ahead: f64,
+    /// 0..1: removes the roll (keeps the horizon level).
+    pub level_horizon: f64,
+    /// 0..1: rolls into turns like a plane or drone.
+    pub bank: f64,
+}
+
+impl Default for CameraSmoothing {
+    fn default() -> Self {
+        CameraSmoothing { on: false, position_s: 0.5, rotation_s: 0.8, look_ahead: 0.0, level_horizon: 0.0, bank: 0.0 }
+    }
+}
+
+/// One sample of a recorded flight.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CamSample {
+    pub t: f64,
+    pub pos: V3,
+    pub rot: Quat,
+    pub fov: f64,
+}
+
+impl CamSample {
+    pub fn of(scene: &Scene, t: f64) -> CamSample {
+        CamSample { t, pos: scene.camera.position, rot: scene.camera.orientation(), fov: scene.camera.fov }
+    }
+}
+
+/// Camera of one frame.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FrameCam {
+    /// Position in keyframe space (keyframe index plus fraction).
+    pub u: f64,
+    pub pos: V3,
+    pub rot: Quat,
+    pub fov: f64,
+}
+
+// ---------------------------------------------------------------------------------------------
+// Splines
+
+/// Centripetal Catmull-Rom between `p1` and `p2` (`p0`, `p3` the neighbours) at `t` in 0..1.
+fn catmull_rom(p0: V3, p1: V3, p2: V3, p3: V3, t: f64) -> V3 {
+    let k = |a: V3, b: V3| (b - a).length().sqrt().max(1e-12);
+    let (t0, t1) = (0.0, k(p0, p1));
+    let t2 = t1 + k(p1, p2);
+    let t3 = t2 + k(p2, p3);
+    let s = t1 + (t2 - t1) * t;
+    let lerp = |a: V3, b: V3, ta: f64, tb: f64| a * ((tb - s) / (tb - ta)) + b * ((s - ta) / (tb - ta));
+    let a1 = lerp(p0, p1, t0, t1);
+    let a2 = lerp(p1, p2, t1, t2);
+    let a3 = lerp(p2, p3, t2, t3);
+    let b1 = lerp(a1, a2, t0, t2);
+    let b2 = lerp(a2, a3, t1, t3);
+    lerp(b1, b2, t1, t2)
+}
+
+/// Monotone cubic Hermite through `v1`..`v2` (neighbours `v0`, `v3`): no overshoot.
+fn monotone(v0: f64, v1: f64, v2: f64, v3: f64, t: f64) -> f64 {
+    let d1 = v1 - v0;
+    let d = v2 - v1;
+    let d3 = v3 - v2;
+    let tangent = |a: f64, b: f64| if a * b <= 0.0 { 0.0 } else { 2.0 * a * b / (a + b) };
+    let (m1, m2) = (tangent(d1, d), tangent(d, d3));
+    let (t2, t3) = (t * t, t * t * t);
+    v1 * (2.0 * t3 - 3.0 * t2 + 1.0) + m1 * (t3 - 2.0 * t2 + t) + v2 * (-2.0 * t3 + 3.0 * t2) + m2 * (t3 - t2)
+}
+
+/// Squad interpolation of orientations `q[i]` → `q[i+1]` (signs already made consistent).
+fn squad(q: &[Quat], i: usize, t: f64) -> Quat {
+    let n = q.len();
+    let at = |k: isize| q[k.clamp(0, n as isize - 1) as usize];
+    let inner = |k: isize| {
+        let qk = at(k);
+        let a = qk.conj().times(at(k + 1)).log();
+        let b = qk.conj().times(at(k - 1)).log();
+        qk.times(Quat::exp((a + b) * -0.25))
+    };
+    let (q1, q2) = (at(i as isize), at(i as isize + 1));
+    let (s1, s2) = (inner(i as isize), inner(i as isize + 1));
+    q1.slerp(q2, t).slerp(s1.slerp(s2, t), 2.0 * t * (1.0 - t))
+}
+
+/// Quaternions with neighbours on the same side (no flips).
+fn consistent(mut q: Vec<Quat>) -> Vec<Quat> {
+    for i in 1..q.len() {
+        if q[i].dot(q[i - 1]) < 0.0 {
+            q[i] = q[i].negated();
+        }
+    }
+    q
+}
+
+/// A camera path through keys (positions, orientations, field of view).
+struct CamSpline {
+    pos: Vec<V3>,
+    rot: Vec<Quat>,
+    fov: Vec<f64>,
+}
+
+impl CamSpline {
+    fn new(pos: Vec<V3>, rot: Vec<Quat>, fov: Vec<f64>) -> CamSpline {
+        CamSpline { pos, rot: consistent(rot), fov }
+    }
+
+    fn keys(&self) -> usize {
+        self.pos.len()
+    }
+
+    /// Camera at `u` (key index plus fraction).
+    fn at(&self, u: f64) -> FrameCam {
+        let n = self.keys();
+        if n == 1 {
+            return FrameCam { u: 0.0, pos: self.pos[0], rot: self.rot[0], fov: self.fov[0] };
+        }
+        let u = u.clamp(0.0, (n - 1) as f64);
+        let i = (u.floor() as usize).min(n - 2);
+        let t = u - i as f64;
+        let p = |k: isize| self.pos[k.clamp(0, n as isize - 1) as usize];
+        let ii = i as isize;
+        // Extrapolated end points that continue the curvature (a straight continuation with
+        // only two keys), so the path does not start or end with a straight stub or a hook.
+        let ext = |a: V3, b: V3, c: Option<V3>| match c {
+            Some(c) => a * 3.0 - b * 3.0 + c,
+            None => a * 2.0 - b,
+        };
+        let p0 = if i == 0 { ext(p(0), p(1), (n > 2).then(|| p(2))) } else { p(ii - 1) };
+        let p3 = if i + 2 >= n { ext(p(ii + 1), p(ii), (n > 2).then(|| p(ii - 1))) } else { p(ii + 2) };
+        let f = |k: isize| self.fov[k.clamp(0, n as isize - 1) as usize];
+        FrameCam { u, pos: catmull_rom(p0, p(ii), p(ii + 1), p3, t), rot: squad(&self.rot, i, t), fov: monotone(f(ii - 1), f(ii), f(ii + 1), f(ii + 2), t) }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Blending the other parameters
+
+/// Scene fields interpolated on a log scale (they change by orders of magnitude).
+const LOG_FIELDS: [&str; 5] = ["march.max_distance", "march.near", "lighting.ao_radius", "dof.focus_distance", "fractal.bailout"];
+
+fn same_shape(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Number(_), Value::Number(_)) => true,
+        (Value::Array(x), Value::Array(y)) => x.len() == y.len(),
+        (Value::Object(_), Value::Object(_)) => true,
+        _ => false,
+    }
+}
+
+/// Blends `v1` → `v2` at `t` (neighbours `v0`, `v3`); `path` is the dotted field name.
+fn blend(v0: &Value, v1: &Value, v2: &Value, v3: &Value, t: f64, path: &str) -> Value {
+    if !same_shape(v1, v2) {
+        return v1.clone();
+    }
+    let v0 = if same_shape(v0, v1) { v0 } else { v1 };
+    let v3 = if same_shape(v3, v2) { v3 } else { v2 };
+    match (v1, v2) {
+        (Value::Number(a), Value::Number(b)) => {
+            let g = |v: &Value| v.as_f64().unwrap_or(0.0);
+            let (x0, x1, x2, x3) = (g(v0), a.as_f64().unwrap_or(0.0), b.as_f64().unwrap_or(0.0), g(v3));
+            let log = LOG_FIELDS.contains(&path) && [x0, x1, x2, x3].iter().all(|x| *x > 0.0);
+            let r = if log { monotone(x0.ln(), x1.ln(), x2.ln(), x3.ln(), t).exp() } else { monotone(x0, x1, x2, x3, t) };
+            if a.is_i64() || a.is_u64() {
+                let r = r.round();
+                if a.is_u64() && b.is_u64() { Value::from(r.max(0.0) as u64) } else { Value::from(r as i64) }
+            } else {
+                serde_json::Number::from_f64(r).map(Value::Number).unwrap_or_else(|| v1.clone())
+            }
+        }
+        (Value::Array(a), Value::Array(b)) => {
+            let el = |v: &Value, k: usize| v.as_array().and_then(|x| x.get(k)).cloned().unwrap_or(Value::Null);
+            Value::Array((0..a.len()).map(|k| blend(&el(v0, k), &a[k], &b[k], &el(v3, k), t, path)).collect())
+        }
+        (Value::Object(a), Value::Object(b)) => {
+            let mut out = a.clone();
+            for (key, va) in a {
+                if key == "camera" && path.is_empty() || key == "animation" {
+                    continue;
+                }
+                let Some(vb) = b.get(key) else { continue };
+                let p = if path.is_empty() { key.clone() } else { format!("{path}.{key}") };
+                let n0 = v0.get(key).unwrap_or(va);
+                let n3 = v3.get(key).unwrap_or(vb);
+                out.insert(key.clone(), blend(n0, va, vb, n3, t, &p));
+            }
+            Value::Object(out)
+        }
+        _ => v1.clone(),
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Distance to the surface (for perceived speed and keyframe errors)
+
+struct Surface {
+    progs: Vec<crate::Program>,
+}
+
+impl Surface {
+    fn new(scenes: &[&Scene]) -> Surface {
+        Surface { progs: scenes.iter().map(|s| crate::Program::new(&s.fractal, &s.cut)).collect() }
+    }
+
+    /// Distance from `p` to the fractal of key `k` (at least a tiny positive value).
+    fn distance(&self, k: usize, p: V3) -> f64 {
+        let Some(prog) = self.progs.get(k.min(self.progs.len().saturating_sub(1))) else { return 1.0 };
+        if prog.inside {
+            return 1.0;
+        }
+        let mut ev = prog.evaluator();
+        let h = 1e-7 * (1.0 + p.length());
+        let d = ev.de(p, h);
+        if d.is_finite() { d.max(1e-9) } else { 1.0 }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Smoothing helpers
+
+/// Zero-phase Gaussian low-pass of `v` (σ in samples); the ends are held by point reflection.
+fn gauss_smooth<T: Copy>(v: &[T], sigma: f64, zero: T, add: impl Fn(T, T, f64) -> T, reflect: impl Fn(T, T) -> T) -> Vec<T> {
+    let n = v.len();
+    if n < 3 || sigma < 0.3 {
+        return v.to_vec();
+    }
+    let r = (sigma * 3.0).ceil() as isize;
+    let w: Vec<f64> = (-r..=r).map(|k| (-(k * k) as f64 / (2.0 * sigma * sigma)).exp()).collect();
+    let get = |i: isize| -> T {
+        if i < 0 {
+            let k = (-i).min(n as isize - 1) as usize;
+            reflect(v[0], v[k])
+        } else if i >= n as isize {
+            let k = (2 * (n as isize - 1) - i).max(0) as usize;
+            reflect(v[n - 1], v[k])
+        } else {
+            v[i as usize]
+        }
+    };
+    (0..n as isize)
+        .map(|i| {
+            let (mut acc, mut ws) = (zero, 0.0);
+            for (j, wk) in w.iter().enumerate() {
+                acc = add(acc, get(i + j as isize - r), *wk);
+                ws += wk;
+            }
+            add(zero, acc, 1.0 / ws)
+        })
+        .collect()
+}
+
+fn smooth_positions(p: &[V3], sigma: f64) -> Vec<V3> {
+    gauss_smooth(p, sigma, V3::ZERO, |a, b, w| a + b * w, |c, x| c * 2.0 - x)
+}
+
+/// Orientations smoothed in the tangent space of their neighbourhood (signs consistent).
+fn smooth_rotations(q: &[Quat], sigma: f64) -> Vec<Quat> {
+    let q = consistent(q.to_vec());
+    let z = Quat { w: 0.0, x: 0.0, y: 0.0, z: 0.0 };
+    let reflect = |c: Quat, x: Quat| {
+        let x = if c.dot(x) < 0.0 { x.negated() } else { x };
+        c.times(Quat::exp(-c.conj().times(x).log()))
+    };
+    let s = gauss_smooth(&q, sigma, z, |a, b, w| a.plus(b.scale(w)), reflect);
+    s.into_iter().map(|x| x.normalize()).collect()
+}
+
+// ---------------------------------------------------------------------------------------------
+// The plan
+
+/// An animation prepared for rendering: the camera of every frame and the keyframe scenes.
+pub struct AnimationPlan {
+    values: Vec<Value>,
+    keys: Vec<Scene>,
+    frames: Vec<FrameCam>,
+    fps: f64,
+}
+
+impl AnimationPlan {
+    pub fn new(anim: &Animation) -> Result<AnimationPlan, String> {
+        if anim.keyframes.is_empty() {
+            return Err("the animation has no keyframes".into());
+        }
+        let keys: Vec<Scene> = anim.keyframes.iter().map(|k| Scene { animation: None, ..k.scene.clone() }).collect();
+        let values = keys.iter().map(|s| serde_json::to_value(s).map_err(|e| e.to_string())).collect::<Result<Vec<_>, _>>()?;
+        let spline = CamSpline::new(
+            keys.iter().map(|s| s.camera.position).collect(),
+            keys.iter().map(|s| s.camera.orientation()).collect(),
+            keys.iter().map(|s| s.camera.fov).collect(),
+        );
+        let fps = anim.fps.clamp(1.0, 240.0);
+        let us = frame_params(anim, &spline, &keys, fps);
+        let mut frames: Vec<FrameCam> = us.iter().map(|u| spline.at(*u)).collect();
+        if anim.camera.on {
+            cameraman(&mut frames, &anim.camera, fps, &keys);
+        }
+        Ok(AnimationPlan { values, keys, frames, fps })
+    }
+
+    pub fn frame_count(&self) -> usize {
+        self.frames.len()
+    }
+
+    pub fn fps(&self) -> f64 {
+        self.fps
+    }
+
+    pub fn camera(&self, frame: usize) -> FrameCam {
+        self.frames[frame.min(self.frames.len() - 1)]
+    }
+
+    /// Positions of all frames (to draw the path).
+    pub fn path(&self) -> Vec<V3> {
+        self.frames.iter().map(|f| f.pos).collect()
+    }
+
+    /// The frame nearest to each keyframe.
+    pub fn key_frames(&self) -> Vec<usize> {
+        (0..self.keys.len())
+            .map(|k| {
+                self.frames
+                    .iter()
+                    .enumerate()
+                    .min_by(|a, b| (a.1.u - k as f64).abs().total_cmp(&(b.1.u - k as f64).abs()))
+                    .map(|(i, _)| i)
+                    .unwrap_or(0)
+            })
+            .collect()
+    }
+
+    /// The scene of frame `frame`.
+    pub fn scene_at(&self, frame: usize) -> Scene {
+        let fc = self.camera(frame);
+        let n = self.keys.len();
+        let mut scene = if n == 1 {
+            self.keys[0].clone()
+        } else {
+            let i = (fc.u.floor() as usize).min(n - 2);
+            let t = fc.u - i as f64;
+            if t <= 1e-12 {
+                self.keys[i].clone()
+            } else if t >= 1.0 - 1e-12 {
+                self.keys[i + 1].clone()
+            } else {
+                let v = |k: isize| &self.values[k.clamp(0, n as isize - 1) as usize];
+                let ii = i as isize;
+                let b = blend(v(ii - 1), v(ii), v(ii + 1), v(ii + 2), t, "");
+                serde_json::from_value(b).unwrap_or_else(|_| self.keys[i].clone())
+            }
+        };
+        scene.camera.position = fc.pos;
+        scene.camera.set_orientation(fc.rot);
+        scene.camera.fov = fc.fov;
+        scene.animation = None;
+        scene
+    }
+}
+
+/// Keyframe-space position of every frame for the animation's timing.
+fn frame_params(anim: &Animation, spline: &CamSpline, keys: &[Scene], fps: f64) -> Vec<f64> {
+    let n = spline.keys();
+    if n == 1 {
+        let frames = match anim.timing {
+            Timing::Steady => (anim.length_s * fps).round().max(1.0) as usize,
+            _ => anim.keyframes[0].frames.max(1) as usize,
+        };
+        return vec![0.0; frames];
+    }
+    match anim.timing {
+        Timing::Keyframes => {
+            let mut us = Vec::new();
+            for (i, k) in anim.keyframes.iter().take(n - 1).enumerate() {
+                let f = k.frames.max(1);
+                for j in 0..f {
+                    us.push(i as f64 + k.easing.apply(j as f64 / f as f64));
+                }
+            }
+            us.push((n - 1) as f64);
+            us
+        }
+        Timing::Steady => {
+            let (u, s) = perceived_length(anim, spline, keys);
+            let total = *s.last().unwrap_or(&0.0);
+            let frames = (anim.length_s * fps).round().max(2.0) as usize;
+            let len = (frames - 1) as f64 / fps;
+            let prof = ease_profile(frames, len, anim.ease_in_s, anim.ease_out_s, fps);
+            prof.iter().map(|p| invert(&u, &s, p * total)).collect()
+        }
+        Timing::Recorded => {
+            // Key times: recorded, else from the frame counts.
+            let mut times = Vec::with_capacity(n);
+            let mut acc = 0.0;
+            for (i, k) in anim.keyframes.iter().enumerate() {
+                let t = k.time_s.unwrap_or(acc);
+                times.push(if i > 0 { t.max(times[i - 1] + 1e-3) } else { t });
+                acc = times[i] + k.frames.max(1) as f64 / fps;
+            }
+            let t0 = times[0];
+            let duration = times[n - 1] - t0;
+            let (u, s) = perceived_length(anim, spline, keys);
+            let s_key: Vec<f64> = (0..n).map(|k| s[u.iter().position(|x| *x >= k as f64 - 1e-9).unwrap_or(u.len() - 1)]).collect();
+            let frames = (duration * fps).round().max(1.0) as usize + 1;
+            // Path position per frame as flown (even within a segment), then a smoothed speed.
+            let flown: Vec<f64> = (0..frames)
+                .map(|f| {
+                    let t = t0 + f as f64 / fps;
+                    let k = times.iter().rposition(|x| *x <= t).unwrap_or(0).min(n - 2);
+                    let a = ((t - times[k]) / (times[k + 1] - times[k])).clamp(0.0, 1.0);
+                    s_key[k] + (s_key[k + 1] - s_key[k]) * a
+                })
+                .collect();
+            let mut vel: Vec<f64> = flown.windows(2).map(|w| w[1] - w[0]).collect();
+            let sigma = anim.speed_smoothing_s * fps;
+            if sigma > 0.3 && !vel.is_empty() {
+                // Speeds are smoothed with even reflection (the speed itself is held at the ends).
+                vel = gauss_smooth(&vel, sigma, 0.0, |a, b, w| a + b * w, |_, x| x);
+            }
+            let total: f64 = vel.iter().sum();
+            let target = *s.last().unwrap_or(&0.0);
+            let k = if total > 0.0 { target / total } else { 0.0 };
+            let mut pos = 0.0;
+            let mut us = vec![0.0];
+            for v in vel {
+                pos += v * k;
+                us.push(invert(&u, &s, pos));
+            }
+            us
+        }
+    }
+}
+
+/// Dense samples of the path: keyframe-space positions and their cumulative perceived length.
+fn perceived_length(anim: &Animation, spline: &CamSpline, keys: &[Scene]) -> (Vec<f64>, Vec<f64>) {
+    const PER_KEY: usize = 96;
+    let n = spline.keys();
+    let count = (n - 1) * PER_KEY + 1;
+    let us: Vec<f64> = (0..count).map(|i| i as f64 / PER_KEY as f64).collect();
+    let cams: Vec<FrameCam> = us.iter().map(|u| spline.at(*u)).collect();
+    let surf = if anim.surface_relative { Some(Surface::new(&keys.iter().collect::<Vec<_>>())) } else { None };
+    let world: f64 = cams.windows(2).map(|w| (w[1].pos - w[0].pos).length()).sum::<f64>().max(1e-12);
+    let dist: Vec<f64> = match &surf {
+        Some(s) => smooth_scalar(&cams.iter().map(|c| s.distance(c.u.floor() as usize, c.pos)).collect::<Vec<_>>(), 3.0),
+        None => vec![world; cams.len()],
+    };
+    let mut s = vec![0.0];
+    for i in 1..cams.len() {
+        let d = 0.5 * (dist[i] + dist[i - 1]);
+        let mv = (cams[i].pos - cams[i - 1].pos).length() / d;
+        let turn = cams[i].rot.angle_to(cams[i - 1].rot);
+        s.push(s[i - 1] + (mv * mv + turn * turn).sqrt() + 1e-9);
+    }
+    (us, s)
+}
+
+fn smooth_scalar(v: &[f64], sigma: f64) -> Vec<f64> {
+    gauss_smooth(v, sigma, 0.0, |a, b, w| a + b * w, |_, x| x)
+}
+
+/// Keyframe-space position where the cumulative length `s` reaches `target`.
+fn invert(u: &[f64], s: &[f64], target: f64) -> f64 {
+    let i = s.partition_point(|x| *x < target);
+    if i == 0 {
+        return u[0];
+    }
+    if i >= s.len() {
+        return *u.last().unwrap_or(&0.0);
+    }
+    let a = (target - s[i - 1]) / (s[i] - s[i - 1]).max(1e-300);
+    u[i - 1] + (u[i] - u[i - 1]) * a
+}
+
+/// Fraction of the way (0..1) per frame for a speed that ramps up over `ein` seconds and down
+/// over `eout` seconds (smooth ramps), constant in between.
+fn ease_profile(frames: usize, len: f64, ein: f64, eout: f64, fps: f64) -> Vec<f64> {
+    let total = len.max(1e-9);
+    let (ein, eout) = (ein.clamp(0.0, total), eout.clamp(0.0, total));
+    let (ein, eout) = if ein + eout > total { (ein * total / (ein + eout), eout * total / (ein + eout)) } else { (ein, eout) };
+    let speed = |t: f64| {
+        let up = if ein > 0.0 && t < ein { let x = t / ein; x * x * (3.0 - 2.0 * x) } else { 1.0 };
+        let down = if eout > 0.0 && t > total - eout { let x = (total - t) / eout; x * x * (3.0 - 2.0 * x) } else { 1.0 };
+        up.min(down)
+    };
+    // Integrate the speed finely, then normalize.
+    let steps = (frames - 1).max(1) * 16;
+    let dt = total / steps as f64;
+    let mut cum = vec![0.0];
+    for i in 0..steps {
+        let t = (i as f64 + 0.5) * dt;
+        cum.push(cum[i] + speed(t) * dt);
+    }
+    let all = cum[steps].max(1e-300);
+    (0..frames).map(|f| cum[((f as f64 / fps / dt).round() as usize).min(steps)] / all).collect()
+}
+
+/// The cameraman pass on the frame cameras.
+fn cameraman(frames: &mut [FrameCam], c: &CameraSmoothing, fps: f64, keys: &[Scene]) {
+    let n = frames.len();
+    if n < 3 {
+        return;
+    }
+    let pos = smooth_positions(&frames.iter().map(|f| f.pos).collect::<Vec<_>>(), c.position_s * fps);
+    let rot = smooth_rotations(&frames.iter().map(|f| f.rot).collect::<Vec<_>>(), c.rotation_s * fps);
+    // Reference "up" for the horizon: the mean up axis of the keyframes.
+    let mut world_up = V3::ZERO;
+    for k in keys {
+        world_up += k.camera.up;
+    }
+    let world_up = world_up.normalize();
+    // Velocity (smoothed positions), for looking ahead and banking.
+    let vel: Vec<V3> = (0..n).map(|i| pos[(i + 1).min(n - 1)] - pos[i.saturating_sub(1)]).collect();
+    let mut out: Vec<Quat> = Vec::with_capacity(n);
+    for i in 0..n {
+        let mut q = rot[i];
+        let (r, f, u) = q.basis();
+        if c.look_ahead > 0.0 && vel[i].length() > 1e-12 {
+            let fa = vel[i].normalize();
+            let ra = fa.cross(u);
+            if ra.length() > 1e-6 {
+                let ra = ra.normalize();
+                q = q.slerp(Quat::from_basis(ra, fa, ra.cross(fa).normalize()), c.look_ahead.clamp(0.0, 1.0));
+            }
+        }
+        if c.level_horizon > 0.0 {
+            let (_, f, _) = q.basis();
+            let rl = f.cross(world_up);
+            if rl.length() > 1e-6 {
+                let rl = rl.normalize();
+                q = q.slerp(Quat::from_basis(rl, f, rl.cross(f).normalize()), c.level_horizon.clamp(0.0, 1.0));
+            }
+        }
+        let _ = (r, f);
+        out.push(q);
+    }
+    if c.bank > 0.0 {
+        // Yaw rate about the world up axis (radians per second), smoothed.
+        let heading = |q: Quat| {
+            let (_, f, _) = q.basis();
+            let h = f - world_up * f.dot(world_up);
+            h.normalize()
+        };
+        let mut yaw: Vec<f64> = (0..n)
+            .map(|i| {
+                let (a, b) = (heading(out[i.saturating_sub(1)]), heading(out[(i + 1).min(n - 1)]));
+                let s = world_up.dot(a.cross(b));
+                let steps = ((i + 1).min(n - 1) - i.saturating_sub(1)).max(1) as f64;
+                s.atan2(a.dot(b)) * fps / steps
+            })
+            .collect();
+        yaw = smooth_scalar(&yaw, 0.25 * fps);
+        for i in 0..n {
+            // Turning left (positive yaw) rolls left; about 20° at 1 rad/s with full banking.
+            let roll = (-yaw[i] * 0.35 * c.bank).clamp(-0.7, 0.7);
+            let (_, f, _) = out[i].basis();
+            out[i] = Quat::from_axis_angle(f, roll).times(out[i]).normalize();
+        }
+    }
+    for (i, fr) in frames.iter_mut().enumerate() {
+        fr.pos = pos[i];
+        fr.rot = out[i];
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Flight recording → keyframes
+
+/// Creates keyframes from a recorded flight: as few as needed so that the camera path through
+/// them stays within `tolerance` of the flight (position error relative to the distance to
+/// the surface, plus orientation error in radians). Keyframe scenes are `base` with the
+/// recorded camera.
+pub fn keyframes_from_flight(samples: &[CamSample], tolerance: f64, base: &Scene, fps: f64) -> Vec<Keyframe> {
+    if samples.is_empty() {
+        return Vec::new();
+    }
+    let t0 = samples[0].t;
+    let surf = Surface::new(&[base]);
+    let dist: Vec<f64> = samples.iter().map(|s| surf.distance(0, s.pos)).collect();
+    let rot = consistent(samples.iter().map(|s| s.rot).collect());
+    let mut keys = vec![0usize];
+    if samples.len() > 1 {
+        keys.push(samples.len() - 1);
+    }
+    let tol = tolerance.max(1e-6);
+    loop {
+        let spline = CamSpline::new(keys.iter().map(|&k| samples[k].pos).collect(), keys.iter().map(|&k| rot[k]).collect(), keys.iter().map(|&k| samples[k].fov).collect());
+        // Geometric error: distance to the nearest point of the segment's path and the
+        // orientation there (the timing is the job of the animation's timing modes).
+        const STEPS: usize = 48;
+        let mut worst = (0.0, 0usize);
+        for seg in 0..keys.len().saturating_sub(1) {
+            let (a, b) = (keys[seg], keys[seg + 1]);
+            let path: Vec<FrameCam> = (0..=STEPS).map(|j| spline.at(seg as f64 + j as f64 / STEPS as f64)).collect();
+            for (i, s) in samples.iter().enumerate().take(b).skip(a + 1) {
+                let (j, _) = path.iter().enumerate().map(|(j, c)| (j, (c.pos - s.pos).length())).min_by(|x, y| x.1.total_cmp(&y.1)).unwrap_or((0, 0.0));
+                // Refine on the two neighbouring pieces of the polyline.
+                let mut best = (path[j].pos, path[j].rot, (path[j].pos - s.pos).length());
+                for k in [j.saturating_sub(1), j] {
+                    if k + 1 > STEPS {
+                        continue;
+                    }
+                    let (p, q) = (path[k].pos, path[k + 1].pos);
+                    let d = q - p;
+                    let f = ((s.pos - p).dot(d) / d.dot(d).max(1e-300)).clamp(0.0, 1.0);
+                    let c = p + d * f;
+                    let e = (c - s.pos).length();
+                    if e < best.2 {
+                        best = (c, path[k].rot.slerp(path[k + 1].rot, f), e);
+                    }
+                }
+                let e = best.2 / dist[i] + best.1.angle_to(rot[i]);
+                if e > worst.0 {
+                    worst = (e, i);
+                }
+            }
+        }
+        if worst.0 <= tol || keys.len() >= 500 {
+            break;
+        }
+        let pos = keys.partition_point(|&k| k < worst.1);
+        keys.insert(pos, worst.1);
+    }
+    keys.iter()
+        .enumerate()
+        .map(|(j, &k)| {
+            let s = &samples[k];
+            let mut scene = Scene { animation: None, ..base.clone() };
+            scene.camera.position = s.pos;
+            scene.camera.set_orientation(s.rot);
+            scene.camera.fov = s.fov;
+            let next = keys.get(j + 1).map(|&n| samples[n].t).unwrap_or(s.t);
+            Keyframe { scene, frames: ((next - s.t) * fps).round().max(1.0) as u32, easing: Easing::Linear, time_s: Some(s.t - t0) }
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::math::v3;
+
+    fn key(pos: V3, target: V3) -> Keyframe {
+        let mut s = Scene::default();
+        s.camera.position = pos;
+        s.camera.look_at(target, v3(0.0, 0.0, 1.0));
+        Keyframe { scene: s, frames: 30, ..Default::default() }
+    }
+
+    fn orbit_keys(n: usize) -> Vec<Keyframe> {
+        (0..n)
+            .map(|i| {
+                let a = i as f64 * 0.7;
+                key(v3(3.0 * a.cos(), 3.0 * a.sin(), 0.5 + 0.2 * i as f64), V3::ZERO)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn quat_round_trips_camera_basis() {
+        let s = key(v3(1.0, -2.0, 0.7), v3(0.2, 0.1, -0.3)).scene;
+        let q = s.camera.orientation();
+        let mut c = s.camera.clone();
+        c.set_orientation(q);
+        for (a, b) in [(c.right, s.camera.right), (c.up, s.camera.up), (c.forward, s.camera.forward)] {
+            assert!((a - b).length() < 1e-9);
+        }
+    }
+
+    #[test]
+    fn path_passes_through_keyframes() {
+        let anim = Animation { keyframes: orbit_keys(4), ..Default::default() };
+        let plan = AnimationPlan::new(&anim).unwrap();
+        assert_eq!(plan.frame_count(), 3 * 30 + 1);
+        for (k, f) in plan.key_frames().into_iter().enumerate() {
+            let c = plan.camera(f);
+            assert!((c.pos - anim.keyframes[k].scene.camera.position).length() < 1e-9, "key {k}");
+            assert!(c.rot.angle_to(anim.keyframes[k].scene.camera.orientation()) < 1e-6);
+        }
+    }
+
+    #[test]
+    fn orientation_has_no_flips() {
+        let anim = Animation { keyframes: orbit_keys(6), ..Default::default() };
+        let plan = AnimationPlan::new(&anim).unwrap();
+        let max_step = (1..plan.frame_count()).map(|i| plan.camera(i).rot.angle_to(plan.camera(i - 1).rot)).fold(0.0, f64::max);
+        assert!(max_step < 0.1, "{max_step}");
+    }
+
+    #[test]
+    fn steady_timing_keeps_the_pace() {
+        // Keyframes at very uneven spacing: the frames must still move evenly.
+        let mut keys = vec![key(v3(3.0, 0.0, 0.0), V3::ZERO), key(v3(3.0, 0.3, 0.0), V3::ZERO), key(v3(3.0, 4.0, 0.0), V3::ZERO), key(v3(3.0, 4.2, 0.0), V3::ZERO)];
+        for k in &mut keys {
+            k.scene.camera.forward = v3(-1.0, 0.0, 0.0);
+            k.scene.camera.right = v3(0.0, 1.0, 0.0);
+            k.scene.camera.up = v3(0.0, 0.0, 1.0);
+        }
+        let anim = Animation { keyframes: keys, timing: Timing::Steady, length_s: 4.0, ease_in_s: 0.0, ease_out_s: 0.0, surface_relative: false, ..Default::default() };
+        let plan = AnimationPlan::new(&anim).unwrap();
+        let steps: Vec<f64> = (1..plan.frame_count()).map(|i| (plan.camera(i).pos - plan.camera(i - 1).pos).length()).collect();
+        let mean = steps.iter().sum::<f64>() / steps.len() as f64;
+        let spread = steps.iter().map(|s| (s - mean).abs()).fold(0.0, f64::max) / mean;
+        assert!(spread < 0.05, "spread {spread}");
+    }
+
+    /// A jittery flight: a smooth curve plus keyboard-like steps and hand shake.
+    fn jittery_flight() -> Vec<CamSample> {
+        let base = Scene::default();
+        (0..600)
+            .map(|i| {
+                let t = i as f64 / 60.0;
+                let jitter = if (i / 7) % 2 == 0 { 0.02 } else { -0.02 };
+                let mut c = base.camera.clone();
+                c.position = v3(3.0 * (0.3 * t).cos(), 3.0 * (0.3 * t).sin(), 1.0 + jitter);
+                c.look_at(v3(jitter * 3.0, 0.0, 0.0), v3(0.0, 0.0, 1.0));
+                CamSample { t, pos: c.position, rot: c.orientation(), fov: c.fov }
+            })
+            .collect()
+    }
+
+    fn jerk(pos: &[V3]) -> f64 {
+        pos.windows(4).map(|w| (w[3] - w[2] * 3.0 + w[1] * 3.0 - w[0]).length()).sum()
+    }
+
+    #[test]
+    fn cameraman_removes_jitter_and_keeps_the_ends() {
+        let flight = jittery_flight();
+        let keys: Vec<Keyframe> = flight
+            .iter()
+            .step_by(5)
+            .map(|s| {
+                let mut sc = Scene::default();
+                sc.camera.position = s.pos;
+                sc.camera.set_orientation(s.rot);
+                Keyframe { scene: sc, frames: 5, time_s: Some(s.t), ..Default::default() }
+            })
+            .collect();
+        let mut anim = Animation { keyframes: keys, timing: Timing::Recorded, speed_smoothing_s: 0.0, fps: 60.0, ..Default::default() };
+        let raw = AnimationPlan::new(&anim).unwrap().path();
+        anim.camera.on = true;
+        let plan = AnimationPlan::new(&anim).unwrap();
+        let smooth = plan.path();
+        assert_eq!(raw.len(), smooth.len());
+        assert!(jerk(&smooth) < jerk(&raw) * 0.1, "{} vs {}", jerk(&smooth), jerk(&raw));
+        assert!((smooth[0] - raw[0]).length() < 1e-9 && (smooth[smooth.len() - 1] - raw[raw.len() - 1]).length() < 1e-9);
+    }
+
+    #[test]
+    fn recorded_speed_is_smoothed() {
+        // Keys at even times but uneven distances: as flown the speed jumps per segment; the
+        // smoothed speed must change gradually.
+        let mut keys = Vec::new();
+        let xs = [0.0, 0.2, 2.0, 2.2, 4.0];
+        for (i, x) in xs.iter().enumerate() {
+            let mut k = key(v3(*x, -5.0, 0.0), v3(*x, 0.0, 0.0));
+            k.time_s = Some(i as f64);
+            keys.push(k);
+        }
+        let anim = Animation { keyframes: keys, timing: Timing::Recorded, speed_smoothing_s: 1.5, surface_relative: false, ..Default::default() };
+        let plan = AnimationPlan::new(&anim).unwrap();
+        let v: Vec<f64> = (1..plan.frame_count()).map(|i| (plan.camera(i).pos - plan.camera(i - 1).pos).length()).collect();
+        let max_change = v.windows(2).map(|w| (w[1] - w[0]).abs()).fold(0.0, f64::max);
+        let mean = v.iter().sum::<f64>() / v.len() as f64;
+        assert!(max_change < mean * 0.1, "speed jumps by {max_change} (mean {mean})");
+    }
+
+    #[test]
+    fn flight_becomes_few_keyframes_within_tolerance() {
+        let flight: Vec<CamSample> = (0..300)
+            .map(|i| {
+                let t = i as f64 / 60.0;
+                let mut c = Scene::default().camera;
+                c.position = v3(3.0 * (0.4 * t).cos(), 3.0 * (0.4 * t).sin(), 1.0);
+                c.look_at(V3::ZERO, v3(0.0, 0.0, 1.0));
+                CamSample { t, pos: c.position, rot: c.orientation(), fov: c.fov }
+            })
+            .collect();
+        let keys = keyframes_from_flight(&flight, 0.01, &Scene::default(), 30.0);
+        assert!(keys.len() >= 2 && keys.len() < 20, "{} keys", keys.len());
+        assert_eq!(keys[0].time_s, Some(0.0));
+        let anim = Animation { keyframes: keys, timing: Timing::Recorded, speed_smoothing_s: 0.0, fps: 60.0, ..Default::default() };
+        let plan = AnimationPlan::new(&anim).unwrap();
+        assert_eq!(plan.frame_count(), 300);
+        // Every recorded position lies close to the path.
+        let surf = Surface::new(&[&Scene::default()]);
+        let path = plan.path();
+        for s in &flight {
+            let d = path.iter().map(|p| (*p - s.pos).length()).fold(f64::MAX, f64::min);
+            assert!(d / surf.distance(0, s.pos) < 0.02, "{d}");
+        }
+    }
+
+    #[test]
+    fn other_parameters_blend() {
+        let mut a = key(v3(3.0, 0.0, 0.0), V3::ZERO);
+        let mut b = key(v3(0.0, 3.0, 0.0), V3::ZERO);
+        a.scene.lighting.ambient = 0.2;
+        b.scene.lighting.ambient = 0.6;
+        a.scene.fractal.max_iterations = 10;
+        b.scene.fractal.max_iterations = 20;
+        a.scene.fractal.inside = false;
+        b.scene.fractal.inside = true;
+        a.frames = 10;
+        let anim = Animation { keyframes: vec![a, b], ..Default::default() };
+        let plan = AnimationPlan::new(&anim).unwrap();
+        let mid = plan.scene_at(5);
+        assert!((mid.lighting.ambient - 0.4).abs() < 1e-9);
+        assert_eq!(mid.fractal.max_iterations, 15);
+        assert!(!mid.fractal.inside);
+        assert!(plan.scene_at(10).fractal.inside);
+    }
+}
