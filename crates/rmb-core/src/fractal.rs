@@ -83,6 +83,29 @@ pub struct Program {
     pub reflections: bool,
     /// Inside rendering (the estimate is inverted around the surface threshold).
     pub inside: bool,
+    /// Objects combined with this fractal (scene composition), in order.
+    pub objects: Vec<ObjectProgram>,
+}
+
+/// An object of the scene composition prepared for evaluation.
+pub struct ObjectProgram {
+    pub shape: ObjectShape,
+    /// Inverse rotation rows, position and scale.
+    pub inv: [[f64; 3]; 3],
+    pub pos: V3,
+    pub scale: f64,
+    /// `BoolOp::index`.
+    pub op: u32,
+    pub smooth: f64,
+    /// Material: 0 the main one, k the k-th entry of `Scene::objects` (1-based).
+    pub material: usize,
+}
+
+pub enum ObjectShape {
+    /// A fractal chain; its constants are part of the main program's.
+    Fractal(Box<Program>),
+    /// `Primitive::index` and parameters.
+    Primitive(u32, [f64; 4]),
 }
 
 /// Result of iterating one point.
@@ -97,6 +120,8 @@ pub struct Orbit {
     /// Smallest squared radius along the orbit.
     pub trap: f64,
     pub escaped: bool,
+    /// The object that forms the surface here: 0 the main fractal, k the k-th object.
+    pub object: u32,
 }
 
 /// Mandelbulb3D's 4D start rotation: Z(Y(X)) with X in the xw, Y in the yw, Z in the zw plane.
@@ -240,7 +265,38 @@ impl Program {
             blend: None,
             reflections: false,
             inside: f.inside,
+            objects: Vec::new(),
         }
+    }
+
+    /// The program of a whole scene: its fractal and the enabled objects of its composition.
+    pub fn for_scene(scene: &crate::Scene) -> Program {
+        use crate::compose::{MAX_OBJECTS, Shape};
+        let mut p = Program::new(&scene.fractal, &scene.cut);
+        for (i, o) in scene.objects.iter().enumerate().take(MAX_OBJECTS) {
+            if !o.enabled {
+                continue;
+            }
+            let shape = match &o.shape {
+                Shape::Fractal(f) => {
+                    let mut op = Self::build(f, &f.slots, 0, f.repeat_from, f.max_iterations, p.constants.len());
+                    p.constants.append(&mut op.constants);
+                    p.missing.append(&mut op.missing);
+                    ObjectShape::Fractal(Box::new(op))
+                }
+                Shape::Primitive(pr) => ObjectShape::Primitive(pr.index(), pr.params()),
+            };
+            p.objects.push(ObjectProgram {
+                shape,
+                inv: o.transform.inverse_rotation(),
+                pos: o.transform.position,
+                scale: o.transform.scale(),
+                op: o.op.index(),
+                smooth: o.smooth.max(0.0),
+                material: if o.material.own { i + 1 } else { 0 },
+            });
+        }
+        p
     }
 
     pub fn is_empty(&self) -> bool {
@@ -269,6 +325,15 @@ impl Program {
         s.push_str(if self.blend.is_some() { "|blend" } else { "" });
         s.push_str(if self.reflections { "|refl" } else { "" });
         s.push_str(if self.is_mix() { "|mix" } else { "" });
+        for o in &self.objects {
+            match &o.shape {
+                ObjectShape::Fractal(f) => {
+                    s.push_str("|obj:");
+                    s.push_str(&part(f));
+                }
+                ObjectShape::Primitive(k, _) => s.push_str(&format!("|prim:{k}")),
+            }
+        }
         s
     }
 
@@ -284,7 +349,15 @@ impl Program {
                 })
                 .collect()
         };
-        Evaluator { prog: self, regs: regs(self), regs2: self.part2.as_deref().map(regs).unwrap_or_default(), flip: false }
+        let regs_obj = self
+            .objects
+            .iter()
+            .map(|o| match &o.shape {
+                ObjectShape::Fractal(f) => regs(f),
+                ObjectShape::Primitive(..) => Vec::new(),
+            })
+            .collect();
+        Evaluator { prog: self, regs: regs(self), regs2: self.part2.as_deref().map(regs).unwrap_or_default(), regs_obj, flip: false }
     }
 }
 
@@ -293,6 +366,7 @@ pub struct Evaluator<'a> {
     prog: &'a Program,
     regs: Vec<Vec<f64>>,
     regs2: Vec<Vec<f64>>,
+    regs_obj: Vec<Vec<Vec<f64>>>,
     /// Swaps inside and outside rendering (rays travelling inside glass).
     pub flip: bool,
 }
@@ -485,7 +559,7 @@ fn chain_orbit(top: &Program, prog: &Program, regs: &mut [Vec<f64>], p: V3, h: f
     if !de.is_finite() {
         de = if it.escaped { 1.0e-3 } else { 0.0 };
     }
-    Orbit { de: de * prog.de_scale, iterations: it.n, r2, r2_old: it.rold, dr: it.dr, trap: it.trap, escaped: it.escaped || prog.difs }
+    Orbit { de: de * prog.de_scale, iterations: it.n, r2, r2_old: it.rold, dr: it.dr, trap: it.trap, escaped: it.escaped || prog.difs, object: 0 }
 }
 
 /// Combines the estimates of the two chains (Mandelbulb3D's DE combination).
@@ -538,7 +612,7 @@ impl Evaluator<'_> {
             let b = iterate_from(prog, p2, &mut self.regs2, p, None, Some(a.state));
             let d = b.difs_de.max(0.0) * p2.de_scale;
             let de = if prog.de_kind == DeKind::Linear && !prog.difs { d / a.dr.abs().max(1e-30) } else { d * prog.mix_pow.abs().max(1e-30).powf(-1.0 - a.n as f64) };
-            o = Orbit { de, iterations: b.n, r2: a.state.iter().map(|v| v * v).sum(), r2_old: a.rold, dr: a.dr, trap: b.trap, escaped: true };
+            o = Orbit { de, iterations: b.n, r2: a.state.iter().map(|v| v * v).sum(), r2_old: a.rold, dr: a.dr, trap: b.trap, escaped: true, object: 0 };
         } else {
             o = chain_orbit(prog, prog, &mut self.regs, p, h);
             if let Some(p2) = prog.part2.as_deref() {
@@ -547,6 +621,27 @@ impl Evaluator<'_> {
             }
         }
         let mut de = (o.de * prog.scene_de_scale).max(0.0);
+        // Scene composition: the objects in order, each in its own coordinates.
+        for (k, ob) in prog.objects.iter().enumerate() {
+            let q = crate::compose::to_local(&ob.inv, ob.pos, ob.scale, p);
+            let (d, orbit) = match &ob.shape {
+                ObjectShape::Fractal(f) => {
+                    let oo = chain_orbit(f, f, &mut self.regs_obj[k], q, h / ob.scale);
+                    let mut d = (oo.de * f.scene_de_scale).max(0.0) * ob.scale;
+                    // A fractal has no distance inside; cutting with it needs one.
+                    if d <= 0.0 && matches!(ob.op, 1 | 4) {
+                        d = -2.0 * h;
+                    }
+                    (d, oo)
+                }
+                ObjectShape::Primitive(kind, a) => (crate::compose::primitive_distance(*kind, *a, q) * ob.scale, Orbit { dr: 1.0, escaped: true, ..Orbit::default() }),
+            };
+            let (nd, wins) = crate::compose::combine(ob.op, de, d, ob.smooth);
+            de = nd;
+            if wins {
+                o = Orbit { object: k as u32 + 1, ..orbit };
+            }
+        }
         if prog.inside != self.flip {
             // Mandelbulb3D's inside rendering: points in the set step on with four times the
             // surface threshold (h is half of it); outside, the estimate falls below the
@@ -581,7 +676,7 @@ mod tests {
     #[test]
     fn mandelbulb_distance_is_plausible() {
         let s = Scene::default();
-        let prog = Program::new(&s.fractal, &s.cut);
+        let prog = Program::for_scene(&s);
         assert!(prog.missing.is_empty());
         let mut ev = prog.evaluator();
         // Far away: roughly the distance to the bulb (radius about 1.1).
@@ -600,7 +695,7 @@ mod tests {
             if f.def.transform {
                 s.fractal.slots.push(crate::scene::Slot::new("Mandelbulb"));
             }
-            let prog = Program::new(&s.fractal, &s.cut);
+            let prog = Program::for_scene(&s);
             let mut ev = prog.evaluator();
             let d = ev.de(v3(2.5, 0.3, 0.2), 1e-5);
             assert!(d.is_finite() && d >= 0.0, "{}: {d}", f.def.name);

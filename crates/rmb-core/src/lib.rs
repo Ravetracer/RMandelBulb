@@ -4,6 +4,7 @@
 //! renderer and file formats.
 
 pub mod animation;
+pub mod compose;
 pub mod flare;
 pub mod formula;
 pub mod fractal;

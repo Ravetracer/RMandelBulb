@@ -31,6 +31,8 @@ pub struct Scene {
     pub cut: Cutting,
     /// Free text (author, notes, where it was imported from).
     pub notes: String,
+    /// Objects combined with the main fractal (scene composition).
+    pub objects: Vec<crate::compose::SceneObject>,
     /// Keyframe animation (keyframe scenes have none).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub animation: Option<crate::animation::Animation>,
@@ -53,6 +55,7 @@ impl Default for Scene {
             post: Post::default(),
             cut: Cutting::default(),
             notes: String::new(),
+            objects: Vec::new(),
             animation: None,
         }
     }

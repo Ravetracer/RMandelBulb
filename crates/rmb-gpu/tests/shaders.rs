@@ -20,7 +20,7 @@ fn every_formula_compiles_to_valid_wgsl() {
         s.fractal.slots = vec![Slot::new(&f.def.name), Slot::new("Amazing Box")];
         for numeric in [false, true] {
             s.fractal.de_mode = if numeric { rmb_core::scene::DeMode::NumericLog } else { rmb_core::scene::DeMode::Auto };
-            let mut prog = Program::new(&s.fractal, &s.cut);
+            let mut prog = Program::for_scene(&s);
             validate(&rmb_gpu::codegen::march_shader(&prog), &f.def.name);
             prog.reflections = true;
             validate(&rmb_gpu::codegen::march_shader(&prog), &f.def.name);
@@ -214,7 +214,7 @@ fn gpu_matches_cpu_with_a_height_map() {
     };
     let mut scene = rmb_core::io::m3p::import_binary(&bytes).expect("import").scene;
     scene.lighting.ao_mode = rmb_core::scene::AoMode::Fast;
-    assert!(Program::new(&scene.fractal, &scene.cut).map_numbers().contains(&10));
+    assert!(Program::for_scene(&scene).map_numbers().contains(&10));
     parity(scene);
 }
 
@@ -228,7 +228,7 @@ fn gpu_matches_cpu_with_an_interpolation_hybrid() {
     if rmb_core::maps::get(12).is_some() {
         scene.material.color_map = rmb_core::scene::ColorMap { image: "12".into(), mode: rmb_core::scene::MapMode::Orbit, scale: 2.0, rotation: [0.0, 0.0, 30.0], ..Default::default() };
     }
-    assert!(Program::new(&scene.fractal, &scene.cut).blend.is_some());
+    assert!(Program::for_scene(&scene).blend.is_some());
     parity(scene);
 }
 
@@ -242,7 +242,7 @@ fn gpu_matches_cpu_with_a_difs_mix() {
     };
     let mut scene = rmb_core::io::m3p::import_binary(&bytes).expect("import").scene;
     scene.lighting.ao_mode = rmb_core::scene::AoMode::Fast;
-    assert!(Program::new(&scene.fractal, &scene.cut).is_mix());
+    assert!(Program::for_scene(&scene).is_mix());
     parity(scene);
 }
 

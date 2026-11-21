@@ -346,7 +346,7 @@ struct Surface {
 
 impl Surface {
     fn new(scenes: &[&Scene]) -> Surface {
-        Surface { progs: scenes.iter().map(|s| crate::Program::new(&s.fractal, &s.cut)).collect() }
+        Surface { progs: scenes.iter().map(|s| crate::Program::for_scene(s)).collect() }
     }
 
     /// Distance from `p` to the fractal of key `k` (at least a tiny positive value).

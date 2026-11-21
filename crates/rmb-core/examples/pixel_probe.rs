@@ -4,7 +4,7 @@ fn main() {
     let a: Vec<String> = std::env::args().collect();
     let s = rmb_core::io::load(std::path::Path::new(&a[1])).expect("load");
     let (w, h, px, py): (u32, u32, u32, u32) = (a[2].parse().unwrap(), a[3].parse().unwrap(), a[4].parse().unwrap(), a[5].parse().unwrap());
-    let prog = rmb_core::Program::new(&s.fractal, &s.cut);
+    let prog = rmb_core::Program::for_scene(&s);
     let sh = Shader::new(&s, &prog, w, h);
     let mut ev = prog.evaluator();
     let sx = ((px as f64 + 0.5) / w as f64) * 2.0 - 1.0;

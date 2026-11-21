@@ -366,7 +366,7 @@ pub fn import_binary(b: &[u8]) -> Result<Import, String> {
         1 => s.fractal.inside = true,
         2 => {
             // Inside and outside: inside rendering when the camera starts in the set.
-            let prog = crate::fractal::Program::new(&s.fractal, &s.cut);
+            let prog = crate::fractal::Program::for_scene(&s);
             let mut ev = prog.evaluator();
             s.fractal.inside = ev.de(s.camera.position, 1e-9) <= 0.0;
         }

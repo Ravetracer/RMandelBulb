@@ -196,7 +196,7 @@ fn render(args: &[String]) -> Result<(), String> {
     override_denoise(&o, &mut scene.post);
     let (w, h) = image_size(&o, &scene);
     let out = o.output.clone().unwrap_or_else(|| o.input.as_ref().map(|p| p.with_extension("png")).unwrap_or_else(|| "out.png".into()));
-    let prog = rmb_core::Program::new(&scene.fractal, &scene.cut);
+    let prog = rmb_core::Program::for_scene(&scene);
     if !prog.missing.is_empty() {
         eprintln!("warning: formulas not available: {}", prog.missing.join(", "));
     }

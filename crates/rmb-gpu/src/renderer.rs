@@ -501,7 +501,7 @@ impl GpuRenderer {
         if self.key.as_ref() == Some(&key) {
             return;
         }
-        let mut prog = Program::new(&scene.fractal, &scene.cut);
+        let mut prog = Program::for_scene(scene);
         prog.reflections = scene.material.reflection > 0.0;
         self.ensure_target(width, height);
         let device = &self.ctx.device;

@@ -14,8 +14,8 @@ pub struct Shader<'a> {
     pub scene: &'a Scene,
     pub prog: &'a Program,
     pub frame: Frame,
-    pub lut: Vec<[f32; 3]>,
-    pub lut_spec: Vec<[f32; 3]>,
+    /// Materials: 0 the main one, k the one of `Scene::objects[k - 1]`.
+    pub materials: Vec<Mat>,
     pub bg_image: Option<(std::sync::Arc<crate::maps::Map>, [[f64; 3]; 3])>,
     /// The 16 × 8 copy of the background image for ambient light.
     pub bg_ambient: Option<std::sync::Arc<crate::maps::Map>>,
@@ -24,11 +24,54 @@ pub struct Shader<'a> {
     /// Interior colors (empty: none).
     pub lut_int: Vec<[f32; 3]>,
     pub lut_int_spec: Vec<[f32; 3]>,
-    /// Transparency per gradient entry.
-    pub lut_trans: Vec<f32>,
-    /// Emission strength per gradient entry, and whether any color emits.
-    pub lut_emis: Vec<f32>,
+    /// Whether any color of any material emits.
     pub emissive: bool,
+}
+
+/// A material prepared for shading: its gradient tables and how a color value picks a color.
+pub struct Mat {
+    pub lut: Vec<[f32; 3]>,
+    pub lut_spec: Vec<[f32; 3]>,
+    pub lut_trans: Vec<f32>,
+    pub lut_emis: Vec<f32>,
+    pub mode: ColorMode,
+    pub scale: f64,
+    pub offset: f64,
+    pub repeat: bool,
+    pub saturation: f64,
+    /// Primitives: `Pattern::index` and size.
+    pub pattern: u32,
+    pub pattern_size: f64,
+}
+
+impl Mat {
+    #[allow(clippy::too_many_arguments)]
+    fn new(g: &[crate::scene::ColorStop], mode: ColorMode, scale: f64, offset: f64, repeat: bool, saturation: f64, pattern: u32, pattern_size: f64) -> Mat {
+        Mat {
+            lut: crate::gradient::lut(g),
+            lut_spec: crate::gradient::lut_specular(g),
+            lut_trans: crate::gradient::lut_transparency(g),
+            lut_emis: crate::gradient::lut_emission(g),
+            mode,
+            scale,
+            offset,
+            repeat,
+            saturation,
+            pattern,
+            pattern_size,
+        }
+    }
+
+    /// The materials of a scene: the main one, then one per object.
+    pub fn of_scene(scene: &Scene) -> Vec<Mat> {
+        let m = &scene.material;
+        let mut out = vec![Mat::new(&m.gradient, m.color_mode, m.color_scale, m.color_offset, m.repeat, m.saturation, 0, 1.0)];
+        for o in &scene.objects {
+            let om = &o.material;
+            out.push(Mat::new(&om.gradient, om.color_mode, om.color_scale, om.color_offset, om.repeat, 1.0, om.pattern.index(), om.pattern_size));
+        }
+        out
+    }
 }
 
 pub struct Hit {
@@ -41,13 +84,15 @@ pub struct Hit {
 
 impl<'a> Shader<'a> {
     pub fn new(scene: &'a Scene, prog: &'a Program, width: u32, height: u32) -> Self {
-        let g = &scene.material.gradient;
+        let materials = Mat::of_scene(scene);
+        // Only materials that are used count for emission.
+        let used = |k: usize| k == 0 || prog.objects.iter().any(|o| o.material == k);
+        let emissive = materials.iter().enumerate().any(|(k, m)| used(k) && m.lut_emis.iter().any(|e| *e > 0.0));
         Shader {
             scene,
             prog,
             frame: Frame::new(scene, width, height),
-            lut: crate::gradient::lut(g),
-            lut_spec: crate::gradient::lut_specular(g),
+            materials,
             bg_image: super::background_image(scene),
             bg_ambient: super::background_maps(scene).map(|(_, s, _)| s),
             color_map: crate::maps::get_any(&scene.material.color_map.image).map(|m| {
@@ -56,9 +101,7 @@ impl<'a> Shader<'a> {
             }),
             lut_int: if scene.material.interior.is_empty() { Vec::new() } else { crate::gradient::lut(&scene.material.interior) },
             lut_int_spec: if scene.material.interior.is_empty() { Vec::new() } else { crate::gradient::lut_specular(&scene.material.interior) },
-            lut_trans: crate::gradient::lut_transparency(g),
-            lut_emis: crate::gradient::lut_emission(g),
-            emissive: g.iter().any(|s| s.emission > 0.0),
+            emissive,
         }
     }
 
@@ -132,12 +175,20 @@ impl<'a> Shader<'a> {
 
     /// Emitted radiance (color × emission strength of the gradient) for an orbit at `p`.
     fn emission_at(&self, orbit: &Orbit, p: V3, eps: f64, t: f64) -> [f64; 3] {
-        if !self.lut_int.is_empty() && !orbit.escaped {
+        if orbit.object == 0 && !self.lut_int.is_empty() && !orbit.escaped {
             return [0.0; 3];
         }
         let h = Hit { t, pos: p, eps, orbit: *orbit, steps: 0 };
-        let (base, _, _, e) = self.gradient(self.color_value(&h, V3::ZERO), t);
+        let (base, _, _, e) = self.gradient(self.material_of(orbit), self.color_value(&h, V3::ZERO), t);
         base.map(|c| c * e)
+    }
+
+    /// Material index of the surface an orbit belongs to.
+    pub fn material_of(&self, orbit: &Orbit) -> usize {
+        match orbit.object {
+            0 => 0,
+            k => self.prog.objects.get(k as usize - 1).map_or(0, |o| o.material),
+        }
     }
 
     pub fn normal(&self, ev: &mut Evaluator, p: V3, eps: f64) -> V3 {
@@ -316,11 +367,23 @@ impl<'a> Shader<'a> {
 
     pub fn color_value(&self, hit: &Hit, n: V3) -> f64 {
         let o = &hit.orbit;
-        match self.scene.material.color_mode {
+        let mat = &self.materials[self.material_of(o)];
+        // Objects: primitives by their pattern, fractals with their own bailout.
+        let mut bailout2 = self.prog.bailout2;
+        if let Some(ob) = (o.object > 0).then(|| self.prog.objects.get(o.object as usize - 1)).flatten() {
+            match &ob.shape {
+                crate::fractal::ObjectShape::Primitive(..) => {
+                    let q = crate::compose::to_local(&ob.inv, ob.pos, ob.scale, hit.pos);
+                    return crate::compose::pattern_value(mat.pattern, mat.pattern_size, q);
+                }
+                crate::fractal::ObjectShape::Fractal(f) => bailout2 = f.bailout2,
+            }
+        }
+        match mat.mode {
             ColorMode::Iterations => {
                 let n_it = o.iterations as f64 + self.scene.material.detail_shift * hit.eps.ln();
                 if o.escaped && o.r2 > 1.0 {
-                    let lb = self.prog.bailout2.max(4.0).sqrt().ln();
+                    let lb = bailout2.max(4.0).sqrt().ln();
                     n_it - ((0.5 * o.r2.ln()) / lb).max(1e-10).log2()
                 } else {
                     n_it
@@ -329,7 +392,7 @@ impl<'a> Shader<'a> {
             ColorMode::IterationsRatio => {
                 let n_it = o.iterations as f64 + self.scene.material.detail_shift * hit.eps.ln();
                 if o.escaped && o.r2 > 1.0 {
-                    let lb = self.prog.bailout2.max(4.0).sqrt().ln().ln();
+                    let lb = bailout2.max(4.0).sqrt().ln().ln();
                     let d = (0.5 * o.r2.ln()).ln();
                     let dd = if o.r2_old > 1.0 { d - (0.5 * o.r2_old.ln()).ln() } else { std::f64::consts::LN_2 };
                     n_it + (lb - d) / dd.max(1e-6)
@@ -419,21 +482,22 @@ impl<'a> Shader<'a> {
 
     /// Surface color, highlight color and transparency for the color value `v` of a hit at
     /// distance `dist`.
-    fn gradient(&self, v: f64, dist: f64) -> ([f64; 3], [f64; 3], f64, f64) {
-        let m = &self.scene.material;
-        let mut t = v * m.color_scale + m.color_offset + m.depth_shift * (dist - m.depth_reference);
+    fn gradient(&self, mat: usize, v: f64, dist: f64) -> ([f64; 3], [f64; 3], f64, f64) {
+        let sm = &self.scene.material;
+        let m = &self.materials[mat];
+        let mut t = v * m.scale + m.offset + sm.depth_shift * (dist - sm.depth_reference);
         t = if m.repeat { t - t.floor() } else { t.clamp(0.0, 1.0) };
-        let x = t * (self.lut.len() - 1) as f64;
-        let i = (x.floor() as usize).min(self.lut.len() - 2);
+        let x = t * (m.lut.len() - 1) as f64;
+        let i = (x.floor() as usize).min(m.lut.len() - 2);
         let f = x - i as f64;
         let mix = |l: &[[f32; 3]]| [0, 1, 2].map(|k| l[i][k] as f64 + (l[i + 1][k] as f64 - l[i][k] as f64) * f);
-        let base = mix(&self.lut);
-        let first = self.lut[0];
+        let base = mix(&m.lut);
+        let first = m.lut[0];
         (
             [0, 1, 2].map(|k| first[k] as f64 + (base[k] - first[k] as f64) * m.saturation),
-            mix(&self.lut_spec),
-            self.lut_trans[i] as f64 + (self.lut_trans[i + 1] as f64 - self.lut_trans[i] as f64) * f,
-            self.lut_emis[i] as f64 + (self.lut_emis[i + 1] as f64 - self.lut_emis[i] as f64) * f,
+            mix(&m.lut_spec),
+            m.lut_trans[i] as f64 + (m.lut_trans[i + 1] as f64 - m.lut_trans[i] as f64) * f,
+            m.lut_emis[i] as f64 + (m.lut_emis[i + 1] as f64 - m.lut_emis[i] as f64) * f,
         )
     }
 
@@ -612,11 +676,13 @@ impl<'a> Shader<'a> {
                 let rr = rough * sc.lighting.roughness;
                 let spec_rough = 1.0 + (2.0 * rr).min(1.0) * (4.0 / sc.lighting.shininess.max(1.0) - 1.0);
                 let cv = self.color_value(h, n);
-                let (base, spec_col, trans, emis) = match self.interior_colors(h, n, h.t) {
+                let main = h.orbit.object == 0;
+                let (base, spec_col, trans, emis) = match self.interior_colors(h, n, h.t).filter(|_| main) {
                     Some((b, s)) => (b, s, 0.0, 0.0),
-                    None => self.gradient(cv, h.t),
+                    None => self.gradient(self.material_of(&h.orbit), cv, h.t),
                 };
-                let base = self.map_color(h, n, cv, base, rr);
+                // Color maps belong to the main fractal.
+                let base = if main { self.map_color(h, n, cv, base, rr) } else { base };
                 // Shading point just off the surface; inside rendering puts the surface one
                 // threshold into the solid, so it needs a larger offset.
                 let p = h.pos + n * (h.eps * if ev.inside() { 4.0 } else { 1.5 });
@@ -805,7 +871,7 @@ pub struct CpuRenderer {
 
 impl CpuRenderer {
     pub fn new(scene: Scene, width: u32, height: u32) -> Self {
-        let prog = Program::new(&scene.fractal, &scene.cut);
+        let prog = Program::for_scene(&scene);
         let n = (width * height) as usize;
         CpuRenderer { scene, prog, width, height, accum: vec![[0.0; 3]; n], aux: vec![[0.0; 6]; n], samples: 0 }
     }
@@ -870,7 +936,7 @@ impl CpuRenderer {
 /// Distance along the ray through screen point (`sx`, `sy` in -1..1) to the surface, if any
 /// (picking, focus distance, navigation speed).
 pub fn pick(scene: &Scene, sx: f64, sy: f64, width: u32, height: u32) -> Option<(f64, V3)> {
-    let prog = Program::new(&scene.fractal, &scene.cut);
+    let prog = Program::for_scene(scene);
     let shader = Shader::new(scene, &prog, width, height);
     let mut ev = prog.evaluator();
     let d = scene.camera.ray_dir(sx, sy, shader.frame.aspect);
@@ -882,7 +948,7 @@ pub fn pick(scene: &Scene, sx: f64, sy: f64, width: u32, height: u32) -> Option<
 /// the light's position (`directional`: toward the direction `p`) and to points around it
 /// within `radius` (in units of the view height).
 pub fn light_visibility(scene: &Scene, p: V3, directional: bool, radius: f64) -> f64 {
-    let prog = Program::new(&scene.fractal, &scene.cut);
+    let prog = Program::for_scene(scene);
     let shader = Shader::new(scene, &prog, 64, 64);
     let mut ev = prog.evaluator();
     let cam = &scene.camera;
@@ -915,7 +981,7 @@ pub fn light_visibility(scene: &Scene, p: V3, directional: bool, radius: f64) ->
 
 /// Distance estimate at the camera position (navigation speed).
 pub fn distance_at_camera(scene: &Scene) -> f64 {
-    let prog = Program::new(&scene.fractal, &scene.cut);
+    let prog = Program::for_scene(scene);
     let mut ev = prog.evaluator();
     ev.de(scene.camera.position, 1e-6)
 }
