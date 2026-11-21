@@ -321,11 +321,14 @@ pub struct March {
     pub refine_steps: u32,
     /// Rays start at this distance from the camera (near clipping).
     pub near: f64,
+    /// Smoothed normals (Mandelbulb3D): the estimate is averaged over this many steps to each
+    /// side along the surface; also measures the roughness (0 = off, 1..8).
+    pub smooth_normals: u32,
 }
 
 impl Default for March {
     fn default() -> Self {
-        March { detail: 1.0, step: 0.8, max_steps: 400, max_distance: 40.0, refine_steps: 4, near: 0.0 }
+        March { detail: 1.0, step: 0.8, max_steps: 400, max_distance: 40.0, refine_steps: 4, near: 0.0, smooth_normals: 0 }
     }
 }
 
@@ -522,6 +525,9 @@ pub struct Lighting {
     /// Ambient occlusion radius relative to the view distance.
     pub ao_radius: f64,
     pub shininess: f64,
+    /// How much the surface roughness (measured with smoothed normals) dulls the highlights and
+    /// softens the diffuse light (Mandelbulb3D's roughness factor, 0..1).
+    pub roughness: f64,
     /// The sky and ground colors of the ambient light follow the camera's up axis
     /// (Mandelbulb3D) instead of the world z axis.
     pub ambient_camera_relative: bool,
@@ -549,6 +555,7 @@ impl Default for Lighting {
             ao_strength: 0.9,
             ao_radius: 0.08,
             shininess: 40.0,
+            roughness: 0.0,
             ambient_camera_relative: false,
         }
     }

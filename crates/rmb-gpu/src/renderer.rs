@@ -208,7 +208,10 @@ fn uniforms(scene: &Scene, prog: &Program, w: u32, h: u32, fast: bool) -> Unifor
             let flags = [if has { 1.0 } else { 0.0 }, if scene.post.display_space { 1.0 } else { 0.0 }, 0.0];
             [0, 1, 2].map(|i| [m[i][0] as f32, m[i][1] as f32, m[i][2] as f32, flags[i]])
         },
-        blend: prog.blend.map(|[a, b]| [a as f32, b as f32, 0.0, 0.0]).unwrap_or([0.0; 4]),
+        blend: {
+            let [a, b] = prog.blend.unwrap_or([0.0; 2]);
+            [a as f32, b as f32, scene.march.smooth_normals.min(8) as f32, l.roughness as f32]
+        },
     }
 }
 
@@ -340,7 +343,7 @@ impl GpuRenderer {
             uniform_buf: uniform("march-uniforms", std::mem::size_of::<Uniforms>()),
             post_buf: uniform("post-uniforms", std::mem::size_of::<PostUniforms>()),
             prm: storage_buffer(device, "prm", 1024),
-            lut: storage_buffer(device, "lut", (rmb_core::gradient::LUT_SIZE * 2 * 16) as u64),
+            lut: storage_buffer(device, "lut", ((rmb_core::gradient::LUT_SIZE * 2 + 128) * 16) as u64),
             maps: storage_buffer(device, "maps", 16),
             map_numbers: Vec::new(),
             map_background: String::new(),
@@ -444,7 +447,9 @@ impl GpuRenderer {
         self.upload_maps(&prog, scene);
         let shade = rmb_core::render::shading_scene(scene);
         let g = &shade.material.gradient;
-        let lut: Vec<[f32; 4]> = rmb_core::gradient::lut(g).iter().chain(&rmb_core::gradient::lut_specular(g)).map(|c| [c[0], c[1], c[2], 1.0]).collect();
+        let mut lut: Vec<[f32; 4]> = rmb_core::gradient::lut(g).iter().chain(&rmb_core::gradient::lut_specular(g)).map(|c| [c[0], c[1], c[2], 1.0]).collect();
+        let rough = rmb_core::render::rough_tables();
+        lut.extend((0..128).map(|i| [0, 1, 2, 3].map(|k| rough[k][i] as f32)));
         self.ctx.queue.write_buffer(&self.lut, 0, bytemuck::cast_slice(&lut));
         self.uniforms = Some(uniforms(&shade, &prog, width, height, fast));
         self.request_pipeline(&prog);

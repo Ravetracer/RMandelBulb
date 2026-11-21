@@ -139,6 +139,51 @@ impl Frame {
     }
 }
 
+/// Mandelbulb3D's diffuse tables for rough surfaces (LightAdjust.SetCosTabFunction): per diffuse
+/// curve, 128 entries over the angle (index 62 - 60 cos).
+pub fn rough_tables() -> &'static [[f64; 128]; 4] {
+    static T: std::sync::OnceLock<[[f64; 128]; 4]> = std::sync::OnceLock::new();
+    T.get_or_init(|| {
+        let base: [[f64; 128]; 4] = std::array::from_fn(|k| {
+            std::array::from_fn(|i| {
+                let d = 1.0 - (i as f64 - 2.0) / 60.0;
+                match k {
+                    0 if d > 0.15 => (d - 0.08) * 1.0869565,
+                    0 if d <= 0.0 => 0.0,
+                    0 => d.powf(((0.505 - d) * 3.8).max(1.0)),
+                    1 => d.max(0.0).powi(2),
+                    2 => d * 0.5 + 0.5,
+                    _ => (d * 0.5 + 0.5).powi(2),
+                }
+            })
+        });
+        let mut out = [[0.0; 128]; 4];
+        for k in 0..4 {
+            let tmp: Vec<f64> = base[k].iter().map(|v| v.max(0.0).sqrt()).collect();
+            for (j, o) in out[k].iter_mut().enumerate() {
+                let e: f64 = (0..=60).map(|i| (j as i64 + i - 30).unsigned_abs() as usize).filter(|l| *l < 128).map(|l| tmp[l]).sum();
+                *o = (e * 0.011 + (e * 0.007).powi(2)).powi(2);
+            }
+        }
+        out
+    })
+}
+
+/// Rough diffuse factor of curve `k` for `ndl` (GetCosTabVal: B-spline over the table).
+pub fn rough_diffuse(k: usize, ndl: f64) -> f64 {
+    let tab = &rough_tables()[k.min(3)];
+    let t = 62.0 - 60.0 * ndl;
+    let (ip, f) = if t.trunc() - 1.0 < 0.0 {
+        (0usize, 0.0)
+    } else if t.trunc() - 1.0 > 124.0 {
+        (124usize, 1.0)
+    } else {
+        ((t.trunc() - 1.0) as usize, t - t.trunc())
+    };
+    let w = crate::maps::spline_weights(f);
+    (0..4).map(|i| tab[ip + i] * w[i]).sum()
+}
+
 /// Linear color to its display (sRGB encoded) value, kept as a float above 1.
 pub fn to_display(v: f32) -> f32 {
     if v <= 0.003_130_8 { v.max(0.0) * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 }

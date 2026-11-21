@@ -136,6 +136,7 @@ impl Inspector {
             l.sky_color = d.sky_color;
             l.ground_color = d.ground_color;
             l.shininess = d.shininess;
+            l.roughness = d.roughness;
             l.ambient_camera_relative = d.ambient_camera_relative;
         }
         widgets::grid(ui, "ambient", |ui| {
@@ -144,6 +145,7 @@ impl Inspector {
             widgets::color(ui, "Ground", "Ambient color from below", &mut l.ground_color);
             widgets::checkbox(ui, "Follow camera", "Sky and ground follow the camera's up axis instead of the world z axis (Mandelbulb3D)", &mut l.ambient_camera_relative);
             widgets::slider_log(ui, "Shininess", "Size of the highlights: higher is smaller and sharper", &mut l.shininess, 2.0..=1024.0, d.shininess);
+            widgets::slider(ui, "Roughness", "How much rough surface parts lose their highlights and get softer light (needs Smooth normals in the Render tab)", &mut l.roughness, 0.0..=1.0, d.roughness);
         });
         if widgets::section(ui, "Ambient occlusion", true) {
             l.ao_mode = d.ao_mode;
@@ -239,6 +241,7 @@ fn render(ui: &mut Ui, scene: &mut Scene) {
         widgets::slider_log(ui, "Max distance", "Rays end after this distance", &mut m.max_distance, 0.01..=1000.0, d.max_distance);
         widgets::slider_u32(ui, "Refinement", "Binary search steps at the surface for an exact hit", &mut m.refine_steps, 0..=12, d.refine_steps);
         widgets::slider_log(ui, "Near", "Rays start at this distance from the camera: hides what is closer (Mandelbulb3D imports set it)", &mut m.near, 0.0..=10.0, d.near);
+        widgets::slider_u32(ui, "Smooth normals", "Averages the surface normal along the surface (steps to each side; 0 = off) and measures the roughness for the lighting. Costs more estimates per pixel.", &mut m.smooth_normals, 0..=8, d.smooth_normals);
     });
 }
 

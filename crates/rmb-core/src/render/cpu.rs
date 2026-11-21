@@ -97,6 +97,52 @@ impl<'a> Shader<'a> {
         n.normalize()
     }
 
+    /// Normal and roughness at a hit at distance `t`. With smoothed normals (Mandelbulb3D's
+    /// RMCalculateNormals) the estimate is sampled along the surface: the mean slopes bend the
+    /// normal, their spread is the roughness (0..1). Without smoothing the roughness is 0.
+    pub fn normal_rough(&self, ev: &mut Evaluator, p: V3, eps: f64, t: f64) -> (V3, f64) {
+        let h = eps * 0.5;
+        let k = [v3(1.0, -1.0, -1.0), v3(-1.0, -1.0, 1.0), v3(-1.0, 1.0, -1.0), v3(1.0, 1.0, 1.0)];
+        let mut g = V3::ZERO;
+        for kk in k {
+            g += kk * ev.de(p + kk * h, h);
+        }
+        let s = self.scene.march.smooth_normals.min(8) as i64;
+        if s == 0 {
+            return (g.normalize(), 0.0);
+        }
+        let cam = &self.scene.camera;
+        // Mandelbulb3D's normal offset (0.15 of the threshold, at most 0.15 pixels) and its
+        // normal: the gradient times that offset (the tetrahedron sum is 4 h times the gradient).
+        let no = 0.15 * self.scene.march.detail.min(1.0) * self.frame.pixel_angle * t;
+        let n0 = g * (no / (4.0 * h));
+        let nrm = g.normalize();
+        let no2 = no * 2.0;
+        let dnn = (ev.de(p, h) + ev.de(p - cam.right * no2, h) + ev.de(p + cam.right * no2, h) + ev.de(p - cam.up * no2, h) + ev.de(p + cam.up * no2, h)) * 0.2;
+        let step = no2 * 3.0 / (s as f64 + 0.5);
+        let tx = cam.right - nrm * cam.right.dot(nrm);
+        let tx = if tx.length() > 1e-9 { tx.normalize() } else { cam.up };
+        let ty = nrm.cross(tx);
+        let mut slopes = |axis: V3| {
+            let (mut sum, mut sq) = (0.0, 0.0);
+            for i in -s..=s {
+                if i != 0 {
+                    let d = (ev.de(p + axis * (i as f64 * step), h) - dnn) / i as f64;
+                    sum += d;
+                    sq += d * d;
+                }
+            }
+            (sum, sq)
+        };
+        let ((n1, s1), (n2, s2)) = (slopes(tx), slopes(ty));
+        let dm = 2.0 * s as f64;
+        let spread = s1 * dm - n1 * n1 + s2 * dm - n2 * n2;
+        let dt2 = no2 * 0.5 / (dm * step);
+        let rough = ((spread * 7.0 * dt2 * dt2 / (n0.dot(n0) + 1e-40)).max(0.0).sqrt() - 0.05).clamp(0.0, 1.0);
+        let n = if s < 8 { n0 + tx * (n1 * dt2) + ty * (n2 * dt2) } else { n0 };
+        (n.normalize(), rough)
+    }
+
     fn soft_shadow(&self, ev: &mut Evaluator, p: V3, l: V3, eps: f64, softness: f64, max_t: f64) -> f64 {
         let mut res: f64 = 1.0;
         let mut t = eps * 4.0;
@@ -303,8 +349,12 @@ impl<'a> Shader<'a> {
                 c
             }
             Some(h) => {
-                let n = self.normal(ev, h.pos, h.eps);
+                let (n, rough) = self.normal_rough(ev, h.pos, h.eps, h.t);
                 let n = if n.dot(d) > 0.0 { -n } else { n };
+                // Roughness dulls the highlights toward 1/p (Phong p ~ shininess / 4) and
+                // softens the diffuse curves (PaintThread.CalcPixelColor2).
+                let rr = rough * sc.lighting.roughness;
+                let spec_rough = 1.0 + (2.0 * rr).min(1.0) * (4.0 / sc.lighting.shininess.max(1.0) - 1.0);
                 let (base, spec_col) = self.gradient(self.color_value(h, n));
                 // Shading point just off the surface; inside rendering puts the surface one
                 // threshold into the solid, so it needs a larger offset.
@@ -326,7 +376,10 @@ impl<'a> Shader<'a> {
                         None => (li.dir, 1.0, sc.march.max_distance),
                     };
                     let ndl = n.dot(ldir);
-                    let df = li.diffuse.apply(ndl);
+                    let mut df = li.diffuse.apply(ndl);
+                    if rr > 0.0 {
+                        df += (super::rough_diffuse(li.diffuse.index() as usize, ndl) - df) * rr;
+                    }
                     // Back faces: only wrapping curves reach them, and not through shadows.
                     if df <= 0.0 || (ndl <= 0.0 && li.shadows) {
                         continue;
@@ -337,7 +390,7 @@ impl<'a> Shader<'a> {
                     }
                     let w = sh * atten * (1.0 - li.occlusion * (1.0 - ao));
                     let hv = (ldir - d).normalize();
-                    let s = if ndl > 0.0 { n.dot(hv).max(0.0).powf(l.shininess) * li.specular * sc.material.specular * (l.shininess + 8.0) / 25.0 } else { 0.0 };
+                    let s = if ndl > 0.0 { n.dot(hv).max(0.0).powf(l.shininess) * li.specular * sc.material.specular * (l.shininess + 8.0) / 25.0 * spec_rough } else { 0.0 };
                     for k in 0..3 {
                         diffuse[k] += li.color[k] * df * w;
                         spec[k] += li.color[k] * s * w;

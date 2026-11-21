@@ -46,12 +46,13 @@ struct U {
     glow2: vec4<f32>,      // second glow color, w: steps to the second color
     glow3: vec4<f32>,      // glow offset (steps), blend, glow iteration, reflection amount
     bg_rot: array<vec4<f32>, 3>, // background image rotation rows; [0].w: has image, [1].w: display space
-    blend: vec4<f32>,      // interpolation hybrid weights of slots 1 and 2
+    blend: vec4<f32>,      // interpolation hybrid weights of slots 1 and 2, smooth normals, roughness
 }
 
 @group(0) @binding(0) var<uniform> u: U;
 @group(0) @binding(1) var<storage, read> prm: array<f32>;
-// Surface colors at 0..255, highlight colors at 256..511.
+// Surface colors at 0..255, highlight colors at 256..511, rough diffuse tables at 512..639
+// (one table per component).
 @group(0) @binding(2) var<storage, read> lut: array<vec4<f32>>;
 @group(0) @binding(3) var<storage, read_write> accum: array<vec4<f32>>;
 // Denoiser helper images per pixel: [2 i] albedo, [2 i + 1] world normal (summed like accum).
@@ -348,18 +349,112 @@ fn march_ray(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, max_steps: u32) ->
     return h;
 }
 
-fn surface_normal(p: vec3<f32>, eps: f32) -> vec3<f32> {
+// Mirrors Shader::normal_rough: xyz normal, w roughness. All estimates come from one call
+// site in one loop (each call site inlines the whole fractal: compile time).
+fn surface_normal_rough(p: vec3<f32>, eps: f32, t: f32) -> vec4<f32> {
     let h = eps * 0.5;
-    let k1 = vec3<f32>(1.0, -1.0, -1.0);
-    let k2 = vec3<f32>(-1.0, -1.0, 1.0);
-    let k3 = vec3<f32>(-1.0, 1.0, -1.0);
-    let k4 = vec3<f32>(1.0, 1.0, 1.0);
-    let n = k1 * de_at(p + k1 * h, h) + k2 * de_at(p + k2 * h, h) + k3 * de_at(p + k3 * h, h) + k4 * de_at(p + k4 * h, h);
-    let l = length(n);
-    if (l > 0.0) {
-        return n / l;
+    let s = i32(min(u.blend.z, 8.0));
+    let right = u.cam_right.xyz;
+    let up = u.cam_up.xyz;
+    let no = 0.15 * min(u.march.x, 1.0) * u.cam_up.w * t;
+    let no2 = no * 2.0;
+    let step = no2 * 3.0 / (f32(max(s, 0)) + 0.5);
+    // Samples: 4 tetrahedron points, then (with smoothing) 5 for the center value and 2 s along
+    // each of the two tangents.
+    var count = 4;
+    if (s > 0) {
+        count = 9 + 4 * s;
     }
-    return vec3<f32>(0.0, 0.0, 1.0);
+    var g = vec3<f32>(0.0);
+    var nrm = vec3<f32>(0.0, 0.0, 1.0);
+    var tx = right;
+    var ty = up;
+    var dnn = 0.0;
+    var n1 = 0.0;
+    var s1 = 0.0;
+    var n2 = 0.0;
+    var s2 = 0.0;
+    for (var j = 0; j < count; j++) {
+        var q = p;
+        var k = vec3<f32>(0.0);
+        var i = 0;
+        if (j < 4) {
+            k = vec3<f32>(select(-1.0, 1.0, j == 0 || j == 3), select(-1.0, 1.0, j >= 2), select(-1.0, 1.0, j == 1 || j == 3));
+            q = p + k * h;
+        } else if (j < 9) {
+            var offs = array<vec3<f32>, 5>(vec3<f32>(0.0), -right, right, -up, up);
+            q = p + offs[j - 4] * no2;
+        } else {
+            let m = (j - 9) % (2 * s);
+            i = select(m - s, m - s + 1, m >= s);
+            q = p + select(ty, tx, j - 9 < 2 * s) * (f32(i) * step);
+        }
+        let v = de_at(q, h);
+        if (j < 4) {
+            g += k * v;
+            if (j == 3) {
+                if (length(g) > 0.0) {
+                    nrm = g / length(g);
+                }
+                tx = right - nrm * dot(right, nrm);
+                if (length(tx) > 1.0e-9) {
+                    tx = normalize(tx);
+                } else {
+                    tx = up;
+                }
+                ty = cross(nrm, tx);
+            }
+        } else if (j < 9) {
+            dnn += v * 0.2;
+        } else {
+            let a = (v - dnn) / f32(i);
+            if (j - 9 < 2 * s) {
+                n1 += a;
+                s1 += a * a;
+            } else {
+                n2 += a;
+                s2 += a * a;
+            }
+        }
+    }
+    if (s <= 0) {
+        return vec4<f32>(nrm, 0.0);
+    }
+    let n0 = g * (no / (4.0 * h));
+    let dm = 2.0 * f32(s);
+    let spread = s1 * dm - n1 * n1 + s2 * dm - n2 * n2;
+    let dt2 = no2 * 0.5 / (dm * step);
+    let rough = clamp(sqrt(max(spread * 7.0 * dt2 * dt2 / (dot(n0, n0) + 1.0e-30), 0.0)) - 0.05, 0.0, 1.0);
+    var n = n0;
+    if (s < 8) {
+        n = n0 + tx * (n1 * dt2) + ty * (n2 * dt2);
+    }
+    if (length(n) > 0.0) {
+        n = n / length(n);
+    } else {
+        n = nrm;
+    }
+    return vec4<f32>(n, rough);
+}
+
+// Mirrors render::rough_diffuse.
+fn rough_diffuse(k: u32, ndl: f32) -> f32 {
+    let t = 62.0 - 60.0 * ndl;
+    var ip = i32(trunc(t)) - 1;
+    var f = t - trunc(t);
+    if (ip < 0) {
+        ip = 0;
+        f = 0.0;
+    } else if (ip > 124) {
+        ip = 124;
+        f = 1.0;
+    }
+    let w = spline_weights(f);
+    var r = 0.0;
+    for (var i = 0; i < 4; i++) {
+        r += lut[512u + u32(ip + i)][min(k, 3u)] * w[i];
+    }
+    return r;
 }
 
 fn soft_shadow(p: vec3<f32>, l: vec3<f32>, eps: f32, softness: f32, max_t: f32) -> f32 {
@@ -646,10 +741,14 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sy: f32) 
         tr.albedo = clamp(c, vec3<f32>(0.0), vec3<f32>(1.0));
     } else {
         let pos = o + d * h.t;
-        var n = surface_normal(pos, h.eps);
+        let nr = surface_normal_rough(pos, h.eps, h.t);
+        var n = nr.xyz;
         if (dot(n, d) > 0.0) {
             n = -n;
         }
+        // Roughness dulls the highlights and softens the diffuse curves.
+        let rr = nr.w * u.blend.w;
+        let spec_rough = 1.0 + min(2.0 * rr, 1.0) * (4.0 / max(u.sky.w, 1.0) - 1.0);
         let cols = gradient(color_value(h, n, pos));
         let base = cols.base;
         let p = pos + n * (h.eps * select(1.5, 4.0, u.scales.z > 0.5));
@@ -682,6 +781,9 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sy: f32) 
             } else if (curve == 3u) {
                 df = (ndl * 0.5 + 0.5) * (ndl * 0.5 + 0.5);
             }
+            if (rr > 0.0) {
+                df += (rough_diffuse(curve, ndl) - df) * rr;
+            }
             // Back faces: only wrapping curves reach them, and not through shadows.
             if (df <= 0.0 || (ndl <= 0.0 && li.opts.x > 0.5)) {
                 continue;
@@ -697,7 +799,7 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sy: f32) 
             let hv = normalize(ldir - d);
             var s = 0.0;
             if (ndl > 0.0) {
-                s = pow(max(dot(n, hv), 0.0), shin) * li.dir.w * u.ground.w * (shin + 8.0) / 25.0;
+                s = pow(max(dot(n, hv), 0.0), shin) * li.dir.w * u.ground.w * (shin + 8.0) / 25.0 * spec_rough;
             }
             diffuse += li.color.xyz * df * w;
             spec += li.color.xyz * s * w;

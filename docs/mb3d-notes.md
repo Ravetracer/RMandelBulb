@@ -138,3 +138,14 @@ little-endian.
 - Interpolation hybrid (addon byte 1 = 1): the iteration counts of formulas 1 and 2 are f32
   weights. Every iteration runs both on the same point; result = blend of the two vectors scaled
   to the blended length; derivative |w1|·s1 + |w2|·s2 (doInterpolHybridPasDE).
+
+## Smoothed normals and roughness (Calc.RMCalculateNormals, PaintThread)
+
+- iOptions (u16 at 16) bits 6..9: smoothing steps S (0 off, 8 = 5×5×5 cube normal). Normal
+  offset No = 0.15 · min(1, DEstop) · pixel size; center = average of 5 estimates (±2No along the
+  screen axes); along two tangents 2S estimates at steps 6No/(S + 0.5): slopes (DE - center)/i;
+  roughness = clamp(sqrt(7 · spread · dt2² / |N|²) - 0.05, 0, 1) with spread = Σ(slope²)·2S -
+  (Σslope)² per tangent and dt2 = No / (2S · step); the mean slopes bend the normal (S < 8).
+- Shading: dRough = roughness · RoughnessFactor (light +2, /255). Specular weight
+  (1 + min(1, 2·dRough)·(1/p - 1)); diffuse = mix(table, rough table, dRough), rough tables =
+  blurred square roots of the diffuse tables (LightAdjust.SetCosTabFunction).

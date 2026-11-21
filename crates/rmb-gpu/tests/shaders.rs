@@ -125,6 +125,9 @@ fn gpu_matches_cpu_with_mandelbulb3d_shading() {
     scene.lighting.lights[1].azimuth = 175.0;
     scene.lighting.lights[1].elevation = 5.0;
     scene.lighting.lights[1].glow_size = 15.0;
+    // Smoothed normals with roughness.
+    scene.march.smooth_normals = 3;
+    scene.lighting.roughness = 1.0;
     // Two bounces of reflections.
     scene.material.reflection = 0.6;
     scene.material.reflection_bounces = 2;

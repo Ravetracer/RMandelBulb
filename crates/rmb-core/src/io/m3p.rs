@@ -660,6 +660,10 @@ pub fn import_binary(b: &[u8]) -> Result<Import, String> {
         // Lens radius = Ap * focus distance; the scene's lens radius is aperture * focus * 0.1.
         s.dof.aperture = ap * 10.0;
     }
+    // ---- smoothed normals (iOptions bits 6..9) and the roughness factor (light record +2)
+    s.march.smooth_normals = ((r.u16(16) >> 6) & 15).min(8) as u32;
+    s.lighting.roughness = r.u8(light + 2) as f64 / 255.0;
+
     // ---- reflections (CalcSR): SRamount (332) when they are calculated automatically (336
     // bit 0), SRreflectioncount (337) bounces. Transmission (bit 1) is not supported.
     let sr = r.u8(336);
