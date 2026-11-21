@@ -283,6 +283,9 @@ pub enum DeKind {
     Linear,
     /// Numerical gradient of the escape potential (no derivative needed).
     Numeric,
+    /// Distance-estimated IFS (Mandelbulb3D's dIFS): shapes write their distance into `rout`,
+    /// transforms scale `a0`; the estimate is the smallest `rout / a0` over the iterations.
+    Difs,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -513,6 +516,7 @@ impl Parser {
                         "log" => DeKind::Log,
                         "linear" => DeKind::Linear,
                         "numeric" => DeKind::Numeric,
+                        "difs" => DeKind::Difs,
                         o => return self.err(format!("unknown DE kind '{o}'")),
                     }
                 }

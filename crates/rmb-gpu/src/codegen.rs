@@ -24,6 +24,7 @@ fn iterate_fn(prog: &Program) -> String {
     let _ = writeln!(s, "const NSLOTS: u32 = {}u;", prog.slots.len());
     let _ = writeln!(s, "const NUMERIC: bool = {};", prog.numeric);
     let _ = writeln!(s, "const DE_LINEAR: bool = {};", prog.de_kind == DeKind::Linear);
+    let _ = writeln!(s, "const DIFS: bool = {};", prog.difs);
     s.push_str(PRELUDE);
     s.push_str(
         "\nfn iterate(p: vec3<f32>, fixed_n: u32, use_fixed: bool) -> Iterated {\n\
@@ -41,6 +42,8 @@ fn iterate_fn(prog: &Program) -> String {
     for name in &names[STATE_AUX..STATE_COUNT] {
         let _ = writeln!(s, "    var {name}: fl = 0.0;");
     }
+    // dIFS: VaryScale starts at 1.
+    let _ = writeln!(s, "    if (DIFS) {{\n        {} = 1.0;\n    }}\n    out.de = 65535.0;", names[STATE_AUX]);
     s.push_str(
         "    if (NSLOTS == 0u) {\n        return out;\n    }\n\
          \x20   let limit = select(u32(u.frac.z), fixed_n, use_fixed);\n\
@@ -62,13 +65,16 @@ fn iterate_fn(prog: &Program) -> String {
     let _ = write!(
         s,
         "        if (!transform) {{\n            n += 1u;\n        }}\n        count += 1u;\n        if (count >= u.slots[slot].x) {{\n            count = 0u;\n            slot += 1u;\n            if (slot >= NSLOTS) {{\n                slot = repeat_from;\n            }}\n        }}\n\
+         \x20       if (DIFS) {{\n            if (!transform) {{\n                let de_i = f32({rout} / {a0});\n                if (de_i < out.de) {{\n                    out.de = de_i;\n                    out.trap = f32({a2} * {a2});\n                }}\n            }}\n            continue;\n        }}\n\
          \x20       if (!transform) {{\n            let r2 = f32({x} * {x} + {y} * {y} + {z} * {z} + {w} * {w});\n            out.trap = min(out.trap, r2);\n            {rout} = fl(r2);\n\
          \x20           if (!use_fixed && !(r2 <= u.march.z)) {{\n                out.escaped = true;\n                break;\n            }}\n        }}\n    }}\n",
         x = names[0],
         y = names[1],
         z = names[2],
         w = names[3],
-        rout = names[STATE_ROUT]
+        rout = names[STATE_ROUT],
+        a0 = names[STATE_AUX],
+        a2 = names[STATE_AUX + 2]
     );
     let _ = writeln!(s, "    out.s = vec4<f32>(f32({}), f32({}), f32({}), f32({}));\n    out.dr = f32({});\n    out.n = n;\n    return out;\n}}", names[0], names[1], names[2], names[3], names[8]);
     s

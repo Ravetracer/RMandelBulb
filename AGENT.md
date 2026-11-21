@@ -64,8 +64,12 @@ cargo clippy -j 8 --workspace --all-targets
 - The translator keeps the machine state in variables (x87 slots `f0`..`f7`, xmm lanes, `r_eax`…)
   and structures branches by post-dominators. FPU compare conditions come from evaluating the
   flag instructions per compare outcome; integer reads of a double's bytes become sign tests
-  (`svN`), sign-bit writes become abs/negate/copysign. Not supported yet: loops, table lookups,
-  dIFS (different calling convention), JIT Pascal formulas.
+  (`svN`), sign-bit writes become abs/negate/copysign, small-range table reads become `sel`
+  chains. dIFS formulas (DEoption 20-22: `esi` = record + 88, `edi` = parameters) translate to
+  `de difs`; the hybrid then takes the smallest `rout / a0` (VaryScale) over the iterations.
+  Not supported yet: loops, data-dependent table lookups, map functions, JIT Pascal formulas.
+- Regenerate without piping the output into `head`: a closed pipe kills `rmb-cli` before it
+  writes the file.
 
 ## Testing the app visually
 

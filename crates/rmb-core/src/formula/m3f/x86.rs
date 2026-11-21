@@ -74,6 +74,8 @@ struct State {
     xmm_known: [[Option<u64>; 2]; 8],
     /// FPU status word compare bits (C0, C2, C3) per compare outcome.
     fpu_status: [i64; OUTCOMES],
+    /// Known value range of integer data registers (after `and` with a low-bit mask).
+    ranges: [Option<(i64, i64)>; 8],
 }
 
 #[derive(Clone, Debug)]
@@ -349,7 +351,14 @@ pub(crate) fn translate(m: &M3f, layout: &[MemSlot]) -> Res<String> {
         stack_int: BTreeMap::new(),
         xmm_known: [[None; 2]; 8],
         fpu_status: [0; OUTCOMES],
+        ranges: [None; 8],
     };
+    if m.de_option >= 20 {
+        // dIFS convention: esi = record + 88, edi = parameters, no arguments.
+        st.regs = [IV::Undef, IV::Undef, IV::Undef, IV::Undef, IV::Ptr(Region::Stack, 0), IV::Undef, IV::Ptr(Region::Rec, 88), IV::Ptr(Region::PVar, 0)];
+        st.stack_int.clear();
+        st.stack_int.insert(0, IV::Int(0x7fff_0000));
+    }
     // Stack at entry: return address at 0, PIteration3D at +4, w pointer at +8.
     st.stack_int.insert(4, IV::Ptr(Region::Rec, 0));
     st.stack_int.insert(8, IV::Ptr(Region::Rec, -8));
@@ -543,6 +552,11 @@ impl Tx<'_> {
         if a.flags != b.flags {
             m.flags = Flags::None;
         }
+        for r in 0..8 {
+            if a.ranges[r] != b.ranges[r] {
+                m.ranges[r] = None;
+            }
+        }
         Ok(m)
     }
 
@@ -609,7 +623,35 @@ impl Tx<'_> {
 
     /// Reads memory of `size` bytes as `kind` ("f" float, "i" integer, "x" 128-bit).
     fn read(&mut self, ins: &Instruction, st: &mut State, size: MemorySize, out: &mut Vec<S>) -> Res<Mem> {
+        // Table read with a small data index (e.g. an option masked with `and eax, 3`): a
+        // selection over the possible entries.
+        if ins.memory_index() != Register::None
+            && let Some(ii) = reg_index(ins.memory_index())
+            && let (IV::Var(idx), Some((lo, hi))) = (st.regs[ii].clone(), st.ranges[ii])
+            && hi - lo < 8
+        {
+            let bi = reg_index(ins.memory_base()).ok_or("base register")?;
+            let IV::Ptr(region, base) = st.regs[bi].clone() else { return Err("table base is not a pointer".into()) };
+            let disp = ins.memory_displacement32() as i32 as i64;
+            let scale = ins.memory_index_scale() as i64;
+            let mut vals = Vec::new();
+            for k in lo..=hi {
+                match self.read_at(region.clone(), base + disp + k * scale, size, st, out)? {
+                    Mem::F(s) => vals.push(s),
+                    _ => return Err("table read of integers".into()),
+                }
+            }
+            let mut e = vals.pop().unwrap_or_else(|| "0.0".into());
+            for (k, v) in vals.into_iter().enumerate().rev() {
+                e = format!("sel({idx} == {}, {v}, {e})", lit((lo + k as i64) as f64));
+            }
+            return Ok(Mem::F(e));
+        }
         let (region, off) = self.address(ins, st)?;
+        self.read_at(region, off, size, st, out)
+    }
+
+    fn read_at(&mut self, region: Region, off: i64, size: MemorySize, st: &mut State, out: &mut Vec<S>) -> Res<Mem> {
         // Integer reads of the bytes of a double: the code tests or copies its sign bit.
         if let Some(n) = int_bytes(size)
             && let Some((var, pos, f32_slot)) = self.double_at(&region, off, n, st)
@@ -619,6 +661,8 @@ impl Tx<'_> {
         match region {
             Region::Rec => match (off, size) {
                 (48, MemorySize::UInt32 | MemorySize::Int32 | MemorySize::DwordOffset) => Ok(Mem::I(IV::Ptr(Region::PVar, 0))),
+                // RStopD (dIFS: the surface threshold) is not kept per point: reads give 0.
+                (-40, MemorySize::Float64) => Ok(Mem::F("0.0".into())),
                 (64, s) if is_int32(s) => Ok(Mem::I(IV::Var("i".into()))),
                 (208, s) if is_int32(s) => Ok(Mem::I(IV::Var("a1".into()))),
                 (_, MemorySize::Float64 | MemorySize::UInt64 | MemorySize::Int64) => Ok(Mem::F(self.rec_field(off, false)?.into())),
@@ -934,6 +978,7 @@ impl Tx<'_> {
 
     fn set_reg(&self, st: &mut State, r: Register, v: IV) -> Res<()> {
         let idx = reg_index(r).ok_or_else(|| format!("unsupported register {r:?}"))?;
+        st.ranges[idx] = None;
         let full = matches!(r, Register::EAX | Register::ECX | Register::EDX | Register::EBX | Register::ESP | Register::EBP | Register::ESI | Register::EDI);
         if full {
             st.regs[idx] = v;
@@ -1070,6 +1115,7 @@ impl Tx<'_> {
                         let name = format!("r_{}", REG_NAMES[idx]);
                         out.push(S::Line(format!("{name} = {res}")));
                         st.regs[idx] = IV::Var(name.clone());
+                        st.ranges[idx] = (mn == Mnemonic::And && k > 0 && (k & (k + 1)) == 0).then_some((0, k));
                         st.flags = Flags::Cmp(name, "0.0".into());
                     }
                 }
@@ -1082,6 +1128,7 @@ impl Tx<'_> {
                             let name = format!("r_{}", REG_NAMES[idx]);
                             out.push(S::Line(format!("{name} = {res}")));
                             st.regs[idx] = IV::Var(name.clone());
+                            st.ranges[idx] = None;
                             st.flags = Flags::Cmp(name, "0.0".into());
                         }
                         OpKind::Memory => {

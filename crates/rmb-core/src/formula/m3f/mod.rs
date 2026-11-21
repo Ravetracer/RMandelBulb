@@ -488,13 +488,15 @@ pub fn translate(m: &M3f) -> Result<Translated, String> {
     if m.has_source {
         return Err("Pascal source formula (JIT) is not supported yet".into());
     }
-    if m.de_option >= 20 {
-        return Err("dIFS formula (distance IFS) is not supported yet".into());
+    if m.de_option > 22 {
+        return Err(format!("unknown DE option {}", m.de_option));
     }
     let layout = memory_layout(&m.options);
     let body = x86::translate(m, &layout)?;
     let mut s = String::new();
-    let category = if m.de_option < 0 {
+    let category = if m.de_option >= 20 {
+        "MB3D dIFS"
+    } else if m.de_option < 0 {
         "MB3D transforms"
     } else if m.is_4d() {
         "MB3D 4D"
@@ -503,6 +505,7 @@ pub fn translate(m: &M3f) -> Result<Translated, String> {
     };
     let de = match m.de_option {
         2 | 5 | 6 | 11 => "linear",
+        20..=22 => "difs",
         _ => "numeric",
     };
     let first_line = m.description.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("").replace('"', "'");
@@ -510,7 +513,7 @@ pub fn translate(m: &M3f) -> Result<Translated, String> {
     let _ = writeln!(s, "    category \"{category}\"");
     let _ = writeln!(s, "    description \"Mandelbulb3D formula {}. {}\"", m.name, first_line.chars().take(200).collect::<String>());
     let _ = writeln!(s, "    de {de}");
-    if m.de_option < 0 {
+    if m.de_option < 0 || matches!(m.de_option, 21 | 22) {
         s.push_str("    transform\n");
     }
     let scale = if de == "linear" { m.ade_scale } else { m.de_scale };

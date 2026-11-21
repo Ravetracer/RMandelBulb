@@ -22,7 +22,7 @@ const PVAR: u64 = DATA + 0x8000;
 const STACK_TOP: u64 = DATA + 0xF_0000;
 
 /// Record offsets compared after each iteration (doubles), and the integer field bFirstIt.
-const COMPARED: [i64; 15] = [-56, -32, -24, -16, -8, 24, 32, 40, 192, 200, 216, 224, 232, 240, 248];
+const COMPARED: [i64; 16] = [-56, -32, -24, -16, -8, 24, 32, 40, 56, 192, 200, 216, 224, 232, 240, 248];
 
 fn state_index(name: &str) -> usize {
     STATE_NAMES.iter().position(|n| *n == name).unwrap_or(0)
@@ -85,7 +85,8 @@ fn check(path: &Path, verbose: bool) -> Outcome {
         Err(e) => return Outcome::Emulator(e),
     };
     let four_d = m.is_4d();
-    let counted = m.de_option >= 0;
+    let difs = m.de_option >= 20;
+    let counted = m.de_option >= 0 && !difs;
 
     let mut emu = match Unicorn::new(Arch::X86, Mode::MODE_32) {
         Ok(e) => e,
@@ -149,6 +150,11 @@ fn check(path: &Path, verbose: bool) -> Outcome {
         if four_d {
             put(&mut rec, 232, 1.0);
         }
+        if difs {
+            // VaryScale starts at 1 in the dIFS loop.
+            put(&mut rec, 200, 1.0);
+            set(&mut regs, "a0", 1.0);
+        }
         put32(&mut rec, 48, (PVAR as u32).to_le_bytes());
         put32(&mut rec, 68, 60i32.to_le_bytes());
         put32(&mut rec, 72, (256.0f32).to_le_bytes());
@@ -165,8 +171,10 @@ fn check(path: &Path, verbose: bool) -> Outcome {
             let esp = STACK_TOP - 0x100;
             let mut stack = Vec::new();
             stack.extend_from_slice(&(MAGIC as u32).to_le_bytes());
-            stack.extend_from_slice(&(REC as u32).to_le_bytes());
-            stack.extend_from_slice(&((REC - 8) as u32).to_le_bytes());
+            if !difs {
+                stack.extend_from_slice(&(REC as u32).to_le_bytes());
+                stack.extend_from_slice(&((REC - 8) as u32).to_le_bytes());
+            }
             let regs_ok = (|| -> Result<(), unicorn_engine::unicorn_const::uc_error> {
                 emu.mem_write(esp, &stack)?;
                 emu.reg_write(RegisterX86::ESP, esp)?;
@@ -175,8 +183,8 @@ fn check(path: &Path, verbose: bool) -> Outcome {
                 emu.reg_write(RegisterX86::EDX, REC - 24)?;
                 emu.reg_write(RegisterX86::ECX, REC - 16)?;
                 emu.reg_write(RegisterX86::EBX, 0)?;
-                emu.reg_write(RegisterX86::ESI, 0)?;
-                emu.reg_write(RegisterX86::EDI, 0)?;
+                emu.reg_write(RegisterX86::ESI, if difs { REC + 88 } else { 0 })?;
+                emu.reg_write(RegisterX86::EDI, if difs { PVAR } else { 0 })?;
                 emu.reg_write(RegisterX86::FPCW, 0x1332)?;
                 emu.emu_start(CODE, MAGIC, 2_000_000, 1_000_000)?;
                 Ok(())

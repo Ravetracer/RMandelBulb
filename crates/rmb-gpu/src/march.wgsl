@@ -56,6 +56,8 @@ struct Iterated {
     n: u32,
     trap: f32,
     escaped: bool,
+    // dIFS: smallest distance over the iterations.
+    de: f32,
 }
 
 struct Hit {
@@ -82,7 +84,9 @@ fn orbit(p: vec3<f32>, h: f32) -> Orbit {
     let r2 = dot(it.s, it.s);
     let r = sqrt(r2);
     var de = 0.0;
-    if (it.escaped) {
+    if (DIFS) {
+        de = max(it.de, 0.0);
+    } else if (it.escaped) {
         if (NUMERIC) {
             var g = vec3<f32>(0.0);
             for (var k = 0u; k < 3u; k++) {
@@ -119,7 +123,7 @@ fn orbit(p: vec3<f32>, h: f32) -> Orbit {
     o.n = it.n;
     o.r2 = r2;
     o.trap = it.trap;
-    o.escaped = it.escaped;
+    o.escaped = it.escaped || DIFS;
     return o;
 }
 

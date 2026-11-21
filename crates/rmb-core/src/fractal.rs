@@ -32,6 +32,8 @@ pub struct Program {
     pub w_slice: f64,
     pub de_kind: DeKind,
     pub numeric: bool,
+    /// Distance-estimated IFS hybrid (any dIFS formula in it).
+    pub difs: bool,
     pub de_scale: f64,
     /// Parameters and `init` constants of all slots, concatenated.
     pub constants: Vec<f64>,
@@ -75,7 +77,8 @@ impl Program {
             constants.extend(formula.cpu.constants(&values));
             slots.push(ProgramSlot { transform: formula.def.transform, formula, iterations: s.iterations, offset });
         }
-        let kinds: Vec<DeKind> = slots.iter().filter(|s| !s.transform).map(|s| s.formula.def.de).collect();
+        let difs = slots.iter().any(|s| s.formula.def.de == DeKind::Difs);
+        let kinds: Vec<DeKind> = slots.iter().filter(|s| !s.transform && s.formula.def.de != DeKind::Difs).map(|s| s.formula.def.de).collect();
         let auto_kind = if kinds.iter().all(|k| *k == DeKind::Log) && !kinds.is_empty() { DeKind::Log } else { DeKind::Linear };
         let mixed = kinds.iter().any(|k| *k != kinds[0]) || kinds.contains(&DeKind::Numeric);
         let (de_kind, numeric) = match f.de_mode {
@@ -102,7 +105,8 @@ impl Program {
             julia_c: f.julia_c,
             w_slice: f.w_slice,
             de_kind,
-            numeric,
+            numeric: numeric && !difs,
+            difs,
             de_scale: f.de_scale * formula_scale,
             constants,
             cuts,
@@ -149,6 +153,8 @@ struct Iterated {
     n: u32,
     trap: f64,
     escaped: bool,
+    /// dIFS: smallest distance over the iterations.
+    difs_de: f64,
 }
 
 impl Evaluator<'_> {
@@ -162,7 +168,11 @@ impl Evaluator<'_> {
         st[STATE_ROUT] = p.x * p.x + p.y * p.y + p.z * p.z + prog.w_slice * prog.w_slice;
         st[STATE_PX..STATE_PX + 3].copy_from_slice(&[p.x, p.y, p.z]);
         debug_assert_eq!(STATE_AUX + 8, STATE_COUNT);
-        let mut out = Iterated { state: [0.0; 4], dr: 1.0, n: 0, trap: f64::MAX, escaped: false };
+        let mut out = Iterated { state: [0.0; 4], dr: 1.0, n: 0, trap: f64::MAX, escaped: false, difs_de: 65535.0 };
+        if prog.difs {
+            // VaryScale starts at 1; the shapes' distances are divided by it.
+            st[STATE_AUX] = 1.0;
+        }
         if prog.slots.is_empty() {
             return out;
         }
@@ -191,6 +201,17 @@ impl Evaluator<'_> {
                     slot = prog.repeat_from;
                 }
             }
+            if prog.difs {
+                if !s.transform {
+                    let de = st[STATE_ROUT] / st[STATE_AUX];
+                    if de < out.difs_de {
+                        out.difs_de = de;
+                        // Coloring: the value the shape left in Dfree1 (a2).
+                        out.trap = st[STATE_AUX + 2] * st[STATE_AUX + 2];
+                    }
+                }
+                continue;
+            }
             if !s.transform {
                 let r2 = st[0] * st[0] + st[1] * st[1] + st[2] * st[2] + st[3] * st[3];
                 out.trap = out.trap.min(r2);
@@ -218,7 +239,9 @@ impl Evaluator<'_> {
         let it = self.iterate(p, None);
         let r2 = it.state.iter().map(|v| v * v).sum::<f64>();
         let r = r2.sqrt();
-        let mut de = if !it.escaped {
+        let mut de = if prog.difs {
+            it.difs_de.max(0.0)
+        } else if !it.escaped {
             0.0
         } else if prog.numeric {
             let mut g = [0.0; 3];
@@ -251,7 +274,7 @@ impl Evaluator<'_> {
             let v = [p.x, p.y, p.z][axis];
             de = de.max(if above { pos - v } else { v - pos });
         }
-        Orbit { de, iterations: it.n, r2, dr: it.dr, trap: it.trap, escaped: it.escaped }
+        Orbit { de, iterations: it.n, r2, dr: it.dr, trap: it.trap, escaped: it.escaped || prog.difs }
     }
 
     pub fn de(&mut self, p: V3, h: f64) -> f64 {
