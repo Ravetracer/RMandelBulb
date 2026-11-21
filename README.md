@@ -15,8 +15,9 @@ modern egui interface and import of Mandelbulb3D parameters.
   Quaternion, Folding Int Pow, Amazing Box/Surf, ABox Mod, Kali box, Kaliset, Mandelbox 4D,
   Menger, Sierpinski, Octahedron, kaleidoscopic IFS, hypercomplex, and transforms (rotate,
   scale, folds, inversion, …).
-- **Mandelbulb3D formulas**: about 250 of Mandelbulb3D's machine-code formulas (`.m3f`) are
-  translated into the formula language (`rmb-cli m3f`) and built in.
+- **Mandelbulb3D formulas**: about 300 of Mandelbulb3D's machine-code formulas (`.m3f`) are
+  translated into the formula language (`rmb-cli m3f`) and built in. Each translation is
+  checked against the original code running in an x86 emulator (`tools/m3f-check`).
 - **Rendering**: progressive anti-aliasing, up to six lights with soft shadows, ray-traced or
   fast ambient occlusion, sky/ground ambient, gradient coloring (iterations, orbit trap, radius,
   normal), depth fog, glow, depth of field, cutting planes, filmic tone mapping, vignette.
@@ -41,8 +42,8 @@ cargo build --release -p rmb-app -p rmb-cli
 
 ## Status and limits
 
-- Not yet translated: dIFS formulas (107), Pascal-source JIT formulas, and formulas with loops,
-  bit operations or map lookups (about 100). Scenes that use them open with the missing slots
+- Not yet translated: dIFS formulas (107), Pascal-source JIT formulas, and about 50 formulas
+  with loops, table or map lookups. Scenes that use them open with the missing slots
   listed and skipped. 34 of the 80 Mandelbulb3D example parameter files are fully supported.
 - Not yet supported from MB3D: interpolation and DE-combination hybrids (imported as
   alternating), inside rendering, 4D rotations, background images, positional lights.

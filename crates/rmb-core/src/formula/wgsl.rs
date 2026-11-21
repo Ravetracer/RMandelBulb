@@ -181,6 +181,7 @@ impl Emitter<'_> {
                     Step => "step",
                     Smoothstep => "smoothstep",
                     Sqr => "sqr_",
+                    Single => return format!("fl(f32({}))", a[0]),
                     Select => return format!("select({}, {}, {})", a[2], a[1], a[0]),
                 };
                 // Typed first argument: abstract literals alone would make e.g. `abs(2.0)` abstract.

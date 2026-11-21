@@ -219,6 +219,81 @@ fn parse_int(s: &str) -> i64 {
     }
 }
 
+/// The state register a field of Mandelbulb3D's iteration record maps to (offsets from the
+/// record pointer, which points at the field C1).
+pub fn record_field(off: i64, four_d: bool) -> Option<&'static str> {
+    Some(match off {
+        -56 => "cw",
+        -48 => "rold",
+        -32 => "x",
+        -24 => "y",
+        -16 => "z",
+        -8 => {
+            if four_d {
+                "w"
+            } else {
+                "dr"
+            }
+        }
+        0 => "px",
+        8 => "py",
+        16 => "pz",
+        24 => "cx",
+        32 => "cy",
+        40 => "cz",
+        56 => "rout",
+        192 => "a6",
+        200 => "a0",
+        216 => "a2",
+        224 => "a3",
+        232 => {
+            if four_d {
+                "dr"
+            } else {
+                "a4"
+            }
+        }
+        240 => "a5",
+        248 => "a7",
+        320 => "cx",
+        328 => "cy",
+        336 => "cz",
+        344 => "cw",
+        _ => return None,
+    })
+}
+
+/// The parameter memory below the parameter pointer for option `values`: (offset, kind,
+/// value) of every slot that holds a number (tests run the original code with it).
+pub fn parameter_memory(m: &M3f, values: &[f64]) -> Result<Vec<(i64, SlotKind, f64)>, String> {
+    let layout = memory_layout(&m.options);
+    let mut src = String::from("formula \"eval\" {\n");
+    for o in &m.options {
+        let _ = writeln!(src, "    param {} \"x\" = 0", o.ident);
+    }
+    src.push_str("    init {\n");
+    let used: Vec<&MemSlot> = layout.iter().filter(|s| s.expr.is_some()).collect();
+    let mut seen = std::collections::HashSet::new();
+    for s in &used {
+        for l in &s.prelude {
+            if seen.insert(l.clone()) {
+                let _ = writeln!(src, "        {l}");
+            }
+        }
+    }
+    for (k, s) in used.iter().enumerate() {
+        let _ = writeln!(src, "        let s{k} = {}", s.expr.as_deref().unwrap_or("0.0"));
+    }
+    src.push_str("    }\n    iter { }\n}\n");
+    let defs = crate::formula::lang::parse_library(&src).map_err(|e| e.to_string())?;
+    let def = defs.first().ok_or("no formula")?;
+    let cpu = crate::formula::cpu::CpuFormula::compile(def);
+    let consts = cpu.constants(values);
+    let n = m.options.len();
+    let pos = |k: usize| def.derived.iter().position(|d| *d == format!("s{k}")).map(|p| n + p);
+    Ok(used.iter().enumerate().map(|(k, s)| (s.offset, s.kind, pos(k).and_then(|p| consts.get(p)).copied().unwrap_or(0.0))).collect())
+}
+
 /// A value the formula code finds in its parameter memory below the parameter pointer.
 #[derive(Clone, Debug)]
 pub(crate) struct MemSlot {
@@ -228,10 +303,12 @@ pub(crate) struct MemSlot {
     /// Formula-language expression of the value (in terms of the parameters), or None if the
     /// slot holds something that cannot be expressed (a function pointer).
     pub expr: Option<String>,
+    /// `init` statements the expression needs (e.g. the steps of a 4D rotation matrix).
+    pub prelude: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum SlotKind {
+pub enum SlotKind {
     F64,
     F32,
     I32,
@@ -240,12 +317,13 @@ pub(crate) enum SlotKind {
 /// Rebuilds Mandelbulb3D's `FillCustomVBufWithVars`: where each option value (or the values
 /// derived from it) lies below the parameter pointer.
 pub(crate) fn memory_layout(opts: &[Opt]) -> Vec<MemSlot> {
-    let mut slots = vec![MemSlot { offset: -8, kind: SlotKind::F64, expr: Some("0.5".into()) }];
+    let mut slots = vec![MemSlot { offset: -8, kind: SlotKind::F64, expr: Some("0.5".into()), prelude: Vec::new() }];
     let mut p: i64 = -8;
+    let mut preludes: Vec<(i64, Vec<String>)> = Vec::new();
     let id = |i: usize| opts.get(i).map(|o| o.ident.clone()).unwrap_or_else(|| "0.0".into());
     let mut push = |p: &mut i64, size: u8, kind: SlotKind, expr: Option<String>| {
         *p -= size as i64;
-        slots.push(MemSlot { offset: *p, kind, expr });
+        slots.push(MemSlot { offset: *p, kind, expr, prelude: Vec::new() });
     };
     let rot = |a: String, b: String, c: String| -> [String; 9] {
         let (sx, cx) = (format!("sin({a} * pi / 180.0)"), format!("cos({a} * pi / 180.0)"));
@@ -308,8 +386,10 @@ pub(crate) fn memory_layout(opts: &[Opt]) -> Vec<MemSlot> {
                 push(&mut p, 8, F64, Some(format!("-{v}")));
             }
             12 => {
-                for _ in 0..16 {
-                    push(&mut p, 4, F32, None);
+                let (prelude, m) = rot4d(i, &(0..6).map(|k| id(i + k)).collect::<Vec<_>>());
+                for e in m {
+                    push(&mut p, 4, F32, Some(e));
+                    preludes.push((p, prelude.clone()));
                 }
                 i += 5;
             }
@@ -357,7 +437,44 @@ pub(crate) fn memory_layout(opts: &[Opt]) -> Vec<MemSlot> {
         }
         i += 1;
     }
+    for (off, pre) in preludes {
+        if let Some(s) = slots.iter_mut().find(|s| s.offset == off) {
+            s.prelude = pre;
+        }
+    }
     slots
+}
+
+/// Mandelbulb3D's `BuildRotMatrix4d`: six plane rotations (YZ, XZ, XY, XW, YW, ZW), each
+/// multiplied from the left. Returns the `init` statements and the 16 entries (row major).
+fn rot4d(opt: usize, angles: &[String]) -> (Vec<String>, Vec<String>) {
+    const I1: [usize; 6] = [1, 0, 0, 0, 1, 2];
+    const I2: [usize; 6] = [2, 2, 1, 3, 3, 3];
+    let mut cur: Vec<Vec<String>> = (0..4).map(|r| (0..4).map(|c| if r == c { "1.0".to_string() } else { "0.0".to_string() }).collect()).collect();
+    let mut lines = Vec::new();
+    for (st, a) in angles.iter().enumerate() {
+        let s = format!("sin({a} * pi / 180.0)");
+        let c = format!("cos({a} * pi / 180.0)");
+        let mut rot: Vec<Vec<String>> = (0..4).map(|r| (0..4).map(|k| if r == k { "1.0".to_string() } else { "0.0".to_string() }).collect()).collect();
+        rot[I1[st]][I1[st]] = c.clone();
+        rot[I2[st]][I2[st]] = c;
+        rot[I1[st]][I2[st]] = format!("-{s}");
+        rot[I2[st]][I1[st]] = s;
+        let mut next = cur.clone();
+        for r in 0..4 {
+            for col in 0..4 {
+                let terms: Vec<String> = (0..4)
+                    .filter(|&k| rot[r][k] != "0.0" && cur[k][col] != "0.0")
+                    .map(|k| if rot[r][k] == "1.0" { cur[k][col].clone() } else { format!("({}) * {}", rot[r][k], cur[k][col]) })
+                    .collect();
+                let name = format!("q{opt}_{st}_{r}{col}");
+                lines.push(format!("let {name} = {}", if terms.is_empty() { "0.0".to_string() } else { terms.join(" + ") }));
+                next[r][col] = name;
+            }
+        }
+        cur = next;
+    }
+    (lines, cur.into_iter().flatten().collect())
 }
 
 /// Result of a translation.

@@ -57,10 +57,15 @@ cargo clippy -j 8 --workspace --all-targets
   `cargo run --release -p rmb-cli -- m3f ../mb3d/M3Formulas -o crates/rmb-core/src/formula/lib/mb3d.mbf`
   (prints the count and the failure reasons). Then run the GPU tests: every formula must give
   valid WGSL and render.
+- `cargo run --release -p m3f-check -- ../mb3d/M3Formulas` runs the original machine code in the
+  Unicorn emulator and compares it with every translation (4 iterations, 10 random points).
+  All but `_DonutTransform` match (that one drifts by about 1e-5, probably x87 trig precision
+  of the emulator). The tool is not a default member: it builds Unicorn (C, needs cmake).
 - The translator keeps the machine state in variables (x87 slots `f0`..`f7`, xmm lanes, `r_eax`…)
   and structures branches by post-dominators. FPU compare conditions come from evaluating the
-  flag instructions per compare outcome. Not supported yet: loops, bit operations on data,
-  table lookups, dIFS (different calling convention), JIT Pascal formulas.
+  flag instructions per compare outcome; integer reads of a double's bytes become sign tests
+  (`svN`), sign-bit writes become abs/negate/copysign. Not supported yet: loops, table lookups,
+  dIFS (different calling convention), JIT Pascal formulas.
 
 ## Testing the app visually
 

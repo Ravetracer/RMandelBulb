@@ -223,6 +223,7 @@ fn call(f: Func, args: &[Expr], l: Layout) -> NumFn {
             Cosh => f64::cosh,
             Tanh => f64::tanh,
             Sqr => |v| v * v,
+            Single => |v| v as f32 as f64,
             _ => |v| v,
         };
         return Box::new(move |r| g(x(r)));

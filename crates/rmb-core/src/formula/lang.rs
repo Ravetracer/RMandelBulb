@@ -210,6 +210,8 @@ pub enum Func {
     Step,
     Smoothstep,
     Sqr,
+    /// Rounds to 32-bit float precision (Mandelbulb3D's Single options).
+    Single,
     Select,
 }
 
@@ -245,6 +247,7 @@ impl Func {
             "step" => (Step, 2),
             "smoothstep" => (Smoothstep, 3),
             "sqr" => (Sqr, 1),
+            "single" => (Single, 1),
             "sel" => (Select, 3),
             _ => return None,
         })

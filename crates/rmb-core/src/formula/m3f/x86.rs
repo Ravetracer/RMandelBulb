@@ -42,8 +42,9 @@ enum IV {
     Int(i64),
     /// Data held in a variable (float-valued integer).
     Var(String),
-    /// Depends on the last FPU compare: one value per outcome.
-    Out([i64; OUTCOMES]),
+    /// Depends on a compare: one value per outcome. The second field names the compare: 0 =
+    /// the FPU compare (`fc_a` vs `fc_b`), n = sign test `sv<n>` vs 0.
+    Out([i64; OUTCOMES], u32),
     Undef,
 }
 
@@ -56,8 +57,8 @@ const OF: u32 = 0x800;
 #[derive(Clone, Debug, PartialEq)]
 enum Flags {
     None,
-    /// Flags per compare outcome.
-    Out([u32; OUTCOMES]),
+    /// Flags per compare outcome (compare named as in `IV::Out`).
+    Out([u32; OUTCOMES], u32),
     /// `cmp a, b` on data.
     Cmp(String, String),
 }
@@ -106,6 +107,13 @@ pub(crate) struct Tx<'a> {
     stack_vars: HashSet<String>,
     /// Derived constants (memory slots) used by the code.
     used_slots: BTreeMap<i64, String>,
+    /// Sign tests created so far (`sv1`, `sv2`, …).
+    views: u32,
+    /// The double each sign test read (by test number).
+    view_vars: HashMap<u32, String>,
+    /// Destination doubles whose low half was copied from another double (integer moves):
+    /// destination -> source.
+    half_copies: HashMap<String, String>,
 }
 
 fn fmt_ins(i: &Instruction) -> String {
@@ -324,7 +332,7 @@ pub(crate) fn translate(m: &M3f, layout: &[MemSlot]) -> Res<String> {
     }
     let ins = Tx::decode_all(&m.code);
     let cfg = Tx::build_cfg(&ins, m.code.len())?;
-    let mut tx = Tx { m, layout, ins, cfg, stack_vars: HashSet::new(), used_slots: BTreeMap::new() };
+    let mut tx = Tx { m, layout, ins, cfg, stack_vars: HashSet::new(), used_slots: BTreeMap::new(), views: 0, view_vars: HashMap::new(), half_copies: HashMap::new() };
     let mut st = State {
         regs: [
             IV::Ptr(Region::Rec, -32),
@@ -352,9 +360,20 @@ pub(crate) fn translate(m: &M3f, layout: &[MemSlot]) -> Res<String> {
     let mut out = String::new();
     if !tx.used_slots.is_empty() {
         out.push_str("    init {\n");
+        let mut seen = HashSet::new();
+        for off in tx.used_slots.keys() {
+            for l in layout.iter().find(|s| s.offset == *off).map(|s| s.prelude.as_slice()).unwrap_or(&[]) {
+                if seen.insert(l.clone()) {
+                    let _ = writeln!(out, "        {l}");
+                }
+            }
+        }
         for (off, name) in &tx.used_slots {
-            let slot = layout.iter().find(|s| s.offset == *off).and_then(|s| s.expr.clone()).unwrap_or_else(|| "0.0".into());
-            let _ = writeln!(out, "        let {name} = {slot}");
+            let s = layout.iter().find(|s| s.offset == *off);
+            let expr = s.and_then(|s| s.expr.clone()).unwrap_or_else(|| "0.0".into());
+            // Single slots hold the value rounded to 32 bits.
+            let expr = if s.is_some_and(|s| s.kind == SlotKind::F32) { format!("single({expr})") } else { expr };
+            let _ = writeln!(out, "        let {name} = {expr}");
         }
         out.push_str("    }\n");
     }
@@ -582,52 +601,21 @@ impl Tx<'_> {
     }
 
     fn rec_field(&self, off: i64, write: bool) -> Res<&'static str> {
-        let four_d = self.m.is_4d();
-        Ok(match off {
-            -56 => "cw",
-            -48 => "rold",
-            -32 => "x",
-            -24 => "y",
-            -16 => "z",
-            -8 => {
-                if four_d {
-                    "w"
-                } else {
-                    "dr"
-                }
-            }
-            0 | 8 | 16 if write => return Err("formula writes the start position C".into()),
-            0 => "px",
-            8 => "py",
-            16 => "pz",
-            24 => "cx",
-            32 => "cy",
-            40 => "cz",
-            56 => "rout",
-            192 => "a6",
-            200 => "a0",
-            216 => "a2",
-            224 => "a3",
-            232 => {
-                if four_d {
-                    "dr"
-                } else {
-                    "a4"
-                }
-            }
-            240 => "a5",
-            248 => "a7",
-            320 => "cx",
-            328 => "cy",
-            336 => "cz",
-            344 => "cw",
-            _ => return Err(format!("unsupported iteration record field at offset {off}")),
-        })
+        if write && matches!(off, 0 | 8 | 16) {
+            return Err("formula writes the start position C".into());
+        }
+        super::record_field(off, self.m.is_4d()).ok_or_else(|| format!("unsupported iteration record field at offset {off}"))
     }
 
     /// Reads memory of `size` bytes as `kind` ("f" float, "i" integer, "x" 128-bit).
-    fn read(&mut self, ins: &Instruction, st: &State, size: MemorySize) -> Res<Mem> {
+    fn read(&mut self, ins: &Instruction, st: &mut State, size: MemorySize, out: &mut Vec<S>) -> Res<Mem> {
         let (region, off) = self.address(ins, st)?;
+        // Integer reads of the bytes of a double: the code tests or copies its sign bit.
+        if let Some(n) = int_bytes(size)
+            && let Some((var, pos, f32_slot)) = self.double_at(&region, off, n, st)
+        {
+            return Ok(Mem::I(self.sign_view(st, var, pos, n, f32_slot, out)));
+        }
         match region {
             Region::Rec => match (off, size) {
                 (48, MemorySize::UInt32 | MemorySize::Int32 | MemorySize::DwordOffset) => Ok(Mem::I(IV::Ptr(Region::PVar, 0))),
@@ -660,7 +648,7 @@ impl Tx<'_> {
                     let name = format!("k{}", -off);
                     self.used_slots.insert(off, name.clone());
                     match (slot.kind, size) {
-                        (SlotKind::I32, s) if is_int32(s) => Ok(Mem::I(IV::Var(name))),
+                        (SlotKind::I32, s) if int_bytes(s).is_some() => Ok(Mem::I(IV::Var(name))),
                         (SlotKind::I32, _) => Err("integer parameter read as float".into()),
                         (SlotKind::F64, MemorySize::Packed128_Float64 | MemorySize::UInt128) => {
                             let next = self.layout.iter().find(|s| s.offset == off + 8 && s.kind == SlotKind::F64).cloned();
@@ -698,6 +686,160 @@ impl Tx<'_> {
         }
     }
 
+    /// The double variable that holds byte `off` (for `n`-byte integer reads), with the byte
+    /// position inside it; the bool tells a 32-bit float parameter.
+    fn double_at(&mut self, region: &Region, off: i64, n: usize, st: &State) -> Option<(String, i64, bool)> {
+        match region {
+            Region::Rec => {
+                if matches!(off, 48..=55 | 64..=79 | 152..=159 | 208..=215) {
+                    return None;
+                }
+                let base = off.div_euclid(8) * 8;
+                if off + n as i64 > base + 8 {
+                    return None;
+                }
+                super::record_field(base, self.m.is_4d()).map(|f| (f.to_string(), off - base, false))
+            }
+            Region::Stack => {
+                if st.stack_int.contains_key(&off) {
+                    return None;
+                }
+                (0..8).find_map(|k| {
+                    let name = format!("m{}", -(off - k));
+                    (self.stack_vars.contains(&name) && k + n as i64 <= 8).then_some((name, k, false))
+                })
+            }
+            Region::PVar if off < 0 => {
+                let slot = self.layout.iter().find(|s| s.offset <= off && off < s.offset + if s.kind == SlotKind::F64 { 8 } else { 4 })?;
+                if slot.kind == SlotKind::I32 || slot.expr.is_none() {
+                    return None;
+                }
+                let name = format!("k{}", -slot.offset);
+                self.used_slots.insert(slot.offset, name.clone());
+                Some((name, off - slot.offset, slot.kind == SlotKind::F32))
+            }
+            _ => None,
+        }
+    }
+
+    /// Bits of a double per compare outcome of `v` against 0 (greater, less, equal, NaN),
+    /// standing in for the unknown magnitude.
+    fn view_bits(f32_slot: bool) -> [u64; OUTCOMES] {
+        if f32_slot {
+            [1.0f32.to_bits() as u64, (-1.0f32).to_bits() as u64, 0, f32::NAN.to_bits() as u64]
+        } else {
+            [1.0f64.to_bits(), (-1.0f64).to_bits(), 0, f64::NAN.to_bits()]
+        }
+    }
+
+    /// An integer view of `n` bytes at `pos` of the double `var`: its value depends on the sign
+    /// of `var` (snapshot `sv<n>`, compared with 0).
+    fn sign_view(&mut self, _st: &mut State, var: String, pos: i64, n: usize, f32_slot: bool, out: &mut Vec<S>) -> IV {
+        self.views += 1;
+        let id = self.views;
+        let name = format!("sv{id}");
+        self.stack_vars.insert(name.clone());
+        self.view_vars.insert(id, var.clone());
+        out.push(S::Line(format!("{name} = {var}")));
+        let mask: u64 = if n >= 8 { u64::MAX } else { (1u64 << (8 * n)) - 1 };
+        IV::Out(Self::view_bits(f32_slot).map(|b| ((b >> (8 * pos)) & mask) as i64), id)
+    }
+
+    /// Writes integer bytes into the double `var`: only sign changes are possible. `v` holds
+    /// the new bytes per outcome of a sign test (of `var` itself or of another value).
+    fn write_sign(&mut self, _st: &State, var: &str, pos: i64, n: usize, v: &IV, out: &mut Vec<S>) -> Res<()> {
+        let (vals, src) = match v {
+            IV::Out(o, c) if *c > 0 => (*o, *c),
+            IV::Int(k) => ([*k; OUTCOMES], 0),
+            _ => return Err("integer write into a double".into()),
+        };
+        // Bytes of another double: a copy done with integer moves (low half, then high half).
+        if let Some(from) = self.view_vars.get(&src).cloned()
+            && from != var
+            && n == 4
+        {
+            if pos == 0 {
+                self.half_copies.insert(var.to_string(), from);
+                return Ok(());
+            }
+            if pos == 4 && self.half_copies.remove(var).as_deref() == Some(from.as_str()) {
+                out.push(S::Line(format!("{var} = {from}")));
+                return Ok(());
+            }
+            return Err("partial copy of a double".into());
+        }
+        // The written bytes keep the magnitude bits of a value with the sign of the outcome
+        // (the views stand in with +-1.0): compare with those bits.
+        let bits = Self::view_bits(false);
+        let mask: u64 = if n >= 8 { u64::MAX } else { (1u64 << (8 * n)) - 1 };
+        const SIGN: u64 = 1 << 63;
+        let mut signs = [false; 2];
+        for k in 0..2 {
+            let new = (bits[k] & !(mask << (8 * pos))) | (((vals[k] as u64) & mask) << (8 * pos));
+            if new & !SIGN != bits[k] & !SIGN {
+                return Err("integer write changes more than the sign of a double".into());
+            }
+            signs[k] = new & SIGN != 0;
+        }
+        let test = format!("sv{src} < 0.0");
+        let line = match (signs[0], signs[1]) {
+            (false, false) => format!("{var} = abs({var})"),
+            (true, true) => format!("{var} = -abs({var})"),
+            // The sign of the tested value.
+            (false, true) => format!("{var} = sel({test}, -abs({var}), abs({var}))"),
+            (true, false) => format!("{var} = sel({test}, abs({var}), -abs({var}))"),
+        };
+        out.push(S::Line(line));
+        Ok(())
+    }
+
+    /// `and`/`or`/`xor` of `b` into the bytes at `pos` of the double `var`: the mask may only
+    /// touch the sign bit.
+    fn sign_rmw(&mut self, mn: Mnemonic, var: &str, pos: i64, n: usize, b: &IV, out: &mut Vec<S>) -> Res<()> {
+        let (vals, src) = match b {
+            IV::Out(o, c) => (*o, *c),
+            IV::Int(k) => ([*k; OUTCOMES], 0),
+            _ => return Err(format!("{mn:?} into a double with unknown data")),
+        };
+        let mask: u64 = if n >= 8 { u64::MAX } else { (1u64 << (8 * n)) - 1 };
+        // Position of the sign bit inside the operand (if it covers byte 7).
+        if pos + n as i64 != 8 {
+            return Err(format!("{mn:?} on low bytes of a double"));
+        }
+        let sign_bit: u64 = 1 << (8 * n - 1);
+        let mut has = [false; 2];
+        for k in 0..2 {
+            let v = (vals[k] as u64) & mask;
+            let rest = v & !sign_bit;
+            let ok = match mn {
+                Mnemonic::And => rest == mask & !sign_bit,
+                _ => rest == 0,
+            };
+            if !ok {
+                return Err(format!("{mn:?} into a double with a mask beyond the sign bit"));
+            }
+            has[k] = v & sign_bit != 0;
+        }
+        let test = if src > 0 { format!("sv{src} < 0.0") } else { String::new() };
+        // New value for "mask has the sign bit" (t) and "has not" (f).
+        let (t, f) = match mn {
+            Mnemonic::Xor => (format!("-{var}"), var.to_string()),
+            Mnemonic::Or => (format!("-abs({var})"), var.to_string()),
+            _ => (var.to_string(), format!("abs({var})")),
+        };
+        let e = match (has[0], has[1]) {
+            (true, true) => t,
+            (false, false) => f,
+            _ if src == 0 => return Err("sign mask without a test".into()),
+            (false, true) => format!("sel({test}, {t}, {f})"),
+            (true, false) => format!("sel({test}, {f}, {t})"),
+        };
+        if e != var {
+            out.push(S::Line(format!("{var} = {e}")));
+        }
+        Ok(())
+    }
+
     fn stack_var(&mut self, name: &str) -> String {
         self.stack_vars.insert(name.to_string());
         name.to_string()
@@ -726,6 +868,20 @@ impl Tx<'_> {
 
     fn write_i(&mut self, ins: &Instruction, st: &mut State, v: IV, out: &mut Vec<S>) -> Res<()> {
         let (region, off) = self.address(ins, st)?;
+        let n = match ins.op_kind(1) {
+            OpKind::Register => match ins.op_register(1) {
+                Register::AL | Register::AH | Register::BL | Register::BH | Register::CL | Register::CH | Register::DL | Register::DH => 1,
+                Register::AX | Register::BX | Register::CX | Register::DX => 2,
+                _ => 4,
+            },
+            _ => int_bytes(ins.memory_size()).unwrap_or(4),
+        };
+        if let Some((var, pos, f32_slot)) = self.double_at(&region, off, n, st) {
+            if f32_slot {
+                return Err("write to a parameter".into());
+            }
+            return self.write_sign(st, &var, pos, n, &v, out);
+        }
         match region {
             Region::Stack => {
                 st.stack_int.insert(off, v);
@@ -752,23 +908,23 @@ impl Tx<'_> {
     }
 
     /// Integer operand value (register, immediate or memory).
-    fn ival(&mut self, ins: &Instruction, op: u32, st: &State) -> Res<IV> {
+    fn ival(&mut self, ins: &Instruction, op: u32, st: &mut State, out: &mut Vec<S>) -> Res<IV> {
         match ins.op_kind(op) {
             OpKind::Register => {
                 let r = ins.op_register(op);
                 let idx = reg_index(r).ok_or_else(|| format!("unsupported register {r:?}"))?;
                 let v = st.regs[idx].clone();
                 Ok(match (r, v) {
-                    (Register::AH | Register::BH | Register::CH | Register::DH, IV::Out(o)) => IV::Out(o.map(|x| (x >> 8) & 0xff)),
-                    (Register::AL | Register::BL | Register::CL | Register::DL, IV::Out(o)) => IV::Out(o.map(|x| x & 0xff)),
-                    (Register::AX | Register::BX | Register::CX | Register::DX, IV::Out(o)) => IV::Out(o.map(|x| x & 0xffff)),
+                    (Register::AH | Register::BH | Register::CH | Register::DH, IV::Out(o, c)) => IV::Out(o.map(|x| (x >> 8) & 0xff), c),
+                    (Register::AL | Register::BL | Register::CL | Register::DL, IV::Out(o, c)) => IV::Out(o.map(|x| x & 0xff), c),
+                    (Register::AX | Register::BX | Register::CX | Register::DX, IV::Out(o, c)) => IV::Out(o.map(|x| x & 0xffff), c),
                     (Register::AH | Register::BH | Register::CH | Register::DH, IV::Int(k)) => IV::Int((k >> 8) & 0xff),
                     (Register::AL | Register::BL | Register::CL | Register::DL, IV::Int(k)) => IV::Int(k & 0xff),
                     (_, v) => v,
                 })
             }
             OpKind::Immediate8 | OpKind::Immediate8to32 | OpKind::Immediate32 | OpKind::Immediate16 | OpKind::Immediate8to16 => Ok(IV::Int(ins.immediate(op) as i64 as i32 as i64)),
-            OpKind::Memory => match self.read(ins, st, ins.memory_size())? {
+            OpKind::Memory => match self.read(ins, st, ins.memory_size(), out)? {
                 Mem::I(v) => Ok(v),
                 _ => Err("float memory used as integer".into()),
             },
@@ -793,14 +949,16 @@ impl Tx<'_> {
             }
         };
         st.regs[idx] = match (old, v) {
-            (IV::Out(o), IV::Out(n)) => IV::Out(std::array::from_fn(|k| combine(o[k], n[k]))),
-            (IV::Out(o), IV::Int(n)) => IV::Out(o.map(|x| combine(x, n))),
-            (IV::Int(o), IV::Out(n)) => IV::Out(n.map(|x| combine(o, x))),
+            (IV::Out(o, c1), IV::Out(n, c2)) if c1 == c2 => IV::Out(std::array::from_fn(|k| combine(o[k], n[k])), c1),
+            (IV::Out(o, c), IV::Int(n)) => IV::Out(o.map(|x| combine(x, n)), c),
+            (IV::Int(o), IV::Out(n, c)) => IV::Out(n.map(|x| combine(o, x)), c),
             (IV::Int(o), IV::Int(n)) => IV::Int(combine(o, n)),
             // The other bits held a pointer or data: they are meaningless next to a status
             // word or a byte constant, so they read as 0.
-            (_, IV::Out(n)) => IV::Out(n.map(|x| combine(0, x))),
+            (_, IV::Out(n, c)) => IV::Out(n.map(|x| combine(0, x)), c),
             (_, IV::Int(n)) => IV::Int(combine(0, n)),
+            // Small integer data loaded into a byte register (an integer option).
+            (_, IV::Var(s)) => IV::Var(s),
             _ => IV::Undef,
         };
         Ok(())
@@ -821,14 +979,30 @@ impl Tx<'_> {
                 _ => 32,
             },
         };
-        let a = self.ival(ins, 0, st)?;
+        // Bit operations directly on the sign byte / high dword of a double in memory.
+        if matches!(mn, Mnemonic::And | Mnemonic::Or | Mnemonic::Xor) && ins.op_kind(0) == OpKind::Memory && ins.op_kind(1) != OpKind::Memory {
+            let (region, off) = self.address(ins, st)?;
+            let n = match bits {
+                8 => 1,
+                16 => 2,
+                _ => 4,
+            };
+            if let Some((var, pos, f32_slot)) = self.double_at(&region, off, n, st) {
+                if f32_slot {
+                    return Err("bit operation on a parameter".into());
+                }
+                let b = self.ival(ins, 1, st, out)?;
+                return self.sign_rmw(mn, &var, pos, n, &b, out);
+            }
+        }
+        let a = self.ival(ins, 0, st, out)?;
         let b = if matches!(mn, Mnemonic::Inc | Mnemonic::Dec | Mnemonic::Neg | Mnemonic::Not) {
             IV::Int(match mn {
                 Mnemonic::Inc | Mnemonic::Dec => 1,
                 _ => 0,
             })
         } else if ins.op_count() > 1 {
-            self.ival(ins, 1, st)?
+            self.ival(ins, 1, st, out)?
         } else {
             IV::Int(1)
         };
@@ -852,6 +1026,11 @@ impl Tx<'_> {
             st.flags = Flags::None;
             return Ok(());
         }
+        if mn == Mnemonic::Xor && ins.op_kind(0) == OpKind::Register && ins.op_kind(1) == OpKind::Register && ins.op_register(0) == ins.op_register(1) {
+            self.set_reg(st, ins.op_register(0), IV::Int(0))?;
+            st.flags = Flags::Out([ZF | PF; OUTCOMES], 0);
+            return Ok(());
+        }
         // Data (variables): only compare/test produce conditions; add/sub/inc/dec compute.
         let is_data = |v: &IV| matches!(v, IV::Var(_));
         if is_data(&a) || is_data(&b) {
@@ -860,6 +1039,40 @@ impl Tx<'_> {
             match mn {
                 Mnemonic::Cmp => st.flags = Flags::Cmp(ea, eb),
                 Mnemonic::Test if ea == eb => st.flags = Flags::Cmp(ea, "0.0".into()),
+                Mnemonic::Test | Mnemonic::And | Mnemonic::Shr | Mnemonic::Sar | Mnemonic::Shl | Mnemonic::Neg | Mnemonic::Not | Mnemonic::Or | Mnemonic::Xor => {
+                    // Bit operations on integer data, as floor arithmetic on the (float) value.
+                    let k = match &b {
+                        IV::Int(k) => *k,
+                        _ => return Err(format!("{mn:?} with two data operands")),
+                    };
+                    let v = &ea;
+                    let res = match mn {
+                        Mnemonic::Neg => format!("-{v}"),
+                        Mnemonic::Not => format!("-{v} - 1.0"),
+                        Mnemonic::Shr | Mnemonic::Sar => format!("floor({v} / {})", lit((1u64 << (k & 31)) as f64)),
+                        Mnemonic::Shl => format!("{v} * {}", lit((1u64 << (k & 31)) as f64)),
+                        Mnemonic::And | Mnemonic::Test if k > 0 && (k & (k + 1)) == 0 => {
+                            let m1 = lit((k + 1) as f64);
+                            format!("({v} - {m1} * floor({v} / {m1}))")
+                        }
+                        Mnemonic::And | Mnemonic::Test if k > 0 && (k & (k - 1)) == 0 => {
+                            let (p, p2) = (lit(k as f64), lit((2 * k) as f64));
+                            format!("((floor({v} / {p}) - 2.0 * floor({v} / {p2})) * {p})")
+                        }
+                        Mnemonic::Or | Mnemonic::Xor if k == 0 => v.clone(),
+                        _ => return Err(format!("{mn:?} {k:#x} on data")),
+                    };
+                    if mn == Mnemonic::Test {
+                        st.flags = Flags::Cmp(res, "0.0".into());
+                    } else {
+                        let OpKind::Register = ins.op_kind(0) else { return Err(format!("{mn:?} on data in memory")) };
+                        let idx = reg_index(ins.op_register(0)).ok_or("register")?;
+                        let name = format!("r_{}", REG_NAMES[idx]);
+                        out.push(S::Line(format!("{name} = {res}")));
+                        st.regs[idx] = IV::Var(name.clone());
+                        st.flags = Flags::Cmp(name, "0.0".into());
+                    }
+                }
                 Mnemonic::Add | Mnemonic::Sub | Mnemonic::Inc | Mnemonic::Dec => {
                     let op = if matches!(mn, Mnemonic::Add | Mnemonic::Inc) { "+" } else { "-" };
                     let res = format!("{ea} {op} {eb}");
@@ -893,15 +1106,21 @@ impl Tx<'_> {
             return Ok(());
         }
         // Static and per-outcome values: compute concretely per outcome.
+        let src_of = |v: &IV| if let IV::Out(_, c) = v { Some(*c) } else { None };
+        let src = match (src_of(&a), src_of(&b)) {
+            (Some(x), Some(y)) if x != y => return Err(format!("{mn:?} combines two different compares")),
+            (Some(x), _) | (_, Some(x)) => x,
+            _ => 0,
+        };
         let av = match &a {
             IV::Int(k) => [*k; OUTCOMES],
-            IV::Out(o) => *o,
+            IV::Out(o, _) => *o,
             _ => [0; OUTCOMES],
         };
         let bv = match &b {
             IV::Int(k) => [*k; OUTCOMES],
-            IV::Out(o) => *o,
-            _ => [0; OUTCOMES],
+            IV::Out(o, _) => *o,
+            _ => return Err(format!("{mn:?} with an unknown operand")),
         };
         if matches!(a, IV::Undef) && !matches!(mn, Mnemonic::Xor) {
             return Err(format!("{mn:?} on an unknown value"));
@@ -962,10 +1181,10 @@ impl Tx<'_> {
             fl[k] = f;
         }
         if mn != Mnemonic::Not {
-            st.flags = Flags::Out(fl);
+            st.flags = Flags::Out(fl, src);
         }
         if !matches!(mn, Mnemonic::Cmp | Mnemonic::Test) {
-            let v = if res.iter().all(|r| *r == res[0]) { IV::Int(res[0]) } else { IV::Out(res) };
+            let v = if res.iter().all(|r| *r == res[0]) { IV::Int(res[0]) } else { IV::Out(res, src) };
             match ins.op_kind(0) {
                 OpKind::Register => self.set_reg(st, ins.op_register(0), v)?,
                 OpKind::Memory => self.write_i(ins, st, v, out)?,
@@ -1000,18 +1219,19 @@ impl Tx<'_> {
             }
         };
         match &st.flags {
-            Flags::Out(f) => {
+            Flags::Out(f, src) => {
+                let (a, b) = if *src == 0 { ("fc_a".to_string(), "fc_b".to_string()) } else { (format!("sv{src}"), "0.0".to_string()) };
                 let t: Vec<bool> = f.iter().map(|x| test(*x)).collect();
                 // Ordered outcomes decide; unordered (NaN) follows "greater" for the condition.
                 Ok(match (t[0], t[1], t[2]) {
                     (true, true, true) => Cond::Always,
                     (false, false, false) => Cond::Never,
-                    (true, false, false) => Cond::Expr("fc_a > fc_b".into()),
-                    (false, true, false) => Cond::Expr("fc_a < fc_b".into()),
-                    (false, false, true) => Cond::Expr("fc_a == fc_b".into()),
-                    (true, true, false) => Cond::Expr("fc_a != fc_b".into()),
-                    (true, false, true) => Cond::Expr("fc_a >= fc_b".into()),
-                    (false, true, true) => Cond::Expr("fc_a <= fc_b".into()),
+                    (true, false, false) => Cond::Expr(format!("{a} > {b}")),
+                    (false, true, false) => Cond::Expr(format!("{a} < {b}")),
+                    (false, false, true) => Cond::Expr(format!("{a} == {b}")),
+                    (true, true, false) => Cond::Expr(format!("{a} != {b}")),
+                    (true, false, true) => Cond::Expr(format!("{a} >= {b}")),
+                    (false, true, true) => Cond::Expr(format!("{a} <= {b}")),
                 })
             }
             Flags::Cmp(a, b) => {
@@ -1034,16 +1254,17 @@ impl Tx<'_> {
     fn fcompare(&self, st: &mut State, a: String, b: String, eflags: bool, out: &mut Vec<S>) {
         out.push(S::Line(format!("fc_a = {a}")));
         out.push(S::Line(format!("fc_b = {b}")));
+
         if eflags {
             // fcomi: ZF PF CF
-            st.flags = Flags::Out([0, CF, ZF, ZF | PF | CF]);
+            st.flags = Flags::Out([0, CF, ZF, ZF | PF | CF], 0);
         } else {
             // Status word bits in ax after fnstsw: C0 = 0x100, C2 = 0x400, C3 = 0x4000.
             st.fpu_status = [0, 0x100, 0x4000, 0x4500];
         }
     }
 
-    fn fval(&mut self, ins: &Instruction, op: u32, st: &State) -> Res<String> {
+    fn fval(&mut self, ins: &Instruction, op: u32, st: &mut State, out: &mut Vec<S>) -> Res<String> {
         match ins.op_kind(op) {
             OpKind::Register => {
                 let r = ins.op_register(op);
@@ -1055,7 +1276,7 @@ impl Tx<'_> {
             }
             OpKind::Memory => {
                 let size = ins.memory_size();
-                match self.read(ins, st, size)? {
+                match self.read(ins, st, size, out)? {
                     Mem::F(s) => Ok(s),
                     Mem::I(v) => self.iv_expr(&v),
                     Mem::X(l, _) => Ok(l[0].clone()),
@@ -1076,13 +1297,13 @@ impl Tx<'_> {
     }
 
     /// Lane expressions of an xmm/m128/m64 source operand.
-    fn xsrc(&mut self, ins: &Instruction, op: u32, st: &State) -> Res<([String; 2], [Option<u64>; 2])> {
+    fn xsrc(&mut self, ins: &Instruction, op: u32, st: &mut State, out: &mut Vec<S>) -> Res<([String; 2], [Option<u64>; 2])> {
         match ins.op_kind(op) {
             OpKind::Register => {
                 let x = Self::xmm_index(ins.op_register(op)).ok_or("expected an xmm register")?;
                 Ok(([format!("x{x}l"), format!("x{x}h")], st.xmm_known[x]))
             }
-            OpKind::Memory => match self.read(ins, st, ins.memory_size())? {
+            OpKind::Memory => match self.read(ins, st, ins.memory_size(), out)? {
                 Mem::X(l, k) => Ok((l, k)),
                 Mem::F(s) => Ok(([s, "0.0".into()], [None, None])),
                 Mem::I(_) => Err("integer memory as xmm operand".into()),
@@ -1098,7 +1319,7 @@ impl Tx<'_> {
             Nop | Fnop | Wait | Ffree | Ffreep | Fninit | Fnclex | Fldcw | Fnstcw | Emms | Cld => Ok(()),
             // ---------------------------------------------------------------- integer
             Push => {
-                let v = self.ival(ins, 0, st).unwrap_or(IV::Undef);
+                let v = self.ival(ins, 0, st, out).unwrap_or(IV::Undef);
                 let esp = self.esp(st)? - 4;
                 st.stack_int.insert(esp, v);
                 st.regs[4] = IV::Ptr(Region::Stack, esp);
@@ -1133,7 +1354,7 @@ impl Tx<'_> {
             }
             Mov => {
                 if ins.op_kind(0) == OpKind::Register {
-                    let v = self.ival(ins, 1, st)?;
+                    let v = self.ival(ins, 1, st, out)?;
                     let v = match v {
                         // Copy data into the destination register's own variable.
                         IV::Var(s) if !s.starts_with("r_") || reg_index(ins.op_register(0)).is_some_and(|i| s != format!("r_{}", REG_NAMES[i])) => {
@@ -1146,12 +1367,12 @@ impl Tx<'_> {
                     };
                     self.set_reg(st, ins.op_register(0), v)
                 } else {
-                    let v = self.ival(ins, 1, st)?;
+                    let v = self.ival(ins, 1, st, out)?;
                     self.write_i(ins, st, v, out)
                 }
             }
             Movzx | Movsx => {
-                let v = self.ival(ins, 1, st)?;
+                let v = self.ival(ins, 1, st, out)?;
                 self.set_reg(st, ins.op_register(0), v)
             }
             Lea => {
@@ -1159,8 +1380,8 @@ impl Tx<'_> {
                 self.set_reg(st, ins.op_register(0), IV::Ptr(r, o))
             }
             Xchg => {
-                let a = self.ival(ins, 0, st)?;
-                let b = self.ival(ins, 1, st)?;
+                let a = self.ival(ins, 0, st, out)?;
+                let b = self.ival(ins, 1, st, out)?;
                 if ins.op_kind(0) == OpKind::Register && ins.op_kind(1) == OpKind::Register {
                     self.set_reg(st, ins.op_register(0), b)?;
                     self.set_reg(st, ins.op_register(1), a)
@@ -1171,18 +1392,18 @@ impl Tx<'_> {
             Add | Sub | And | Or | Xor | Cmp | Test | Shr | Shl | Sar | Inc | Dec | Neg | Not => self.alu(ins, st, out),
             Sahf => {
                 let ax = st.regs[0].clone();
-                let IV::Out(o) = ax else { return Err("sahf without a status word in ah".into()) };
+                let IV::Out(o, c) = ax else { return Err("sahf without a status word in ah".into()) };
                 // AH bits 7, 6, 4, 2, 0 -> SF ZF AF PF CF.
                 st.flags = Flags::Out(o.map(|v| {
                     let ah = ((v >> 8) & 0xff) as u32;
                     (if ah & 0x80 != 0 { SF } else { 0 }) | (if ah & 0x40 != 0 { ZF } else { 0 }) | (if ah & 4 != 0 { PF } else { 0 }) | (if ah & 1 != 0 { CF } else { 0 })
-                }));
+                }), c);
                 Ok(())
             }
             Fnstsw | Fstsw => {
                 // Status word: compare bits plus TOP.
                 let top = ((8 - st.depth as i64) & 7) << 11;
-                let v = IV::Out(st.fpu_status.map(|c| c | top));
+                let v = IV::Out(st.fpu_status.map(|c| c | top), 0);
                 if ins.op_kind(0) == OpKind::Register {
                     self.set_reg(st, Register::AX, v)
                 } else {
@@ -1191,11 +1412,11 @@ impl Tx<'_> {
             }
             // ---------------------------------------------------------------- x87 loads/stores
             Fld => {
-                let v = self.fval(ins, 0, st)?;
+                let v = self.fval(ins, 0, st, out)?;
                 self.push(st, v, out)
             }
             Fild => {
-                let v = match self.read(ins, st, ins.memory_size())? {
+                let v = match self.read(ins, st, ins.memory_size(), out)? {
                     Mem::I(v) => self.iv_expr(&v)?,
                     Mem::F(s) => s,
                     Mem::X(..) => return Err("fild of 128 bits".into()),
@@ -1275,9 +1496,9 @@ impl Tx<'_> {
                 };
                 let pop = matches!(mn, Faddp | Fsubp | Fsubrp | Fmulp | Fdivp | Fdivrp);
                 let (dst, src) = if ins.op_count() == 2 {
-                    (Self::st_index(ins.op_register(0)).ok_or("dst")?, self.fval(ins, 1, st)?)
+                    (Self::st_index(ins.op_register(0)).ok_or("dst")?, self.fval(ins, 1, st, out)?)
                 } else if ins.op_count() == 1 && ins.op_kind(0) == OpKind::Memory {
-                    (0, self.fval(ins, 0, st)?)
+                    (0, self.fval(ins, 0, st, out)?)
                 } else {
                     (1, self.st(st, 0)?)
                 };
@@ -1349,9 +1570,9 @@ impl Tx<'_> {
                 let b = if ins.op_count() == 0 {
                     self.st(st, 1)?
                 } else if ins.op_count() == 2 {
-                    self.fval(ins, 1, st)?
+                    self.fval(ins, 1, st, out)?
                 } else {
-                    self.fval(ins, 0, st)?
+                    self.fval(ins, 0, st, out)?
                 };
                 self.fcompare(st, a, b, false, out);
                 match mn {
@@ -1366,7 +1587,7 @@ impl Tx<'_> {
             }
             Fcomi | Fcomip | Fucomi | Fucomip => {
                 let a = self.st(st, 0)?;
-                let b = self.fval(ins, 1, st)?;
+                let b = self.fval(ins, 1, st, out)?;
                 self.fcompare(st, a, b, true, out);
                 if matches!(mn, Fcomip | Fucomip) {
                     self.pop(st)?;
@@ -1386,13 +1607,13 @@ impl Tx<'_> {
             Unpcklpd | Unpckhpd | Shufpd | Haddpd | Pshufd => self.sse_shuffle(ins, st, out),
             Comisd | Ucomisd => {
                 let x = Self::xmm_index(ins.op_register(0)).ok_or("xmm")?;
-                let (b, _) = self.xsrc(ins, 1, st)?;
+                let (b, _) = self.xsrc(ins, 1, st, out)?;
                 self.fcompare(st, format!("x{x}l"), b[0].clone(), true, out);
                 Ok(())
             }
             Cvtsi2sd => {
                 let x = Self::xmm_index(ins.op_register(0)).ok_or("xmm")?;
-                let v = self.ival(ins, 1, st)?;
+                let v = self.ival(ins, 1, st, out)?;
                 let e = self.iv_expr(&v)?;
                 out.push(S::Line(format!("x{x}l = {e}")));
                 st.xmm_known[x][0] = None;
@@ -1421,7 +1642,7 @@ impl Tx<'_> {
         match (ins.op_kind(0), ins.op_kind(1)) {
             (OpKind::Register, _) => {
                 let x = Self::xmm_index(ins.op_register(0)).ok_or("expected xmm destination")?;
-                let (src, known) = self.xsrc(ins, 1, st)?;
+                let (src, known) = self.xsrc(ins, 1, st, out)?;
                 let from_mem = ins.op_kind(1) == OpKind::Memory;
                 let (l, h) = (format!("x{x}l"), format!("x{x}h"));
                 let set = |name: &str, v: &str, out: &mut Vec<S>| {
@@ -1489,7 +1710,7 @@ impl Tx<'_> {
         use Mnemonic::*;
         let mn = ins.mnemonic();
         let x = Self::xmm_index(ins.op_register(0)).ok_or("expected xmm destination")?;
-        let (src, _) = self.xsrc(ins, 1, st)?;
+        let (src, _) = self.xsrc(ins, 1, st, out)?;
         let packed = matches!(mn, Addpd | Subpd | Mulpd | Divpd | Minpd | Maxpd | Sqrtpd);
         let lanes = if packed { 2 } else { 1 };
         // Compute into temporaries first (source and destination may be the same register).
@@ -1533,7 +1754,7 @@ impl Tx<'_> {
             st.xmm_known[x] = [Some(0), Some(0)];
             return Ok(());
         }
-        let (_, known) = self.xsrc(ins, 1, st)?;
+        let (_, known) = self.xsrc(ins, 1, st, out)?;
         const ABS: u64 = 0x7fff_ffff_ffff_ffff;
         const SIGN: u64 = 0x8000_0000_0000_0000;
         for (k, kn) in known.iter().enumerate() {
@@ -1560,7 +1781,7 @@ impl Tx<'_> {
         use Mnemonic::*;
         let mn = ins.mnemonic();
         let x = Self::xmm_index(ins.op_register(0)).ok_or("expected xmm destination")?;
-        let (src, known) = self.xsrc(ins, 1, st)?;
+        let (src, known) = self.xsrc(ins, 1, st, out)?;
         let (l, h) = (format!("x{x}l"), format!("x{x}h"));
         let (nl, nh, kl, kh) = match mn {
             Unpcklpd => (l.clone(), src[0].clone(), st.xmm_known[x][0], known[0]),
@@ -1599,6 +1820,16 @@ enum Cond {
     Always,
     Never,
     Expr(String),
+}
+
+/// Bytes of an integer memory access.
+fn int_bytes(s: MemorySize) -> Option<usize> {
+    match s {
+        MemorySize::UInt8 | MemorySize::Int8 => Some(1),
+        MemorySize::UInt16 | MemorySize::Int16 => Some(2),
+        MemorySize::UInt32 | MemorySize::Int32 | MemorySize::DwordOffset => Some(4),
+        _ => None,
+    }
 }
 
 fn is_int32(s: MemorySize) -> bool {

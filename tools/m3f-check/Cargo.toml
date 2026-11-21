@@ -1,0 +1,11 @@
+[package]
+name = "m3f-check"
+version = "0.1.0"
+edition = "2024"
+license = "LGPL-2.1-or-later"
+publish = false
+description = "Checks translated Mandelbulb3D formulas against the original machine code (Unicorn emulator)"
+
+[dependencies]
+rmb-core = { path = "../../crates/rmb-core" }
+unicorn-engine = "2.1"
