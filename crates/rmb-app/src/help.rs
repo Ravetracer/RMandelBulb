@@ -55,6 +55,7 @@ const SHORTCUTS: &[(&str, &str)] = &[
     ("Wheel", "Orbit: move toward the cursor · Fly: speed"),
     ("Double-click", "Look at the point, set the focus distance"),
     ("Fly: W A S D, R F", "Move forward/left/back/right, up/down (Shift: faster)"),
+    ("Fly: Space", "Mouse look: the mouse steers freely (full turns); Space or Esc releases the mouse"),
     ("Q E, arrow keys", "Roll, turn"),
 ];
 

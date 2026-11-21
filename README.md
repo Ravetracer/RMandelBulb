@@ -27,7 +27,8 @@ modern egui interface and import of Mandelbulb3D parameters.
   normal), depth fog, glow, depth of field, cutting planes, filmic tone mapping, vignette.
 - **Navigation**:
   - Orbit around the point under the cursor; the wheel zooms toward the cursor.
-  - Fly mode with WASD, at a speed that adapts to the distance from the surface.
+  - Fly mode with WASD, at a speed that adapts to the distance from the surface; Space
+    captures the mouse for free steering (full turns, no stop at the window border).
   - Double-click looks at a point and sets the focus there.
   - Low-resolution preview while moving.
   - Lens flares per light (star, anamorphic streak, ghosts, rings, lens dirt; presets),

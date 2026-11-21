@@ -5,7 +5,9 @@
 //! Orbit mode: left drag orbits around the surface point under the cursor, right drag pans,
 //! middle drag looks around, the wheel moves toward the point under the cursor.
 //! Fly mode: WASD / R F move, Q E roll, left drag looks, the wheel changes the speed; the speed
-//! follows the distance to the surface, so flying stays controllable at any zoom.
+//! follows the distance to the surface, so flying stays controllable at any zoom. Space
+//! captures the mouse ("mouse look"): the cursor hides and every mouse move steers, without
+//! limits at the window border; Space or Esc releases it.
 //! While navigating the preview renders at a lower resolution without shadows.
 
 use std::sync::mpsc;
@@ -93,6 +95,10 @@ pub struct Viewport {
     pub light_clicked: bool,
     /// Gizmo handle being dragged.
     gizmo: Option<crate::gizmos::Handle>,
+    /// Fly mode: the mouse is captured and steers.
+    pub mouse_look: bool,
+    /// Whether the cursor is currently hidden and grabbed.
+    grabbed: bool,
     /// Lens flare layer being computed, and what the shown one belongs to.
     flare_job: Option<(FlareKey, mpsc::Receiver<FlareLayer>)>,
     flare_key: Option<FlareKey>,
@@ -157,6 +163,8 @@ impl Viewport {
             selected_light: 0,
             light_clicked: false,
             gizmo: None,
+            mouse_look: false,
+            grabbed: false,
             flare_job: None,
             flare_key: None,
         }
@@ -216,6 +224,10 @@ impl Viewport {
         let full = ((rect.width() * ppp * prefs.preview_percent as f32 / 100.0).round().max(16.0) as u32, (rect.height() * ppp * prefs.preview_percent as f32 / 100.0).round().max(16.0) as u32);
 
         let previewing = self.preview.is_some();
+        if previewing && self.mouse_look {
+            self.mouse_look = false;
+        }
+        self.apply_grab(ui.ctx());
         // Axis cross: click an axis end to look along it.
         let mut triad_hover = None;
         if self.show_guides && !previewing {
@@ -622,6 +634,23 @@ impl Viewport {
                 self.mode = if self.mode == NavMode::Orbit { NavMode::Fly } else { NavMode::Orbit };
             }
         }
+        // Mouse look: Space toggles it in Fly mode, Esc releases it.
+        if resp.has_focus() && self.mode == NavMode::Fly && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Space)) {
+            self.mouse_look = !self.mouse_look;
+        }
+        if self.mouse_look && (self.mode != NavMode::Fly || !resp.has_focus() || ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Escape)) || !ui.input(|i| i.viewport().focused.unwrap_or(true))) {
+            self.mouse_look = false;
+        }
+        self.apply_grab(ui.ctx());
+        if self.mouse_look {
+            // Raw mouse motion: no limits at the window border, full turns and loops.
+            let m = ui.input(|i| i.pointer.motion()).unwrap_or_default();
+            if m != egui::Vec2::ZERO {
+                scene.camera.rotate_local(m.x as f64 * speed * 0.5, -(m.y as f64) * speed * 0.5 * inv, 0.0);
+                self.nav();
+            }
+            ui.ctx().request_repaint();
+        }
         if resp.has_focus() {
             let dt = ui.input(|i| i.stable_dt).min(0.1) as f64;
             let (fwd, side, upd, roll, yaw, pitch) = ui.input(|i| {
@@ -688,6 +717,19 @@ impl Viewport {
         }
     }
 
+    /// Hides and grabs the cursor while mouse look is on (and gives it back after).
+    fn apply_grab(&mut self, ctx: &egui::Context) {
+        if self.mouse_look == self.grabbed {
+            return;
+        }
+        self.grabbed = self.mouse_look;
+        // X11 and Windows cannot lock the cursor, only keep it in the window; the steering uses
+        // the raw mouse motion either way.
+        let grab = if cfg!(target_os = "macos") { egui::CursorGrab::Locked } else { egui::CursorGrab::Confined };
+        ctx.send_viewport_cmd(egui::ViewportCommand::CursorGrab(if self.grabbed { grab } else { egui::CursorGrab::None }));
+        ctx.send_viewport_cmd(egui::ViewportCommand::CursorVisible(!self.grabbed));
+    }
+
     fn hud(&self, ui: &Ui, rect: Rect, doc: &Document) {
         let p = ui.painter();
         let mut y = rect.top() + 10.0;
@@ -704,6 +746,9 @@ impl Viewport {
         }
         if let Some((_, _, label)) = &self.preview {
             y += pill(format!("{}  {label}  ·  navigation is off; press Edit in the timeline or click a keyframe", crate::icons::CAMERA), theme::ACCENT, y);
+        }
+        if self.mouse_look {
+            y += pill(format!("{}  Mouse look: move the mouse to steer  ·  Space or Esc releases the mouse", crate::icons::FLY), theme::ACCENT, y);
         }
         if self.compiling() {
             y += pill(format!("{}  Compiling shader…", crate::icons::GEAR), theme::TEXT, y);
@@ -726,7 +771,7 @@ impl Viewport {
             pill(format!("{}  {e}", crate::icons::INFO), theme::TEXT_MUTED, y);
         }
         if self.mode == NavMode::Fly {
-            let t = format!("{}  Fly  ·  WASD move · R/F up/down · Q/E roll · drag to look · wheel: speed ×{:.2}", crate::icons::FLY, self.fly_speed);
+            let t = format!("{}  Fly  ·  WASD move · R/F up/down · Q/E roll · drag to look · Space: mouse look · wheel: speed ×{:.2}", crate::icons::FLY, self.fly_speed);
             let galley = ui.painter().layout_no_wrap(t, font.clone(), theme::TEXT);
             let r = Rect::from_min_size(pos2(rect.left() + 10.0, rect.bottom() - galley.size().y - 18.0), galley.size() + vec2(16.0, 8.0));
             p.rect_filled(r, 6.0, Color32::from_black_alpha(150));
