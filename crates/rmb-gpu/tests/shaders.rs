@@ -63,6 +63,9 @@ fn gpu_matches_cpu_with_de_combination_and_4d_rotation() {
     scene.fractal.julia_c = [-0.2, 0.6, 0.2, 0.1];
     scene.fractal.rotation_4d = [20.0, 10.0, 5.0];
     scene.fractal.combine = Some(rmb_core::scene::DeCombine { mode: rmb_core::scene::CombineMode::Smooth, start: 2, repeat_from: 2, max_iterations: 6, smooth: 0.2 });
+    if rmb_core::maps::get(2).is_some() {
+        scene.material.color_map = rmb_core::scene::ColorMap { image: "2".into(), mode: rmb_core::scene::MapMode::Normal, rotation: [30.0, 60.0, 0.0], luminance_only: true, ..Default::default() };
+    }
     parity(scene);
 }
 
@@ -142,6 +145,10 @@ fn gpu_matches_cpu_with_mandelbulb3d_shading() {
     scene.material.detail_shift = 0.24;
     scene.material.depth_shift = 0.3;
     scene.material.depth_reference = 3.0;
+    // A color map projected in 3D, softened by roughness.
+    if rmb_core::maps::get(12).is_some() {
+        scene.material.color_map = rmb_core::scene::ColorMap { image: "12".into(), mode: rmb_core::scene::MapMode::Triplanar, scale: 3.0, ..Default::default() };
+    }
     // Interior colors on a cut face.
     scene.material.interior = rmb_core::gradient::preset("Ice").unwrap_or_default();
     scene.material.interior_scale = 0.8;
@@ -218,6 +225,9 @@ fn gpu_matches_cpu_with_an_interpolation_hybrid() {
     // Two bulb variants (a bulb blended with a box is too chaotic for f32 against f64).
     scene.fractal.slots = vec![Slot::new("Mandelbulb"), Slot::new("Mandelbulb (cosine)")];
     scene.fractal.blend = Some([0.6, 0.4]);
+    if rmb_core::maps::get(12).is_some() {
+        scene.material.color_map = rmb_core::scene::ColorMap { image: "12".into(), mode: rmb_core::scene::MapMode::Orbit, scale: 2.0, rotation: [0.0, 0.0, 30.0], ..Default::default() };
+    }
     assert!(Program::new(&scene.fractal, &scene.cut).blend.is_some());
     parity(scene);
 }

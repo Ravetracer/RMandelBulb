@@ -7,7 +7,7 @@ use rayon::prelude::*;
 use super::{Frame, Rng, post_process, shading_scene};
 use crate::fractal::{Evaluator, Orbit, Program};
 use crate::math::{V3, v3};
-use crate::scene::{AoMode, BackgroundMode, ColorMode, Scene};
+use crate::scene::{AoMode, BackgroundMode, ColorMode, MapMode, Scene};
 
 /// Shading inputs that do not change per pixel.
 pub struct Shader<'a> {
@@ -17,6 +17,8 @@ pub struct Shader<'a> {
     pub lut: Vec<[f32; 3]>,
     pub lut_spec: Vec<[f32; 3]>,
     pub bg_image: Option<(std::sync::Arc<crate::maps::Map>, [[f64; 3]; 3])>,
+    /// Color map with its rotation matrix and average color (display values).
+    pub color_map: Option<ColorMapData>,
     /// Interior colors (empty: none).
     pub lut_int: Vec<[f32; 3]>,
     pub lut_int_spec: Vec<[f32; 3]>,
@@ -40,6 +42,10 @@ impl<'a> Shader<'a> {
             lut: crate::gradient::lut(g),
             lut_spec: crate::gradient::lut_specular(g),
             bg_image: super::background_image(scene),
+            color_map: crate::maps::get_any(&scene.material.color_map.image).map(|m| {
+                let avg = m.average();
+                (m, crate::maps::rotation_matrix(scene.material.color_map.rotation), avg)
+            }),
             lut_int: if scene.material.interior.is_empty() { Vec::new() } else { crate::gradient::lut(&scene.material.interior) },
             lut_int_spec: if scene.material.interior.is_empty() { Vec::new() } else { crate::gradient::lut_specular(&scene.material.interior) },
         }
@@ -259,6 +265,57 @@ impl<'a> Shader<'a> {
     }
 
     /// Surface and highlight color for the color value `v`.
+    /// Surface color from the color map (Mandelbulb3D's diffuse maps, PaintThread): `base` is
+    /// the gradient color, `v` the color value, `rough` the roughness (blends toward the map's
+    /// average color in the 3D modes).
+    fn map_color(&self, h: &Hit, n: V3, v: f64, base: [f64; 3], rough: f64) -> [f64; 3] {
+        let Some((m, rot, avg)) = &self.color_map else { return base };
+        let cm = &self.scene.material.color_map;
+        let frac = |x: f64| x - x.floor();
+        let mut c = match cm.mode {
+            MapMode::Orbit => {
+                // Orbit trap (MB3D: 15-bit trap · 4096) and iteration value, both around 0.
+                let a = (h.orbit.trap * 4096.0).clamp(0.0, 32767.0) / 32768.0 - 0.5;
+                let b = (v * cm.iter_scale + cm.iter_offset).clamp(0.0, 1.0) - 0.5;
+                let (s, co) = cm.rotation[2].to_radians().sin_cos();
+                m.rgb_tiled(frac((co * a + s * b + cm.offset[0]) * cm.scale), frac((co * b - s * a + cm.offset[1]) * cm.scale))
+            }
+            MapMode::Normal => {
+                let (u, w) = crate::maps::panorama_uv(rot, n.to_array());
+                let s = m.sample_panorama(u, w);
+                [s[2], s[1], s[0]]
+            }
+            MapMode::Wrap | MapMode::Triplanar => {
+                let p = h.pos * cm.scale;
+                let an = v3(n.x.abs(), n.y.abs(), n.z.abs());
+                let wsum = (an.x + an.y + an.z).max(1e-30);
+                let wv = [an.x / wsum, an.y / wsum, an.z / wsum];
+                let (ox, oy) = (cm.offset[0], cm.offset[1]);
+                if cm.mode == MapMode::Wrap {
+                    let (sx, sy, sz) = (p.x.sin(), p.y.sin(), p.z.sin());
+                    m.rgb_tiled(sy * wv[0] + sx * (wv[1] + wv[2]) + ox, sz * (wv[0] + wv[1]) + sy * wv[2] + oy)
+                } else {
+                    let a = m.rgb_tiled(p.y + ox, p.z + oy);
+                    let b = m.rgb_tiled(p.x + ox, p.z + oy);
+                    let c = m.rgb_tiled(p.x + ox, p.y + oy);
+                    [0, 1, 2].map(|k| a[k] * wv[0] + b[k] * wv[1] + c[k] * wv[2])
+                }
+            }
+        };
+        if cm.mode != MapMode::Orbit && rough > 0.0 {
+            c = [0, 1, 2].map(|k| c[k] + (avg[k] - c[k]) * rough);
+        }
+        if !self.scene.post.display_space {
+            c = c.map(super::srgb_decode);
+        }
+        if cm.luminance_only {
+            let y = |v: &[f64; 3]| 0.3 * v[0] + 0.59 * v[1] + 0.11 * v[2];
+            let f = y(&c) / (0.01 + y(&base));
+            return base.map(|b| b * f);
+        }
+        c
+    }
+
     /// Interior colors for a hit whose orbit did not escape (None: not interior or no interior
     /// colors): indexed by the final radius relative to the bailout (inside rendering: the
     /// iteration value), like Mandelbulb3D's CalcColorsInside.
@@ -383,10 +440,12 @@ impl<'a> Shader<'a> {
                 // softens the diffuse curves (PaintThread.CalcPixelColor2).
                 let rr = rough * sc.lighting.roughness;
                 let spec_rough = 1.0 + (2.0 * rr).min(1.0) * (4.0 / sc.lighting.shininess.max(1.0) - 1.0);
+                let cv = self.color_value(h, n);
                 let (base, spec_col) = match self.interior_colors(h, n, h.t) {
                     Some(c) => c,
-                    None => self.gradient(self.color_value(h, n), h.t),
+                    None => self.gradient(cv, h.t),
                 };
+                let base = self.map_color(h, n, cv, base, rr);
                 // Shading point just off the surface; inside rendering puts the surface one
                 // threshold into the solid, so it needs a larger offset.
                 let p = h.pos + n * (h.eps * if sc.fractal.inside { 4.0 } else { 1.5 });
@@ -463,6 +522,9 @@ impl<'a> Shader<'a> {
         Traced { color: c, albedo, normal, surface }
     }
 }
+
+/// A loaded color map: image, rotation matrix (normal mode), average color.
+pub type ColorMapData = (std::sync::Arc<crate::maps::Map>, [[f64; 3]; 3], [f64; 3]);
 
 /// What [`Shader::trace`] found.
 struct Traced {

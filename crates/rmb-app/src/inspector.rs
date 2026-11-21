@@ -318,6 +318,54 @@ fn color(ui: &mut Ui, scene: &mut Scene) {
             widgets::slider_u32(ui, "Bounces", "Reflections of reflections", &mut m.reflection_bounces, 1..=8, d.reflection_bounces);
         }
     });
+    color_map(ui, m);
+}
+
+fn color_map(ui: &mut Ui, m: &mut rmb_core::scene::Material) {
+    let d = rmb_core::scene::ColorMap::default();
+    if widgets::section(ui, "Color map", true) {
+        m.color_map = d.clone();
+    }
+    let cm = &mut m.color_map;
+    ui.horizontal(|ui| {
+        if ui.button("Image…").on_hover_text("An image that gives the surface color instead of the gradient (or a Mandelbulb3D map number)").clicked()
+            && let Some(p) = rfd::FileDialog::new().add_filter("Image", &["jpg", "jpeg", "png", "bmp"]).pick_file()
+        {
+            cm.image = p.display().to_string();
+        }
+        ui.add(egui::TextEdit::singleline(&mut cm.image).desired_width(140.0).hint_text("off")).on_hover_text("File, name in the map folders, or Mandelbulb3D map number");
+        if !cm.image.is_empty() && widgets::icon_button(ui, icons::X, "Remove the color map").clicked() {
+            cm.image.clear();
+        }
+    });
+    if cm.image.trim().is_empty() {
+        return;
+    }
+    if rmb_core::maps::get_any(&cm.image).is_none() {
+        ui.label(RichText::new("Not found: give the full path or set the maps folder in the preferences").size(theme::fs(11.0)).color(theme::WARN));
+    }
+    widgets::grid(ui, "cmap", |ui| {
+        widgets::label(ui, "Mapping", "Orbit trap × iterations: 2D from the orbit. Surface normal: by direction. 3D waves / 3D projection: by position on the object.");
+        egui::ComboBox::from_id_salt("cmap-mode").selected_text(cm.mode.label()).show_ui(ui, |ui| {
+            for mm in rmb_core::scene::MapMode::ALL {
+                ui.selectable_value(&mut cm.mode, mm, mm.label());
+            }
+        });
+        ui.end_row();
+        widgets::slider_log(ui, "Scale", "Repetitions (orbit mode) or tiles per world unit (3D modes)", &mut cm.scale, 0.01..=100.0, d.scale);
+        if cm.mode == rmb_core::scene::MapMode::Normal {
+            for (k, axis) in ["X", "Y", "Z"].iter().enumerate() {
+                widgets::slider(ui, &format!("Rotate {axis}"), "Rotation of the map in degrees", &mut cm.rotation[k], -180.0..=360.0, 0.0);
+            }
+        } else {
+            widgets::slider(ui, "Offset X", "Shifts the map", &mut cm.offset[0], 0.0..=1.0, 0.0);
+            widgets::slider(ui, "Offset Y", "Shifts the map", &mut cm.offset[1], 0.0..=1.0, 0.0);
+        }
+        if cm.mode == rmb_core::scene::MapMode::Orbit {
+            widgets::slider(ui, "Rotate", "Rotation of the map in degrees", &mut cm.rotation[2], -180.0..=180.0, 0.0);
+        }
+        widgets::checkbox(ui, "Brightness only", "Takes only the brightness of the map; the hue comes from the gradient", &mut cm.luminance_only);
+    });
 }
 
 fn effects(ui: &mut Ui, scene: &mut Scene) {

@@ -48,6 +48,10 @@ struct U {
     bg_rot: array<vec4<f32>, 3>, // background image rotation rows; [0].w: has image, [1].w: display space
     blend: vec4<f32>,      // interpolation hybrid weights of slots 1 and 2, smooth normals, roughness
     interior: vec4<f32>,   // interior colors: on, scale, offset
+    cmap0: vec4<f32>,      // color map: mode + 1 (0 = off), scale, offset x, offset y
+    cmap1: vec4<f32>,      // cos, sin of the 2D rotation, iteration scale, iteration offset
+    cmap2: vec4<f32>,      // luminance only, average color
+    cmap_rot: array<vec4<f32>, 3>, // rotation of the normal mode (rows)
 }
 
 @group(0) @binding(0) var<uniform> u: U;
@@ -146,19 +150,9 @@ fn map_sample(i: i32, x: f32, y: f32, ch: f32) -> f32 {
     return sum / 255.0;
 }
 
-// Mirrors Shader::background_image (maps.rs: panorama_uv, sample_panorama).
-fn background_image(d: vec3<f32>) -> vec3<f32> {
-    let i = map_find_u(0xffffffffu);
-    if (i < 0) {
-        return vec3<f32>(0.0);
-    }
-    let l = max(length(d), 1.0e-30);
-    let m0 = u.bg_rot[0].xyz;
-    let m1 = u.bg_rot[1].xyz;
-    let m2 = u.bg_rot[2].xyz;
-    let v = (m0 * d.x + m1 * d.y + m2 * d.z) / l;
-    let pu = atan2(v.x, v.z) * (-0.5 / 3.141592653589793) + 0.5;
-    let pv = 0.5 - asin(clamp(v.y, -1.0, 1.0)) / 3.141592653589793;
+// RGB of map `i` at u, v (0..1): wrapped horizontally, clamped vertically (maps.rs
+// sample_panorama; pixels are blue | green << 8 | red << 16).
+fn map_panorama(i: i32, pu: f32, pv: f32) -> vec3<f32> {
     let h0 = 1u + 4u * u32(i);
     let w = i32(maps[h0 + 1u]);
     let h = i32(maps[h0 + 2u]);
@@ -175,15 +169,127 @@ fn background_image(d: vec3<f32>) -> vec3<f32> {
         for (var k = 0; k < 4; k++) {
             let xx = (((i32(xf) - 1 + k) % w) + w) % w;
             let p = maps[base + u32(yy * w + xx)];
-            // Pixels are blue | green << 8 | red << 16: as RGB.
             sum += vec3<f32>(f32((p >> 16u) & 255u), f32((p >> 8u) & 255u), f32(p & 255u)) * (wx[k] * wy[j]);
         }
     }
-    var rgb = sum / 255.0;
+    return sum / 255.0;
+}
+
+// RGB of map `i` at u, v, tiled in both directions (maps.rs rgb_tiled).
+fn map_tiled(i: i32, pu: f32, pv: f32) -> vec3<f32> {
+    let h0 = 1u + 4u * u32(i);
+    let w = i32(maps[h0 + 1u]);
+    let h = i32(maps[h0 + 2u]);
+    let base = maps[h0 + 3u];
+    let x = (pu - floor(pu)) * f32(w);
+    let y = (pv - floor(pv)) * f32(h);
+    let xf = floor(x);
+    let yf = floor(y);
+    let wx = spline_weights(x - xf);
+    let wy = spline_weights(y - yf);
+    var sum = vec3<f32>(0.0);
+    for (var j = 0; j < 4; j++) {
+        let yy = (((i32(yf) - 1 + j) % h) + h) % h;
+        for (var k = 0; k < 4; k++) {
+            let xx = (((i32(xf) - 1 + k) % w) + w) % w;
+            let p = maps[base + u32(yy * w + xx)];
+            sum += vec3<f32>(f32((p >> 16u) & 255u), f32((p >> 8u) & 255u), f32(p & 255u)) * (wx[k] * wy[j]);
+        }
+    }
+    return sum / 255.0;
+}
+
+fn srgb_decode3(c: vec3<f32>) -> vec3<f32> {
+    return select(pow((c + 0.055) / 1.055, vec3<f32>(2.4)), c / 12.92, c <= vec3<f32>(0.04045));
+}
+
+// Mirrors Shader::background_image (maps.rs: panorama_uv, sample_panorama).
+fn background_image(d: vec3<f32>) -> vec3<f32> {
+    let i = map_find_u(0xffffffffu);
+    if (i < 0) {
+        return vec3<f32>(0.0);
+    }
+    let l = max(length(d), 1.0e-30);
+    let v = (u.bg_rot[0].xyz * d.x + u.bg_rot[1].xyz * d.y + u.bg_rot[2].xyz * d.z) / l;
+    let pu = atan2(v.x, v.z) * (-0.5 / 3.141592653589793) + 0.5;
+    let pv = 0.5 - asin(clamp(v.y, -1.0, 1.0)) / 3.141592653589793;
+    var rgb = map_panorama(i, pu, pv);
     if (u.bg_rot[1].w < 0.5) {
-        rgb = select(pow((rgb + 0.055) / 1.055, vec3<f32>(2.4)), rgb / 12.92, rgb <= vec3<f32>(0.04045));
+        rgb = srgb_decode3(rgb);
     }
     return rgb;
+}
+
+// Mirrors Shader::map_color (the color map is stored under the number 0xfffffffe).
+fn map_color(h: Hit, pos: vec3<f32>, n: vec3<f32>, v: f32, base: vec3<f32>, rough: f32) -> vec3<f32> {
+    let i = map_find_u(0xfffffffeu);
+    if (i < 0) {
+        return base;
+    }
+    let mode = u32(u.cmap0.x) - 1u;
+    let scale = u.cmap0.y;
+    let ox = u.cmap0.z;
+    let oy = u.cmap0.w;
+    var c = vec3<f32>(0.0);
+    if (mode == 1u) {
+        let r = u.cmap_rot[0].xyz * n.x + u.cmap_rot[1].xyz * n.y + u.cmap_rot[2].xyz * n.z;
+        let l = max(length(r), 1.0e-30);
+        let rv = r / l;
+        c = map_panorama(i, atan2(rv.x, rv.z) * (-0.5 / 3.141592653589793) + 0.5, 0.5 - asin(clamp(rv.y, -1.0, 1.0)) / 3.141592653589793);
+    } else {
+        // Up to three tiled lookups (3D projection), from one call site: compile time.
+        let p = pos * scale;
+        let an = abs(n);
+        let wv = an / max(an.x + an.y + an.z, 1.0e-30);
+        var count = 1;
+        if (mode == 3u) {
+            count = 3;
+        }
+        for (var k = 0; k < count; k++) {
+            var pu = 0.0;
+            var pv = 0.0;
+            var wk = 1.0;
+            if (mode == 0u) {
+                let a = clamp(h.orbit.trap * 4096.0, 0.0, 32767.0) / 32768.0 - 0.5;
+                let b = clamp(v * u.cmap1.z + u.cmap1.w, 0.0, 1.0) - 0.5;
+                let qu = (u.cmap1.x * a + u.cmap1.y * b + ox) * scale;
+                let qv = (u.cmap1.x * b - u.cmap1.y * a + oy) * scale;
+                pu = qu - floor(qu);
+                pv = qv - floor(qv);
+            } else if (mode == 2u) {
+                let sx = sin(p.x);
+                let sy = sin(p.y);
+                let sz = sin(p.z);
+                pu = sy * wv.x + sx * (wv.y + wv.z) + ox;
+                pv = sz * (wv.x + wv.y) + sy * wv.z + oy;
+            } else if (k == 0) {
+                pu = p.y + ox;
+                pv = p.z + oy;
+                wk = wv.x;
+            } else if (k == 1) {
+                pu = p.x + ox;
+                pv = p.z + oy;
+                wk = wv.y;
+            } else {
+                pu = p.x + ox;
+                pv = p.y + oy;
+                wk = wv.z;
+            }
+            c += map_tiled(i, pu, pv) * wk;
+        }
+    }
+    if (mode != 0u && rough > 0.0) {
+        c = mix(c, u.cmap2.yzw, rough);
+    }
+    if (u.bg_rot[1].w < 0.5) {
+        c = srgb_decode3(c);
+    }
+    if (u.cmap2.x > 0.5) {
+        let yc = dot(c, vec3<f32>(0.3, 0.59, 0.11));
+        let yb = dot(base, vec3<f32>(0.3, 0.59, 0.11));
+        return base * (yc / (0.01 + yb));
+    }
+    return c;
 }
 
 fn map_xy(n: f32, u_: f32, v_: f32, ch: f32) -> f32 {
@@ -750,7 +856,8 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sy: f32) 
         // Roughness dulls the highlights and softens the diffuse curves.
         let rr = nr.w * u.blend.w;
         let spec_rough = 1.0 + min(2.0 * rr, 1.0) * (4.0 / max(u.sky.w, 1.0) - 1.0);
-        var cols = gradient(color_value(h, n, pos), h.t);
+        let cv = color_value(h, n, pos);
+        var cols = gradient(cv, h.t);
         // Interior colors where the orbit did not escape (mirrors Shader::interior_colors).
         if (u.interior.x > 0.5 && !h.orbit.escaped) {
             var v = clamp(h.orbit.r2 / max(u.march.z, 1.0e-30), 0.0, 1.0);
@@ -768,6 +875,9 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sy: f32) 
             let f = x - f32(i);
             cols.base = mix(lut[640u + i].xyz, lut[641u + i].xyz, f);
             cols.spec = mix(lut[896u + i].xyz, lut[897u + i].xyz, f);
+        }
+        if (u.cmap0.x > 0.5) {
+            cols.base = map_color(h, pos, n, cv, cols.base, rr);
         }
         let base = cols.base;
         let p = pos + n * (h.eps * select(1.5, 4.0, u.scales.z > 0.5));

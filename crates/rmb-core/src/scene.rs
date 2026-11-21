@@ -613,6 +613,62 @@ impl ColorStop {
     }
 }
 
+/// How a color map is put on the surface (Mandelbulb3D's color map modes).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum MapMode {
+    /// 2D: orbit trap and iteration value as the two coordinates.
+    #[default]
+    Orbit,
+    /// By the surface normal (panorama lookup).
+    Normal,
+    /// 3D position through sine waves.
+    Wrap,
+    /// 3D position, three planar projections blended by the normal.
+    Triplanar,
+}
+
+impl MapMode {
+    pub const ALL: [MapMode; 4] = [MapMode::Orbit, MapMode::Normal, MapMode::Wrap, MapMode::Triplanar];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            MapMode::Orbit => "Orbit trap × iterations",
+            MapMode::Normal => "Surface normal",
+            MapMode::Wrap => "3D waves",
+            MapMode::Triplanar => "3D projection",
+        }
+    }
+
+    pub fn index(self) -> u32 {
+        self as u32
+    }
+}
+
+/// An image that gives the surface color instead of the gradient.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ColorMap {
+    /// File (path, or name in the map folders) or a Mandelbulb3D map number. Empty: off.
+    pub image: String,
+    pub mode: MapMode,
+    /// Repetitions (orbit mode) or map tiles per world unit (3D modes).
+    pub scale: f64,
+    /// Degrees: the third is the 2D rotation of the orbit mode; normal mode uses all three.
+    pub rotation: [f64; 3],
+    pub offset: [f64; 2],
+    /// Only the brightness of the map; the hue comes from the gradient.
+    pub luminance_only: bool,
+    /// Orbit mode: the iteration coordinate is value · scale + offset (0..1).
+    pub iter_scale: f64,
+    pub iter_offset: f64,
+}
+
+impl Default for ColorMap {
+    fn default() -> Self {
+        ColorMap { image: String::new(), mode: MapMode::Orbit, scale: 1.0, rotation: [0.0; 3], offset: [0.0; 2], luminance_only: false, iter_scale: 0.05, iter_offset: 0.0 }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Material {
@@ -633,6 +689,7 @@ pub struct Material {
     pub depth_shift: f64,
     /// Distance from the camera where the depth shift is 0.
     pub depth_reference: f64,
+    pub color_map: ColorMap,
     /// Colors where a ray meets the inside of the fractal (cut planes, camera inside the solid);
     /// empty: the normal gradient. Indexed by the final radius (inside rendering: iterations).
     pub interior: Vec<ColorStop>,
@@ -657,6 +714,7 @@ impl Default for Material {
             detail_shift: 0.0,
             depth_shift: 0.0,
             depth_reference: 0.0,
+            color_map: ColorMap::default(),
             interior: Vec::new(),
             interior_scale: 1.0,
             interior_offset: 0.0,

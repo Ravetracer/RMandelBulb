@@ -572,6 +572,27 @@ pub fn import_binary(b: &[u8]) -> Result<Import, String> {
         s.material.color_scale = -m / span;
         s.material.color_offset = (32767.0 - c_start - m * col_plus) / span;
         s.material.detail_shift = var_mul;
+        // The orbit-mode color map reads MB3D's color index as 0..1.
+        s.material.color_map.iter_scale = -m / 32767.0;
+        s.material.color_map.iter_offset = 1.0 - col_plus * m / 32767.0;
+    }
+
+    // ---- color map (diffuse map, LightVals: iColOnOT): number bColorMap | Ex << 8; mode from
+    // Lights[1].FreeByte (orbit trap × index, normals, 3D waves, 3D projection).
+    let map_nr = r.u8(light + 3) as u32 | (r.u8(light + 68 + 32 + 16) as u32) << 8;
+    if map_nr != 0 {
+        let cm = &mut s.material.color_map;
+        cm.image = map_nr.to_string();
+        cm.mode = [crate::scene::MapMode::Orbit, crate::scene::MapMode::Normal, crate::scene::MapMode::Wrap, crate::scene::MapMode::Triplanar][(r.u8(light + 68 + 32 + 24) & 3) as usize];
+        let ex2 = r.u8(light + 68 + 64 + 16) as i32 - 30;
+        cm.scale = if cm.mode == crate::scene::MapMode::Orbit { 1.05f64.powi(ex2) } else { 1.2f64.powi(ex2) };
+        let (a, b, c) = (((tb(7) >> 12) & 0xFF) as f64, ((tb(7) >> 20) & 0xFF) as f64, ((tb(8) >> 20) & 0xFF) as f64);
+        cm.offset = [a / 256.0, b / 256.0];
+        cm.rotation = if cm.mode == crate::scene::MapMode::Orbit { [0.0, 0.0, (c - 128.0) * 360.0 / 256.0] } else { [180.0 - a * 180.0 / 128.0, b * 180.0 / 128.0, c * 180.0 / 128.0] };
+        cm.luminance_only = add_options & 4 != 0;
+        if crate::maps::get_any(&cm.image).is_none() {
+            warnings.push(format!("color map {map_nr} not found (set the Mandelbulb3D maps folder in the preferences); the gradient is used"));
+        }
     }
 
     // ---- background and depth fog: the background is the vertical gradient of the depth

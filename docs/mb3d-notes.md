@@ -159,3 +159,13 @@ little-endian.
   whose ray meets the inside of the set (no DE stop: cut faces, camera inside): SIgradient =
   32768 + 32767 · Rout / RStop (inside rendering: smooth iterations · 32767 / (maxIt + 1));
   start/end from TBoptions bits 0..6 / 7..13 as 32768 + s⁴ · 0.000158025.
+
+## Color maps (HeaderTrafos.MakeLightValsFromHeaderLight, PaintThread)
+
+- Map number = bColorMap (light +3) | Lights[1].AdditionalByteEx << 8; mode = Lights[1].FreeByte
+  & 3: 0 orbit trap × color index (2D: trap · 4096 and SIgradient, both 0..32767 → -0.5..0.5,
+  rotated by ((TBpos[8] >> 20) & 255 - 128) · 2π/256, offset ((TBpos[7] >> 12 / >> 20) & 255)/256,
+  scale 1.05^(Lights[2].AdditionalByteEx - 30)); 1 by normal (sphere lookup, rotation
+  BuildRotMatrixS(π - a·π/128, b·π/128, c·π/128)); 2 3D sine wrap and 3 three planar projections
+  (world position · 1.2^(Ex2 - 30)). Modes 1..3 blend toward the map's average color by the
+  roughness. AdditionalOptions bit 2: keep the gradient hue, take the map's luminance.

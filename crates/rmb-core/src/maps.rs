@@ -182,6 +182,38 @@ pub fn get_file(name: &str) -> Option<Arc<Map>> {
     m
 }
 
+/// A map by number (all digits) or by file name.
+pub fn get_any(name: &str) -> Option<Arc<Map>> {
+    let name = name.trim();
+    if name.is_empty() {
+        return None;
+    }
+    match name.parse::<i32>() {
+        Ok(n) => get(n),
+        Err(_) => get_file(name),
+    }
+}
+
+impl Map {
+    /// RGB (0..1, display values) at `u`, `v` in 0..1, tiled in both directions.
+    pub fn rgb_tiled(&self, u: f64, v: f64) -> [f64; 3] {
+        let s = self.sample((u - u.floor()) * self.width as f64, (v - v.floor()) * self.height as f64);
+        [s[2], s[1], s[0]]
+    }
+
+    /// Average RGB (0..1, display values).
+    pub fn average(&self) -> [f64; 3] {
+        let n = self.pixels.len().max(1) as f64;
+        let mut a = [0.0; 3];
+        for p in &self.pixels {
+            for k in 0..3 {
+                a[k] += p[2 - k] as f64;
+            }
+        }
+        a.map(|v| v / (255.0 * n))
+    }
+}
+
 /// Rotation of a background image (Mandelbulb3D's `BuildRotMatrixS`, angles in degrees).
 pub fn rotation_matrix(deg: [f64; 3]) -> [[f64; 3]; 3] {
     let [(sx, cx), (sy, cy), (sz, cz)] = deg.map(|a| a.to_radians().sin_cos());
