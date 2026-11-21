@@ -16,7 +16,7 @@ modern egui interface and import of Mandelbulb3D parameters.
   Quaternion, Folding Int Pow, Amazing Box/Surf, ABox Mod, Kali box, Kaliset, Mandelbox 4D,
   Menger, Sierpinski, Octahedron, kaleidoscopic IFS, hypercomplex, and transforms (rotate,
   scale, folds, inversion, …).
-- **Mandelbulb3D formulas**: 471 of Mandelbulb3D's 497 formulas plus the built-in ones:
+- **Mandelbulb3D formulas**: 469 of Mandelbulb3D's 497 formulas plus the built-in ones:
   machine-code formulas (`.m3f`, dIFS included) and the Pascal-source JIT formulas (also the EM
   collection) are translated into the formula language (`rmb-cli m3f`) and built in; a few are
   written by hand (`lib/mb3d_builtin.mbf`). Translations and hand-written versions are checked
