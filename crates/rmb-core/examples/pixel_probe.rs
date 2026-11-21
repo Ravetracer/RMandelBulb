@@ -11,8 +11,8 @@ fn main() {
     let sy = 1.0 - ((py as f64 + 0.5) / h as f64) * 2.0;
     let d = s.camera.ray_dir(sx, sy, sh.frame.aspect);
     let t0 = rmb_core::render::start_distance(&s);
-    let (hit, steps) = sh.march(&mut ev, s.camera.position, d, t0, s.march.max_distance, s.march.max_steps);
-    println!("t0 {t0:.4} steps {steps}");
+    let (hit, steps, glow) = sh.march(&mut ev, s.camera.position, d, t0, s.march.max_distance, s.march.max_steps);
+    println!("t0 {t0:.4} steps {steps} glowing steps {glow}");
     if let Some(hh) = hit {
         let n = sh.normal(&mut ev, hh.pos, hh.eps);
         println!("hit t {:.5} eps {:.2e} de {:.3e} its {} escaped {} normal {:?} n.d {:.3}", hh.t, hh.eps, hh.orbit.de, hh.orbit.iterations, hh.orbit.escaped, n, n.dot(d));

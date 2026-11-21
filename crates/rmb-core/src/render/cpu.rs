@@ -15,6 +15,7 @@ pub struct Shader<'a> {
     pub prog: &'a Program,
     pub frame: Frame,
     pub lut: Vec<[f32; 3]>,
+    pub lut_spec: Vec<[f32; 3]>,
 }
 
 pub struct Hit {
@@ -27,7 +28,8 @@ pub struct Hit {
 
 impl<'a> Shader<'a> {
     pub fn new(scene: &'a Scene, prog: &'a Program, width: u32, height: u32) -> Self {
-        Shader { scene, prog, frame: Frame::new(scene, width, height), lut: crate::gradient::lut(&scene.material.gradient) }
+        let g = &scene.material.gradient;
+        Shader { scene, prog, frame: Frame::new(scene, width, height), lut: crate::gradient::lut(g), lut_spec: crate::gradient::lut_specular(g) }
     }
 
     /// Surface threshold at ray distance `t`.
@@ -35,15 +37,21 @@ impl<'a> Shader<'a> {
         (self.scene.march.detail * self.frame.pixel_angle * t).max(1.0e-7)
     }
 
-    /// Marches a ray. Returns the hit (if any) and the number of steps taken.
-    pub fn march(&self, ev: &mut Evaluator, o: V3, d: V3, t0: f64, max_t: f64, max_steps: u32) -> (Option<Hit>, u32) {
+    /// Marches a ray. Returns the hit (if any), the number of steps taken and the number of
+    /// glowing steps (see `Fog::glow_iteration`).
+    pub fn march(&self, ev: &mut Evaluator, o: V3, d: V3, t0: f64, max_t: f64, max_steps: u32) -> (Option<Hit>, u32, u32) {
         let m = &self.scene.march;
+        let glow_it = self.scene.fog.glow_iteration;
         let mut t = t0;
         let mut last_step = 0.0;
+        let mut glow = 0;
         for step in 0..max_steps {
             let p = o + d * t;
             let eps = self.eps_at(t);
             let orbit = ev.orbit(p, eps * 0.5);
+            if glow_it == 0 || orbit.iterations == glow_it {
+                glow += 1;
+            }
             if orbit.de < eps {
                 // Binary refinement toward the threshold.
                 let (mut t_hit, mut orbit_hit) = (t, orbit);
@@ -59,16 +67,16 @@ impl<'a> Shader<'a> {
                         dt *= 0.5;
                     }
                 }
-                return (Some(Hit { t: t_hit, pos: o + d * t_hit, eps: self.eps_at(t_hit), orbit: orbit_hit, steps: step }), step);
+                return (Some(Hit { t: t_hit, pos: o + d * t_hit, eps: self.eps_at(t_hit), orbit: orbit_hit, steps: step }), step, glow.min(step));
             }
             // At least a tenth of the threshold: no stalling where the estimate is near zero.
             last_step = (orbit.de * m.step).max(eps * 0.1);
             t += last_step;
             if t > max_t {
-                return (None, step);
+                return (None, step, glow.min(step));
             }
         }
-        (None, max_steps)
+        (None, max_steps, glow)
     }
 
     pub fn normal(&self, ev: &mut Evaluator, p: V3, eps: f64) -> V3 {
@@ -81,10 +89,9 @@ impl<'a> Shader<'a> {
         n.normalize()
     }
 
-    fn soft_shadow(&self, ev: &mut Evaluator, p: V3, l: V3, eps: f64, softness: f64) -> f64 {
+    fn soft_shadow(&self, ev: &mut Evaluator, p: V3, l: V3, eps: f64, softness: f64, max_t: f64) -> f64 {
         let mut res: f64 = 1.0;
         let mut t = eps * 4.0;
-        let max_t = self.scene.march.max_distance;
         for _ in 0..160 {
             let q = p + l * t;
             let e = self.eps_at(t) * 0.5 + eps * 0.5;
@@ -120,14 +127,14 @@ impl<'a> Shader<'a> {
                     occ += (h - d).max(0.0) / radius * w;
                     w *= 0.6;
                 }
-                (1.0 - l.ao_strength * occ / 0.959).clamp(0.0, 1.0)
+                ao_curve((occ / 0.959).clamp(0.0, 1.0), l.ao_strength)
             }
             AoMode::Raytraced => {
                 let d = cosine_dir(n, rng.next_f64(), rng.next_f64());
                 let eps = self.eps_at(t);
-                let (hit, _) = self.march(ev, p + n * (eps * 2.0), d, 0.0, radius, 48);
+                let (hit, _, _) = self.march(ev, p + n * (eps * 2.0), d, 0.0, radius, 48);
                 match hit {
-                    Some(h) => 1.0 - l.ao_strength * (1.0 - h.t / radius).clamp(0.0, 1.0),
+                    Some(h) => ao_curve((1.0 - h.t / radius).clamp(0.0, 1.0), l.ao_strength),
                     None => 1.0,
                 }
             }
@@ -182,17 +189,21 @@ impl<'a> Shader<'a> {
         }
     }
 
-    fn gradient(&self, v: f64) -> [f64; 3] {
+    /// Surface and highlight color for the color value `v`.
+    fn gradient(&self, v: f64) -> ([f64; 3], [f64; 3]) {
         let m = &self.scene.material;
         let mut t = v * m.color_scale + m.color_offset;
         t = if m.repeat { t - t.floor() } else { t.clamp(0.0, 1.0) };
         let x = t * (self.lut.len() - 1) as f64;
         let i = (x.floor() as usize).min(self.lut.len() - 2);
         let f = x - i as f64;
-        let (a, b) = (self.lut[i], self.lut[i + 1]);
-        let base = [0, 1, 2].map(|k| a[k] as f64 + (b[k] as f64 - a[k] as f64) * f);
+        let mix = |l: &[[f32; 3]]| [0, 1, 2].map(|k| l[i][k] as f64 + (l[i + 1][k] as f64 - l[i][k] as f64) * f);
+        let base = mix(&self.lut);
         let first = self.lut[0];
-        [0, 1, 2].map(|k| first[k] as f64 + (base[k] - first[k] as f64) * m.saturation)
+        (
+            [0, 1, 2].map(|k| first[k] as f64 + (base[k] - first[k] as f64) * m.saturation),
+            mix(&self.lut_spec),
+        )
     }
 
     /// Linear radiance of one sample of pixel (`px`, `py`).
@@ -212,7 +223,7 @@ impl<'a> Shader<'a> {
             o = o + cam.right * (r * a.cos()) + cam.up * (r * a.sin());
             d = (focus - o).normalize();
         }
-        let (hit, steps) = self.march(ev, o, d, super::start_distance(sc), sc.march.max_distance, sc.march.max_steps);
+        let (hit, _, steps) = self.march(ev, o, d, super::start_distance(sc), sc.march.max_distance, sc.march.max_steps);
         let (glow, glow_mix) = sc.fog.glow_at(steps as f64, sc.march.max_steps as f64);
         let bg = self.background(d, sy);
         let fog_col = if sc.fog.from_background { bg } else { sc.fog.color.map(|x| x as f64) };
@@ -225,7 +236,7 @@ impl<'a> Shader<'a> {
             Some(h) => {
                 let n = self.normal(ev, h.pos, h.eps);
                 let n = if n.dot(d) > 0.0 { -n } else { n };
-                let base = self.gradient(self.color_value(h, n));
+                let (base, spec_col) = self.gradient(self.color_value(h, n));
                 // Shading point just off the surface; inside rendering puts the surface one
                 // threshold into the solid, so it needs a larger offset.
                 let p = h.pos + n * (h.eps * if sc.fractal.inside { 4.0 } else { 1.5 });
@@ -235,22 +246,35 @@ impl<'a> Shader<'a> {
                 let mut diffuse = [0, 1, 2].map(|k| (l.ground_color[k] as f64 + (l.sky_color[k] - l.ground_color[k]) as f64 * hemi) * l.ambient * ao);
                 let mut spec = [0.0; 3];
                 for li in &fr.lights {
-                    let ndl = n.dot(li.dir);
-                    if ndl <= 0.0 {
+                    // Point lights: direction, squared-distance falloff and shadow length.
+                    let (ldir, atten, max_t) = match li.point {
+                        Some(lp) => {
+                            let v = lp - p;
+                            let d2 = v.dot(v).max(1e-30);
+                            let dist = d2.sqrt();
+                            (v * (1.0 / dist), 1.0 / d2, dist)
+                        }
+                        None => (li.dir, 1.0, sc.march.max_distance),
+                    };
+                    let ndl = n.dot(ldir);
+                    let df = li.diffuse.apply(ndl);
+                    // Back faces: only wrapping curves reach them, and not through shadows.
+                    if df <= 0.0 || (ndl <= 0.0 && li.shadows) {
                         continue;
                     }
-                    let sh = if li.shadows { self.soft_shadow(ev, p, li.dir, h.eps, li.softness) } else { 1.0 };
+                    let sh = if li.shadows { self.soft_shadow(ev, p, ldir, h.eps, li.softness, max_t) } else { 1.0 };
                     if sh <= 0.0 {
                         continue;
                     }
-                    let hv = (li.dir - d).normalize();
-                    let s = n.dot(hv).max(0.0).powf(l.shininess) * li.specular * sc.material.specular * (l.shininess + 8.0) / 25.0;
+                    let w = sh * atten * (1.0 - li.occlusion * (1.0 - ao));
+                    let hv = (ldir - d).normalize();
+                    let s = if ndl > 0.0 { n.dot(hv).max(0.0).powf(l.shininess) * li.specular * sc.material.specular * (l.shininess + 8.0) / 25.0 } else { 0.0 };
                     for k in 0..3 {
-                        diffuse[k] += li.color[k] * ndl * sh;
-                        spec[k] += li.color[k] * s * sh;
+                        diffuse[k] += li.color[k] * df * w;
+                        spec[k] += li.color[k] * s * w;
                     }
                 }
-                let lit = [0, 1, 2].map(|k| base[k] * diffuse[k] + spec[k]);
+                let lit = [0, 1, 2].map(|k| base[k] * diffuse[k] + spec[k] * spec_col[k]);
                 let f = sc.fog.amount(h.t, near, far);
                 [0, 1, 2].map(|k| lit[k] * (1.0 - f) + fog_col[k] * f.max(0.0))
             }
@@ -269,6 +293,17 @@ impl<'a> Shader<'a> {
             }
         }
         c
+    }
+}
+
+/// Light left by the occlusion `occ` (0..1) at `strength`: linear up to 1, above 1 it bends
+/// toward the square like Mandelbulb3D's ambient shadow amplitude.
+pub fn ao_curve(occ: f64, strength: f64) -> f64 {
+    if strength <= 1.0 {
+        1.0 - strength * occ
+    } else {
+        let d = 1.0 - occ;
+        (d + (strength - 1.0) * (d * d - d)).max(0.0)
     }
 }
 
@@ -346,7 +381,7 @@ pub fn pick(scene: &Scene, sx: f64, sy: f64, width: u32, height: u32) -> Option<
     let shader = Shader::new(scene, &prog, width, height);
     let mut ev = prog.evaluator();
     let d = scene.camera.ray_dir(sx, sy, shader.frame.aspect);
-    let (hit, _) = shader.march(&mut ev, scene.camera.position, d, super::start_distance(scene), scene.march.max_distance, scene.march.max_steps);
+    let (hit, _, _) = shader.march(&mut ev, scene.camera.position, d, super::start_distance(scene), scene.march.max_distance, scene.march.max_steps);
     hit.map(|h| (h.t, h.pos))
 }
 

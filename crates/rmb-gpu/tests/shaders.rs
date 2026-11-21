@@ -115,9 +115,25 @@ fn gpu_matches_cpu_with_mandelbulb3d_shading() {
     scene.fog.glow_offset = 3.0;
     scene.fog.glow_mix_steps = 40.0;
     scene.fog.glow_color2 = [1.0, 0.2, 0.1];
+    scene.fog.glow_iteration = 4;
+    scene.lighting.lights[0].diffuse = rmb_core::scene::DiffuseCurve::Squared;
     scene.material.color_mode = ColorMode::IterationsRatio;
     scene.material.color_scale = -0.3;
     scene.material.color_offset = 1.7;
     scene.material.detail_shift = 0.24;
+    // A shadowed point light and highlight colors per gradient stop.
+    scene.lighting.lights.push(rmb_core::scene::Light {
+        kind: rmb_core::scene::LightKind::Point,
+        position: rmb_core::v3(1.2, -1.5, 1.0),
+        intensity: 3.0,
+        color: [1.0, 0.6, 0.3],
+        diffuse: rmb_core::scene::DiffuseCurve::Wrap,
+        occlusion: 0.7,
+        shadows: false,
+        ..Default::default()
+    });
+    for (i, st) in scene.material.gradient.iter_mut().enumerate() {
+        st.specular = [0.2 * i as f32, 1.0, 0.5];
+    }
     parity(scene);
 }

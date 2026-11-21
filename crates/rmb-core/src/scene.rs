@@ -325,10 +325,64 @@ impl Default for March {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum LightKind {
+    /// Parallel light from a direction (azimuth, elevation).
+    #[default]
+    Directional,
+    /// Light from a point (`position`); falls off with the squared distance.
+    Point,
+}
+
+/// How the diffuse light depends on the angle between the surface and the light
+/// (Mandelbulb3D's diffuse functions).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum DiffuseCurve {
+    /// cos (Lambert).
+    #[default]
+    Lambert,
+    /// cos²: harder.
+    Squared,
+    /// cos / 2 + 1/2: wraps around to the back side.
+    Wrap,
+    /// (cos / 2 + 1/2)²: wraps, softer.
+    WrapSquared,
+}
+
+impl DiffuseCurve {
+    pub const ALL: [DiffuseCurve; 4] = [DiffuseCurve::Lambert, DiffuseCurve::Squared, DiffuseCurve::Wrap, DiffuseCurve::WrapSquared];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            DiffuseCurve::Lambert => "cos",
+            DiffuseCurve::Squared => "cos²",
+            DiffuseCurve::Wrap => "Wrap",
+            DiffuseCurve::WrapSquared => "Wrap²",
+        }
+    }
+
+    /// Diffuse factor for `ndl` (cos of the angle).
+    pub fn apply(self, ndl: f64) -> f64 {
+        match self {
+            DiffuseCurve::Lambert => ndl.max(0.0),
+            DiffuseCurve::Squared => ndl.max(0.0).powi(2),
+            DiffuseCurve::Wrap => ndl * 0.5 + 0.5,
+            DiffuseCurve::WrapSquared => (ndl * 0.5 + 0.5).powi(2),
+        }
+    }
+
+    pub fn index(self) -> u32 {
+        self as u32
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Light {
     pub enabled: bool,
+    pub kind: LightKind,
+    /// Point lights: position in the world.
+    pub position: V3,
     /// Degrees; with `camera_relative` around the view direction, else world azimuth (from +x).
     pub azimuth: f64,
     /// Degrees above the horizon (or above the view plane).
@@ -340,12 +394,17 @@ pub struct Light {
     pub shadows: bool,
     /// Soft shadow width (0 = hard).
     pub softness: f64,
+    pub diffuse: DiffuseCurve,
+    /// How much the ambient occlusion darkens this light (0..1).
+    pub occlusion: f64,
 }
 
 impl Default for Light {
     fn default() -> Self {
         Light {
             enabled: true,
+            kind: LightKind::Directional,
+            position: v3(2.0, -2.0, 2.0),
             azimuth: -35.0,
             elevation: 40.0,
             camera_relative: true,
@@ -354,6 +413,8 @@ impl Default for Light {
             specular: 0.5,
             shadows: true,
             softness: 0.08,
+            diffuse: DiffuseCurve::Lambert,
+            occlusion: 0.0,
         }
     }
 }
@@ -462,6 +523,19 @@ impl ColorMode {
 pub struct ColorStop {
     pub pos: f64,
     pub color: [f32; 3],
+    /// Color of the highlights at this stop (multiplies the specular light).
+    #[serde(default = "white")]
+    pub specular: [f32; 3],
+}
+
+fn white() -> [f32; 3] {
+    [1.0; 3]
+}
+
+impl ColorStop {
+    pub fn new(pos: f64, color: [f32; 3]) -> ColorStop {
+        ColorStop { pos, color, specular: white() }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -559,6 +633,9 @@ pub struct Fog {
     pub glow_mix_steps: f64,
     /// The glow replaces the color instead of adding to it.
     pub glow_blend: bool,
+    /// Only ray steps where the fractal escaped after this many iterations glow (0 = all steps;
+    /// Mandelbulb3D's "dynamic fog on iteration").
+    pub glow_iteration: u32,
 }
 
 impl Default for Fog {
@@ -578,6 +655,7 @@ impl Default for Fog {
             glow_color2: [0.5, 0.7, 1.0],
             glow_mix_steps: 0.0,
             glow_blend: false,
+            glow_iteration: 0,
         }
     }
 }

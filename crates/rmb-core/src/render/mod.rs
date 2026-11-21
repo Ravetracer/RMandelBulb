@@ -14,11 +14,16 @@ use crate::scene::Scene;
 /// Light prepared for shading.
 #[derive(Clone, Copy, Debug)]
 pub struct FrameLight {
+    /// Direction toward a directional light.
     pub dir: V3,
+    /// Point light: its position (`dir` is unused).
+    pub point: Option<V3>,
     pub color: [f64; 3],
     pub specular: f64,
     pub shadows: bool,
     pub softness: f64,
+    pub diffuse: crate::scene::DiffuseCurve,
+    pub occlusion: f64,
 }
 
 /// Per-frame values derived from the scene (identical on CPU and GPU).
@@ -46,10 +51,13 @@ impl Frame {
             .take(crate::scene::MAX_LIGHTS)
             .map(|l| FrameLight {
                 dir: l.direction(&scene.camera),
+                point: (l.kind == crate::scene::LightKind::Point).then_some(l.position),
                 color: [0, 1, 2].map(|k| l.color[k] as f64 * l.intensity),
                 specular: l.specular,
                 shadows: l.shadows,
                 softness: l.softness,
+                diffuse: l.diffuse,
+                occlusion: l.occlusion.clamp(0.0, 1.0),
             })
             .collect();
         Frame {
@@ -79,6 +87,7 @@ pub fn shading_scene(scene: &Scene) -> Cow<'_, Scene> {
     let c = |x: &mut [f32; 3]| *x = x.map(to_display);
     for st in &mut s.material.gradient {
         c(&mut st.color);
+        c(&mut st.specular);
     }
     for l in &mut s.lighting.lights {
         c(&mut l.color);

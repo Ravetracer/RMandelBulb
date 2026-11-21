@@ -6,9 +6,9 @@
 alias fl = f32;
 
 struct GLight {
-    dir: vec4<f32>,   // w: specular
-    color: vec4<f32>,
-    opts: vec4<f32>,  // x: shadows, y: softness
+    dir: vec4<f32>,   // xyz: direction, or the position of a point light; w: specular
+    color: vec4<f32>, // w: point light
+    opts: vec4<f32>,  // x: shadows, y: softness, z: diffuse curve, w: occlusion
 }
 
 struct U {
@@ -42,11 +42,12 @@ struct U {
     fog2: vec4<f32>,       // fog mode, strength, start, curve
     fog3: vec4<f32>,       // squared, from background, color detail shift
     glow2: vec4<f32>,      // second glow color, w: steps to the second color
-    glow3: vec4<f32>,      // glow offset (steps), blend
+    glow3: vec4<f32>,      // glow offset (steps), blend, glow iteration
 }
 
 @group(0) @binding(0) var<uniform> u: U;
 @group(0) @binding(1) var<storage, read> prm: array<f32>;
+// Surface colors at 0..255, highlight colors at 256..511.
 @group(0) @binding(2) var<storage, read> lut: array<vec4<f32>>;
 @group(0) @binding(3) var<storage, read_write> accum: array<vec4<f32>>;
 
@@ -75,6 +76,7 @@ struct Hit {
     t: f32,
     eps: f32,
     steps: u32,
+    glow_steps: u32,
     orbit: Orbit,
 }
 
@@ -171,12 +173,17 @@ fn march_ray(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, max_steps: u32) ->
     var t = t0;
     var last_step = 0.0;
     var step = 0u;
+    var glow = 0u;
+    let glow_it = u32(u.glow3.z);
     loop {
         if (step >= max_steps) {
             break;
         }
         let eps = eps_at(t);
         let ob = orbit(o + d * t, eps * 0.5);
+        if (glow_it == 0u || ob.n == glow_it) {
+            glow++;
+        }
         if (ob.de < eps) {
             var t_hit = t;
             var ob_hit = ob;
@@ -197,17 +204,20 @@ fn march_ray(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, max_steps: u32) ->
             h.eps = eps_at(t_hit);
             h.orbit = ob_hit;
             h.steps = step;
+            h.glow_steps = min(glow, step);
             return h;
         }
         last_step = max(ob.de * u.march.y, eps * 0.1);
         t += last_step;
         if (t > max_t) {
             h.steps = step;
+            h.glow_steps = min(glow, step);
             return h;
         }
         step++;
     }
     h.steps = max_steps;
+    h.glow_steps = glow;
     return h;
 }
 
@@ -225,10 +235,9 @@ fn surface_normal(p: vec3<f32>, eps: f32) -> vec3<f32> {
     return vec3<f32>(0.0, 0.0, 1.0);
 }
 
-fn soft_shadow(p: vec3<f32>, l: vec3<f32>, eps: f32, softness: f32) -> f32 {
+fn soft_shadow(p: vec3<f32>, l: vec3<f32>, eps: f32, softness: f32, max_t: f32) -> f32 {
     var res = 1.0;
     var t = eps * 4.0;
-    let max_t = u.cam_fwd.w;
     for (var i = 0u; i < 160u; i++) {
         let e = eps_at(t) * 0.5 + eps * 0.5;
         let d = de_at(p + l * t, e);
@@ -260,6 +269,16 @@ fn cosine_dir(n: vec3<f32>, u1: f32, u2: f32) -> vec3<f32> {
     return normalize(t * (r * cos(phi)) + b * (r * sin(phi)) + n * sqrt(max(1.0 - u1, 0.0)));
 }
 
+// Mirrors cpu::ao_curve.
+fn ao_curve(occ: f32) -> f32 {
+    let s = u.ao.y;
+    if (s <= 1.0) {
+        return 1.0 - s * occ;
+    }
+    let d = 1.0 - occ;
+    return max(d + (s - 1.0) * (d * d - d), 0.0);
+}
+
 fn ambient_occlusion(p: vec3<f32>, n: vec3<f32>, t: f32) -> f32 {
     let radius = u.ao.z * t;
     var mode = u32(u.ao.x);
@@ -282,7 +301,7 @@ fn ambient_occlusion(p: vec3<f32>, n: vec3<f32>, t: f32) -> f32 {
             occ += max(h - d, 0.0) / radius * w;
             w *= 0.6;
         }
-        return clamp(1.0 - u.ao.y * occ / 0.959, 0.0, 1.0);
+        return ao_curve(clamp(occ / 0.959, 0.0, 1.0));
     }
     let u1 = rnd();
     let u2 = rnd();
@@ -290,7 +309,7 @@ fn ambient_occlusion(p: vec3<f32>, n: vec3<f32>, t: f32) -> f32 {
     let eps = eps_at(t);
     let h = march_ray(p + n * (eps * 2.0), d, 0.0, radius, 48u);
     if (h.hit) {
-        return 1.0 - u.ao.y * clamp(1.0 - h.t / radius, 0.0, 1.0);
+        return ao_curve(clamp(1.0 - h.t / radius, 0.0, 1.0));
     }
     return 1.0;
 }
@@ -346,7 +365,12 @@ fn color_value(h: Hit, n: vec3<f32>, pos: vec3<f32>) -> f32 {
     return n.z * 2.0 + 2.0;
 }
 
-fn gradient(v: f32) -> vec3<f32> {
+struct Colors {
+    base: vec3<f32>,
+    spec: vec3<f32>,
+}
+
+fn gradient(v: f32) -> Colors {
     var t = v * u.color.y + u.color.z;
     if (u.color.w > 0.5) {
         t = t - floor(t);
@@ -357,7 +381,10 @@ fn gradient(v: f32) -> vec3<f32> {
     let i = min(u32(floor(x)), 254u);
     let f = x - f32(i);
     let base = mix(lut[i].xyz, lut[i + 1u].xyz, f);
-    return mix(lut[0].xyz, base, u.color2.x);
+    var c: Colors;
+    c.base = mix(lut[0].xyz, base, u.color2.x);
+    c.spec = mix(lut[i + 256u].xyz, lut[i + 257u].xyz, f);
+    return c;
 }
 
 // Mirrors scene::Fog::amount.
@@ -403,10 +430,10 @@ fn sample_pixel(px: u32, py: u32, sample: u32) -> vec3<f32> {
         d = normalize(focus - o);
     }
     let h = march_ray(o, d, u.scales.w, u.cam_fwd.w, u.band.z);
-    let glow = u.glow.w * max(f32(h.steps) - u.glow3.x, 0.0) / f32(max(u.band.z, 1u));
+    let glow = u.glow.w * max(f32(h.glow_steps) - u.glow3.x, 0.0) / f32(max(u.band.z, 1u));
     var glow_mix = 0.0;
     if (u.glow2.w > 0.0) {
-        glow_mix = min(f32(h.steps) / u.glow2.w, 1.0);
+        glow_mix = min(f32(h.glow_steps) / u.glow2.w, 1.0);
     }
     let bg = background(d, sy);
     var fog_col = u.fog.xyz;
@@ -423,7 +450,8 @@ fn sample_pixel(px: u32, py: u32, sample: u32) -> vec3<f32> {
         if (dot(n, d) > 0.0) {
             n = -n;
         }
-        let base = gradient(color_value(h, n, pos));
+        let cols = gradient(color_value(h, n, pos));
+        let base = cols.base;
         let p = pos + n * (h.eps * select(1.5, 4.0, u.scales.z > 0.5));
         let ao = ambient_occlusion(p, n, h.t);
         let hemi = dot(n, u.amb_up.xyz) * 0.5 + 0.5;
@@ -432,23 +460,49 @@ fn sample_pixel(px: u32, py: u32, sample: u32) -> vec3<f32> {
         let shin = u.sky.w;
         for (var i = 0u; i < u.size.w; i++) {
             let li = u.lights[i];
-            let ndl = dot(n, li.dir.xyz);
-            if (ndl <= 0.0) {
+            // Point lights: direction, squared-distance falloff and shadow length.
+            var ldir = li.dir.xyz;
+            var atten = 1.0;
+            var max_t = u.cam_fwd.w;
+            if (li.color.w > 0.5) {
+                let v = li.dir.xyz - p;
+                let d2 = max(dot(v, v), 1.0e-30);
+                let dist = sqrt(d2);
+                ldir = v / dist;
+                atten = 1.0 / d2;
+                max_t = dist;
+            }
+            let ndl = dot(n, ldir);
+            let curve = u32(li.opts.z);
+            var df = max(ndl, 0.0);
+            if (curve == 1u) {
+                df = df * df;
+            } else if (curve == 2u) {
+                df = ndl * 0.5 + 0.5;
+            } else if (curve == 3u) {
+                df = (ndl * 0.5 + 0.5) * (ndl * 0.5 + 0.5);
+            }
+            // Back faces: only wrapping curves reach them, and not through shadows.
+            if (df <= 0.0 || (ndl <= 0.0 && li.opts.x > 0.5)) {
                 continue;
             }
             var sh = 1.0;
             if (li.opts.x > 0.5 && u.dof.w < 0.5) {
-                sh = soft_shadow(p, li.dir.xyz, h.eps, li.opts.y);
+                sh = soft_shadow(p, ldir, h.eps, li.opts.y, max_t);
             }
             if (sh <= 0.0) {
                 continue;
             }
-            let hv = normalize(li.dir.xyz - d);
-            let s = pow(max(dot(n, hv), 0.0), shin) * li.dir.w * u.ground.w * (shin + 8.0) / 25.0;
-            diffuse += li.color.xyz * ndl * sh;
-            spec += li.color.xyz * s * sh;
+            let w = sh * atten * (1.0 - li.opts.w * (1.0 - ao));
+            let hv = normalize(ldir - d);
+            var s = 0.0;
+            if (ndl > 0.0) {
+                s = pow(max(dot(n, hv), 0.0), shin) * li.dir.w * u.ground.w * (shin + 8.0) / 25.0;
+            }
+            diffuse += li.color.xyz * df * w;
+            spec += li.color.xyz * s * w;
         }
-        let lit = base * diffuse + spec;
+        let lit = base * diffuse + spec * cols.spec;
         let f = fog_amount(h.t);
         c = lit * (1.0 - f) + fog_col * max(f, 0.0);
     }

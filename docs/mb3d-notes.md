@@ -85,3 +85,14 @@ little-endian.
 - DOF (post process, DOF.pas): enabled by bit 0 of byte 181; blur radius in pixels =
   Ap * (z - zSharp) / pixel size(z), zSharp = sDOFZsharp (164) * Width pixels from the start
   plane, Ap = sDOFaperture (172) * 0.5 for one pass. Equals a thin lens with radius Ap * focus.
+- Lights: diffuse function (LFunction >> 4) & 3 = cos, cos², cos/2 + 1/2, (cos/2 + 1/2)²
+  (DiffCosTabNsmall). Lights with shadows enabled but not calculated are multiplied by the
+  ambient shadow, others by 1 - DiffuseShadowing * (1 - AO) (Lights[3].AdditionalByteEx / 256).
+  Positional lights (Loption bit 2): position = the three Double7B values (world), color scaled
+  by lamp * 1.3, falloff 1 / d² for diffuse and specular.
+- Ambient shadow amplitude a = (TBpos[11] & 0xFF) / 53: 1 - a * s up to 1, above it
+  d + (a - 1) * (d² - d) with d = 1 - s. Byte 149: bit 0 on, bits 2-3 type (0/1/2 screen space,
+  3 DEAO); DEAO rays reach sDEAOmaxL (374) * half the image diagonal in pixels; the screen-space
+  kinds search in levels up to about the image size.
+- Dynamic fog on iteration (byte 223 = N > 0): only ray steps whose DE evaluation ended after
+  N iterations count.

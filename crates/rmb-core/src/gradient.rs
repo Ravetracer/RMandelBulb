@@ -27,7 +27,7 @@ pub fn preset_names() -> impl Iterator<Item = &'static str> {
 
 pub fn preset(name: &str) -> Option<Vec<ColorStop>> {
     PRESETS.iter().find(|(n, _)| *n == name).map(|(_, s)| {
-        s.iter().map(|(p, c)| ColorStop { pos: *p, color: [srgb_to_linear(c[0]), srgb_to_linear(c[1]), srgb_to_linear(c[2])] }).collect()
+        s.iter().map(|(p, c)| ColorStop::new(*p, [srgb_to_linear(c[0]), srgb_to_linear(c[1]), srgb_to_linear(c[2])])).collect()
     })
 }
 
@@ -44,27 +44,42 @@ pub fn linear_to_srgb(v: f32) -> u8 {
 
 /// Linear color at `t` (0..1) of a gradient.
 pub fn sample(stops: &[ColorStop], t: f64) -> [f32; 3] {
+    sample_by(stops, t, [0.7; 3], |s| s.color)
+}
+
+/// Highlight color at `t` (0..1) of a gradient.
+pub fn sample_specular(stops: &[ColorStop], t: f64) -> [f32; 3] {
+    sample_by(stops, t, [1.0; 3], |s| s.specular)
+}
+
+fn sample_by(stops: &[ColorStop], t: f64, empty: [f32; 3], get: impl Fn(&ColorStop) -> [f32; 3]) -> [f32; 3] {
     match stops.len() {
-        0 => return [0.7, 0.7, 0.7],
-        1 => return stops[0].color,
+        0 => return empty,
+        1 => return get(&stops[0]),
         _ => {}
     }
     let mut sorted: Vec<&ColorStop> = stops.iter().collect();
     sorted.sort_by(|a, b| a.pos.total_cmp(&b.pos));
     if t <= sorted[0].pos {
-        return sorted[0].color;
+        return get(sorted[0]);
     }
     for w in sorted.windows(2) {
         if t <= w[1].pos {
             let span = (w[1].pos - w[0].pos).max(1e-9);
             let f = ((t - w[0].pos) / span) as f32;
-            return [0, 1, 2].map(|k| w[0].color[k] + (w[1].color[k] - w[0].color[k]) * f);
+            let (a, b) = (get(w[0]), get(w[1]));
+            return [0, 1, 2].map(|k| a[k] + (b[k] - a[k]) * f);
         }
     }
-    sorted[sorted.len() - 1].color
+    get(sorted[sorted.len() - 1])
 }
 
 /// The gradient sampled into `LUT_SIZE` linear RGB entries.
 pub fn lut(stops: &[ColorStop]) -> Vec<[f32; 3]> {
     (0..LUT_SIZE).map(|i| sample(stops, i as f64 / (LUT_SIZE - 1) as f64)).collect()
+}
+
+/// The highlight colors sampled like [`lut`].
+pub fn lut_specular(stops: &[ColorStop]) -> Vec<[f32; 3]> {
+    (0..LUT_SIZE).map(|i| sample_specular(stops, i as f64 / (LUT_SIZE - 1) as f64)).collect()
 }

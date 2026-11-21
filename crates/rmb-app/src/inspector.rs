@@ -3,7 +3,7 @@
 //! Right panel: camera, ray marching, light, color, effects and scene notes.
 
 use egui::{RichText, Ui};
-use rmb_core::scene::{AoMode, BackgroundMode, ColorMode, ColorStop, FogMode, Light, MAX_LIGHTS, Scene};
+use rmb_core::scene::{AoMode, BackgroundMode, ColorMode, ColorStop, DiffuseCurve, FogMode, Light, LightKind, MAX_LIGHTS, Scene};
 use rmb_core::{V3, v3};
 
 use crate::viewport::{NavMode, Viewport};
@@ -85,12 +85,33 @@ impl Inspector {
             let dl = Light::default();
             widgets::grid(ui, "light", |ui| {
                 widgets::checkbox(ui, "On", "Switch the light on or off", &mut li.enabled);
-                widgets::checkbox(ui, "Follows camera", "The direction is relative to the view (light moves with the camera); off: fixed in the world", &mut li.camera_relative);
-                widgets::slider(ui, "Azimuth", "Horizontal direction in degrees (0 = from the camera / +x)", &mut li.azimuth, -180.0..=180.0, dl.azimuth);
-                widgets::slider(ui, "Elevation", "Height above the horizon in degrees", &mut li.elevation, -90.0..=90.0, dl.elevation);
+                widgets::label(ui, "Type", "Directional: parallel light from a direction. Point: light from a position, falls off with the squared distance.");
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut li.kind, LightKind::Directional, "Directional").on_hover_text("Parallel light from a direction");
+                    ui.selectable_value(&mut li.kind, LightKind::Point, "Point").on_hover_text("Light from a position in the scene");
+                });
+                ui.end_row();
+                if li.kind == LightKind::Point {
+                    let speed = (li.position.length() * 0.002).max(1e-9);
+                    widgets::drag(ui, "X", "Light position", &mut li.position.x, speed, dl.position.x);
+                    widgets::drag(ui, "Y", "Light position", &mut li.position.y, speed, dl.position.y);
+                    widgets::drag(ui, "Z", "Light position", &mut li.position.z, speed, dl.position.z);
+                } else {
+                    widgets::checkbox(ui, "Follows camera", "The direction is relative to the view (light moves with the camera); off: fixed in the world", &mut li.camera_relative);
+                    widgets::slider(ui, "Azimuth", "Horizontal direction in degrees (0 = from the camera / +x)", &mut li.azimuth, -180.0..=180.0, dl.azimuth);
+                    widgets::slider(ui, "Elevation", "Height above the horizon in degrees", &mut li.elevation, -90.0..=90.0, dl.elevation);
+                }
                 widgets::color(ui, "Color", "Light color", &mut li.color);
-                widgets::slider(ui, "Intensity", "Brightness of the light", &mut li.intensity, 0.0..=3.0, dl.intensity);
+                widgets::slider_log(ui, "Intensity", "Brightness of the light (point lights: at distance 1)", &mut li.intensity, 0.0..=1000.0, dl.intensity);
                 widgets::slider(ui, "Specular", "Strength of the highlights of this light", &mut li.specular, 0.0..=2.0, dl.specular);
+                widgets::label(ui, "Diffuse", "How the light falls off with the angle to the surface. Wrap curves also light the back sides.");
+                egui::ComboBox::from_id_salt("diffuse-curve").selected_text(li.diffuse.label()).show_ui(ui, |ui| {
+                    for c in DiffuseCurve::ALL {
+                        ui.selectable_value(&mut li.diffuse, c, c.label());
+                    }
+                });
+                ui.end_row();
+                widgets::slider(ui, "Occlusion", "How much the ambient occlusion darkens this light (0..1)", &mut li.occlusion, 0.0..=1.0, dl.occlusion);
                 widgets::checkbox(ui, "Shadows", "Cast shadows (costs a shadow ray per sample)", &mut li.shadows);
                 if li.shadows {
                     widgets::slider(ui, "Softness", "Width of the shadow edges (0 = hard)", &mut li.softness, 0.0..=0.5, dl.softness);
@@ -127,8 +148,8 @@ impl Inspector {
         );
         if l.ao_mode != AoMode::Off {
             widgets::grid(ui, "ao", |ui| {
-                widgets::slider(ui, "Strength", "How dark occluded areas get", &mut l.ao_strength, 0.0..=1.0, d.ao_strength);
-                widgets::slider_log(ui, "Radius", "Reach of the occlusion, relative to the view distance", &mut l.ao_radius, 0.002..=0.5, d.ao_radius);
+                widgets::slider(ui, "Strength", "How dark occluded areas get; above 1 the darkening gets steeper (Mandelbulb3D)", &mut l.ao_strength, 0.0..=4.0, d.ao_strength);
+                widgets::slider_log(ui, "Radius", "Reach of the occlusion, relative to the view distance", &mut l.ao_radius, 0.002..=2.0, d.ao_radius);
             });
         }
     }
@@ -228,7 +249,8 @@ fn color(ui: &mut Ui, scene: &mut Scene) {
     let n = m.gradient.len();
     for (i, s) in m.gradient.iter_mut().enumerate() {
         ui.horizontal(|ui| {
-            widgets::color_button(ui, &mut s.color);
+            widgets::color_button(ui, &mut s.color).on_hover_text("Surface color");
+            widgets::color_button(ui, &mut s.specular).on_hover_text("Highlight color: multiplies the specular light here");
             ui.add(egui::Slider::new(&mut s.pos, 0.0..=1.0).max_decimals(3)).on_hover_text("Position of this color on the gradient");
             if n > 2 && widgets::icon_button(ui, icons::X, "Remove this color").clicked() {
                 remove = Some(i);
@@ -240,7 +262,7 @@ fn color(ui: &mut Ui, scene: &mut Scene) {
     }
     if ui.button(format!("{}  Add color", icons::PLUS)).clicked() {
         let c = rmb_core::gradient::sample(&m.gradient, 0.5);
-        m.gradient.push(ColorStop { pos: 0.5, color: c });
+        m.gradient.push(ColorStop::new(0.5, c));
     }
 
     if widgets::section(ui, "Mapping", true) {
@@ -327,6 +349,7 @@ fn effects(ui: &mut Ui, scene: &mut Scene) {
         widgets::slider_log(ui, "Second color after", "Ray steps until the glow has the second color (0 = only the first color)", &mut f.glow_mix_steps, 0.0..=2000.0, df.glow_mix_steps);
         widgets::color(ui, "Second glow color", "", &mut f.glow_color2);
         widgets::checkbox(ui, "Cover", "The glow covers the image instead of adding light", &mut f.glow_blend);
+        widgets::slider_u32(ui, "Glow iteration", "Only ray steps where the fractal escaped after this many iterations glow (0 = all steps)", &mut f.glow_iteration, 0..=100, df.glow_iteration);
     });
 
     let dd = rmb_core::scene::Dof::default();

@@ -11,7 +11,7 @@
 use crate::gradient::srgb_to_linear;
 use crate::math::{V3, v3};
 use crate::formula::lang::DeKind;
-use crate::scene::{AoMode, BackgroundMode, ColorMode, ColorStop, CombineMode, DeCombine, FogMode, Light, Post, Scene, Slot};
+use crate::scene::{AoMode, BackgroundMode, ColorMode, ColorStop, CombineMode, DeCombine, DiffuseCurve, FogMode, Light, LightKind, Post, Scene, Slot};
 
 /// Result of an import: the scene and what could not be converted.
 pub struct Import {
@@ -374,6 +374,8 @@ pub fn import_binary(b: &[u8]) -> Result<Import, String> {
     let s_diff = soft(tb(5) as f64 * 0.02);
     let s_spec = soft(((tb(7) & 0xFFF) as f64 * 0.02).max(0.004));
     let hs_flags = r.u8(133);
+    // Lights without (calculated) shadows are darkened by this share of the ambient occlusion.
+    let diffuse_shadowing = r.u8(light + 68 + 3 * 32 + 16) as f64 / 256.0;
     let mut lights = Vec::new();
     let mut powers = Vec::new();
     for i in 0..6 {
@@ -388,8 +390,9 @@ pub fn import_binary(b: &[u8]) -> Result<Import, String> {
             continue;
         }
         let color = r.rgb(lo + 4);
-        let dir_cam = if opt & 4 != 0 {
-            // Positional light: shown as a directional light from its position.
+        let point = opt & 4 != 0;
+        let dir_cam = if point {
+            // Positional light: the direction is only used for the editor's angles.
             let pos = v3(r.d7(lo + 9), r.d7(lo + 17), r.d7(lo + 25));
             let d = (pos - mid).normalize();
             v3(d.dot(r0), d.dot(r1), d.dot(r2))
@@ -401,14 +404,26 @@ pub fn import_binary(b: &[u8]) -> Result<Import, String> {
         // Phong exponent of the light; the scene's Blinn highlight needs about four times it.
         let power = (2u32 << (func & 7)) as f64;
         powers.push(power);
+        // Shadows switched on but not calculated: the ambient occlusion stands in for them.
+        let hs_enabled = opt & 64 == 0;
+        let hs_calculated = hs_enabled && hs_flags & (4 << i) != 0;
         let mut l = Light {
             color,
+            diffuse: [DiffuseCurve::Lambert, DiffuseCurve::Squared, DiffuseCurve::Wrap, DiffuseCurve::WrapSquared][((func >> 4) & 3) as usize],
+            occlusion: if hs_enabled && !hs_calculated { 1.0 } else { diffuse_shadowing },
             intensity: (lamp * s_diff * light_scale).clamp(0.0, 20.0),
-            shadows: opt & 64 == 0 && hs_flags & (4 << i) != 0,
+            kind: if point { LightKind::Point } else { LightKind::Directional },
+            position: v3(r.d7(lo + 9), r.d7(lo + 17), r.d7(lo + 25)),
+            shadows: hs_calculated,
             softness: 0.02,
             camera_relative: !world,
             ..Light::default()
         };
+        if point {
+            // Point light colors are scaled by 1.3 and the light scale once more; the light falls
+            // off with the squared distance (no clamp: the falloff needs large values).
+            l.intensity = lamp * 1.3 * light_scale * light_scale * s_diff;
+        }
         // Specular strength relative to the diffuse one (set after the shininess is known).
         l.specular = s_spec / s_diff.max(1e-3);
         if world {
@@ -439,33 +454,36 @@ pub fn import_binary(b: &[u8]) -> Result<Import, String> {
     s.lighting.ambient_camera_relative = tb_options & 0x2000_0000 == 0;
     let ao_flags = r.u8(149);
     s.lighting.ao_mode = if ao_flags & 1 != 0 { AoMode::Raytraced } else { AoMode::Off };
-    s.lighting.ao_strength = ((tb(11) & 0xFF) as f64 / 53.0).clamp(0.0, 1.0);
+    s.lighting.ao_strength = ((tb(11) & 0xFF) as f64 / 53.0).clamp(0.0, 4.0);
+    // MB3D's ambient shadow reaches far: the screen-space kinds search up to about half the image,
+    // DEAO rays up to DEAOmaxL (374) times half the image diagonal. As a share of the distance:
+    let pa = fov.to_radians() / height as f64;
+    let half_diag = 0.5 * ((width * width + height * height) as f64).sqrt();
+    s.lighting.ao_radius = if (ao_flags >> 2) & 3 == 3 {
+        r.f32(374).clamp(0.0, 100.0) * half_diag * pa
+    } else {
+        0.5 * width as f64 * pa
+    }
+    .clamp(0.02, 2.0);
 
     // ---- surface colors: 10 stops (position 0..32767, diffuse and specular color)
     let cycling = tb_options & 0x4000 != 0;
     let mut stops: Vec<ColorStop> = (0..10)
         .map(|k| {
             let o = light + 260 + k * 10;
-            ColorStop { pos: r.u16(o) as f64 / 32767.0, color: r.rgb(o + 2) }
+            ColorStop { pos: r.u16(o) as f64 / 32767.0, color: r.rgb(o + 2), specular: r.rgb(o + 6) }
         })
         .collect();
     stops.sort_by(|a, b| a.pos.total_cmp(&b.pos));
     // Cycling colors wrap from the last stop to the first, else the last color stays.
-    let end_color = if cycling { stops.first().map(|f| f.color) } else { stops.last().map(|l| l.color) };
-    if let Some(color) = end_color {
-        stops.push(ColorStop { pos: 1.0, color });
+    let end = if cycling { stops.first().cloned() } else { stops.last().cloned() };
+    if let Some(end) = end {
+        stops.push(ColorStop { pos: 1.0, ..end });
     }
     s.material.gradient = stops;
     s.material.repeat = cycling;
-    // Specular colors per stop are not supported: their average brightness scales the highlights.
-    let spec_avg = (0..10)
-        .map(|k| {
-            let o = light + 266 + k * 10;
-            (r.u8(o) as f64 + r.u8(o + 1) as f64 + r.u8(o + 2) as f64) / (3.0 * 255.0)
-        })
-        .sum::<f64>()
-        / 10.0;
-    s.material.specular = if sqr_mode { spec_avg * spec_avg } else { spec_avg };
+    // The stops carry the specular colors.
+    s.material.specular = 1.0;
     if tb_options & (1 << 17) != 0 {
         s.material.color_mode = ColorMode::OrbitTrap;
         s.material.color_scale = 1.0 / s.fractal.max_iterations.max(1) as f64;
@@ -558,6 +576,8 @@ pub fn import_binary(b: &[u8]) -> Result<Import, String> {
     s.fog.glow_color = [srgb_to_linear(r.u8(light + 55)), srgb_to_linear(r.u8(light + 59)), srgb_to_linear(r.u8(light + 63))];
     s.fog.glow_color2 = r.rgb(light + 4);
     s.fog.glow_mix_steps = if mix_mul > 0.0 { 1.0 / mix_mul } else { 0.0 };
+    // Dynamic fog on iteration N: only ray steps whose estimate stopped after N iterations count.
+    s.fog.glow_iteration = r.u8(223) as u32;
     let dfog_opts = r.u8(light + 68 + 24) & 3;
     s.fog.glow_blend = dfog_opts & 1 != 0;
 

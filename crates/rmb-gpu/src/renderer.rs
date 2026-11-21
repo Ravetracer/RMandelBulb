@@ -124,9 +124,9 @@ fn uniforms(scene: &Scene, prog: &Program, w: u32, h: u32, fast: bool) -> Unifor
     let bg = &scene.background;
     let mut lights = [GLight::zeroed(); 6];
     for (g, fl) in lights.iter_mut().zip(&fr.lights) {
-        g.dir = v4(fl.dir, fl.specular);
-        g.color = [fl.color[0] as f32, fl.color[1] as f32, fl.color[2] as f32, 0.0];
-        g.opts = [if fl.shadows { 1.0 } else { 0.0 }, fl.softness as f32, 0.0, 0.0];
+        g.dir = v4(fl.point.unwrap_or(fl.dir), fl.specular);
+        g.color = [fl.color[0] as f32, fl.color[1] as f32, fl.color[2] as f32, if fl.point.is_some() { 1.0 } else { 0.0 }];
+        g.opts = [if fl.shadows { 1.0 } else { 0.0 }, fl.softness as f32, fl.diffuse.index() as f32, fl.occlusion as f32];
     }
     let mut cuts = [[0.0f32; 4]; 3];
     for (c, (axis, pos, above)) in cuts.iter_mut().zip(&prog.cuts) {
@@ -192,7 +192,7 @@ fn uniforms(scene: &Scene, prog: &Program, w: u32, h: u32, fast: bool) -> Unifor
         fog2: [if fog.mode == FogMode::Range { 1.0 } else { 0.0 }, fog.strength as f32, fog.start as f32, fog.curve as f32],
         fog3: [if fog.squared { 1.0 } else { 0.0 }, if fog.from_background { 1.0 } else { 0.0 }, m.detail_shift as f32, 0.0],
         glow2: c4(fog.glow_color2, fog.glow_mix_steps),
-        glow3: [fog.glow_offset as f32, if fog.glow_blend { 1.0 } else { 0.0 }, 0.0, 0.0],
+        glow3: [fog.glow_offset as f32, if fog.glow_blend { 1.0 } else { 0.0 }, fog.glow_iteration as f32, 0.0],
     }
 }
 
@@ -314,7 +314,7 @@ impl GpuRenderer {
             uniform_buf: uniform("march-uniforms", std::mem::size_of::<Uniforms>()),
             post_buf: uniform("post-uniforms", std::mem::size_of::<PostUniforms>()),
             prm: storage_buffer(device, "prm", 1024),
-            lut: storage_buffer(device, "lut", (rmb_core::gradient::LUT_SIZE * 16) as u64),
+            lut: storage_buffer(device, "lut", (rmb_core::gradient::LUT_SIZE * 2 * 16) as u64),
             display_pipeline,
             march_pipeline_layout: device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("march"), bind_group_layouts: &[Some(&march_layout)], immediate_size: 0 }),
             march_layout,
@@ -404,7 +404,8 @@ impl GpuRenderer {
             self.ctx.queue.write_buffer(&self.prm, 0, bytemuck::cast_slice(&consts));
         }
         let shade = rmb_core::render::shading_scene(scene);
-        let lut: Vec<[f32; 4]> = rmb_core::gradient::lut(&shade.material.gradient).iter().map(|c| [c[0], c[1], c[2], 1.0]).collect();
+        let g = &shade.material.gradient;
+        let lut: Vec<[f32; 4]> = rmb_core::gradient::lut(g).iter().chain(&rmb_core::gradient::lut_specular(g)).map(|c| [c[0], c[1], c[2], 1.0]).collect();
         self.ctx.queue.write_buffer(&self.lut, 0, bytemuck::cast_slice(&lut));
         self.uniforms = Some(uniforms(&shade, &prog, width, height, fast));
         self.request_pipeline(&prog);
