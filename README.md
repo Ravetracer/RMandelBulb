@@ -42,6 +42,10 @@ modern egui interface and import of Mandelbulb3D parameters.
   - Native `.rmb` (JSON).
   - Mandelbulb3D `.m3p` files, and MB3D text parameters pasted with Ctrl+V.
   - PNG export that embeds the scene, so opening the PNG restores it.
+- **Scene composition** (Mandelbulber's boolean mode): add fractals and shapes (plane, box,
+  sphere, cylinder, torus, water) to the scene, place them with gizmos, combine them by adding,
+  cutting away or intersecting (also smoothly), each in its own colors. Ctrl+click selects the
+  object under the cursor.
 - **Emissive colors**: gradient colors can shine by themselves, light their surroundings in
   their color and glow (MagicaVoxel-style emission).
 - **Animation** (Animation button, timeline under the view):

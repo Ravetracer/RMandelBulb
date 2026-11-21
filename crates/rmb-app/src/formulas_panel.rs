@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
-//! Left panel: the hybrid formula chain, the selected formula's parameters and the iteration
-//! settings.
+//! Left panel: the scene's objects (main fractal and composed objects), and for the selected
+//! one its hybrid formula chain, parameters and iteration settings, or its primitive, placement,
+//! operation and material.
 
 use egui::{Color32, RichText, Ui};
+use rmb_core::compose::{BoolOp, MAX_OBJECTS, ObjectMaterial, Pattern, Primitive, SceneObject, Shape, Transform};
 use rmb_core::formula::{ParamKind, find, library};
-use rmb_core::scene::{DeMode, Fractal, MAX_SLOTS, Scene, Slot};
+use rmb_core::scene::{ColorMode, DeMode, Fractal, MAX_SLOTS, Scene, Slot};
 
 use crate::{icons, theme, widgets};
 
@@ -16,15 +18,206 @@ pub struct FormulasPanel {
 }
 
 impl FormulasPanel {
-    pub fn show(&mut self, ui: &mut Ui, scene: &mut Scene) {
+    /// `selected`: the object being edited (None: the main fractal), shared with the view.
+    pub fn show(&mut self, ui: &mut Ui, scene: &mut Scene, selected: &mut Option<usize>) {
+        if selected.is_some_and(|k| k >= scene.objects.len()) {
+            *selected = None;
+        }
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            self.chain(ui, &mut scene.fractal);
-            ui.add_space(4.0);
+            let before = *selected;
+            self.objects(ui, scene, selected);
+            if *selected != before {
+                self.selected = 0;
+            }
             ui.separator();
-            self.params(ui, &mut scene.fractal);
-            ui.separator();
-            iteration(ui, &mut scene.fractal);
+            match *selected {
+                None => {
+                    self.chain(ui, &mut scene.fractal);
+                    ui.add_space(4.0);
+                    ui.separator();
+                    self.params(ui, &mut scene.fractal);
+                    ui.separator();
+                    iteration(ui, &mut scene.fractal, true);
+                }
+                Some(k) => {
+                    let glass = scene.material.transmission;
+                    self.object(ui, &mut scene.objects[k], &scene.camera, glass);
+                }
+            }
         });
+    }
+
+    /// The list of the scene's objects with the buttons to add, order and remove them.
+    fn objects(&mut self, ui: &mut Ui, scene: &mut Scene, selected: &mut Option<usize>) {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("SCENE").size(theme::fs(10.5)).color(theme::TEXT_MUTED).strong()).on_hover_text(
+                "The main fractal and the objects combined with it, in order: each object is added to, cut away from or intersected with everything above it (Mandelbulber's boolean mode)",
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.add_enabled_ui(scene.objects.len() < MAX_OBJECTS, |ui| {
+                    ui.menu_button(icons::PLUS, |ui| {
+                        let cam = &scene.camera;
+                        // New objects appear in front of the camera.
+                        let ahead = cam.position + cam.forward * rmb_core::render::cpu::distance_at_camera(scene).clamp(0.2, 10.0).max(1.0);
+                        let mut add = None;
+                        if ui.button("Fractal").on_hover_text("Another fractal with its own formulas, placement and colors").clicked() {
+                            let f = Fractal { slots: vec![Slot::new("Amazing Box")], max_iterations: 12, bailout: 16.0, ..Default::default() };
+                            add = Some(SceneObject { name: "Fractal".into(), shape: Shape::Fractal(Box::new(f)), transform: Transform { position: ahead, scale: 0.15, ..Default::default() }, ..Default::default() });
+                        }
+                        ui.separator();
+                        for p in Primitive::defaults() {
+                            let tip = match p {
+                                Primitive::Plane => "A ground: everything below it is solid",
+                                Primitive::Water { .. } => "A water surface with waves (for real water: give its colors transparency and turn on Glass in the Color tab)",
+                                _ => "A basic shape",
+                            };
+                            if ui.button(p.name()).on_hover_text(tip).clicked() {
+                                add = Some(primitive_object(p, ahead));
+                            }
+                        }
+                        if let Some(o) = add {
+                            scene.objects.push(o);
+                            *selected = Some(scene.objects.len() - 1);
+                            ui.close();
+                        }
+                    })
+                    .response
+                    .on_hover_text("Add an object (fractal or basic shape)");
+                });
+            });
+        });
+        let mut action: Option<(usize, i32)> = None;
+        let row = |ui: &mut Ui, sel: bool, icon: &str, name: &str, badge: &str, tip: &str| -> bool {
+            let text = format!("{icon}  {name}");
+            let r = ui.add(egui::Button::selectable(sel, RichText::new(text)).min_size(egui::vec2(ui.available_width() - 70.0, 24.0)));
+            if !badge.is_empty() {
+                ui.label(RichText::new(badge).color(theme::TEXT_MUTED).monospace());
+            }
+            r.on_hover_text(tip).clicked()
+        };
+        ui.horizontal(|ui| {
+            if row(ui, selected.is_none(), icons::ATOM, "Main fractal", "", "The main fractal (formulas, colors and all settings of the inspector)") {
+                *selected = None;
+            }
+        });
+        for (k, o) in scene.objects.iter_mut().enumerate() {
+            ui.horizontal(|ui| {
+                let icon = match o.shape {
+                    Shape::Fractal(_) => icons::ATOM,
+                    Shape::Primitive(_) => icons::CUBE,
+                };
+                let badge = match o.op {
+                    BoolOp::Union => "+",
+                    BoolOp::Subtract => "−",
+                    BoolOp::Intersect => "∩",
+                    BoolOp::SmoothUnion => "~+",
+                    BoolOp::SmoothSubtract => "~−",
+                    BoolOp::SmoothIntersect => "~∩",
+                };
+                let label = format!("{icon}  {}", o.name);
+                let name = if o.enabled { RichText::new(label) } else { RichText::new(label).color(theme::TEXT_MUTED) };
+                let r = ui.add(egui::Button::selectable(*selected == Some(k), name).min_size(egui::vec2(ui.available_width() - 70.0, 24.0)));
+                if r.on_hover_text(format!("{} ({})", o.name, o.op.label())).clicked() {
+                    *selected = Some(k);
+                }
+                ui.label(RichText::new(badge).color(theme::TEXT_MUTED).monospace()).on_hover_text(o.op.label());
+                let eye = if o.enabled { egui_phosphor::regular::EYE } else { egui_phosphor::regular::EYE_SLASH };
+                if widgets::icon_button(ui, eye, "Show or hide this object").clicked() {
+                    o.enabled = !o.enabled;
+                }
+            });
+        }
+        if let Some(k) = *selected {
+            ui.horizontal(|ui| {
+                if widgets::icon_button(ui, icons::CARET_UP, "Move up (the order decides what is cut from what)").clicked() && k > 0 {
+                    action = Some((k, -1));
+                }
+                if widgets::icon_button(ui, icons::CARET_DOWN, "Move down").clicked() && k + 1 < scene.objects.len() {
+                    action = Some((k, 1));
+                }
+                if scene.objects.len() < MAX_OBJECTS && widgets::icon_button(ui, egui_phosphor::regular::COPY, "Duplicate this object").clicked() {
+                    action = Some((k, 2));
+                }
+                if widgets::icon_button(ui, icons::TRASH, "Remove this object").clicked() {
+                    action = Some((k, 3));
+                }
+            });
+        }
+        match action {
+            Some((k, -1)) => {
+                scene.objects.swap(k, k - 1);
+                *selected = Some(k - 1);
+            }
+            Some((k, 1)) => {
+                scene.objects.swap(k, k + 1);
+                *selected = Some(k + 1);
+            }
+            Some((k, 2)) => {
+                let mut c = scene.objects[k].clone();
+                c.name = format!("{} copy", c.name);
+                scene.objects.insert(k + 1, c);
+                *selected = Some(k + 1);
+            }
+            Some((k, 3)) => {
+                scene.objects.remove(k);
+                *selected = None;
+            }
+            _ => {}
+        }
+    }
+
+    /// Editor of a composed object.
+    fn object(&mut self, ui: &mut Ui, o: &mut SceneObject, cam: &rmb_core::scene::Camera, glass: bool) {
+        widgets::grid(ui, "object", |ui| {
+            widgets::label(ui, "Name", "Name of the object");
+            ui.text_edit_singleline(&mut o.name);
+            ui.end_row();
+            widgets::checkbox(ui, "Visible", "Include this object in the scene", &mut o.enabled);
+            widgets::label(ui, "Operation", "How the object is combined with everything above it in the list");
+            egui::ComboBox::from_id_salt("obj-op").selected_text(o.op.label()).show_ui(ui, |ui| {
+                for op in BoolOp::ALL {
+                    ui.selectable_value(&mut o.op, op, op.label());
+                }
+            });
+            ui.end_row();
+            if o.op.smooth() {
+                widgets::slider_log(ui, "Blend", "Distance over which the object melts into the others (world units)", &mut o.smooth, 0.0001..=2.0, 0.1);
+            }
+        });
+        widgets::section(ui, "Placement", false);
+        let t = &mut o.transform;
+        widgets::grid(ui, "obj-place", |ui| {
+            let speed = (t.position.length() * 0.002).max(1e-4);
+            widgets::drag(ui, "X", "Position along the world x axis (red); or drag the arrows in the view", &mut t.position.x, speed, 0.0);
+            widgets::drag(ui, "Y", "Position along the world y axis (green)", &mut t.position.y, speed, 0.0);
+            widgets::drag(ui, "Z", "Position along the world z axis (blue, up)", &mut t.position.z, speed, 0.0);
+            widgets::label(ui, "", "");
+            if ui.small_button("In front of the camera").on_hover_text("Moves the object to the middle of the view").clicked() {
+                t.position = cam.position + cam.forward * 2.0;
+            }
+            ui.end_row();
+            for (k, axis) in ["Turn X", "Turn Y", "Turn Z"].iter().enumerate() {
+                widgets::slider(ui, axis, "Rotation in degrees (about x, then y, then z)", &mut t.rotation[k], -180.0..=180.0, 0.0);
+            }
+            widgets::slider_log(ui, "Scale", "Size of the object", &mut t.scale, 0.0001..=100.0, 1.0);
+        });
+        match &mut o.shape {
+            Shape::Primitive(p) => {
+                widgets::section(ui, p.name(), false);
+                primitive_params(ui, p);
+            }
+            Shape::Fractal(f) => {
+                ui.separator();
+                self.chain(ui, f);
+                ui.add_space(4.0);
+                ui.separator();
+                self.params(ui, f);
+                ui.separator();
+                iteration(ui, f, false);
+            }
+        }
+        let primitive = matches!(o.shape, Shape::Primitive(_));
+        object_material(ui, &mut o.material, primitive, glass);
     }
 
     fn chain(&mut self, ui: &mut Ui, f: &mut Fractal) {
@@ -234,7 +427,97 @@ fn formula_picker(ui: &mut Ui, name: &mut String, search: &mut String, idx: usiz
     chosen
 }
 
-fn iteration(ui: &mut Ui, f: &mut Fractal) {
+/// A new primitive object at `at` (planes and water at the ground below it).
+fn primitive_object(p: Primitive, at: rmb_core::V3) -> SceneObject {
+    let mut material = ObjectMaterial { color_scale: 1.0, repeat: false, ..Default::default() };
+    let mut pos = at;
+    match p {
+        Primitive::Plane => {
+            pos = rmb_core::v3(0.0, 0.0, -1.2);
+            material.pattern = Pattern::Checker;
+            material.pattern_size = 0.5;
+            material.gradient = vec![rmb_core::scene::ColorStop::new(0.0, [0.8, 0.8, 0.78]), rmb_core::scene::ColorStop::new(1.0, [0.12, 0.12, 0.15])];
+        }
+        Primitive::Water { .. } => {
+            pos = rmb_core::v3(0.0, 0.0, -1.0);
+            material.gradient = vec![rmb_core::scene::ColorStop::new(0.0, [0.02, 0.12, 0.2]), rmb_core::scene::ColorStop::new(1.0, [0.02, 0.12, 0.2])];
+        }
+        _ => {}
+    }
+    SceneObject { name: p.name().into(), shape: Shape::Primitive(p), transform: Transform { position: pos, ..Default::default() }, material, ..Default::default() }
+}
+
+/// The size parameters of a primitive.
+fn primitive_params(ui: &mut Ui, p: &mut Primitive) {
+    if matches!(p, Primitive::Plane) {
+        ui.add(egui::Label::new(RichText::new("The ground: everything below it is solid. Turn it for walls.").color(theme::TEXT_MUTED)).wrap());
+        return;
+    }
+    widgets::grid(ui, "prim", |ui| match p {
+        Primitive::Plane => {}
+        Primitive::Box { size, rounding } => {
+            for (k, n) in ["Width", "Depth", "Height"].iter().enumerate() {
+                widgets::slider_log(ui, n, "Size of the box (before the object's scale)", &mut size[k], 0.001..=100.0, 1.0);
+            }
+            widgets::slider_log(ui, "Rounding", "Radius of the rounded edges", rounding, 0.0..=10.0, 0.0);
+        }
+        Primitive::Sphere { radius } => {
+            widgets::slider_log(ui, "Radius", "Radius of the sphere", radius, 0.001..=100.0, 0.5);
+        }
+        Primitive::Cylinder { radius, height, rounding } => {
+            widgets::slider_log(ui, "Radius", "Radius of the cylinder", radius, 0.001..=100.0, 0.3);
+            widgets::slider_log(ui, "Height", "Height of the cylinder (along its z axis)", height, 0.001..=100.0, 1.0);
+            widgets::slider_log(ui, "Rounding", "Radius of the rounded edges", rounding, 0.0..=10.0, 0.0);
+        }
+        Primitive::Torus { major, minor } => {
+            widgets::slider_log(ui, "Ring radius", "Radius of the ring", major, 0.001..=100.0, 0.6);
+            widgets::slider_log(ui, "Thickness", "Radius of the tube", minor, 0.001..=100.0, 0.15);
+        }
+        Primitive::Water { amplitude, wavelength, phase, angle } => {
+            widgets::slider_log(ui, "Wave height", "Height of the largest waves", amplitude, 0.0..=10.0, 0.02);
+            widgets::slider_log(ui, "Wave length", "Length of the largest waves", wavelength, 0.001..=100.0, 0.3);
+            widgets::slider(ui, "Phase", "Moves the waves (animate it for moving water)", phase, -20.0..=20.0, 0.0);
+            widgets::slider(ui, "Direction", "Direction of the waves in degrees", angle, -180.0..=180.0, 0.0);
+        }
+    });
+}
+
+/// The material of an object.
+fn object_material(ui: &mut Ui, m: &mut ObjectMaterial, primitive: bool, glass: bool) {
+    widgets::section(ui, "Material", false);
+    ui.checkbox(&mut m.own, "Own colors").on_hover_text("Off: the object uses the main fractal's colors (Color tab)");
+    if !m.own {
+        return;
+    }
+    crate::inspector::gradient_editor(ui, &mut m.gradient, glass);
+    widgets::grid(ui, "obj-mat", |ui| {
+        if primitive {
+            widgets::label(ui, "Pattern", "How the shape picks its colors from the gradient");
+            egui::ComboBox::from_id_salt("obj-pattern").selected_text(m.pattern.label()).show_ui(ui, |ui| {
+                for p in Pattern::ALL {
+                    ui.selectable_value(&mut m.pattern, p, p.label());
+                }
+            });
+            ui.end_row();
+            if m.pattern != Pattern::Solid {
+                widgets::slider_log(ui, "Pattern size", "Size of the checker cells, or the height / distance per gradient length", &mut m.pattern_size, 0.001..=100.0, 1.0);
+            }
+        } else {
+            widgets::label(ui, "Color by", "Which value of the orbit picks the gradient color");
+            egui::ComboBox::from_id_salt("obj-color-mode").selected_text(m.color_mode.label()).show_ui(ui, |ui| {
+                for c in ColorMode::ALL {
+                    ui.selectable_value(&mut m.color_mode, c, c.label());
+                }
+            });
+            ui.end_row();
+        }
+        widgets::slider_log(ui, "Scale", "How fast the colors change with the value", &mut m.color_scale, -10.0..=10.0, if primitive { 1.0 } else { 0.15 });
+        widgets::slider(ui, "Offset", "Shifts the gradient (with a solid pattern: picks the color)", &mut m.color_offset, -5.0..=5.0, 0.0);
+        widgets::checkbox(ui, "Repeat", "Repeat the gradient (else clamp at its ends)", &mut m.repeat);
+    });
+}
+
+fn iteration(ui: &mut Ui, f: &mut Fractal, main: bool) {
     let d = Fractal::default();
     if widgets::section(ui, "Iteration", true) {
         let slots = std::mem::take(&mut f.slots);
@@ -254,22 +537,28 @@ fn iteration(ui: &mut Ui, f: &mut Fractal) {
         widgets::slider(ui, "DE scale", "Multiplies the distance estimate. Lower it if the surface shows holes or noise (overstepping).", &mut f.de_scale, 0.05..=2.0, d.de_scale);
         widgets::slider(ui, "W slice", "Start value of the 4th dimension (4D formulas).", &mut f.w_slice, -2.0..=2.0, d.w_slice);
         widgets::checkbox(ui, "Julia", "Use a fixed constant c for every point instead of the point's position.", &mut f.julia);
-        widgets::checkbox(
-            ui,
-            "Inside",
-            "Render the inside of the set: escaping points are solid, the set is empty space. For views from within the fractal (slower: rays step in small steps).",
-            &mut f.inside,
-        );
+        if main {
+            widgets::checkbox(
+                ui,
+                "Inside",
+                "Render the inside of the set: escaping points are solid, the set is empty space. For views from within the fractal (slower: rays step in small steps).",
+                &mut f.inside,
+            );
+        }
         if f.julia {
             for (k, n) in ["Julia X", "Julia Y", "Julia Z", "Julia W"].iter().enumerate() {
                 widgets::drag(ui, n, "Julia constant", &mut f.julia_c[k], 0.002, 0.0);
             }
         }
-        for (k, n) in ["Rotate XW", "Rotate YW", "Rotate ZW"].iter().enumerate() {
-            widgets::slider(ui, n, "Rotates the start point into the 4th dimension (formulas that use w)", &mut f.rotation_4d[k], -180.0..=180.0, 0.0);
+        if main {
+            for (k, n) in ["Rotate XW", "Rotate YW", "Rotate ZW"].iter().enumerate() {
+                widgets::slider(ui, n, "Rotates the start point into the 4th dimension (formulas that use w)", &mut f.rotation_4d[k], -180.0..=180.0, 0.0);
+            }
         }
     });
-    combine(ui, f);
+    if main {
+        combine(ui, f);
+    }
 }
 
 fn combine(ui: &mut Ui, f: &mut Fractal) {

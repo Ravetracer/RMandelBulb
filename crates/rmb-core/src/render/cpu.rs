@@ -979,6 +979,17 @@ pub fn light_visibility(scene: &Scene, p: V3, directional: bool, radius: f64) ->
     seen as f64 / N as f64
 }
 
+/// The object at screen position (`sx`, `sy`): 0 the main fractal, k the k-th composed object;
+/// None where the ray hits nothing.
+pub fn pick_object(scene: &Scene, sx: f64, sy: f64, width: u32, height: u32) -> Option<u32> {
+    let prog = Program::for_scene(scene);
+    let shader = Shader::new(scene, &prog, width, height);
+    let mut ev = prog.evaluator();
+    let d = scene.camera.ray_dir(sx, sy, shader.frame.aspect);
+    let (hit, _, _) = shader.march(&mut ev, scene.camera.position, d, super::start_distance(scene), scene.march.max_distance, scene.march.max_steps);
+    hit.map(|h| h.orbit.object)
+}
+
 /// Distance estimate at the camera position (navigation speed).
 pub fn distance_at_camera(scene: &Scene) -> f64 {
     let prog = Program::for_scene(scene);

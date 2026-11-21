@@ -13,7 +13,7 @@ fn main() {
     let boxf = Fractal { slots: vec![Slot::new("Amazing Box")], max_iterations: 12, bailout: 16.0, de_mode: DeMode::Linear, ..Default::default() };
     s.objects = vec![
         SceneObject { name: "Box fractal".into(), shape: Shape::Fractal(Box::new(boxf)), transform: Transform { position: v3(1.7, 1.2, -0.65), rotation: [0.0, 0.0, 30.0], scale: 0.1 }, material: ObjectMaterial { gradient: glow, color_scale: 0.3, ..Default::default() }, ..Default::default() },
-        SceneObject { name: "Ground".into(), shape: Shape::Primitive(Primitive::Plane), transform: Transform { position: v3(0.0, 0.0, -1.1), ..Default::default() }, material: ObjectMaterial { gradient: two([0.85, 0.85, 0.8], [0.12, 0.12, 0.16]), pattern: Pattern::Checker, pattern_size: 0.5, repeat: false, ..Default::default() }, ..Default::default() },
+        SceneObject { name: "Ground".into(), shape: Shape::Primitive(Primitive::Plane), transform: Transform { position: v3(0.0, 0.0, -1.1), ..Default::default() }, material: ObjectMaterial { gradient: two([0.85, 0.85, 0.8], [0.12, 0.12, 0.16]), pattern: Pattern::Checker, pattern_size: 0.5, color_scale: 1.0, repeat: false, ..Default::default() }, ..Default::default() },
         SceneObject { name: "Carve".into(), op: BoolOp::Subtract, shape: Shape::Primitive(Primitive::Sphere { radius: 0.55 }), transform: Transform { position: v3(0.7, -0.7, 0.5), ..Default::default() }, ..Default::default() },
         SceneObject { name: "Ring".into(), op: BoolOp::SmoothUnion, smooth: 0.15, shape: Shape::Primitive(Primitive::Torus { major: 1.05, minor: 0.06 }), transform: Transform { rotation: [75.0, 0.0, 35.0], ..Default::default() }, material: ObjectMaterial { own: false, ..Default::default() }, ..Default::default() },
     ];

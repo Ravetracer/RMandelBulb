@@ -58,11 +58,12 @@
   - [x] Like emission in MagicaVoxel:
         https://www.megavoxels.com/learn/how-to-create-lights-in-magicavoxel-using-emission/
   - [ ] Possible: animated shimmer (flicker over time), emission from color maps
-- [ ] Scene composition like Mandelbulber's boolean mode (as used by Julius Horsthuis): several
-      independent fractals, each with its own position, rotation and scale, combined by union,
-      subtraction, intersection (and smooth variants), plus primitives (plane, box, sphere,
-      cylinder, water surface) with their own materials. Today: one hybrid chain or two chains
-      combined (union / smooth / mix).
+- [x] Scene composition like Mandelbulber's boolean mode (as used by Julius Horsthuis): up to
+      eight objects after the main fractal (fractals or plane, box, sphere, cylinder, torus,
+      water), each with position, rotation, scale, operation (add, cut away, intersect, smooth
+      variants) and its own material (gradient with transparency/emission, patterns for shapes)
+  - [ ] Possible: transform of the main fractal, repetition (infinite grids of an object),
+        more primitives (capsule, cone, prism), object fractals with DE combination
 - [ ] Loading 3D objects into the scene (standard formats, Blender, …)
 - [ ] Textures instead of colors, or as masks over the colors with layer blend modes
 - [x] AI denoiser (Intel Open Image Denoise, from RWildFire) with albedo and normal helper images

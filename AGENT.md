@@ -19,7 +19,7 @@ Open work and wished features: `TODO.md`.
 
 | Path | Content |
 |------|---------|
-| `crates/rmb-core` | `flare.rs` (lens flares: model, presets, screen-space layer added before post processing), `animation.rs` (keyframes, camera path, timing, cameraman smoothing, flight → keyframes), `video.rs` (PNG sequences, movies through ffmpeg), `scene.rs` (model), `formula/` (language `lang.rs`, `cpu.rs` closure compiler, `wgsl.rs` emitter, `lib/*.mbf` built-ins, `m3f/` MB3D machine-code translator, `lib/mb3d.mbf` its generated output), `fractal.rs` (hybrid `Program`, CPU evaluator), `render/` (`cpu.rs` reference renderer, `mod.rs` frame setup and post processing), `io/` (`.rmb` JSON, `m3p.rs` MB3D import, PNG with scene) |
+| `crates/rmb-core` | `compose.rs` (scene composition: objects, primitives, boolean ops, transforms; mirrored in march.wgsl), `flare.rs` (lens flares: model, presets, screen-space layer added before post processing), `animation.rs` (keyframes, camera path, timing, cameraman smoothing, flight → keyframes), `video.rs` (PNG sequences, movies through ffmpeg), `scene.rs` (model), `formula/` (language `lang.rs`, `cpu.rs` closure compiler, `wgsl.rs` emitter, `lib/*.mbf` built-ins, `m3f/` MB3D machine-code translator, `lib/mb3d.mbf` its generated output), `fractal.rs` (hybrid `Program`, CPU evaluator), `render/` (`cpu.rs` reference renderer, `mod.rs` frame setup and post processing), `io/` (`.rmb` JSON, `m3p.rs` MB3D import, PNG with scene) |
 | `crates/rmb-gpu` | `march.wgsl` (kernel, mirrors `render/cpu.rs`), `codegen.rs` (hybrid `iterate` function), `display.wgsl` (post), `renderer.rs` (progressive bands, async shader compile) |
 | `crates/rmb-app` | egui app: `app.rs`, `viewport.rs` (preview and navigation), `formulas_panel.rs`, `inspector.rs`, `export.rs` (image and animation export), `timeline.rs` (animation panel: keyframes, recording, playback), `gizmos.rs` (light gizmos in the view), `doc.rs` (undo), `prefs.rs`, `theme.rs` (from RWildFire) |
 | `crates/rmb-cli` | Command line |
@@ -93,6 +93,17 @@ cargo clippy -j 8 --workspace --all-targets
 - Regenerate from both folders: `rmb-cli m3f ../mb3d/M3Formulas ../mb3d/EM_JIT_M3Formulas -o …`.
 - Regenerate without piping the output into `head`: a closed pipe kills `rmb-cli` before it
   writes the file.
+
+## Scene composition
+
+- `Scene::objects` (compose.rs) after the main fractal. `Program::for_scene` builds them;
+  object fractals append their constants to the main program's. `Evaluator::orbit` folds the
+  objects in order and sets `Orbit::object` (which object forms the surface, for its material).
+- GPU: `codegen.rs` emits a chain per fractal object (settings from the `objs` buffer, binding
+  6, filled by `renderer.rs::objects_gpu`) and `compose_objects`; object materials are LUT
+  blocks of 512 entries from index 1152. Adding objects or changing their formulas / primitive
+  type changes the shader signature (recompile); everything else is buffer data.
+- `cargo run --release -p rmb-core --example compose_demo -- out.rmb` writes a demo scene.
 
 ## Lens flares
 

@@ -447,22 +447,33 @@ fn color(ui: &mut Ui, scene: &mut Scene) {
     let d = rmb_core::scene::Material::default();
     let m = &mut scene.material;
     widgets::section(ui, "Gradient", false);
-    widgets::gradient_strip(ui, &m.gradient, 22.0);
+    gradient_editor(ui, &mut m.gradient, m.transmission);
+
+    if widgets::section(ui, "Mapping", true) {
+        let g = std::mem::take(&mut m.gradient);
+        *m = rmb_core::scene::Material { gradient: g, ..d.clone() };
+    }
+    mapping(ui, m, &d);
+}
+
+/// Gradient strip, presets and the color stops (surface, highlight, transparency with `glass`,
+/// emission, position).
+pub fn gradient_editor(ui: &mut Ui, gradient: &mut Vec<ColorStop>, glass: bool) {
+    widgets::gradient_strip(ui, gradient, 22.0);
     ui.add_space(4.0);
     ui.horizontal_wrapped(|ui| {
         for name in rmb_core::gradient::preset_names() {
-            if ui.small_button(name).clicked()
+            if ui.small_button(name).on_hover_text("Replace the colors with this gradient").clicked()
                 && let Some(g) = rmb_core::gradient::preset(name)
             {
-                m.gradient = g;
+                *gradient = g;
             }
         }
     });
     ui.add_space(4.0);
     let mut remove = None;
-    let n = m.gradient.len();
-    let glass = m.transmission;
-    for (i, s) in m.gradient.iter_mut().enumerate() {
+    let n = gradient.len();
+    for (i, s) in gradient.iter_mut().enumerate() {
         ui.horizontal(|ui| {
             widgets::color_button(ui, &mut s.color).on_hover_text("Surface color");
             widgets::color_button(ui, &mut s.specular).on_hover_text("Highlight color: multiplies the specular light here");
@@ -485,17 +496,15 @@ fn color(ui: &mut Ui, scene: &mut Scene) {
         });
     }
     if let Some(i) = remove {
-        m.gradient.remove(i);
+        gradient.remove(i);
     }
-    if ui.button(format!("{}  Add color", icons::PLUS)).clicked() {
-        let c = rmb_core::gradient::sample(&m.gradient, 0.5);
-        m.gradient.push(ColorStop::new(0.5, c));
+    if ui.button(format!("{}  Add color", icons::PLUS)).on_hover_text("Add a color in the middle of the gradient").clicked() {
+        let c = rmb_core::gradient::sample(gradient, 0.5);
+        gradient.push(ColorStop::new(0.5, c));
     }
+}
 
-    if widgets::section(ui, "Mapping", true) {
-        let g = std::mem::take(&mut m.gradient);
-        *m = rmb_core::scene::Material { gradient: g, ..d.clone() };
-    }
+fn mapping(ui: &mut Ui, m: &mut rmb_core::scene::Material, d: &rmb_core::scene::Material) {
     widgets::grid(ui, "mapping", |ui| {
         widgets::label(ui, "Color by", "Which value of the orbit picks the gradient color");
         egui::ComboBox::from_id_salt("color-mode").selected_text(m.color_mode.label()).show_ui(ui, |ui| {

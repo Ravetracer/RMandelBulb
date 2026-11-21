@@ -93,6 +93,8 @@ pub struct Viewport {
     pub selected_light: usize,
     /// A light was picked in the view (the inspector switches to it).
     pub light_clicked: bool,
+    /// The composed object being edited (None: the main fractal), shared with the left panel.
+    pub selected_object: Option<usize>,
     /// Gizmo handle being dragged.
     gizmo: Option<crate::gizmos::Handle>,
     /// Fly mode: the mouse is captured and steers.
@@ -162,6 +164,7 @@ impl Viewport {
             show_guides: true,
             selected_light: 0,
             light_clicked: false,
+            selected_object: None,
             gizmo: None,
             mouse_look: false,
             grabbed: false,
@@ -243,12 +246,29 @@ impl Viewport {
             }
         }
         // Light gizmos take the drags that start on one of their handles.
-        let gizmos_on = self.show_lights && !previewing && self.recording.is_none();
+        let editing = !previewing && self.recording.is_none();
+        let gizmos_on = self.show_lights && editing;
+        // The selected composed object has its move gizmo whatever the light gizmos do.
+        let object_on = self.selected_object.is_some_and(|k| k < doc.scene.objects.len()) && editing;
         let mut hover_handle = None;
-        if gizmos_on {
+        // Ctrl+click selects the object under the cursor (the main fractal or a composed one).
+        if editing
+            && resp.clicked()
+            && ui.input(|i| i.modifiers.command)
+            && let Some(p) = resp.interact_pointer_pos()
+        {
+            let (sx, sy) = Self::screen(rect, p);
+            if let Some(k) = rmb_core::render::cpu::pick_object(&doc.scene, sx, sy, rect.width().max(1.0) as u32, rect.height().max(1.0) as u32) {
+                self.selected_object = k.checked_sub(1).map(|k| k as usize);
+            }
+        }
+        if gizmos_on || object_on {
             use crate::gizmos;
             let proj = gizmos::Proj::new(&doc.scene.camera, doc.scene.aspect(), rect);
-            let hs = gizmos::handles(&doc.scene, self.selected_light, &proj, rect);
+            let mut hs = if gizmos_on { gizmos::handles(&doc.scene, self.selected_light, &proj, rect) } else { Vec::new() };
+            if let Some(k) = self.selected_object.filter(|_| object_on) {
+                hs.extend(gizmos::object_handles(&doc.scene, k, &proj));
+            }
             hover_handle = resp.hover_pos().and_then(|p| gizmos::hit(&hs, p, self.selected_light));
             if resp.drag_started_by(PointerButton::Primary)
                 && let Some(o) = ui.input(|i| i.pointer.press_origin())
@@ -256,6 +276,7 @@ impl Viewport {
                 self.gizmo = gizmos::hit(&hs, o, self.selected_light);
             }
             if let Some(h) = self.gizmo.or(hover_handle.filter(|_| resp.clicked()))
+                && gizmos::object_of(h).is_none()
                 && self.selected_light != gizmos::light_of(h)
             {
                 self.selected_light = gizmos::light_of(h);
@@ -318,10 +339,15 @@ impl Viewport {
             crate::gizmos::draw_grid(ui.painter(), &crate::gizmos::Proj::new(&camera, aspect, rect), rect);
         }
         self.draw_overlay(ui, rect, &camera, aspect);
-        if gizmos_on {
+        if gizmos_on || object_on {
             let proj = crate::gizmos::Proj::new(&doc.scene.camera, doc.scene.aspect(), rect);
             let active = self.gizmo.or(hover_handle);
-            crate::gizmos::draw(ui.painter(), &doc.scene, self.selected_light, &proj, rect, active);
+            if gizmos_on {
+                crate::gizmos::draw(ui.painter(), &doc.scene, self.selected_light, &proj, rect, active);
+            }
+            if let Some(k) = self.selected_object.filter(|_| object_on) {
+                crate::gizmos::draw_object(ui.painter(), &doc.scene, k, &proj, rect, active);
+            }
             if let (Some(h), Some(p)) = (active, resp.hover_pos().or(resp.interact_pointer_pos())) {
                 let mut text = crate::gizmos::tip(h, &doc.scene);
                 if self.gizmo.is_some()

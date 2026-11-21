@@ -591,7 +591,7 @@ impl eframe::App for App {
             self.status_bar(ui);
         });
         egui::Panel::left("formulas").resizable(true).default_size(320.0).size_range(260.0..=480.0).frame(egui::Frame::new().fill(theme::PANEL).inner_margin(egui::Margin::symmetric(10, 8))).show(ui, |ui| {
-            self.formulas.show(ui, &mut self.doc.scene);
+            self.formulas.show(ui, &mut self.doc.scene, &mut self.view.selected_object);
         });
         egui::Panel::right("inspector").resizable(true).default_size(340.0).size_range(300.0..=520.0).frame(egui::Frame::new().fill(theme::PANEL).inner_margin(egui::Margin::symmetric(12, 10))).show(ui, |ui| {
             self.inspector.show(ui, &mut self.doc.scene, &mut self.view);

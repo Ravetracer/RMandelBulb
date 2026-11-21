@@ -26,6 +26,9 @@ pub enum Handle {
     Dial(usize),
     /// Move along world axis 0 (x), 1 (y) or 2 (z).
     Axis(usize, usize),
+    /// Center and axis arrows of composed object k.
+    ObjCenter(usize),
+    ObjAxis(usize, usize),
 }
 
 /// World axes and their colors (x red, y green, z blue, as in 3D editors).
@@ -173,30 +176,73 @@ pub fn handles(scene: &Scene, selected: usize, proj: &Proj, rect: Rect) -> Vec<(
     out
 }
 
-/// The handle under `p` (selected light's handles first).
+/// The handle under `p` (the selected object's and light's handles first).
 pub fn hit(handles: &[(Handle, Pos2)], p: Pos2, selected: usize) -> Option<Handle> {
-    let light = |h: &Handle| light_of(*h);
+    let other = |h: &Handle| object_of(*h).is_none() && light_of(*h) != selected;
     handles
         .iter()
         .filter(|(_, s)| s.distance(p) < 10.0)
         .min_by(|a, b| {
-            let ka = (light(&a.0) != selected, a.1.distance(p));
-            let kb = (light(&b.0) != selected, b.1.distance(p));
+            let ka = (other(&a.0), a.1.distance(p));
+            let kb = (other(&b.0), b.1.distance(p));
             ka.partial_cmp(&kb).unwrap_or(std::cmp::Ordering::Equal)
         })
         .map(|(h, _)| *h)
 }
 
-/// The light a handle belongs to.
+/// The light a handle belongs to (`usize::MAX` for object handles).
 pub fn light_of(h: Handle) -> usize {
     match h {
         Handle::Position(i) | Handle::Target(i) | Handle::Rim(i) | Handle::Corner(i) | Handle::Dial(i) | Handle::Axis(i, _) => i,
+        Handle::ObjCenter(_) | Handle::ObjAxis(..) => usize::MAX,
+    }
+}
+
+/// The composed object a handle belongs to.
+pub fn object_of(h: Handle) -> Option<usize> {
+    match h {
+        Handle::ObjCenter(k) | Handle::ObjAxis(k, _) => Some(k),
+        _ => None,
+    }
+}
+
+/// Handles of composed object `k`: its center and the move arrows.
+pub fn object_handles(scene: &Scene, k: usize, proj: &Proj) -> Vec<(Handle, Pos2)> {
+    let Some(o) = scene.objects.get(k) else { return Vec::new() };
+    let p = o.transform.position;
+    let mut out: Vec<(Handle, Pos2)> = proj.screen(p).map(|s| (Handle::ObjCenter(k), s)).into_iter().collect();
+    let len = ARROW_PX * proj.world_per_px(p);
+    for (a, (e, _, _)) in AXES.iter().enumerate() {
+        out.extend(proj.screen(p + *e * len).map(|s| (Handle::ObjAxis(k, a), s)));
+    }
+    out
+}
+
+/// `p` moved along world axis `a` by the part of the mouse move in that axis's screen direction.
+fn along_axis(proj: &Proj, p: V3, a: usize, delta: Vec2) -> V3 {
+    let e = AXES[a].0;
+    let len = ARROW_PX * proj.world_per_px(p);
+    match (proj.screen(p), proj.screen(p + e * len)) {
+        (Some(p0), Some(p1)) if (p1 - p0).length_sq() > 1.0 => {
+            let sd = p1 - p0;
+            p + e * (len * (delta.dot(sd) / sd.length_sq()) as f64)
+        }
+        _ => p,
     }
 }
 
 /// Applies a drag of `h` by `delta` (pointer now at `pointer`).
 pub fn apply(h: Handle, scene: &mut Scene, proj: &Proj, rect: Rect, pointer: Pos2, delta: Vec2, depth: bool) {
     let cam = proj.cam.clone();
+    if let Some(k) = object_of(h) {
+        let Some(o) = scene.objects.get_mut(k) else { return };
+        let p = o.transform.position;
+        o.transform.position = match h {
+            Handle::ObjAxis(_, a) => along_axis(proj, p, a, delta),
+            _ => proj.drag(p, delta, depth),
+        };
+        return;
+    }
     let Some(l) = scene.lighting.lights.get_mut(light_of(h)) else { return };
     match h {
         Handle::Position(_) => {
@@ -209,21 +255,13 @@ pub fn apply(h: Handle, scene: &mut Scene, proj: &Proj, rect: Rect, pointer: Pos
         }
         Handle::Target(_) => l.target = proj.drag(l.target, delta, depth),
         Handle::Axis(_, a) => {
-            // Along the axis by the part of the mouse move in the axis's screen direction.
-            let e = AXES[a].0;
-            let len = ARROW_PX * proj.world_per_px(l.position);
-            if let (Some(p0), Some(p1)) = (proj.screen(l.position), proj.screen(l.position + e * len)) {
-                let sd = p1 - p0;
-                let l2 = sd.length_sq();
-                if l2 > 1.0 {
-                    let mv = e * (len * (delta.dot(sd) / l2) as f64);
-                    l.position += mv;
-                    if l.kind == LightKind::Line {
-                        l.target += mv;
-                    }
-                }
+            let mv = along_axis(proj, l.position, a, delta) - l.position;
+            l.position += mv;
+            if l.kind == LightKind::Line {
+                l.target += mv;
             }
         }
+        Handle::ObjCenter(_) | Handle::ObjAxis(..) => {}
         Handle::Rim(_) => {
             let q = proj.drag(rim_point(&cam, l.position, l.target, l.cone_angle), delta, false);
             let a = (l.target - l.position).normalize();
@@ -358,33 +396,12 @@ pub fn draw(painter: &Painter, scene: &Scene, selected: usize, proj: &Proj, rect
     // Selected positional light: a dashed line down to the ground (z = 0) with a mark there,
     // and the move arrows along the world axes.
     if let Some(l) = lights.get(selected).filter(|l| l.kind.positional()) {
-        let ground = v3(l.position.x, l.position.y, 0.0);
-        if let Some((a, b)) = proj.segment(l.position, ground) {
-            let dash = Stroke::new(1.0, Color32::from_white_alpha(140));
-            painter.add(egui::Shape::dashed_line(&[a, b], dash, 5.0, 4.0));
-            let r = 0.04 * proj.world_per_px(ground) * 150.0;
-            let ring: Vec<Pos2> = (0..=24)
-                .filter_map(|k| {
-                    let w = k as f64 / 24.0 * std::f64::consts::TAU;
-                    proj.screen(ground + v3(r * w.cos(), r * w.sin(), 0.0))
-                })
-                .collect();
-            painter.add(egui::Shape::line(ring, Stroke::new(1.2, Color32::from_white_alpha(160))));
-        }
-        let len = ARROW_PX * proj.world_per_px(l.position);
-        if let Some(p0) = proj.screen(l.position) {
-            for (a, (e, col, name)) in AXES.iter().enumerate() {
-                let Some(p1) = proj.screen(l.position + *e * len) else { continue };
-                let hot = hover == Some(Handle::Axis(selected, a));
-                let w = if hot { 3.5 } else { 2.0 };
-                painter.line_segment([p0, p1], Stroke::new(w, *col));
-                let dir = (p1 - p0).normalized();
-                let side = vec2(-dir.y, dir.x);
-                let head = if hot { 11.0 } else { 9.0 };
-                painter.add(egui::Shape::convex_polygon(vec![p1 + dir * head, p1 + side * head * 0.45, p1 - side * head * 0.45], *col, Stroke::NONE));
-                painter.text(p1 + dir * (head + 7.0), egui::Align2::CENTER_CENTER, *name, egui::FontId::proportional(11.0), *col);
-            }
-        }
+        drop_line(&painter, proj, l.position);
+        let hot = match hover {
+            Some(Handle::Axis(i, a)) if i == selected => Some(a),
+            _ => None,
+        };
+        move_arrows(&painter, proj, l.position, hot);
     }
     // Handles of the selected light.
     for (h, p) in handles(scene, selected, proj, rect) {
@@ -405,8 +422,68 @@ pub fn draw(painter: &Painter, scene: &Scene, selected: usize, proj: &Proj, rect
     }
 }
 
+/// A dashed line from `p` down to the ground (z = 0) with a ring there.
+fn drop_line(painter: &Painter, proj: &Proj, p: V3) {
+    let ground = v3(p.x, p.y, 0.0);
+    if let Some((a, b)) = proj.segment(p, ground) {
+        let dash = Stroke::new(1.0, Color32::from_white_alpha(140));
+        painter.add(egui::Shape::dashed_line(&[a, b], dash, 5.0, 4.0));
+        let r = 0.04 * proj.world_per_px(ground) * 150.0;
+        let ring: Vec<Pos2> = (0..=24)
+            .filter_map(|k| {
+                let w = k as f64 / 24.0 * std::f64::consts::TAU;
+                proj.screen(ground + v3(r * w.cos(), r * w.sin(), 0.0))
+            })
+            .collect();
+        painter.add(egui::Shape::line(ring, Stroke::new(1.2, Color32::from_white_alpha(160))));
+    }
+}
+
+/// The x/y/z move arrows at `p` (`hot`: the hovered one).
+fn move_arrows(painter: &Painter, proj: &Proj, p: V3, hot: Option<usize>) {
+    let len = ARROW_PX * proj.world_per_px(p);
+    let Some(p0) = proj.screen(p) else { return };
+    for (a, (e, col, name)) in AXES.iter().enumerate() {
+        let Some(p1) = proj.screen(p + *e * len) else { continue };
+        let hot = hot == Some(a);
+        let w = if hot { 3.5 } else { 2.0 };
+        painter.line_segment([p0, p1], Stroke::new(w, *col));
+        let dir = (p1 - p0).normalized();
+        let side = vec2(-dir.y, dir.x);
+        let head = if hot { 11.0 } else { 9.0 };
+        painter.add(egui::Shape::convex_polygon(vec![p1 + dir * head, p1 + side * head * 0.45, p1 - side * head * 0.45], *col, Stroke::NONE));
+        painter.text(p1 + dir * (head + 7.0), egui::Align2::CENTER_CENTER, *name, egui::FontId::proportional(11.0), *col);
+    }
+}
+
+/// Draws the move gizmo of composed object `k`.
+pub fn draw_object(painter: &Painter, scene: &Scene, k: usize, proj: &Proj, rect: Rect, hover: Option<Handle>) {
+    let Some(o) = scene.objects.get(k) else { return };
+    let painter = painter.with_clip_rect(rect);
+    let p = o.transform.position;
+    drop_line(&painter, proj, p);
+    let hot = match hover {
+        Some(Handle::ObjAxis(i, a)) if i == k => Some(a),
+        _ => None,
+    };
+    move_arrows(&painter, proj, p, hot);
+    if let Some(s) = proj.screen(p) {
+        let r = if hover == Some(Handle::ObjCenter(k)) { 7.0 } else { 5.5 };
+        painter.rect_filled(Rect::from_center_size(s, vec2(r * 2.0, r * 2.0)), 2.0, theme::ACCENT);
+        painter.rect_stroke(Rect::from_center_size(s, vec2(r * 2.0, r * 2.0)), 2.0, Stroke::new(1.0, Color32::BLACK), egui::StrokeKind::Outside);
+        painter.text(s + vec2(r + 6.0, -r - 4.0), egui::Align2::LEFT_BOTTOM, &o.name, egui::FontId::proportional(11.0), theme::TEXT);
+    }
+}
+
 /// Hover text for a handle.
 pub fn tip(h: Handle, scene: &Scene) -> String {
+    if let Some(k) = object_of(h) {
+        let name = scene.objects.get(k).map(|o| o.name.as_str()).unwrap_or("");
+        return match h {
+            Handle::ObjAxis(_, a) => format!("{name}: drag to move along {}", AXES[a].2),
+            _ => format!("{name}: drag to move, Shift: toward or away from the camera"),
+        };
+    }
     let kind = scene.lighting.lights.get(light_of(h)).map(|l| l.kind).unwrap_or_default();
     let n = light_of(h) + 1;
     match h {
@@ -417,11 +494,16 @@ pub fn tip(h: Handle, scene: &Scene) -> String {
         Handle::Corner(_) => format!("Light {n}: drag to resize the rectangle"),
         Handle::Dial(_) => format!("Light {n} (directional): drag to turn it; filled = shines from the camera's side"),
         Handle::Axis(_, a) => format!("Light {n}: drag to move along {}", AXES[a].2),
+        Handle::ObjCenter(_) | Handle::ObjAxis(..) => String::new(),
     }
 }
 
 /// The light's position as text (shown while dragging).
 pub fn position_text(h: Handle, scene: &Scene) -> Option<String> {
+    if let Some(k) = object_of(h) {
+        let p = scene.objects.get(k)?.transform.position;
+        return Some(format!("x {:.3}  y {:.3}  z {:.3}", p.x, p.y, p.z));
+    }
     let l = scene.lighting.lights.get(light_of(h))?;
     match h {
         Handle::Position(_) | Handle::Axis(..) if l.kind.positional() => Some(format!("x {:.3}  y {:.3}  z {:.3}", l.position.x, l.position.y, l.position.z)),
