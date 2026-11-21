@@ -3,7 +3,7 @@
 //! Right panel: camera, ray marching, light, color, effects and scene notes.
 
 use egui::{RichText, Ui};
-use rmb_core::scene::{AoMode, BackgroundMode, ColorMode, ColorStop, DiffuseCurve, FogMode, Light, LightKind, MAX_LIGHTS, Scene};
+use rmb_core::scene::{AoMode, BackgroundMode, ColorMode, ColorStop, DiffuseCurve, FogMode, GlowShape, Light, LightKind, MAX_LIGHTS, Scene};
 use rmb_core::{V3, v3};
 
 use crate::viewport::{NavMode, Viewport};
@@ -112,6 +112,19 @@ impl Inspector {
                 });
                 ui.end_row();
                 widgets::slider(ui, "Occlusion", "How much the ambient occlusion darkens this light (0..1)", &mut li.occlusion, 0.0..=1.0, dl.occlusion);
+                widgets::checkbox(ui, "Visible", "The light source itself shows in the image as a glow", &mut li.visible);
+                if li.visible {
+                    widgets::label(ui, "Glow shape", "Soft: bright core with a soft falloff. Sharp: small spot. Ball: glowing ball that covers what is behind. Halo: transparent halo.");
+                    egui::ComboBox::from_id_salt("glow-shape").selected_text(li.glow_shape.label()).show_ui(ui, |ui| {
+                        for g in GlowShape::ALL {
+                            ui.selectable_value(&mut li.glow_shape, g, g.label());
+                        }
+                    });
+                    ui.end_row();
+                    let size_tip = if li.kind == LightKind::Point { "Glow radius in world units" } else { "Glow radius in degrees (shows on the background only)" };
+                    widgets::slider_log(ui, "Glow size", size_tip, &mut li.glow_size, 0.0001..=90.0, dl.glow_size);
+                    widgets::slider_log(ui, "Glow intensity", "Brightness of the glow (smaller glows are brighter, like in Mandelbulb3D)", &mut li.glow_intensity, 0.0..=100.0, dl.glow_intensity);
+                }
                 widgets::checkbox(ui, "Shadows", "Cast shadows (costs a shadow ray per sample)", &mut li.shadows);
                 if li.shadows {
                     widgets::slider(ui, "Softness", "Width of the shadow edges (0 = hard)", &mut li.softness, 0.0..=0.5, dl.softness);

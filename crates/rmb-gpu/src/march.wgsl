@@ -9,6 +9,8 @@ struct GLight {
     dir: vec4<f32>,   // xyz: direction, or the position of a point light; w: specular
     color: vec4<f32>, // w: point light
     opts: vec4<f32>,  // x: shadows, y: softness, z: diffuse curve, w: occlusion
+    glow: vec4<f32>,  // visible light: x: shape + 1 (0 = not visible), y: squared radius, z: additive
+    glow_col: vec4<f32>,
 }
 
 struct U {
@@ -466,6 +468,74 @@ fn gradient(v: f32) -> Colors {
     return c;
 }
 
+// Mirrors scene::GlowShape::shape: (share of the pixel that stays, light added).
+fn glow_shape(shape: u32, u_: f32, r2_: f32, point: bool) -> vec2<f32> {
+    let r2 = max(r2_, 1.0e-30);
+    if (shape == 0u) {
+        let q = (u_ + 0.0004) * 25.0;
+        return vec2<f32>(1.0, (1.0 - u_) * 0.1 / (q * q) / r2);
+    }
+    if (shape == 1u) {
+        return vec2<f32>(1.0, 0.05 * pow(max(1.0 - sqrt(u_), 0.0), 50.0) / r2 * select(1.0, 1.5, point));
+    }
+    if (shape == 2u) {
+        let f = u_ * 1.05;
+        if (f < 1.0) {
+            let t = select(0.7, max(f - 0.95, 0.0) * 10.0, point);
+            return vec2<f32>(t, 4e-3 * sqrt(1.05 - f * f) / r2 * select(0.7, 1.0, point));
+        }
+        if (point) {
+            return vec2<f32>((f - 0.95) * 10.0, 17.8e-3 * (1.05 - f) / r2);
+        }
+        return vec2<f32>((f - 1.0) * 6.0 + 0.7, 12.5e-3 * (1.05 - f) / r2);
+    }
+    let u2 = u_ * u_;
+    return vec2<f32>(u2 * u2, 7e-3 * (1.0 - u_) / r2);
+}
+
+// Mirrors render::light_glow; applies the glow of light `i` to `c`.
+fn light_glow(i: u32, o: vec3<f32>, d: vec3<f32>, hit: bool, hit_t: f32, fog_col: vec3<f32>, c: vec3<f32>) -> vec3<f32> {
+    let li = u.lights[i];
+    let r2 = li.glow.y;
+    let point = li.color.w > 0.5;
+    var u_ = 0.0;
+    var t_light = u.cam_fwd.w;
+    if (point) {
+        let v = li.dir.xyz - o;
+        let along = dot(v, d);
+        if (along < 0.0) {
+            return c;
+        }
+        let w = v - d * along;
+        let d2 = dot(w, w);
+        if (d2 >= r2) {
+            return c;
+        }
+        if (hit && hit_t < along - sqrt(r2 - d2)) {
+            return c;
+        }
+        u_ = d2 / r2;
+        t_light = along;
+    } else {
+        if (hit) {
+            return c;
+        }
+        let a = max(1.0 - dot(li.dir.xyz, d), 0.0);
+        if (a >= r2) {
+            return c;
+        }
+        u_ = a / r2;
+    }
+    let s = glow_shape(u32(li.glow.x) - 1u, u_, r2, point);
+    let fl = fog_amount(t_light);
+    let flux = s.y * (1.0 - fl * 0.9);
+    var keep = 1.0;
+    if (li.glow.z < 0.5) {
+        keep = clamp(s.x, 0.0, 1.0);
+    }
+    return c * keep + fog_col * max(fl, 0.0) * (1.0 - keep) + li.glow_col.xyz * flux;
+}
+
 // Mirrors scene::Fog::amount.
 fn fog_amount(t: f32) -> f32 {
     if (u.fog2.x < 0.5) {
@@ -594,6 +664,12 @@ fn sample_pixel(px: u32, py: u32, sample: u32) -> vec3<f32> {
         c = mix(c, glow_col, clamp(glow, 0.0, 1.0));
     } else {
         c += glow_col * glow;
+    }
+    // Visible light sources.
+    for (var i = 0u; i < u.size.w; i++) {
+        if (u.lights[i].glow.x > 0.5) {
+            c = light_glow(i, o, d, h.hit, h.t, fog_col, c);
+        }
     }
     return c;
 }

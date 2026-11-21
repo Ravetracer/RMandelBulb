@@ -11,7 +11,7 @@
 use crate::gradient::srgb_to_linear;
 use crate::math::{V3, v3};
 use crate::formula::lang::DeKind;
-use crate::scene::{AoMode, BackgroundMode, ColorMode, ColorStop, CombineMode, DeCombine, DiffuseCurve, FogMode, Light, LightKind, Post, Scene, Slot};
+use crate::scene::{AoMode, BackgroundMode, ColorMode, ColorStop, CombineMode, DeCombine, DiffuseCurve, FogMode, GlowShape, Light, LightKind, Post, Scene, Slot};
 
 /// Result of an import: the scene and what could not be converted.
 pub struct Import {
@@ -429,6 +429,30 @@ pub fn import_binary(b: &[u8]) -> Result<Import, String> {
             // Point light colors are scaled by 1.3 and the light scale once more; the light falls
             // off with the squared distance (no clamp: the falloff needs large values).
             l.intensity = lamp * 1.3 * light_scale * light_scale * s_diff;
+        }
+        // Visible light source (iLightPos bits 1..3: 2 sharp, 4 halo, 6 ball, others soft).
+        let vis = ((opt >> 2) & 6) | ((func & 128) >> 4);
+        if vis != 0 {
+            l.visible = true;
+            l.glow_shape = match vis {
+                2 => GlowShape::Sharp,
+                4 => GlowShape::Halo,
+                6 => GlowShape::Ball,
+                _ => GlowShape::Soft,
+            };
+            // Squared glow radius sLmaxL * 1e-8 (HeaderTrafos), from the color sum in 0..255.
+            let bytes = (r.u8(lo + 4) as f64) + (r.u8(lo + 5) as f64) + (r.u8(lo + 6) as f64);
+            let (mut r2, glow) = if point {
+                let k = lamp * 1.3 * light_scale * light_scale;
+                (800.0 * (bytes * k + 128.0 * lamp) * 1e-8, k)
+            } else {
+                (800.0 * (bytes * light_scale + 128.0) * lamp * 1e-8, lamp * light_scale)
+            };
+            if vis == 8 {
+                r2 *= 5.0;
+            }
+            l.glow_size = if point { r2.max(0.0).sqrt() } else { (1.0 - r2.clamp(0.0, 2.0)).acos().to_degrees() };
+            l.glow_intensity = glow;
         }
         // Specular strength relative to the diffuse one (set after the shininess is known).
         l.specular = s_spec / s_diff.max(1e-3);

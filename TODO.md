@@ -13,7 +13,8 @@
 - [x] Positional lights (point lights with 1/d² falloff)
 - [x] Specular colors per gradient stop, MB3D's diffuse light functions, lights darkened by AO
 - [x] Dynamic fog on one iteration, AO strength above 1, AO reach like MB3D
-- [ ] Visible light sources, color variation with depth (VarColZpos), interior colors
+- [x] Visible light sources (glow shapes soft, sharp, ball, halo; occlusion and depth fog)
+- [ ] Color variation with depth (VarColZpos), interior colors
 - [ ] Unverified (no reference render): "KentPress - Parameter 3 tweak fogits" renders almost
       white (dynamic fog on iteration 31), "Waste-and-tragedy - Mandalex" overexposed (strong
       point light; MB3D's screen-space AO probably darkens more)

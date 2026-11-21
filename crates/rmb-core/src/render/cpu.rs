@@ -303,6 +303,17 @@ impl<'a> Shader<'a> {
                 *ck += glow_col[k] * glow;
             }
         }
+        // Visible light sources.
+        let hit_t = hit.as_ref().map(|h| h.t);
+        for li in &fr.lights {
+            if let Some(g) = &li.glow
+                && let Some((add, keep, fl)) = super::light_glow(li, g, o, d, hit_t, &sc.fog, near, far)
+            {
+                for k in 0..3 {
+                    c[k] = c[k] * keep + fog_col[k] * fl * (1.0 - keep) + add[k];
+                }
+            }
+        }
         Sample { color: c, albedo, normal }
     }
 }

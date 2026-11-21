@@ -117,6 +117,12 @@ fn gpu_matches_cpu_with_mandelbulb3d_shading() {
     scene.fog.glow_color2 = [1.0, 0.2, 0.1];
     scene.fog.glow_iteration = 4;
     scene.lighting.lights[0].diffuse = rmb_core::scene::DiffuseCurve::Squared;
+    // A visible directional light in view (behind the camera's view direction).
+    scene.lighting.lights[1].visible = true;
+    scene.lighting.lights[1].camera_relative = true;
+    scene.lighting.lights[1].azimuth = 175.0;
+    scene.lighting.lights[1].elevation = 5.0;
+    scene.lighting.lights[1].glow_size = 15.0;
     scene.material.color_mode = ColorMode::IterationsRatio;
     scene.material.color_scale = -0.3;
     scene.material.color_offset = 1.7;
@@ -130,6 +136,9 @@ fn gpu_matches_cpu_with_mandelbulb3d_shading() {
         diffuse: rmb_core::scene::DiffuseCurve::Wrap,
         occlusion: 0.7,
         shadows: false,
+        visible: true,
+        glow_shape: rmb_core::scene::GlowShape::Ball,
+        glow_size: 0.4,
         ..Default::default()
     });
     for (i, st) in scene.material.gradient.iter_mut().enumerate() {

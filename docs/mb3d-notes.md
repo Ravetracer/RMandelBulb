@@ -106,3 +106,15 @@ little-endian.
   u, v = fract of the two inputs. Both sample with `SplineIpolMap`: uniform cubic B-spline
   (`MakeSplineCoeff`) over the 4×4 pixels around (u·width, v·height), wrapping at the edges,
   result / 255. Call convention: eax = input vector, edx = map number, ecx = 3 result doubles.
+
+## Visible lights (PaintThread.CalcPixelColor2, CalcPosLightShape)
+
+- Type = iLightPos & 14 with iLightPos = ((Loption >> 2) & 7) | ((LFunction & 128) >> 4):
+  2 sharp, 4 halo ("more transparency"), 6 ball, 8 and others soft. Squared radius
+  R = sLmaxL * 1e-8 (point light: 800 * (color sum * lamp * 1.3 * ls² + 128 * lamp), world units;
+  global light: 800 * (color sum * ls + 128) * lamp, in 1 - cos(angle); type 8 five times).
+- u = squared distance of the light from the view ray / R (point lights; skipped behind the
+  viewer or behind the surface), or (1 - dot(light, view)) / R for global lights on the
+  background only. CalcPosLightShape gives the light added (∝ 1/R) and the share of the pixel
+  kept; the light is dimmed by 1 - 0.9 · depth fog at its position. Types 2 and 8 add, the others
+  blend: pixel · kept + depth color · fog · (1 - kept) + light.

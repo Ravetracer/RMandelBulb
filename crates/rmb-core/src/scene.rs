@@ -376,6 +376,60 @@ impl DiffuseCurve {
     }
 }
 
+/// Look of a visible light source (Mandelbulb3D's visible light functions).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum GlowShape {
+    /// Bright core with a soft falloff.
+    #[default]
+    Soft,
+    /// Small sharp spot.
+    Sharp,
+    /// Glowing ball that partly covers what is behind it.
+    Ball,
+    /// Transparent halo, brightest in the middle.
+    Halo,
+}
+
+impl GlowShape {
+    pub const ALL: [GlowShape; 4] = [GlowShape::Soft, GlowShape::Sharp, GlowShape::Ball, GlowShape::Halo];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            GlowShape::Soft => "Soft",
+            GlowShape::Sharp => "Sharp",
+            GlowShape::Ball => "Ball",
+            GlowShape::Halo => "Halo",
+        }
+    }
+
+    pub fn index(self) -> u32 {
+        self as u32
+    }
+
+    /// Light added (as a share of the light color) and how much of what lies behind stays
+    /// visible, for `u` = squared distance from the light center / squared glow radius (0..1).
+    /// `r2` is the squared radius (brighter for small glows, like Mandelbulb3D).
+    pub fn shape(self, u: f64, r2: f64, point: bool) -> (f64, f64) {
+        let r2 = r2.max(1e-30);
+        match self {
+            GlowShape::Soft => (1.0, (1.0 - u) * 0.1 / ((u + 0.0004) * 25.0).powi(2) / r2),
+            GlowShape::Sharp => (1.0, 0.05 * (1.0 - u.sqrt()).max(0.0).powi(50) / r2 * if point { 1.5 } else { 1.0 }),
+            GlowShape::Ball => {
+                let f = u * 1.05;
+                if f < 1.0 {
+                    let t = if point { (f - 0.95).max(0.0) * 10.0 } else { 0.7 };
+                    (t, 4e-3 * (1.05 - f * f).sqrt() / r2 * if point { 1.0 } else { 0.7 })
+                } else if point {
+                    ((f - 0.95) * 10.0, 17.8e-3 * (1.05 - f) / r2)
+                } else {
+                    ((f - 1.0) * 6.0 + 0.7, 12.5e-3 * (1.05 - f) / r2)
+                }
+            }
+            GlowShape::Halo => (u.powi(4), 7e-3 * (1.0 - u) / r2),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Light {
@@ -397,6 +451,12 @@ pub struct Light {
     pub diffuse: DiffuseCurve,
     /// How much the ambient occlusion darkens this light (0..1).
     pub occlusion: f64,
+    /// The light source itself shows in the image as a glow.
+    pub visible: bool,
+    pub glow_shape: GlowShape,
+    /// Glow radius: world units for point lights, degrees for directional lights.
+    pub glow_size: f64,
+    pub glow_intensity: f64,
 }
 
 impl Default for Light {
@@ -415,6 +475,10 @@ impl Default for Light {
             softness: 0.08,
             diffuse: DiffuseCurve::Lambert,
             occlusion: 0.0,
+            visible: false,
+            glow_shape: GlowShape::Soft,
+            glow_size: 0.1,
+            glow_intensity: 1.0,
         }
     }
 }

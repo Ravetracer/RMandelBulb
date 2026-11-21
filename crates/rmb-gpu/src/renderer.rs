@@ -64,6 +64,8 @@ struct GLight {
     dir: [f32; 4],
     color: [f32; 4],
     opts: [f32; 4],
+    glow: [f32; 4],
+    glow_col: [f32; 4],
 }
 
 #[repr(C)]
@@ -128,6 +130,10 @@ fn uniforms(scene: &Scene, prog: &Program, w: u32, h: u32, fast: bool) -> Unifor
         g.dir = v4(fl.point.unwrap_or(fl.dir), fl.specular);
         g.color = [fl.color[0] as f32, fl.color[1] as f32, fl.color[2] as f32, if fl.point.is_some() { 1.0 } else { 0.0 }];
         g.opts = [if fl.shadows { 1.0 } else { 0.0 }, fl.softness as f32, fl.diffuse.index() as f32, fl.occlusion as f32];
+        if let Some(gl) = &fl.glow {
+            g.glow = [gl.shape.index() as f32 + 1.0, gl.r2 as f32, if gl.additive { 1.0 } else { 0.0 }, 0.0];
+            g.glow_col = [gl.color[0] as f32, gl.color[1] as f32, gl.color[2] as f32, 0.0];
+        }
     }
     let mut cuts = [[0.0f32; 4]; 3];
     for (c, (axis, pos, above)) in cuts.iter_mut().zip(&prog.cuts) {

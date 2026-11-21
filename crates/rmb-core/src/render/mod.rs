@@ -26,6 +26,61 @@ pub struct FrameLight {
     pub softness: f64,
     pub diffuse: crate::scene::DiffuseCurve,
     pub occlusion: f64,
+    pub glow: Option<Glow>,
+}
+
+/// A visible light source prepared for shading.
+#[derive(Clone, Copy, Debug)]
+pub struct Glow {
+    pub shape: crate::scene::GlowShape,
+    /// Squared radius: world units² for point lights, 1 - cos(angle) for directional ones.
+    pub r2: f64,
+    pub color: [f64; 3],
+    /// Added on top (else it partly covers what is behind).
+    pub additive: bool,
+}
+
+/// Glow of a visible light on the primary ray (`o`, `d`) with the surface at `hit_t`: the
+/// light added, the share of the pixel that stays and the fog amount at the light (what the
+/// glow covers turns into that much fog; Mandelbulb3D's visible lights).
+#[allow(clippy::too_many_arguments)]
+pub fn light_glow(li: &FrameLight, g: &Glow, o: V3, d: V3, hit_t: Option<f64>, fog: &crate::scene::Fog, near: f64, far: f64) -> Option<([f64; 3], f64, f64)> {
+    let (u, t_light) = match li.point {
+        Some(p) => {
+            let v = p - o;
+            let along = v.dot(d);
+            // Behind the viewer.
+            if along < 0.0 {
+                return None;
+            }
+            let d2 = (v - d * along).dot(v - d * along);
+            if d2 >= g.r2 {
+                return None;
+            }
+            // The surface is in front of the glowing sphere.
+            if hit_t.is_some_and(|t| t < along - (g.r2 - d2).sqrt()) {
+                return None;
+            }
+            (d2 / g.r2, along)
+        }
+        None => {
+            // Directional lights only show on the background.
+            if hit_t.is_some() {
+                return None;
+            }
+            let a = (1.0 - li.dir.dot(d)).max(0.0);
+            if a >= g.r2 {
+                return None;
+            }
+            (a / g.r2, far)
+        }
+    };
+    let (transp, flux) = g.shape.shape(u, g.r2, li.point.is_some());
+    // Depth fog at the light dims it.
+    let fl = fog.amount(t_light, near, far);
+    let flux = flux * (1.0 - fl * 0.9);
+    let add = g.color.map(|c| c * flux);
+    Some((add, if g.additive { 1.0 } else { transp.clamp(0.0, 1.0) }, fl.max(0.0)))
 }
 
 /// Per-frame values derived from the scene (identical on CPU and GPU).
@@ -49,7 +104,7 @@ impl Frame {
             .lighting
             .lights
             .iter()
-            .filter(|l| l.enabled && l.intensity > 0.0)
+            .filter(|l| l.enabled && (l.intensity > 0.0 || l.visible))
             .take(crate::scene::MAX_LIGHTS)
             .map(|l| FrameLight {
                 dir: l.direction(&scene.camera),
@@ -60,6 +115,16 @@ impl Frame {
                 softness: l.softness,
                 diffuse: l.diffuse,
                 occlusion: l.occlusion.clamp(0.0, 1.0),
+                glow: l.visible.then(|| Glow {
+                    shape: l.glow_shape,
+                    r2: if l.kind == crate::scene::LightKind::Point {
+                        l.glow_size * l.glow_size
+                    } else {
+                        1.0 - l.glow_size.to_radians().cos()
+                    },
+                    color: l.color.map(|c| c as f64 * l.glow_intensity),
+                    additive: matches!(l.glow_shape, crate::scene::GlowShape::Soft | crate::scene::GlowShape::Sharp),
+                }),
             })
             .collect();
         Frame {
@@ -149,4 +214,36 @@ pub fn post_process(c: [f64; 3], post: &crate::scene::Post, u: f64, v: f64) -> [
         let d = x.max(0.0).powf(g);
         (((d - 0.5) * post.contrast + 0.5) * vig).clamp(0.0, 1.0)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scene::{Fog, GlowShape};
+
+    #[test]
+    fn point_light_glows_unless_hidden() {
+        let li = FrameLight {
+            dir: v3(0.0, 0.0, 1.0),
+            point: Some(v3(0.0, 5.0, 0.0)),
+            color: [1.0; 3],
+            specular: 0.0,
+            shadows: false,
+            softness: 0.0,
+            diffuse: crate::scene::DiffuseCurve::Lambert,
+            occlusion: 0.0,
+            glow: None,
+        };
+        let g = Glow { shape: GlowShape::Soft, r2: 0.25, color: [1.0; 3], additive: true };
+        let fog = Fog::default();
+        let (o, d) = (V3::ZERO, v3(0.0, 1.0, 0.0));
+        let (add, keep, _) = light_glow(&li, &g, o, d, None, &fog, 0.0, 100.0).expect("glow on the axis");
+        assert!(add[0] > 1.0 && keep == 1.0);
+        // A surface in front of the light hides it; one behind does not.
+        assert!(light_glow(&li, &g, o, d, Some(2.0), &fog, 0.0, 100.0).is_none());
+        assert!(light_glow(&li, &g, o, d, Some(9.0), &fog, 0.0, 100.0).is_some());
+        // Off to the side or behind the viewer: nothing.
+        assert!(light_glow(&li, &g, o, v3(1.0, 0.0, 0.0), None, &fog, 0.0, 100.0).is_none());
+        assert!(light_glow(&li, &g, o, v3(0.0, -1.0, 0.0), None, &fog, 0.0, 100.0).is_none());
+    }
 }
