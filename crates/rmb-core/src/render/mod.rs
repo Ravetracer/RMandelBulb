@@ -226,6 +226,14 @@ impl Frame {
     }
 }
 
+/// An area light's facing direction and its half-width and half-height axes.
+pub fn area_axes(l: &crate::scene::Light) -> (V3, V3, V3) {
+    let aim = (l.target - l.position).normalize();
+    let side = if aim.z.abs() < 0.99 { aim.cross(v3(0.0, 0.0, 1.0)) } else { aim.cross(v3(1.0, 0.0, 0.0)) }.normalize();
+    let up = side.cross(aim).normalize();
+    (aim, side * (0.5 * l.width.max(0.0)), up * (0.5 * l.height.max(0.0)))
+}
+
 /// The shape of a light for shading.
 fn light_shape(l: &crate::scene::Light) -> LightShape {
     let aim = (l.target - l.position).normalize();
@@ -238,9 +246,8 @@ fn light_shape(l: &crate::scene::Light) -> LightShape {
             LightShape::Spot { axis: aim, cos_outer: outer.cos(), cos_inner: inner.cos() }
         }
         LightKind::Area => {
-            let side = if aim.z.abs() < 0.99 { aim.cross(v3(0.0, 0.0, 1.0)) } else { aim.cross(v3(1.0, 0.0, 0.0)) }.normalize();
-            let up = side.cross(aim).normalize();
-            LightShape::Area { n: aim, u: side * (0.5 * l.width.max(0.0)), v: up * (0.5 * l.height.max(0.0)) }
+            let (n, u, v) = area_axes(l);
+            LightShape::Area { n, u, v }
         }
         LightKind::Line => LightShape::Line { end: l.target },
     }

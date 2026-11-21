@@ -28,6 +28,17 @@ pub struct Inspector {
 
 impl Inspector {
     pub fn show(&mut self, ui: &mut Ui, scene: &mut Scene, view: &mut Viewport) {
+        // The light picked in the view (selection shared with the view's gizmos).
+        if view.light_clicked {
+            view.light_clicked = false;
+            self.tab = Tab::Light;
+        }
+        self.light = view.selected_light;
+        self.show_tabs(ui, scene, view);
+        view.selected_light = self.light;
+    }
+
+    fn show_tabs(&mut self, ui: &mut Ui, scene: &mut Scene, view: &mut Viewport) {
         widgets::segmented(
             ui,
             &mut self.tab,

@@ -30,6 +30,8 @@ modern egui interface and import of Mandelbulb3D parameters.
   - Fly mode with WASD, at a speed that adapts to the distance from the surface.
   - Double-click looks at a point and sets the focus there.
   - Low-resolution preview while moving.
+  - Lights are drawn in the view with gizmos: drag positions, aim points, the spot cone, the
+    area size, and turn directional lights on a dial.
 - **Files**:
   - Native `.rmb` (JSON).
   - Mandelbulb3D `.m3p` files, and MB3D text parameters pasted with Ctrl+V.

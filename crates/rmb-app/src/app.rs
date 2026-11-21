@@ -345,6 +345,13 @@ impl App {
             }
             ui.separator();
             if ui
+                .selectable_label(self.view.show_lights, format!("{}  Lights", icons::LIGHT))
+                .on_hover_text("Show the lights in the view with handles to move and aim them (click one to edit it)")
+                .clicked()
+            {
+                self.view.show_lights = !self.view.show_lights;
+            }
+            if ui
                 .selectable_label(self.timeline.open, format!("{}  Animation", egui_phosphor::regular::FILM_STRIP))
                 .on_hover_text("Timeline: keyframes, flight recording, playback and movie export")
                 .clicked()

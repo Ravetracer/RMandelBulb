@@ -83,6 +83,14 @@ pub struct Viewport {
     pub overlay: Option<PathOverlay>,
     /// Flight being recorded.
     pub recording: Option<Recording>,
+    /// Draw the lights with their gizmos.
+    pub show_lights: bool,
+    /// The light being edited (shared with the inspector).
+    pub selected_light: usize,
+    /// A light was picked in the view (the inspector switches to it).
+    pub light_clicked: bool,
+    /// Gizmo handle being dragged.
+    gizmo: Option<crate::gizmos::Handle>,
 }
 
 /// The animation's camera path, drawn over the view.
@@ -134,6 +142,10 @@ impl Viewport {
             preview: None,
             overlay: None,
             recording: None,
+            show_lights: true,
+            selected_light: 0,
+            light_clicked: false,
+            gizmo: None,
         }
     }
 
@@ -191,7 +203,43 @@ impl Viewport {
         let full = ((rect.width() * ppp * prefs.preview_percent as f32 / 100.0).round().max(16.0) as u32, (rect.height() * ppp * prefs.preview_percent as f32 / 100.0).round().max(16.0) as u32);
 
         let previewing = self.preview.is_some();
-        if previewing {
+        // Light gizmos take the drags that start on one of their handles.
+        let gizmos_on = self.show_lights && !previewing && self.recording.is_none();
+        let mut hover_handle = None;
+        if gizmos_on {
+            use crate::gizmos;
+            let proj = gizmos::Proj::new(&doc.scene.camera, doc.scene.aspect(), rect);
+            let hs = gizmos::handles(&doc.scene, self.selected_light, &proj, rect);
+            hover_handle = resp.hover_pos().and_then(|p| gizmos::hit(&hs, p, self.selected_light));
+            if resp.drag_started_by(PointerButton::Primary)
+                && let Some(o) = ui.input(|i| i.pointer.press_origin())
+            {
+                self.gizmo = gizmos::hit(&hs, o, self.selected_light);
+            }
+            if let Some(h) = self.gizmo.or(hover_handle.filter(|_| resp.clicked()))
+                && self.selected_light != gizmos::light_of(h)
+            {
+                self.selected_light = gizmos::light_of(h);
+                self.light_clicked = true;
+            }
+            if let Some(h) = self.gizmo {
+                if resp.dragged_by(PointerButton::Primary) {
+                    let p = resp.interact_pointer_pos().unwrap_or_default();
+                    let depth = ui.input(|i| i.modifiers.shift);
+                    gizmos::apply(h, &mut doc.scene, &proj, rect, p, resp.drag_delta(), depth);
+                    self.nav();
+                }
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+            } else if hover_handle.is_some() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+            }
+            if !resp.dragged() {
+                self.gizmo = None;
+            }
+        } else {
+            self.gizmo = None;
+        }
+        if previewing || self.gizmo.is_some() {
             self.hover = resp.hover_pos().map(|p| Self::screen(rect, p));
         } else {
             self.navigate(ui, &resp, rect, doc, prefs);
@@ -227,6 +275,17 @@ impl Viewport {
             ui.painter().rect_stroke(rect, 0.0, egui::Stroke::new(1.0, theme::BORDER), egui::StrokeKind::Outside);
         }
         self.draw_overlay(ui, rect, &camera, aspect);
+        if gizmos_on {
+            let proj = crate::gizmos::Proj::new(&doc.scene.camera, doc.scene.aspect(), rect);
+            let active = self.gizmo.or(hover_handle);
+            crate::gizmos::draw(ui.painter(), &doc.scene, self.selected_light, &proj, rect, active);
+            if let (Some(h), Some(p)) = (active, resp.hover_pos().or(resp.interact_pointer_pos())) {
+                let galley = ui.painter().layout_no_wrap(crate::gizmos::tip(h, &doc.scene), egui::FontId::proportional(theme::fs(11.5)), theme::TEXT);
+                let r = Rect::from_min_size(p + vec2(14.0, 14.0), galley.size() + vec2(12.0, 6.0));
+                ui.painter().rect_filled(r, 4.0, Color32::from_black_alpha(190));
+                ui.painter().galley(r.min + vec2(6.0, 3.0), galley, theme::TEXT);
+            }
+        }
         self.hud(ui, rect, doc);
         if !self.paused && (self.navigating() || self.compiling() || self.samples() < prefs.preview_samples) {
             ui.ctx().request_repaint();

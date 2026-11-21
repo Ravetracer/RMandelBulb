@@ -9,6 +9,7 @@ mod app;
 mod doc;
 mod export;
 mod formulas_panel;
+mod gizmos;
 mod help;
 mod icons;
 mod inspector;
