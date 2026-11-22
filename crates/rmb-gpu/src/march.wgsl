@@ -95,7 +95,7 @@ struct Orbit {
 
 // A composed object (rmb-core compose.rs, filled by renderer.rs).
 struct Obj {
-    inv0: vec4<f32>,  // inverse rotation rows; w: scale, operation, smoothing
+    inv0: vec4<f32>,  // inverse rotation rows; w: distance scale, operation, smoothing
     inv1: vec4<f32>,
     inv2: vec4<f32>,
     pos: vec4<f32>,   // w: material (0 main, k the k-th object's own)
@@ -106,6 +106,7 @@ struct Obj {
     mat: vec4<f32>,   // material: color mode, scale, offset, repeat
     mat2: vec4<f32>,  // saturation, pattern, pattern size, LUT base
     slots: array<vec4<u32>, 2>,
+    size: vec4<f32>,  // scale per own axis
 }
 
 @group(0) @binding(6) var<storage, read> objs: array<Obj>;
@@ -535,7 +536,8 @@ fn model_surface(obj: u32, pos: vec3<f32>, base: vec3<f32>, n: vec3<f32>) -> Mod
     if (ob.misc.w < 1.5 || u32(ob.mat2.y) != 4u) {
         return r;
     }
-    let nl = vec3<f32>(dot(ob.inv0.xyz, n), dot(ob.inv1.xyz, n), dot(ob.inv2.xyz, n));
+    // Mirrors compose::normal_to_local / normal_to_world.
+    let nl = normalize(vec3<f32>(dot(ob.inv0.xyz, n), dot(ob.inv1.xyz, n), dot(ob.inv2.xyz, n)) * ob.size.xyz);
     let s = model_surf(obj - 1u, obj_local(obj - 1u, pos), nl, true);
     if (!s.found) {
         return r;
@@ -548,7 +550,8 @@ fn model_surface(obj: u32, pos: vec3<f32>, base: vec3<f32>, n: vec3<f32>) -> Mod
     }
     r.spec = s.spec;
     // The transpose undoes the inverse rotation.
-    r.n = ob.inv0.xyz * s.n.x + ob.inv1.xyz * s.n.y + ob.inv2.xyz * s.n.z;
+    let m = s.n / ob.size.xyz;
+    r.n = normalize(ob.inv0.xyz * m.x + ob.inv1.xyz * m.y + ob.inv2.xyz * m.z);
     return r;
 }
 
@@ -556,7 +559,7 @@ fn model_surface(obj: u32, pos: vec3<f32>, base: vec3<f32>, n: vec3<f32>) -> Mod
 fn obj_local(j: u32, p: vec3<f32>) -> vec3<f32> {
     let ob = objs[j];
     let d = p - ob.pos.xyz;
-    return vec3<f32>(dot(ob.inv0.xyz, d), dot(ob.inv1.xyz, d), dot(ob.inv2.xyz, d)) / ob.inv0.w;
+    return vec3<f32>(dot(ob.inv0.xyz, d), dot(ob.inv1.xyz, d), dot(ob.inv2.xyz, d)) / ob.size.xyz;
 }
 
 // Mirrors compose::primitive_distance.

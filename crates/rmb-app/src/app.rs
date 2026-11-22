@@ -358,6 +358,17 @@ impl App {
             {
                 self.view.show_lights = !self.view.show_lights;
             }
+            ui.separator();
+            for mode in crate::gizmos::GizmoMode::ALL {
+                if ui
+                    .selectable_label(self.view.gizmo_mode == mode, format!("{}  {}", mode.icon(), mode.label()))
+                    .on_hover_text(format!("{} (select an object in the scene list or Ctrl+click it in the view)", mode.tip()))
+                    .clicked()
+                {
+                    self.view.gizmo_mode = mode;
+                }
+            }
+            ui.separator();
             if ui
                 .selectable_label(self.timeline.open, format!("{}  Animation", egui_phosphor::regular::FILM_STRIP))
                 .on_hover_text("Timeline: keyframes, flight recording, playback and movie export")

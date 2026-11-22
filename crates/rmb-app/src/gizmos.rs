@@ -9,6 +9,9 @@
 //! - Handles of the selected light: position, aim point (line: other end), the spot's cone rim
 //!   (angle), the area's corner (size), the dial dot (direction). Handles move in the plane
 //!   facing the camera; with Shift toward or away from the camera.
+//! - The selected composed object has handles by `GizmoMode`: move arrows along the world
+//!   axes, rotation rings about its own axes, or scale handles along its own axes (stretch)
+//!   with the center for the uniform scale.
 
 use egui::{Color32, Painter, Pos2, Rect, Stroke, Vec2, pos2, vec2};
 use rmb_core::scene::{Camera, LightKind, Scene};
@@ -29,7 +32,54 @@ pub enum Handle {
     /// Center and axis arrows of composed object k.
     ObjCenter(usize),
     ObjAxis(usize, usize),
+    /// Rotation ring of object k about its own axis.
+    ObjRing(usize, usize),
+    /// Stretch handle of object k along its own axis, and the uniform scale (center).
+    ObjScale(usize, usize),
+    ObjScaleAll(usize),
 }
+
+/// What the handles of the selected object do.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum GizmoMode {
+    #[default]
+    Move,
+    Rotate,
+    Scale,
+}
+
+impl GizmoMode {
+    pub const ALL: [GizmoMode; 3] = [GizmoMode::Move, GizmoMode::Rotate, GizmoMode::Scale];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            GizmoMode::Move => "Move",
+            GizmoMode::Rotate => "Rotate",
+            GizmoMode::Scale => "Scale",
+        }
+    }
+
+    pub fn icon(self) -> &'static str {
+        match self {
+            GizmoMode::Move => egui_phosphor::regular::ARROWS_OUT_CARDINAL,
+            GizmoMode::Rotate => egui_phosphor::regular::ARROW_CLOCKWISE,
+            GizmoMode::Scale => egui_phosphor::regular::RESIZE,
+        }
+    }
+
+    pub fn tip(self) -> &'static str {
+        match self {
+            GizmoMode::Move => "Handles of the selected object move it: arrows along the world axes, the center in the view plane (Shift: toward or away from the camera)",
+            GizmoMode::Rotate => "Handles of the selected object turn it: drag a ring to turn about the object's own axis",
+            GizmoMode::Scale => "Handles of the selected object resize it: drag an axis handle to stretch along the object's own axis, the center to scale it as a whole",
+        }
+    }
+}
+
+/// Radius of the rotation rings relative to the arrow length.
+const RING: f64 = 0.85;
+/// Points per rotation ring (drawing and picking).
+const RING_POINTS: usize = 48;
 
 /// World axes and their colors (x red, y green, z blue, as in 3D editors).
 pub const AXES: [(V3, Color32, &str); 3] = [
@@ -194,28 +244,118 @@ pub fn hit(handles: &[(Handle, Pos2)], p: Pos2, selected: usize) -> Option<Handl
 pub fn light_of(h: Handle) -> usize {
     match h {
         Handle::Position(i) | Handle::Target(i) | Handle::Rim(i) | Handle::Corner(i) | Handle::Dial(i) | Handle::Axis(i, _) => i,
-        Handle::ObjCenter(_) | Handle::ObjAxis(..) => usize::MAX,
+        Handle::ObjCenter(_) | Handle::ObjAxis(..) | Handle::ObjRing(..) | Handle::ObjScale(..) | Handle::ObjScaleAll(_) => usize::MAX,
     }
 }
 
 /// The composed object a handle belongs to.
 pub fn object_of(h: Handle) -> Option<usize> {
     match h {
-        Handle::ObjCenter(k) | Handle::ObjAxis(k, _) => Some(k),
+        Handle::ObjCenter(k) | Handle::ObjAxis(k, _) | Handle::ObjRing(k, _) | Handle::ObjScale(k, _) | Handle::ObjScaleAll(k) => Some(k),
         _ => None,
     }
 }
 
-/// Handles of composed object `k`: its center and the move arrows.
-pub fn object_handles(scene: &Scene, k: usize, proj: &Proj) -> Vec<(Handle, Pos2)> {
+/// The object's own axes in world coordinates (columns of its rotation).
+fn own_axes(t: &rmb_core::compose::Transform) -> [V3; 3] {
+    let r = t.rotation_matrix();
+    std::array::from_fn(|a| v3(r[0][a], r[1][a], r[2][a]))
+}
+
+/// Points of the rotation ring about own axis `a` of an object at `p` (radius `rad`).
+fn ring_points(axes: &[V3; 3], a: usize, p: V3, rad: f64) -> Vec<V3> {
+    let (u, w) = (axes[(a + 1) % 3], axes[(a + 2) % 3]);
+    (0..=RING_POINTS)
+        .map(|i| {
+            let t = i as f64 / RING_POINTS as f64 * std::f64::consts::TAU;
+            p + (u * t.cos() + w * t.sin()) * rad
+        })
+        .collect()
+}
+
+/// Handles of composed object `k` for `mode`.
+pub fn object_handles(scene: &Scene, k: usize, proj: &Proj, mode: GizmoMode) -> Vec<(Handle, Pos2)> {
     let Some(o) = scene.objects.get(k) else { return Vec::new() };
     let p = o.transform.position;
-    let mut out: Vec<(Handle, Pos2)> = proj.screen(p).map(|s| (Handle::ObjCenter(k), s)).into_iter().collect();
+    let center = if mode == GizmoMode::Scale { Handle::ObjScaleAll(k) } else { Handle::ObjCenter(k) };
+    let mut out: Vec<(Handle, Pos2)> = proj.screen(p).map(|s| (center, s)).into_iter().collect();
     let len = ARROW_PX * proj.world_per_px(p);
-    for (a, (e, _, _)) in AXES.iter().enumerate() {
-        out.extend(proj.screen(p + *e * len).map(|s| (Handle::ObjAxis(k, a), s)));
+    let axes = own_axes(&o.transform);
+    match mode {
+        GizmoMode::Move => {
+            for (a, (e, _, _)) in AXES.iter().enumerate() {
+                out.extend(proj.screen(p + *e * len).map(|s| (Handle::ObjAxis(k, a), s)));
+            }
+        }
+        GizmoMode::Rotate => {
+            for a in 0..3 {
+                out.extend(ring_points(&axes, a, p, len * RING).into_iter().filter_map(|q| proj.screen(q).map(|s| (Handle::ObjRing(k, a), s))));
+            }
+        }
+        GizmoMode::Scale => {
+            for (a, e) in axes.iter().enumerate() {
+                out.extend(proj.screen(p + *e * len).map(|s| (Handle::ObjScale(k, a), s)));
+            }
+        }
     }
     out
+}
+
+/// Rows of the rotation by `angle` (radians) about the unit axis `e` (Rodrigues).
+fn axis_rotation(e: V3, angle: f64) -> [[f64; 3]; 3] {
+    let (s, c) = angle.sin_cos();
+    let t = 1.0 - c;
+    [
+        [c + e.x * e.x * t, e.x * e.y * t - e.z * s, e.x * e.z * t + e.y * s],
+        [e.y * e.x * t + e.z * s, c + e.y * e.y * t, e.y * e.z * t - e.x * s],
+        [e.z * e.x * t - e.y * s, e.z * e.y * t + e.x * s, c + e.z * e.z * t],
+    ]
+}
+
+fn mat_mul(a: &[[f64; 3]; 3], b: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
+    std::array::from_fn(|r| std::array::from_fn(|c| (0..3).map(|k| a[r][k] * b[k][c]).sum()))
+}
+
+/// Applies a drag of an object handle (pointer now at `pointer`, moved by `delta`).
+fn apply_object(h: Handle, o: &mut rmb_core::compose::SceneObject, proj: &Proj, pointer: Pos2, delta: Vec2, depth: bool) {
+    let t = &mut o.transform;
+    let p = t.position;
+    match h {
+        Handle::ObjAxis(_, a) => t.position = along_axis(proj, p, a, delta),
+        Handle::ObjCenter(_) => t.position = proj.drag(p, delta, depth),
+        Handle::ObjRing(_, a) => {
+            let Some(c) = proj.screen(p) else { return };
+            // Turn by the pointer's angle change around the center (counterclockwise on screen
+            // is a positive turn about an axis that points toward the camera).
+            let angle = |q: Pos2| (-(q.y - c.y) as f64).atan2((q.x - c.x) as f64);
+            let mut da = angle(pointer) - angle(pointer - delta);
+            if da > std::f64::consts::PI {
+                da -= std::f64::consts::TAU;
+            } else if da < -std::f64::consts::PI {
+                da += std::f64::consts::TAU;
+            }
+            let e = own_axes(t)[a];
+            let sign = if e.dot(proj.cam.position - p) >= 0.0 { 1.0 } else { -1.0 };
+            let r = mat_mul(&axis_rotation(e, da * sign), &t.rotation_matrix());
+            t.set_rotation_matrix(r);
+        }
+        Handle::ObjScale(_, a) => {
+            let len = ARROW_PX * proj.world_per_px(p);
+            let e = own_axes(t)[a];
+            if let (Some(s0), Some(s1)) = (proj.screen(p), proj.screen(p + e * len))
+                && (s1 - s0).length_sq() > 1.0
+            {
+                let sd = s1 - s0;
+                let f = (1.0 + (delta.dot(sd) / sd.length_sq()) as f64).clamp(0.2, 5.0);
+                t.stretch[a] = (t.stretch[a] * f).clamp(1e-3, 1e3);
+            }
+        }
+        Handle::ObjScaleAll(_) => {
+            let f = (((delta.x - delta.y) * 0.01) as f64).exp();
+            t.scale = (t.scale * f).clamp(1e-4, 1e4);
+        }
+        _ => {}
+    }
 }
 
 /// `p` moved along world axis `a` by the part of the mouse move in that axis's screen direction.
@@ -235,12 +375,9 @@ fn along_axis(proj: &Proj, p: V3, a: usize, delta: Vec2) -> V3 {
 pub fn apply(h: Handle, scene: &mut Scene, proj: &Proj, rect: Rect, pointer: Pos2, delta: Vec2, depth: bool) {
     let cam = proj.cam.clone();
     if let Some(k) = object_of(h) {
-        let Some(o) = scene.objects.get_mut(k) else { return };
-        let p = o.transform.position;
-        o.transform.position = match h {
-            Handle::ObjAxis(_, a) => along_axis(proj, p, a, delta),
-            _ => proj.drag(p, delta, depth),
-        };
+        if let Some(o) = scene.objects.get_mut(k) {
+            apply_object(h, o, proj, pointer, delta, depth);
+        }
         return;
     }
     let Some(l) = scene.lighting.lights.get_mut(light_of(h)) else { return };
@@ -261,7 +398,7 @@ pub fn apply(h: Handle, scene: &mut Scene, proj: &Proj, rect: Rect, pointer: Pos
                 l.target += mv;
             }
         }
-        Handle::ObjCenter(_) | Handle::ObjAxis(..) => {}
+        Handle::ObjCenter(_) | Handle::ObjAxis(..) | Handle::ObjRing(..) | Handle::ObjScale(..) | Handle::ObjScaleAll(_) => {}
         Handle::Rim(_) => {
             let q = proj.drag(rim_point(&cam, l.position, l.target, l.cone_angle), delta, false);
             let a = (l.target - l.position).normalize();
@@ -456,19 +593,53 @@ fn move_arrows(painter: &Painter, proj: &Proj, p: V3, hot: Option<usize>) {
     }
 }
 
-/// Draws the move gizmo of composed object `k`.
-pub fn draw_object(painter: &Painter, scene: &Scene, k: usize, proj: &Proj, rect: Rect, hover: Option<Handle>) {
+/// Draws the gizmo of composed object `k` for `mode`.
+pub fn draw_object(painter: &Painter, scene: &Scene, k: usize, proj: &Proj, rect: Rect, hover: Option<Handle>, mode: GizmoMode) {
     let Some(o) = scene.objects.get(k) else { return };
     let painter = painter.with_clip_rect(rect);
     let p = o.transform.position;
     drop_line(&painter, proj, p);
-    let hot = match hover {
-        Some(Handle::ObjAxis(i, a)) if i == k => Some(a),
-        _ => None,
-    };
-    move_arrows(&painter, proj, p, hot);
+    let len = ARROW_PX * proj.world_per_px(p);
+    let axes = own_axes(&o.transform);
+    match mode {
+        GizmoMode::Move => {
+            let hot = match hover {
+                Some(Handle::ObjAxis(i, a)) if i == k => Some(a),
+                _ => None,
+            };
+            move_arrows(&painter, proj, p, hot);
+        }
+        GizmoMode::Rotate => {
+            let to_cam = proj.cam.position - p;
+            for (a, &(_, col, _)) in AXES.iter().enumerate() {
+                let hot = hover == Some(Handle::ObjRing(k, a));
+                let pts = ring_points(&axes, a, p, len * RING);
+                for w in pts.windows(2) {
+                    // The far half of the ring is dimmer.
+                    let front = ((w[0] + w[1]) * 0.5 - p).dot(to_cam) >= 0.0;
+                    let c = if front { col } else { col.gamma_multiply(0.35) };
+                    if let (Some(x), Some(y)) = (proj.screen(w[0]), proj.screen(w[1])) {
+                        painter.line_segment([x, y], Stroke::new(if hot { 3.5 } else { 2.0 }, c));
+                    }
+                }
+            }
+        }
+        GizmoMode::Scale => {
+            let Some(p0) = proj.screen(p) else { return };
+            for (a, e) in axes.iter().enumerate() {
+                let Some(p1) = proj.screen(p + *e * len) else { continue };
+                let hot = hover == Some(Handle::ObjScale(k, a));
+                let col = AXES[a].1;
+                painter.line_segment([p0, p1], Stroke::new(if hot { 3.5 } else { 2.0 }, col));
+                let r = if hot { 6.0 } else { 4.5 };
+                painter.rect_filled(Rect::from_center_size(p1, vec2(r * 2.0, r * 2.0)), 1.0, col);
+                let dir = (p1 - p0).normalized();
+                painter.text(p1 + dir * (r + 9.0), egui::Align2::CENTER_CENTER, AXES[a].2, egui::FontId::proportional(11.0), col);
+            }
+        }
+    }
     if let Some(s) = proj.screen(p) {
-        let r = if hover == Some(Handle::ObjCenter(k)) { 7.0 } else { 5.5 };
+        let r = if hover == Some(Handle::ObjCenter(k)) || hover == Some(Handle::ObjScaleAll(k)) { 7.0 } else { 5.5 };
         painter.rect_filled(Rect::from_center_size(s, vec2(r * 2.0, r * 2.0)), 2.0, theme::ACCENT);
         painter.rect_stroke(Rect::from_center_size(s, vec2(r * 2.0, r * 2.0)), 2.0, Stroke::new(1.0, Color32::BLACK), egui::StrokeKind::Outside);
         painter.text(s + vec2(r + 6.0, -r - 4.0), egui::Align2::LEFT_BOTTOM, &o.name, egui::FontId::proportional(11.0), theme::TEXT);
@@ -481,6 +652,9 @@ pub fn tip(h: Handle, scene: &Scene) -> String {
         let name = scene.objects.get(k).map(|o| o.name.as_str()).unwrap_or("");
         return match h {
             Handle::ObjAxis(_, a) => format!("{name}: drag to move along {}", AXES[a].2),
+            Handle::ObjRing(_, a) => format!("{name}: drag around the center to turn about its own {} axis", AXES[a].2),
+            Handle::ObjScale(_, a) => format!("{name}: drag to stretch along its own {} axis", AXES[a].2),
+            Handle::ObjScaleAll(_) => format!("{name}: drag right or up to make it larger, left or down smaller"),
             _ => format!("{name}: drag to move, Shift: toward or away from the camera"),
         };
     }
@@ -494,15 +668,20 @@ pub fn tip(h: Handle, scene: &Scene) -> String {
         Handle::Corner(_) => format!("Light {n}: drag to resize the rectangle"),
         Handle::Dial(_) => format!("Light {n} (directional): drag to turn it; filled = shines from the camera's side"),
         Handle::Axis(_, a) => format!("Light {n}: drag to move along {}", AXES[a].2),
-        Handle::ObjCenter(_) | Handle::ObjAxis(..) => String::new(),
+        Handle::ObjCenter(_) | Handle::ObjAxis(..) | Handle::ObjRing(..) | Handle::ObjScale(..) | Handle::ObjScaleAll(_) => String::new(),
     }
 }
 
 /// The light's position as text (shown while dragging).
 pub fn position_text(h: Handle, scene: &Scene) -> Option<String> {
     if let Some(k) = object_of(h) {
-        let p = scene.objects.get(k)?.transform.position;
-        return Some(format!("x {:.3}  y {:.3}  z {:.3}", p.x, p.y, p.z));
+        let t = &scene.objects.get(k)?.transform;
+        let p = t.position;
+        return Some(match h {
+            Handle::ObjRing(..) => format!("turn x {:.1}°  y {:.1}°  z {:.1}°", t.rotation[0], t.rotation[1], t.rotation[2]),
+            Handle::ObjScale(..) | Handle::ObjScaleAll(_) => format!("scale {:.3}  stretch {:.3} × {:.3} × {:.3}", t.scale, t.stretch[0], t.stretch[1], t.stretch[2]),
+            _ => format!("x {:.3}  y {:.3}  z {:.3}", p.x, p.y, p.z),
+        });
     }
     let l = scene.lighting.lights.get(light_of(h))?;
     match h {

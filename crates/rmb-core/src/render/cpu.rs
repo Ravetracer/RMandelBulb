@@ -198,7 +198,7 @@ impl<'a> Shader<'a> {
         }
         let Some(ob) = (h.orbit.object > 0).then(|| self.prog.objects.get(h.orbit.object as usize - 1)).flatten() else { return base };
         let crate::fractal::ObjectShape::Model(Some(m)) = &ob.shape else { return base };
-        let q = crate::compose::to_local(&ob.inv, ob.pos, ob.scale, h.pos);
+        let q = crate::compose::to_local(&ob.inv, ob.pos, ob.size, h.pos);
         match m.vol.color(q.to_array(), &m.look) {
             Some(c) if self.scene.post.display_space => c.map(super::srgb_encode),
             Some(c) => c,
@@ -215,26 +215,24 @@ impl<'a> Shader<'a> {
         }
         let Some(ob) = (h.orbit.object > 0).then(|| self.prog.objects.get(h.orbit.object as usize - 1)).flatten() else { return (base, 1.0, n) };
         let crate::fractal::ObjectShape::Model(Some(m)) = &ob.shape else { return (base, 1.0, n) };
-        let q = crate::compose::to_local(&ob.inv, ob.pos, ob.scale, h.pos);
-        let nl = crate::compose::to_local(&ob.inv, V3::ZERO, 1.0, n);
+        let q = crate::compose::to_local(&ob.inv, ob.pos, ob.size, h.pos);
+        let nl = crate::compose::normal_to_local(&ob.inv, ob.size, n);
         let Some(s) = m.vol.surface(q.to_array(), &m.look, Some(nl.to_array())) else { return (base, 1.0, n) };
         let color = match s.color {
             Some(c) if self.scene.post.display_space => c.map(super::srgb_encode),
             Some(c) => c,
             None => base,
         };
-        // The transpose undoes the inverse rotation.
-        let (i, b) = (&ob.inv, s.normal);
-        let nw = v3(i[0][0] * b[0] + i[1][0] * b[1] + i[2][0] * b[2], i[0][1] * b[0] + i[1][1] * b[1] + i[2][1] * b[2], i[0][2] * b[0] + i[1][2] * b[1] + i[2][2] * b[2]);
-        (color, s.specular, nw)
+        let b = s.normal;
+        (color, s.specular, crate::compose::normal_to_world(&ob.inv, ob.size, v3(b[0], b[1], b[2])))
     }
 
     /// Where the texture layers of a hit are evaluated (`n`: world normal, zero if unknown).
     fn layer_coord(&self, h: &Hit, n: V3, cv: f64) -> crate::texture::Coord {
         let mut c = crate::texture::Coord { obj: h.pos, world: h.pos, n_obj: n, n_world: n, value: cv, trap: h.orbit.trap };
         if let Some(ob) = (h.orbit.object > 0).then(|| self.prog.objects.get(h.orbit.object as usize - 1)).flatten() {
-            c.obj = crate::compose::to_local(&ob.inv, ob.pos, ob.scale, h.pos);
-            c.n_obj = crate::compose::to_local(&ob.inv, V3::ZERO, 1.0, n);
+            c.obj = crate::compose::to_local(&ob.inv, ob.pos, ob.size, h.pos);
+            c.n_obj = crate::compose::rotate(&ob.inv, n);
         }
         c
     }
@@ -451,7 +449,7 @@ impl<'a> Shader<'a> {
         if let Some(ob) = (o.object > 0).then(|| self.prog.objects.get(o.object as usize - 1)).flatten() {
             match &ob.shape {
                 crate::fractal::ObjectShape::Primitive(..) | crate::fractal::ObjectShape::Model(_) => {
-                    let q = crate::compose::to_local(&ob.inv, ob.pos, ob.scale, hit.pos);
+                    let q = crate::compose::to_local(&ob.inv, ob.pos, ob.size, hit.pos);
                     return crate::compose::pattern_value(mat.pattern, mat.pattern_size, q);
                 }
                 crate::fractal::ObjectShape::Fractal(f) => bailout2 = f.bailout2,

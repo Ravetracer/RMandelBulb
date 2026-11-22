@@ -211,9 +211,25 @@ impl FormulasPanel {
             }
             ui.end_row();
             for (k, axis) in ["Turn X", "Turn Y", "Turn Z"].iter().enumerate() {
-                widgets::slider(ui, axis, "Rotation in degrees (about x, then y, then z)", &mut t.rotation[k], -180.0..=180.0, 0.0);
+                let tip = "Rotation in degrees (about x, then y, then z); or drag the rings in the view (Rotate in the toolbar). Double click: 0";
+                widgets::label(ui, axis, tip);
+                let r = ui.add(egui::DragValue::new(&mut t.rotation[k]).speed(0.5).max_decimals(2).suffix("°")).on_hover_text(tip);
+                if r.double_clicked() {
+                    t.rotation[k] = 0.0;
+                }
+                ui.end_row();
             }
-            widgets::slider_log(ui, "Scale", "Size of the object", &mut t.scale, 0.0001..=100.0, 1.0);
+            widgets::slider_log(ui, "Scale", "Size of the object; or drag its center in the view (Scale in the toolbar)", &mut t.scale, 0.0001..=100.0, 1.0);
+            for (k, axis) in ["Stretch X", "Stretch Y", "Stretch Z"].iter().enumerate() {
+                let tip = "Extra size along the object's own axis (1: none); or drag the axis handles in the view (Scale in the toolbar). Double click: 1";
+                widgets::label(ui, axis, tip);
+                let r = ui.add(egui::DragValue::new(&mut t.stretch[k]).speed(0.005).max_decimals(3)).on_hover_text(tip);
+                if r.double_clicked() {
+                    t.stretch[k] = 1.0;
+                }
+                ui.end_row();
+                t.stretch[k] = t.stretch[k].clamp(0.001, 1000.0);
+            }
         });
         match &mut o.shape {
             Shape::Primitive(p) => {

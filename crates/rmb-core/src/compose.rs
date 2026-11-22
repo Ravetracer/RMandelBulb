@@ -186,18 +186,21 @@ fn water_height(a: [f64; 4], x: f64, y: f64) -> (f64, f64) {
     (h, slope)
 }
 
-/// Position, rotation (degrees about x, then y, then z) and uniform scale of an object.
+/// Position, rotation (degrees about x, then y, then z), uniform scale and stretch along the
+/// object's own axes.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Transform {
     pub position: V3,
     pub rotation: [f64; 3],
     pub scale: f64,
+    /// Extra scale along the object's x, y and z axes (on top of `scale`).
+    pub stretch: [f64; 3],
 }
 
 impl Default for Transform {
     fn default() -> Self {
-        Transform { position: V3::ZERO, rotation: [0.0; 3], scale: 1.0 }
+        Transform { position: V3::ZERO, rotation: [0.0; 3], scale: 1.0, stretch: [1.0; 3] }
     }
 }
 
@@ -217,15 +220,60 @@ impl Transform {
         [[r[0][0], r[1][0], r[2][0]], [r[0][1], r[1][1], r[2][1]], [r[0][2], r[1][2], r[2][2]]]
     }
 
+    /// Rows of the rotation (local → world): the transpose of `inverse_rotation`.
+    pub fn rotation_matrix(&self) -> [[f64; 3]; 3] {
+        let i = self.inverse_rotation();
+        [[i[0][0], i[1][0], i[2][0]], [i[0][1], i[1][1], i[2][1]], [i[0][2], i[1][2], i[2][2]]]
+    }
+
+    /// Sets `rotation` from the rows of a rotation matrix (R = Rz · Ry · Rx).
+    pub fn set_rotation_matrix(&mut self, r: [[f64; 3]; 3]) {
+        let sy = (-r[2][0]).clamp(-1.0, 1.0);
+        let y = sy.asin();
+        let (x, z) = if sy.abs() < 1.0 - 1e-9 {
+            (r[2][1].atan2(r[2][2]), r[1][0].atan2(r[0][0]))
+        } else {
+            // Gimbal lock: only x - z (or x + z) is defined; keep x at zero.
+            (0.0, (-r[0][1]).atan2(r[1][1]))
+        };
+        // No negative zeros or rounding dust in the fields.
+        self.rotation = [x, y, z].map(|v| if v.abs() < 1e-9 { 0.0 } else { v.to_degrees() });
+    }
+
     pub fn scale(&self) -> f64 {
         self.scale.abs().max(1e-9)
     }
+
+    /// Scale along the object's axes: `scale` times `stretch`.
+    pub fn size(&self) -> V3 {
+        let s = self.stretch.map(|v| v.abs().max(1e-6));
+        v3(s[0], s[1], s[2]) * self.scale()
+    }
 }
 
-/// World point `p` in the coordinates of an object with inverse rotation `inv`, `pos` and `scale`.
-pub fn to_local(inv: &[[f64; 3]; 3], pos: V3, scale: f64, p: V3) -> V3 {
-    let d = p - pos;
-    v3(inv[0][0] * d.x + inv[0][1] * d.y + inv[0][2] * d.z, inv[1][0] * d.x + inv[1][1] * d.y + inv[1][2] * d.z, inv[2][0] * d.x + inv[2][1] * d.y + inv[2][2] * d.z) * (1.0 / scale)
+/// World point `p` in the coordinates of an object with inverse rotation `inv`, `pos` and
+/// `size` (scale per own axis).
+pub fn to_local(inv: &[[f64; 3]; 3], pos: V3, size: V3, p: V3) -> V3 {
+    let r = rotate(inv, p - pos);
+    v3(r.x / size.x, r.y / size.y, r.z / size.z)
+}
+
+/// `v` times the matrix with rows `m`.
+pub fn rotate(m: &[[f64; 3]; 3], v: V3) -> V3 {
+    v3(m[0][0] * v.x + m[0][1] * v.y + m[0][2] * v.z, m[1][0] * v.x + m[1][1] * v.y + m[1][2] * v.z, m[2][0] * v.x + m[2][1] * v.y + m[2][2] * v.z)
+}
+
+/// A world normal in an object's coordinates (normals scale inversely to points).
+pub fn normal_to_local(inv: &[[f64; 3]; 3], size: V3, n: V3) -> V3 {
+    let r = rotate(inv, n);
+    v3(r.x * size.x, r.y * size.y, r.z * size.z).normalize()
+}
+
+/// An object's normal in world coordinates (the inverse of `normal_to_local`).
+pub fn normal_to_world(inv: &[[f64; 3]; 3], size: V3, n: V3) -> V3 {
+    let m = v3(n.x / size.x, n.y / size.y, n.z / size.z);
+    // The transpose undoes the inverse rotation.
+    v3(inv[0][0] * m.x + inv[1][0] * m.y + inv[2][0] * m.z, inv[0][1] * m.x + inv[1][1] * m.y + inv[2][1] * m.z, inv[0][2] * m.x + inv[1][2] * m.y + inv[2][2] * m.z).normalize()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -405,12 +453,34 @@ mod tests {
     }
 
     #[test]
+    fn rotation_matrix_round_trip() {
+        for rot in [[10.0, 20.0, 30.0], [-170.0, 45.0, 95.0], [0.0, 0.0, -55.0], [30.0, 89.0, 0.0]] {
+            let t = Transform { rotation: rot, ..Default::default() };
+            let mut u = Transform::default();
+            u.set_rotation_matrix(t.rotation_matrix());
+            let (a, b) = (t.rotation_matrix(), u.rotation_matrix());
+            for r in 0..3 {
+                for c in 0..3 {
+                    assert!((a[r][c] - b[r][c]).abs() < 1e-9, "{rot:?} -> {:?}", u.rotation);
+                }
+            }
+        }
+        // Stretch: points scale per own axis, normals inversely.
+        let t = Transform { stretch: [2.0, 1.0, 0.5], ..Default::default() };
+        let (inv, size) = (t.inverse_rotation(), t.size());
+        assert_eq!(to_local(&inv, V3::ZERO, size, v3(2.0, 1.0, 0.5)), v3(1.0, 1.0, 1.0));
+        let n = normal_to_local(&inv, size, v3(1.0, 1.0, 0.0).normalize());
+        let back = normal_to_world(&inv, size, n);
+        assert!((back - v3(1.0, 1.0, 0.0).normalize()).length() < 1e-12);
+    }
+
+    #[test]
     fn transform_moves_rotates_and_scales() {
-        let t = Transform { position: v3(1.0, 2.0, 3.0), rotation: [0.0, 0.0, 90.0], scale: 2.0 };
+        let t = Transform { position: v3(1.0, 2.0, 3.0), rotation: [0.0, 0.0, 90.0], scale: 2.0, ..Default::default() };
         let inv = t.inverse_rotation();
         // The world point one unit along +y from the position is local +x (rotated 90° about z)
         // at half the distance (scale 2).
-        let q = to_local(&inv, t.position, t.scale(), v3(1.0, 4.0, 3.0));
+        let q = to_local(&inv, t.position, t.size(), v3(1.0, 4.0, 3.0));
         assert!((q - v3(1.0, 0.0, 0.0)).length() < 1e-12, "{q:?}");
         // Rotations stay orthonormal.
         let t2 = Transform { rotation: [30.0, -50.0, 120.0], ..Default::default() };

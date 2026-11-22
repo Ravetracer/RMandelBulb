@@ -87,6 +87,8 @@ pub struct Viewport {
     pub recording: Option<Recording>,
     /// Draw the lights with their gizmos.
     pub show_lights: bool,
+    /// What the handles of the selected object do.
+    pub gizmo_mode: crate::gizmos::GizmoMode,
     /// Draw the ground grid, the axes and the axis cross.
     pub show_guides: bool,
     /// The light being edited (shared with the inspector).
@@ -161,6 +163,7 @@ impl Viewport {
             overlay: None,
             recording: None,
             show_lights: true,
+            gizmo_mode: Default::default(),
             show_guides: true,
             selected_light: 0,
             light_clicked: false,
@@ -267,7 +270,7 @@ impl Viewport {
             let proj = gizmos::Proj::new(&doc.scene.camera, doc.scene.aspect(), rect);
             let mut hs = if gizmos_on { gizmos::handles(&doc.scene, self.selected_light, &proj, rect) } else { Vec::new() };
             if let Some(k) = self.selected_object.filter(|_| object_on) {
-                hs.extend(gizmos::object_handles(&doc.scene, k, &proj));
+                hs.extend(gizmos::object_handles(&doc.scene, k, &proj, self.gizmo_mode));
             }
             hover_handle = resp.hover_pos().and_then(|p| gizmos::hit(&hs, p, self.selected_light));
             if resp.drag_started_by(PointerButton::Primary)
@@ -346,7 +349,7 @@ impl Viewport {
                 crate::gizmos::draw(ui.painter(), &doc.scene, self.selected_light, &proj, rect, active);
             }
             if let Some(k) = self.selected_object.filter(|_| object_on) {
-                crate::gizmos::draw_object(ui.painter(), &doc.scene, k, &proj, rect, active);
+                crate::gizmos::draw_object(ui.painter(), &doc.scene, k, &proj, rect, active, self.gizmo_mode);
             }
             if let (Some(h), Some(p)) = (active, resp.hover_pos().or(resp.interact_pointer_pos())) {
                 let mut text = crate::gizmos::tip(h, &doc.scene);

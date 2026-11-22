@@ -43,12 +43,15 @@ modern egui interface and import of Mandelbulb3D parameters.
   - Mandelbulb3D `.m3p` files, and MB3D text parameters pasted with Ctrl+V.
   - PNG export that embeds the scene, so opening the PNG restores it.
 - **Scene composition** (Mandelbulber's boolean mode): add fractals and shapes (plane, box,
-  sphere, cylinder, torus, water) to the scene, place them with gizmos, combine them by adding,
+  sphere, cylinder, torus, water) to the scene, move, rotate, scale and stretch them with gizmos
+  in the view (Move / Rotate / Scale in the toolbar), combine them by adding,
   cutting away or intersecting (also smoothly), each in its own colors. Ctrl+click selects the
   object under the cursor.
 - **3D models**: OBJ, STL, PLY and glTF/GLB files (Blender exports all of them) as scene
-  objects. They are baked into a distance grid (64 to 256 points along the longest side) and keep
-  their vertex, material and texture colors. Detail finer than one grid cell is rounded off.
+  objects. A distance grid (64 to 256 points along the longest side) covers the space around
+  them; near the surface the triangles themselves are used, so thin parts stay sharp at any
+  distance. Each material gets a color, a color texture, a bump and a specular map; images near
+  the model file (for example in a `textures` folder) are assigned to the materials by name.
 - **Texture layers** (up to four per material): images, or a solid color through a mask image,
   over the gradient colors with blend modes (multiply, screen, overlay, soft light, …), as bumps
   or as glow. Triplanar, planar, spherical, cylindrical or orbit mapping, in object or world

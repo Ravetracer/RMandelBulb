@@ -65,9 +65,12 @@
   - [ ] Possible: transform of the main fractal, repetition (infinite grids of an object),
         more primitives (capsule, cone, prism), object fractals with DE combination
 - [x] Loading 3D objects into the scene: OBJ (+MTL), STL, PLY, glTF/GLB as composition objects,
-      baked into a signed distance grid (16-bit, up to 256 points per side), with their colors
-  - [ ] Possible: FBX import, smoother shading up close (tricubic sampling or exact triangle
-        distances near the surface), a disk cache of baked models, normal maps of glTF models
+      baked into a signed distance grid (16-bit, up to 256 points per side) with exact triangle
+      distances near the surface; per-material colors, color textures, bump and specular maps
+      (images near the model are assigned by name); move, rotate, scale and stretch in the view
+  - [ ] Possible: FBX import, a disk cache of baked models, normal maps of glTF models,
+        emissive materials (glTF emissive factor), faster near-surface search (models make
+        renders about 2x slower than the grid alone)
 - [x] Texture layers instead of colors, or as masks over the colors with layer blend modes
       (color, bump and glow layers; triplanar, planar, spherical, cylindrical, orbit mapping)
   - [ ] Possible: alpha channel masks, normal maps, roughness/specular layers, texture

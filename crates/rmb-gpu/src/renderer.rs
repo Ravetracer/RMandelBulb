@@ -130,6 +130,7 @@ struct ObjGpu {
     mat: [f32; 4],
     mat2: [f32; 4],
     slots: [[u32; 4]; 2],
+    size: [f32; 4],
 }
 
 /// Words per model header in the `vols` buffer (march.wgsl `MODEL_HEADER`).
@@ -264,6 +265,7 @@ fn objects_gpu(scene: &Scene, prog: &Program, lut: &mut Vec<[f32; 4]>) -> Vec<Ob
             g.inv[r] = [o.inv[r][0] as f32, o.inv[r][1] as f32, o.inv[r][2] as f32, 0.0];
         }
         g.inv[0][3] = o.scale as f32;
+        g.size = [o.size.x as f32, o.size.y as f32, o.size.z as f32, 0.0];
         g.inv[1][3] = o.op as f32;
         g.inv[2][3] = o.smooth as f32;
         g.pos = v4(o.pos, 0.0);

@@ -94,9 +94,11 @@ pub struct Program {
 /// An object of the scene composition prepared for evaluation.
 pub struct ObjectProgram {
     pub shape: ObjectShape,
-    /// Inverse rotation rows, position and scale.
+    /// Inverse rotation rows, position, scale per own axis (`Transform::size`) and the
+    /// smallest of those (distances are multiplied by it: a lower bound when stretched).
     pub inv: [[f64; 3]; 3],
     pub pos: V3,
+    pub size: V3,
     pub scale: f64,
     /// `BoolOp::index`.
     pub op: u32,
@@ -302,7 +304,8 @@ impl Program {
                 shape,
                 inv: o.transform.inverse_rotation(),
                 pos: o.transform.position,
-                scale: o.transform.scale(),
+                size: o.transform.size(),
+                scale: o.transform.size().x.min(o.transform.size().y).min(o.transform.size().z),
                 op: o.op.index(),
                 smooth: o.smooth.max(0.0),
                 material: if o.material.own { i + 1 } else { 0 },
@@ -643,7 +646,7 @@ impl Evaluator<'_> {
         let mut de = (o.de * prog.scene_de_scale).max(0.0);
         // Scene composition: the objects in order, each in its own coordinates.
         for (k, ob) in prog.objects.iter().enumerate() {
-            let q = crate::compose::to_local(&ob.inv, ob.pos, ob.scale, p);
+            let q = crate::compose::to_local(&ob.inv, ob.pos, ob.size, p);
             let (d, orbit) = match &ob.shape {
                 ObjectShape::Fractal(f) => {
                     let oo = chain_orbit(f, f, &mut self.regs_obj[k], q, h / ob.scale);

@@ -444,7 +444,7 @@ fn gpu_matches_cpu_with_composed_objects() {
         SceneObject {
             name: "Box".into(),
             shape: Shape::Fractal(Box::new(box_frac)),
-            transform: Transform { position: p(1.4, 0.4, 0.2), rotation: [10.0, 25.0, 40.0], scale: 0.25 },
+            transform: Transform { position: p(1.4, 0.4, 0.2), rotation: [10.0, 25.0, 40.0], scale: 0.25, ..Default::default() },
             material: ObjectMaterial { gradient: emissive, color_scale: 0.3, ..Default::default() },
             ..Default::default()
         },
@@ -573,7 +573,7 @@ fn gpu_matches_cpu_with_a_3d_model() {
         SceneObject {
             name: "Ring".into(),
             shape: Shape::Model(model.clone()),
-            transform: Transform { rotation: [60.0, 10.0, 30.0], scale: 1.8, ..Default::default() },
+            transform: Transform { rotation: [60.0, 10.0, 30.0], scale: 1.8, stretch: [1.3, 0.8, 1.0], ..Default::default() },
             material: ObjectMaterial { pattern: Pattern::Model, ..Default::default() },
             ..Default::default()
         },
