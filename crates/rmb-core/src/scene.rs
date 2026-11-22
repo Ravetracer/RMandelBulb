@@ -687,10 +687,16 @@ pub enum ColorMode {
     Normal,
     /// Smooth iteration count interpolated between the last two radii (Mandelbulb3D).
     IterationsRatio,
+    /// Distance along `Material::color_direction` from `Material::color_center` (world units):
+    /// the gradient runs through space in layers; one glow band is one sheet of light.
+    Plane,
+    /// Distance from `Material::color_center` (world units): the gradient runs outward in
+    /// shells; one glow band is one sphere of light.
+    Sphere,
 }
 
 impl ColorMode {
-    pub const ALL: [ColorMode; 5] = [ColorMode::Iterations, ColorMode::IterationsRatio, ColorMode::OrbitTrap, ColorMode::Radius, ColorMode::Normal];
+    pub const ALL: [ColorMode; 7] = [ColorMode::Iterations, ColorMode::IterationsRatio, ColorMode::OrbitTrap, ColorMode::Radius, ColorMode::Normal, ColorMode::Plane, ColorMode::Sphere];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -699,6 +705,8 @@ impl ColorMode {
             ColorMode::Radius => "Radius",
             ColorMode::Normal => "Normal",
             ColorMode::IterationsRatio => "Iterations (MB3D)",
+            ColorMode::Plane => "Position: plane",
+            ColorMode::Sphere => "Position: sphere",
         }
     }
 
@@ -794,6 +802,10 @@ impl Default for ColorMap {
 #[serde(default)]
 pub struct Material {
     pub gradient: Vec<ColorStop>,
+    /// Center of the position color modes (also used by the objects' materials).
+    pub color_center: [f64; 3],
+    /// Direction of the plane color mode (normalized when used).
+    pub color_direction: [f64; 3],
     /// Glowing stripes over the gradient.
     pub bands: Vec<crate::gradient::GlowBand>,
     /// Animation: the gradient turns by this many lengths per second (moves `color_offset`).
@@ -867,6 +879,8 @@ impl Default for Material {
     fn default() -> Self {
         Material {
             gradient: crate::gradient::preset("Copper").unwrap_or_default(),
+            color_center: [0.0; 3],
+            color_direction: [0.0, 0.0, 1.0],
             bands: Vec::new(),
             rotation: 0.0,
             color_mode: ColorMode::Iterations,

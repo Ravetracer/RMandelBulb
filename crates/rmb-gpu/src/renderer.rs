@@ -118,6 +118,8 @@ struct Uniforms {
     emis2: [f32; 4],
     emis3: [f32; 4],
     path: [f32; 4],
+    ccenter: [f32; 4],
+    cdir: [f32; 4],
 }
 
 /// A composed object (march.wgsl `Obj`).
@@ -545,6 +547,12 @@ fn uniforms(scene: &Scene, prog: &Program, w: u32, h: u32, fast: bool) -> Unifor
         emis2: {
             let any = emissive_any(scene, prog);
             [m.emission_rays.clamp(1, 8) as f32, if any { m.steam.max(0.0) as f32 } else { 0.0 }, m.steam_size as f32, m.steam_grain as f32]
+        },
+        ccenter: [m.color_center[0] as f32, m.color_center[1] as f32, m.color_center[2] as f32, 0.0],
+        cdir: {
+            let d = m.color_direction;
+            let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+            if len > 0.0 { [(d[0] / len) as f32, (d[1] / len) as f32, (d[2] / len) as f32, 0.0] } else { [0.0, 0.0, 1.0, 0.0] }
         },
         path: {
             let on = l.render_mode == rmb_core::scene::RenderMode::PathTraced;

@@ -61,6 +61,8 @@ struct U {
     emis2: vec4<f32>,      // emissive colors: rays for their light; steam strength (0 when nothing emits), size, grain
     emis3: vec4<f32>,      // steam offset, cover
     path: vec4<f32>,       // path tracing: on, bounces, firefly clamp
+    ccenter: vec4<f32>,    // position color modes: center
+    cdir: vec4<f32>,       // plane color mode: direction (normalized)
 }
 
 @group(0) @binding(0) var<uniform> u: U;
@@ -1083,14 +1085,29 @@ fn value_noise(p: vec3<f32>) -> f32 {
 
 const STEAM_TETRA = array<vec3<f32>, 4>(vec3<f32>(1.0, -1.0, -1.0), vec3<f32>(-1.0, -1.0, 1.0), vec3<f32>(-1.0, 1.0, -1.0), vec3<f32>(1.0, 1.0, 1.0));
 
-// The steam sample of the primary march (Shader::trace, SteamPick): on, seed, total weight,
-// picked point, its falloff size and ray distance.
-var<private> steam_pick: bool;
-var<private> steam_seed: u32;
-var<private> steam_w: f32;
-var<private> steam_pos: vec3<f32>;
-var<private> steam_rs: f32;
-var<private> steam_t: f32;
+// The glow and steam sample of the primary march (Shader::trace, SteamPick): on, seed, total
+// weight, picked point, its falloff size, ray distance, falloff toward the surface.
+var<private> pick_on: bool;
+var<private> pick_seed: u32;
+var<private> pick_w: f32;
+var<private> pick_pos: vec3<f32>;
+var<private> pick_rs: f32;
+var<private> pick_t: f32;
+var<private> pick_fall: bool;
+
+// Mirrors SteamPick::offer.
+fn pick_offer(step: u32, salt: i32, w: f32, p: vec3<f32>, rs: f32, t: f32, fall: bool) {
+    if (w <= 0.0) {
+        return;
+    }
+    pick_w += w;
+    if (hash3(i32(step), bitcast<i32>(pick_seed), salt) * pick_w < w) {
+        pick_pos = p;
+        pick_rs = rs;
+        pick_t = t;
+        pick_fall = fall;
+    }
+}
 
 // Mirrors render::steam_density.
 fn steam_density(p: vec3<f32>) -> f32 {
@@ -1113,7 +1130,7 @@ fn march_ray(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, max_steps: u32, ha
     var h: Hit;
     h.hit = false;
     h.halo = vec3<f32>(0.0);
-    let halo = halo_on && (u.emis.z > 0.0 || u.emis2.y > 0.0);
+    let halo = halo_on && pick_on;
     var t = t0;
     var last_step = 0.0;
     var step = 0u;
@@ -1153,23 +1170,15 @@ fn march_ray(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, max_steps: u32, ha
         }
         last_step = max(ob.de * u.march.y, eps * 0.1);
         if (halo) {
-            let r = max(u.emis.w * t, eps);
-            let rs = max(u.emis2.z * t, eps);
+            // Mirrors Shader::march_ex: offer the point for the glow and the steam.
             let p = o + d * t;
+            let r = max(u.emis.w * t, eps);
             if (u.emis.z > 0.0 && ob.de < 8.0 * r) {
-                h.halo += emission_at(ob, p, eps, t) * (exp(-ob.de / r) * min(last_step, r) / r * u.emis.z);
+                pick_offer(step, 0x61c0, exp(-ob.de / r) * min(last_step, r) / r * u.emis.z, p, r, t, false);
             }
-            if (steam_pick && ob.de < 8.0 * rs) {
-                // Mirrors Shader::march_ex: reservoir sampling of the steam point.
-                let w = exp(-ob.de / rs) * min(last_step, rs) / rs * steam_density(p);
-                if (w > 0.0) {
-                    steam_w += w;
-                    if (hash3(i32(step), bitcast<i32>(steam_seed), 0x51ea) * steam_w < w) {
-                        steam_pos = p;
-                        steam_rs = rs;
-                        steam_t = t;
-                    }
-                }
+            let rs = max(u.emis2.z * t, eps);
+            if (u.emis2.y > 0.0 && ob.de < 8.0 * rs) {
+                pick_offer(step, 0x51ea, exp(-ob.de / rs) * min(last_step, rs) / rs * steam_density(p) * u.emis2.y, p, rs, t, true);
             }
         }
         t += last_step;
@@ -1464,6 +1473,13 @@ fn color_value(h: Hit, n: vec3<f32>, pos: vec3<f32>) -> f32 {
     }
     if (mode == 2u) {
         return length(pos) * 4.0;
+    }
+    // Mirrors render::cpu::position_value.
+    if (mode == 6u) {
+        return length(pos - u.ccenter.xyz);
+    }
+    if (mode == 5u) {
+        return dot(pos - u.ccenter.xyz, u.cdir.xyz);
     }
     return n.z * 2.0 + 2.0;
 }
@@ -2050,34 +2066,38 @@ fn path_specular_share(amount: f32, spec: vec3<f32>, trans: f32, glass: f32) -> 
 fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sx: f32, sy: f32, inside: bool, glass: f32, env: bool) -> Traced {
     var tr: Traced;
     tr.hit = false;
-    // Steam (mirrors Shader::trace): pick a point in the haze, a random ray from it finds the
-    // emissive light that reaches it.
-    let steam_on = u.emis2.y > 0.0;
-    steam_w = 0.0;
-    steam_seed = 0u;
+    // Glow and steam (mirrors Shader::trace): pick a point near the glowing surfaces, a random
+    // ray from it finds the emitted light of the surface it came from.
+    let steam_on = u.emis.z > 0.0 || u.emis2.y > 0.0;
+    pick_w = 0.0;
+    pick_seed = 0u;
     if (steam_on) {
-        steam_seed = u32(rnd() * 16777216.0);
+        pick_seed = u32(rnd() * 16777216.0);
     }
-    steam_pick = steam_on;
+    pick_on = steam_on;
     var h = march_ray(o, d, t0, max_t, u.band.z, true);
-    steam_pick = false;
+    pick_on = false;
     if (steam_on) {
         let u1 = rnd();
         let u2 = rnd();
-        if (steam_w > 0.0) {
-            let hh = steam_rs * 0.05;
+        if (pick_w > 0.0) {
+            let hh = pick_rs * 0.05;
             var g = vec3<f32>(0.0);
             for (var k = 0u; k < 4u; k++) {
-                g += STEAM_TETRA[k] * de_at(steam_pos + STEAM_TETRA[k] * hh, eps_at(steam_t) * 0.5);
+                g += STEAM_TETRA[k] * de_at(pick_pos + STEAM_TETRA[k] * hh, eps_at(pick_t) * 0.5);
             }
             var n = -d;
             if (length(g) > 0.0) {
                 n = -normalize(g);
             }
             let dir = cosine_dir(n, u1, u2);
-            let sh = march_ray(steam_pos, dir, 0.0, 8.0 * steam_rs, 64u, false);
+            let sh = march_ray(pick_pos, dir, 0.0, 8.0 * pick_rs, 64u, false);
             if (sh.hit) {
-                h.halo += emission_at(sh.orbit, steam_pos + dir * sh.t, sh.eps, steam_t + sh.t) * (steam_w * exp(-sh.t / steam_rs) * u.emis2.y);
+                var f = pick_w;
+                if (pick_fall) {
+                    f *= exp(-sh.t / pick_rs);
+                }
+                h.halo += emission_at(sh.orbit, pick_pos + dir * sh.t, sh.eps, pick_t + sh.t) * f;
             }
         }
     }

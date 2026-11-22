@@ -483,7 +483,19 @@ fn color(ui: &mut Ui, scene: &mut Scene) {
         let bands = std::mem::take(&mut m.bands);
         *m = rmb_core::scene::Material { gradient: g, bands, ..d.clone() };
     }
-    mapping(ui, m, &d);
+    match mapping(ui, m, &d) {
+        Some(PositionRequest::CenterFromView) => {
+            // The surface point in the middle of the view (else a point ahead).
+            let cam = scene.camera.clone();
+            let p = rmb_core::render::cpu::pick(scene, 0.0, 0.0, 256, 256).map(|(_, h)| h).unwrap_or(cam.position + cam.forward * rmb_core::render::cpu::distance_at_camera(scene).max(0.1) * 2.0);
+            scene.material.color_center = [p.x, p.y, p.z];
+        }
+        Some(PositionRequest::DirectionFromCamera) => {
+            let f = scene.camera.forward;
+            scene.material.color_direction = [f.x, f.y, f.z];
+        }
+        None => {}
+    }
 }
 
 /// Gradient strip, presets and the color stops (surface, highlight, transparency with `glass`,
@@ -624,7 +636,14 @@ pub fn bands_editor(ui: &mut Ui, gradient: &[ColorStop], bands: &mut Vec<rmb_cor
     }
 }
 
-fn mapping(ui: &mut Ui, m: &mut rmb_core::scene::Material, d: &rmb_core::scene::Material) {
+/// Buttons of the position color modes that need the scene.
+enum PositionRequest {
+    CenterFromView,
+    DirectionFromCamera,
+}
+
+fn mapping(ui: &mut Ui, m: &mut rmb_core::scene::Material, d: &rmb_core::scene::Material) -> Option<PositionRequest> {
+    let mut request = None;
     widgets::grid(ui, "mapping", |ui| {
         widgets::label(ui, "Color by", "Which value of the orbit picks the gradient color");
         egui::ComboBox::from_id_salt("color-mode").selected_text(m.color_mode.label()).show_ui(ui, |ui| {
@@ -633,7 +652,39 @@ fn mapping(ui: &mut Ui, m: &mut rmb_core::scene::Material, d: &rmb_core::scene::
             }
         });
         ui.end_row();
-        widgets::slider_log(ui, "Scale", "How fast the colors change with the value (negative reverses the gradient)", &mut m.color_scale, -10.0..=10.0, d.color_scale);
+        if matches!(m.color_mode, ColorMode::Plane | ColorMode::Sphere) {
+            let what = if m.color_mode == ColorMode::Sphere { "Center of the spheres" } else { "A point on the plane where the gradient starts" };
+            for (k, axis) in ["Center X", "Center Y", "Center Z"].iter().enumerate() {
+                widgets::drag(ui, axis, &format!("{what} (world units)"), &mut m.color_center[k], 0.01, d.color_center[k]);
+            }
+            widgets::label(ui, "", "");
+            if ui.small_button("Use view center").on_hover_text("Puts the center on the surface point in the middle of the view").clicked() {
+                request = Some(PositionRequest::CenterFromView);
+            }
+            ui.end_row();
+            if m.color_mode == ColorMode::Plane {
+                for (k, axis) in ["Direction X", "Direction Y", "Direction Z"].iter().enumerate() {
+                    widgets::drag(ui, axis, "Direction in which the gradient runs (the planes stand across it)", &mut m.color_direction[k], 0.01, d.color_direction[k]);
+                }
+                widgets::label(ui, "", "");
+                if ui.small_button("From camera").on_hover_text("The gradient runs along the viewing direction: layers move toward or away from the camera").clicked() {
+                    request = Some(PositionRequest::DirectionFromCamera);
+                }
+                ui.end_row();
+            }
+        }
+        widgets::slider_log(
+            ui,
+            "Scale",
+            if matches!(m.color_mode, ColorMode::Plane | ColorMode::Sphere) {
+                "Gradient lengths per world unit: small values make wide layers (one glow band then is one front of light through the fractal)"
+            } else {
+                "How fast the colors change with the value (negative reverses the gradient)"
+            },
+            &mut m.color_scale,
+            -10.0..=10.0,
+            d.color_scale,
+        );
         widgets::slider(ui, "Offset", "Shifts the gradient", &mut m.color_offset, -5.0..=5.0, d.color_offset);
         widgets::drag(ui, "Rotation", "Animation: the gradient (with its glow bands) turns by this many gradient lengths per second, so colors flow through the fractal (palette rotation; 0 = off)", &mut m.rotation, 0.005, d.rotation);
         if !m.interior.is_empty() {
@@ -668,6 +719,7 @@ fn mapping(ui: &mut Ui, m: &mut rmb_core::scene::Material, d: &rmb_core::scene::
     emissive(ui, m);
     crate::layers::layers_editor(ui, &mut m.layers, "main");
     color_map(ui, m);
+    request
 }
 
 /// Settings of the emissive gradient colors.

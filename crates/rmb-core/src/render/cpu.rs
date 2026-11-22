@@ -31,6 +31,18 @@ pub struct Shader<'a> {
 /// Tetrahedron directions of the distance gradient at a steam point (march.wgsl `STEAM_TETRA`).
 const STEAM_TETRA: [[f64; 3]; 4] = [[1.0, -1.0, -1.0], [-1.0, -1.0, 1.0], [-1.0, 1.0, -1.0], [1.0, 1.0, 1.0]];
 
+/// Color value of the position modes at world point `p` (march.wgsl `position_value`).
+pub fn position_value(m: &crate::scene::Material, mode: ColorMode, p: V3) -> f64 {
+    let c = v3(m.color_center[0], m.color_center[1], m.color_center[2]);
+    let d = p - c;
+    if mode == ColorMode::Sphere {
+        return d.length();
+    }
+    let dir = v3(m.color_direction[0], m.color_direction[1], m.color_direction[2]);
+    let len = dir.length();
+    if len > 0.0 { d.dot(dir * (1.0 / len)) } else { d.z }
+}
+
 /// Whether the scene is path traced.
 fn sc_path(sc: &Scene) -> bool {
     sc.lighting.render_mode == crate::scene::RenderMode::PathTraced
@@ -48,8 +60,9 @@ pub fn path_specular_share(amount: f64, spec: [f64; 3], trans: f64, glass: f64) 
     s.max(g).clamp(0.0, 0.9)
 }
 
-/// The steam sample of a ray: random seed, total weight, the picked point, its falloff size and
-/// ray distance (march.wgsl `SteamPick`).
+/// The glow and steam sample of a ray: random seed, total weight, the picked point, its falloff
+/// size, ray distance and whether the light falls off along the way to the surface (steam;
+/// march.wgsl `pick_*`).
 #[derive(Clone, Copy, Default)]
 pub struct SteamPick {
     pub seed: u32,
@@ -57,6 +70,25 @@ pub struct SteamPick {
     pub pos: V3,
     pub rs: f64,
     pub t: f64,
+    pub fall: bool,
+}
+
+impl SteamPick {
+    /// Offers the point `p` (ray distance `t`, falloff size `rs`) with weight `w`: reservoir
+    /// sampling with the hashed random number of `step` and `salt`.
+    #[allow(clippy::too_many_arguments)]
+    fn offer(&mut self, step: u32, salt: i32, w: f64, p: V3, rs: f64, t: f64, fall: bool) {
+        if w <= 0.0 {
+            return;
+        }
+        self.w += w;
+        if (super::hash3(step as i32, self.seed as i32, salt) as f64) * self.w < w {
+            self.pos = p;
+            self.rs = rs;
+            self.t = t;
+            self.fall = fall;
+        }
+    }
 }
 
 /// A material prepared for shading: its gradient tables and how a color value picks a color.
@@ -151,20 +183,15 @@ impl<'a> Shader<'a> {
     /// Marches a ray. Returns the hit (if any), the number of steps taken and the number of
     /// glowing steps (see `Fog::glow_iteration`).
     pub fn march(&self, ev: &mut Evaluator, o: V3, d: V3, t0: f64, max_t: f64, max_steps: u32) -> (Option<Hit>, u32, u32) {
-        let (h, s, g, _) = self.march_ex(ev, o, d, t0, max_t, max_steps, false, None);
-        (h, s, g)
+        self.march_ex(ev, o, d, t0, max_t, max_steps, None)
     }
 
-    /// [`Shader::march`] that with `halo` also collects the glow of emissive colors the ray
-    /// passes close to: per step the emission at the point times exp(-distance / R) over R,
-    /// R = glow size · ray distance, times the glow strength. With `steam` it also picks the
-    /// steam sample of the ray (see [`SteamPick`]).
+    /// [`Shader::march`] that with `pick` also offers the points near emissive parts for the
+    /// glow and the steam (see [`SteamPick`]).
     #[allow(clippy::too_many_arguments)]
-    fn march_ex(&self, ev: &mut Evaluator, o: V3, d: V3, t0: f64, max_t: f64, max_steps: u32, halo: bool, mut steam: Option<&mut SteamPick>) -> (Option<Hit>, u32, u32, [f64; 3]) {
+    fn march_ex(&self, ev: &mut Evaluator, o: V3, d: V3, t0: f64, max_t: f64, max_steps: u32, mut pick: Option<&mut SteamPick>) -> (Option<Hit>, u32, u32) {
         let m = &self.scene.march;
         let sm = &self.scene.material;
-        let halo = halo && self.emissive && (sm.emission_glow > 0.0 || sm.steam > 0.0);
-        let mut glow_e = [0.0; 3];
         let glow_it = self.scene.fog.glow_iteration;
         let mut t = t0;
         let mut last_step = 0.0;
@@ -191,43 +218,29 @@ impl<'a> Shader<'a> {
                         dt *= 0.5;
                     }
                 }
-                return (Some(Hit { t: t_hit, pos: o + d * t_hit, eps: self.eps_at(t_hit), orbit: orbit_hit, steps: step }), step, glow.min(step), glow_e);
+                return (Some(Hit { t: t_hit, pos: o + d * t_hit, eps: self.eps_at(t_hit), orbit: orbit_hit, steps: step }), step, glow.min(step));
             }
             // At least a tenth of the threshold: no stalling where the estimate is near zero.
             last_step = (orbit.de * m.step).max(eps * 0.1);
-            if halo {
+            if let Some(pk) = pick.as_deref_mut() {
+                // Glow and steam: offer the point in proportion to its weight (glow: falloff from
+                // the surface; steam: also the noise density).
                 let r = (sm.emission_glow_size * t).max(eps);
-                let rs = (sm.steam_size * t).max(eps);
                 if sm.emission_glow > 0.0 && orbit.de < 8.0 * r {
-                    let w = (-orbit.de / r).exp() * last_step.min(r) / r * sm.emission_glow;
-                    let e = self.emission_at(&orbit, p, eps, t);
-                    for k in 0..3 {
-                        glow_e[k] += e[k] * w;
-                    }
+                    pk.offer(step, 0x61c0, (-orbit.de / r).exp() * last_step.min(r) / r * sm.emission_glow, p, r, t, false);
                 }
-                if let Some(st) = steam.as_deref_mut()
-                    && orbit.de < 8.0 * rs
-                {
-                    // Steam: pick one point along the ray in proportion to its weight
-                    // (reservoir sampling with hashed random numbers).
+                let rs = (sm.steam_size * t).max(eps);
+                if sm.steam > 0.0 && orbit.de < 8.0 * rs {
                     let dens = super::steam_density(p, sm.steam_grain, sm.steam_offset, sm.steam_cover);
-                    let w = (-orbit.de / rs).exp() * last_step.min(rs) / rs * dens;
-                    if w > 0.0 {
-                        st.w += w;
-                        if (super::hash3(step as i32, st.seed as i32, 0x51ea) as f64) * st.w < w {
-                            st.pos = p;
-                            st.rs = rs;
-                            st.t = t;
-                        }
-                    }
+                    pk.offer(step, 0x51ea, (-orbit.de / rs).exp() * last_step.min(rs) / rs * dens * sm.steam, p, rs, t, true);
                 }
             }
             t += last_step;
             if t > max_t {
-                return (None, step, glow.min(step), glow_e);
+                return (None, step, glow.min(step));
             }
         }
-        (None, max_steps, glow, glow_e)
+        (None, max_steps, glow)
     }
 
     /// Emitted radiance (color × emission strength of the gradient) for an orbit at `p`.
@@ -558,6 +571,7 @@ impl<'a> Shader<'a> {
             ColorMode::OrbitTrap => o.trap.max(0.0).sqrt() * 4.0,
             ColorMode::Radius => hit.pos.length() * 4.0,
             ColorMode::Normal => n.z * 2.0 + 2.0,
+            ColorMode::Plane | ColorMode::Sphere => position_value(&self.scene.material, mat.mode, hit.pos),
         }
     }
 
@@ -842,13 +856,15 @@ impl<'a> Shader<'a> {
         let path = sc_path(self.scene);
         let sc = self.scene;
         let fr = &self.frame;
-        // Steam: the light of emissive parts scattered by the haze along the ray. One point is
-        // picked in proportion to the haze's weight (density times the falloff from the
-        // surface, per length); a random ray from it toward the nearest surface (cosine
-        // weighted around the falling distance) finds the emissive light reaching it.
-        let steam_on = self.emissive && sc.material.steam > 0.0;
+        // Glow and steam: the light of emissive parts scattered near their surfaces along the
+        // ray. One point is picked in proportion to the weight (falloff from the surface per
+        // length, for the steam times its noise density); a random ray from it toward the
+        // nearest surface (cosine weighted around the falling distance) finds the emitted light
+        // of that surface, so glow and steam take the color of the glowing parts themselves.
+        let steam_on = self.emissive && (sc.material.steam > 0.0 || sc.material.emission_glow > 0.0);
         let mut pick = SteamPick { seed: if steam_on { (rng.next_f64() * 16_777_216.0) as u32 } else { 0 }, ..SteamPick::default() };
-        let (hit, _, steps, mut halo) = self.march_ex(ev, o, d, t0, max_t, sc.march.max_steps, true, steam_on.then_some(&mut pick));
+        let (hit, _, steps) = self.march_ex(ev, o, d, t0, max_t, sc.march.max_steps, steam_on.then_some(&mut pick));
+        let mut halo = [0.0; 3];
         if steam_on {
             let (u1, u2) = (rng.next_f64(), rng.next_f64());
             if pick.w > 0.0 {
@@ -863,7 +879,7 @@ impl<'a> Shader<'a> {
                 let dir = cosine_dir(n, u1, u2);
                 if let (Some(h), _, _) = self.march(ev, pick.pos, dir, 0.0, 8.0 * pick.rs, 64) {
                     let e = self.emission_at(&h.orbit, h.pos, h.eps, pick.t + h.t);
-                    let f = pick.w * (-h.t / pick.rs).exp() * sc.material.steam;
+                    let f = pick.w * if pick.fall { (-h.t / pick.rs).exp() } else { 1.0 };
                     for k in 0..3 {
                         halo[k] += e[k] * f;
                     }

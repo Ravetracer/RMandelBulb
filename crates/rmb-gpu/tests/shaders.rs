@@ -55,6 +55,20 @@ fn gpu_matches_cpu() {
 }
 
 #[test]
+fn gpu_matches_cpu_with_position_coloring() {
+    for mode in [rmb_core::scene::ColorMode::Plane, rmb_core::scene::ColorMode::Sphere] {
+        let mut scene = Scene::default();
+        scene.lighting.ao_mode = rmb_core::scene::AoMode::Fast;
+        scene.material.color_mode = mode;
+        scene.material.color_scale = 1.3;
+        scene.material.color_center = [0.2, -0.1, 0.3];
+        scene.material.color_direction = [1.0, 0.5, 0.2];
+        scene.material.bands = vec![rmb_core::gradient::GlowBand { pos: 0.4, width: 0.1, emission: 5.0, ..Default::default() }];
+        parity(scene);
+    }
+}
+
+#[test]
 fn gpu_matches_cpu_path_traced() {
     let mut scene = Scene::default();
     scene.lighting.render_mode = rmb_core::scene::RenderMode::PathTraced;

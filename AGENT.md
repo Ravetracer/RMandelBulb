@@ -124,9 +124,14 @@ cargo clippy -j 8 --workspace --all-targets
 - `render/bloom.rs`: bloom pyramid and streaks (Kawase streak filter) applied in
   `HdrImage::finish*` and `CpuRenderer::rgba8`; the GPU preview runs the same passes
   (`bloom.wgsl`, composite in display.wgsl; streak regions after the pyramid in one buffer).
-- Steam (`Material::steam*`): `march_ex` picks one point of the haze per primary ray
-  (reservoir sampling with `hash3`, weight = noise density × falloff from the surface); `trace`
-  casts one ray from it toward the falling distance and adds the emission it hits. GPU: the
+- Glow and steam (`Material::emission_glow*`, `steam*`): `march_ex` offers points near the
+  surface to one `SteamPick` per primary ray (reservoir sampling with `hash3`; glow weight =
+  falloff from the surface, steam also × noise density); `trace` casts one ray from the picked
+  point toward the falling distance and adds the emission of the surface it hits (so glow and
+  steam take the color of the glowing surface, not of the empty space).
+- Position color modes (`ColorMode::Plane` / `Sphere`, `Material::color_center` /
+  `color_direction`, shared by all materials): the gradient runs through world space, so a glow
+  band becomes one front of light. GPU: the
   same in `march_ray`/`trace` (private `steam_*` variables). The drift moves `steam_offset` in
   animations (`color_phases`).
 
