@@ -395,6 +395,10 @@ pub struct ObjectMaterial {
     /// Use these colors (else the main material's).
     pub own: bool,
     pub gradient: Vec<ColorStop>,
+    /// Glowing stripes over the gradient.
+    pub bands: Vec<crate::gradient::GlowBand>,
+    /// Animation: the gradient turns by this many lengths per second (moves `color_offset`).
+    pub rotation: f64,
     /// Fractals: which value of the orbit picks the color.
     pub color_mode: ColorMode,
     pub color_scale: f64,
@@ -413,6 +417,8 @@ impl Default for ObjectMaterial {
         ObjectMaterial {
             own: true,
             gradient: crate::gradient::preset("Bone").unwrap_or_default(),
+            bands: Vec::new(),
+            rotation: 0.0,
             color_mode: ColorMode::Iterations,
             color_scale: 0.15,
             color_offset: 0.0,

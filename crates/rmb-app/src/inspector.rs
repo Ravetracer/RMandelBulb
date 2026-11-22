@@ -448,10 +448,12 @@ fn color(ui: &mut Ui, scene: &mut Scene) {
     let m = &mut scene.material;
     widgets::section(ui, "Gradient", false);
     gradient_editor(ui, &mut m.gradient, m.transmission);
+    bands_editor(ui, &m.gradient, &mut m.bands, m.repeat, "main");
 
     if widgets::section(ui, "Mapping", true) {
         let g = std::mem::take(&mut m.gradient);
-        *m = rmb_core::scene::Material { gradient: g, ..d.clone() };
+        let bands = std::mem::take(&mut m.bands);
+        *m = rmb_core::scene::Material { gradient: g, bands, ..d.clone() };
     }
     mapping(ui, m, &d);
 }
@@ -504,6 +506,96 @@ pub fn gradient_editor(ui: &mut Ui, gradient: &mut Vec<ColorStop>, glass: bool) 
     }
 }
 
+/// The glow bands of a gradient: a strip of the gradient with the bands (drag a band's marker
+/// to move it) and per band its color, emission, position, width, softness and speed.
+pub fn bands_editor(ui: &mut Ui, gradient: &[ColorStop], bands: &mut Vec<rmb_core::gradient::GlowBand>, repeat: bool, id: &str) {
+    use rmb_core::gradient::{GlowBand, MAX_BANDS};
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("GLOW BANDS").size(theme::fs(10.5)).color(theme::TEXT_MUTED).strong()).on_hover_text(
+            "Stripes over the gradient, independent of its colors: thin ones with emission make single glowing lines through the fractal. Animate them with the gradient's Rotation (Mapping) or each band's own speed.",
+        );
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let active = bands.iter().filter(|b| b.enabled).count();
+            ui.add_enabled_ui(active < MAX_BANDS, |ui| {
+                if widgets::icon_button(ui, icons::PLUS, &format!("Add a glow band (up to {MAX_BANDS} are drawn)")).clicked() {
+                    let pos = bands.last().map_or(0.5, |b| (b.pos + 0.25).rem_euclid(1.0));
+                    bands.push(GlowBand { pos, ..GlowBand::default() });
+                }
+            });
+        });
+    });
+    if bands.is_empty() {
+        return;
+    }
+    // The gradient with the bands, and draggable markers.
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 18.0), egui::Sense::drag());
+    let active = rmb_core::gradient::active_bands(bands);
+    let mut mesh = egui::Mesh::default();
+    let n = 256;
+    let w = rect.width() / n as f32;
+    for i in 0..n {
+        let t = i as f64 / (n - 1) as f64;
+        let c = rmb_core::gradient::sample(gradient, t).map(|v| v as f64);
+        let (c, e) = rmb_core::gradient::apply_bands(&active, t, repeat, c, 0.0);
+        let glow = 1.0 + e.min(4.0) * 0.25;
+        let c = c.map(|v| (v * glow) as f32);
+        let r = egui::Rect::from_min_max(egui::pos2(rect.left() + i as f32 * w, rect.top()), egui::pos2(rect.left() + (i + 1) as f32 * w + 0.5, rect.bottom()));
+        mesh.add_colored_rect(r, widgets::to_color32(c));
+    }
+    ui.painter().add(egui::Shape::mesh(mesh));
+    ui.painter().rect_stroke(rect, egui::CornerRadius::same(4), egui::Stroke::new(1.0, theme::BORDER), egui::StrokeKind::Outside);
+    let x_of = |pos: f64| rect.left() + (pos.rem_euclid(1.0) as f32) * rect.width();
+    for b in bands.iter().filter(|b| b.enabled) {
+        let x = x_of(b.pos);
+        let tri = vec![egui::pos2(x, rect.bottom() - 6.0), egui::pos2(x - 5.0, rect.bottom() + 3.0), egui::pos2(x + 5.0, rect.bottom() + 3.0)];
+        ui.painter().add(egui::Shape::convex_polygon(tri, widgets::to_color32(b.color), egui::Stroke::new(1.0, egui::Color32::BLACK)));
+    }
+    let drag_id = ui.id().with(("band-drag", id));
+    if resp.drag_started()
+        && let Some(p) = resp.interact_pointer_pos()
+    {
+        let near = bands.iter().enumerate().filter(|(_, b)| b.enabled).map(|(i, b)| (i, (x_of(b.pos) - p.x).abs())).filter(|(_, d)| *d < 10.0).min_by(|a, b| a.1.total_cmp(&b.1)).map(|(i, _)| i);
+        ui.data_mut(|d| d.insert_temp(drag_id, near));
+    }
+    let dragging: Option<usize> = ui.data(|d| d.get_temp(drag_id)).flatten();
+    if resp.dragged()
+        && let (Some(i), Some(p)) = (dragging, resp.interact_pointer_pos())
+        && let Some(b) = bands.get_mut(i)
+    {
+        b.pos = (((p.x - rect.left()) / rect.width()) as f64).clamp(0.0, 1.0);
+    }
+    resp.on_hover_text("The gradient with its glow bands (brighter where they glow). Drag a band's marker to move it.");
+    ui.add_space(6.0);
+    let mut remove = None;
+    for (i, b) in bands.iter_mut().enumerate() {
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut b.enabled, "").on_hover_text("Draw this band");
+            widgets::color_button(ui, &mut b.color).on_hover_text("Color of the band");
+            ui.add(egui::DragValue::new(&mut b.emission).range(0.0..=100.0).speed(0.02).max_decimals(2).prefix(format!("{} ", egui_phosphor::regular::SPARKLE)))
+                .on_hover_text("Emission: the band shines by itself, lights its surroundings and glows (0 = a plain color stripe; settings under Mapping › Emissive colors)");
+            ui.spacing_mut().slider_width = (ui.spacing().slider_width - 60.0).max(50.0);
+            ui.add(egui::Slider::new(&mut b.pos, 0.0..=1.0).max_decimals(3)).on_hover_text("Position of the band on the gradient");
+            if widgets::icon_button(ui, icons::X, "Remove this band").clicked() {
+                remove = Some(i);
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.add_space(24.0);
+            ui.label("Width").on_hover_text("Width of the band in gradient lengths");
+            ui.add(egui::DragValue::new(&mut b.width).range(0.0005..=1.0).speed(0.0005).max_decimals(4)).on_hover_text("Width of the band in gradient lengths (thin: a single line through the fractal)");
+            ui.label("Soft").on_hover_text("How softly the band fades out");
+            ui.add(egui::DragValue::new(&mut b.softness).range(0.0..=1.0).speed(0.01).max_decimals(2)).on_hover_text("Share of the band that fades out (0: hard edges, 1: soft from the center)");
+            ui.label(egui_phosphor::regular::ARROWS_CLOCKWISE).on_hover_text("Speed");
+            ui.add(egui::DragValue::new(&mut b.speed).speed(0.005).max_decimals(3).suffix("/s"))
+                .on_hover_text("Animation: the band wanders through the gradient by this many gradient lengths per second; the gradient's colors stay (negative: the other way)");
+        });
+    }
+    if let Some(i) = remove {
+        bands.remove(i);
+    }
+}
+
 fn mapping(ui: &mut Ui, m: &mut rmb_core::scene::Material, d: &rmb_core::scene::Material) {
     widgets::grid(ui, "mapping", |ui| {
         widgets::label(ui, "Color by", "Which value of the orbit picks the gradient color");
@@ -515,6 +607,7 @@ fn mapping(ui: &mut Ui, m: &mut rmb_core::scene::Material, d: &rmb_core::scene::
         ui.end_row();
         widgets::slider_log(ui, "Scale", "How fast the colors change with the value (negative reverses the gradient)", &mut m.color_scale, -10.0..=10.0, d.color_scale);
         widgets::slider(ui, "Offset", "Shifts the gradient", &mut m.color_offset, -5.0..=5.0, d.color_offset);
+        widgets::drag(ui, "Rotation", "Animation: the gradient (with its glow bands) turns by this many gradient lengths per second, so colors flow through the fractal (palette rotation; 0 = off)", &mut m.rotation, 0.005, d.rotation);
         if !m.interior.is_empty() {
             widgets::label(ui, "Interior colors", "Colors where rays meet the inside of the fractal (cut planes, camera inside the solid); imported from Mandelbulb3D");
             ui.horizontal(|ui| {
@@ -557,16 +650,18 @@ fn emissive(ui: &mut Ui, m: &mut rmb_core::scene::Material) {
         m.emission_reach = d.emission_reach;
         m.emission_glow = d.emission_glow;
         m.emission_glow_size = d.emission_glow_size;
+        m.emission_rays = d.emission_rays;
     }
     let glow_layer = m.layers.iter().any(|l| l.enabled && l.target == rmb_core::texture::Target::Emission);
-    if !glow_layer && !m.gradient.iter().any(|s| s.emission > 0.0) {
-        ui.label(RichText::new("Give a gradient color an emission (the sparkle field next to it) or add a Glow texture layer to let it shine, light its surroundings and glow.").size(theme::fs(11.5)).color(theme::TEXT_MUTED));
+    if !glow_layer && !m.gradient.iter().any(|s| s.emission > 0.0) && !m.bands.iter().any(|b| b.enabled && b.emission > 0.0) {
+        ui.label(RichText::new("Give a gradient color or a glow band an emission (the sparkle field next to it) or add a Glow texture layer to let it shine, light its surroundings and glow.").size(theme::fs(11.5)).color(theme::TEXT_MUTED));
         return;
     }
     widgets::grid(ui, "emissive", |ui| {
         widgets::slider_log(ui, "Light", "How much emissive colors light their surroundings in their color (0 = not; costs a ray per sample, refines with the samples)", &mut m.emission_light, 0.0..=20.0, d.emission_light);
         if m.emission_light > 0.0 {
             widgets::slider_log(ui, "Reach", "How far that light reaches, relative to the distance from the camera", &mut m.emission_reach, 0.01..=10.0, d.emission_reach);
+            widgets::slider_u32(ui, "Rays", "Rays per sample that gather this light: more give a cleaner image sooner (each costs about one more ray)", &mut m.emission_rays, 1..=8, d.emission_rays);
         }
         widgets::slider_log(ui, "Glow", "Glow around emissive parts, also in the air in front of them", &mut m.emission_glow, 0.0..=20.0, d.emission_glow);
         if m.emission_glow > 0.0 {
@@ -756,6 +851,11 @@ fn effects(ui: &mut Ui, scene: &mut Scene) {
         widgets::slider(ui, "Contrast", "", &mut p.contrast, 0.5..=2.0, dp.contrast);
         widgets::slider(ui, "Saturation", "", &mut p.saturation, 0.0..=2.0, dp.saturation);
         widgets::slider(ui, "Vignette", "Darkens the corners", &mut p.vignette, 0.0..=1.0, dp.vignette);
+        widgets::slider(ui, "Bloom", "Soft glow around bright parts, like light scattering in a lens (0 = off)", &mut p.bloom, 0.0..=3.0, dp.bloom);
+        if p.bloom > 0.0 {
+            widgets::slider_log(ui, "Bloom threshold", "Brightness above which parts bloom (after exposure; 1 = white). Lower: more of the image glows", &mut p.bloom_threshold, 0.0..=10.0, dp.bloom_threshold);
+            widgets::slider(ui, "Bloom size", "0: a tight halo; 1: a wide glow over large parts of the image", &mut p.bloom_size, 0.0..=1.0, dp.bloom_size);
+        }
         let note = match rmb_core::render::denoise::available() {
             Ok(p) => format!("Intel Open Image Denoise on saved images (and the \"Denoised\" preview). Library: {}", p.display()),
             Err(e) => format!("Intel Open Image Denoise on saved images. Not available: {e}. Run python3 tools/fetch_oidn.py or set RMB_OIDN_DIR."),

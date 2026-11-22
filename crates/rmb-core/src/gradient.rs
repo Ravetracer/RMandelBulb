@@ -2,6 +2,8 @@
 
 //! Surface color gradients.
 
+use serde::{Deserialize, Serialize};
+
 use crate::scene::ColorStop;
 
 /// Entries of the sampled gradient table (CPU and GPU use the same table).
@@ -40,6 +42,82 @@ pub fn linear_to_srgb(v: f32) -> u8 {
     let v = v.clamp(0.0, 1.0);
     let s = if v <= 0.003_130_8 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 };
     (s * 255.0 + 0.5) as u8
+}
+
+/// Glow bands per material that the renderers draw (more are ignored).
+pub const MAX_BANDS: usize = 4;
+
+/// A stripe laid over a gradient, independent of its stops: at gradient positions within the
+/// band the surface takes the band's color and emission. Thin bands with emission make single
+/// glowing stripes; animated (palette rotation, the band's own speed) they sweep through the
+/// fractal.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GlowBand {
+    pub enabled: bool,
+    /// Center (gradient position 0..1).
+    pub pos: f64,
+    /// Full width in gradient units.
+    pub width: f64,
+    /// Share of the half width that fades out (0: hard edges, 1: soft from the center).
+    pub softness: f64,
+    /// Linear RGB.
+    pub color: [f32; 3],
+    /// Shines by itself with this strength, like [`ColorStop::emission`].
+    pub emission: f32,
+    /// Animation: the band moves through the gradient by this many gradient lengths per second
+    /// (the gradient's colors stay where they are).
+    pub speed: f64,
+}
+
+impl Default for GlowBand {
+    fn default() -> Self {
+        Self { enabled: true, pos: 0.5, width: 0.02, softness: 0.6, color: [0.15, 0.4, 1.0], emission: 4.0, speed: 0.0 }
+    }
+}
+
+impl GlowBand {
+    /// Half width and the half width of the full-strength core (as the renderers use them).
+    pub fn extent(&self) -> (f64, f64) {
+        let half = (self.width * 0.5).max(1e-6);
+        (half, half * (1.0 - self.softness.clamp(0.0, 1.0)))
+    }
+
+    /// Strength (0..1) of the band at gradient position `t`; with `repeat` the gradient wraps
+    /// around, so the band does too.
+    pub fn weight(&self, t: f64, repeat: bool) -> f64 {
+        let (half, inner) = self.extent();
+        let mut d = (t - self.pos).abs();
+        if repeat {
+            d -= d.floor();
+            d = d.min(1.0 - d);
+        }
+        if d >= half {
+            0.0
+        } else if d <= inner {
+            1.0
+        } else {
+            let x = (half - d) / (half - inner);
+            x * x * (3.0 - 2.0 * x)
+        }
+    }
+}
+
+/// The bands the renderers draw: enabled ones, at most [`MAX_BANDS`].
+pub fn active_bands(bands: &[GlowBand]) -> Vec<GlowBand> {
+    bands.iter().filter(|b| b.enabled).take(MAX_BANDS).cloned().collect()
+}
+
+/// Lays `bands` over a surface color and emission at gradient position `t`.
+pub fn apply_bands(bands: &[GlowBand], t: f64, repeat: bool, mut base: [f64; 3], mut emis: f64) -> ([f64; 3], f64) {
+    for b in bands {
+        let w = b.weight(t, repeat);
+        if w > 0.0 {
+            base = std::array::from_fn(|k| base[k] + (b.color[k] as f64 - base[k]) * w);
+            emis += (b.emission as f64 - emis) * w;
+        }
+    }
+    (base, emis)
 }
 
 /// Linear color at `t` (0..1) of a gradient.

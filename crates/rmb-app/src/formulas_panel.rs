@@ -528,6 +528,7 @@ fn object_material(ui: &mut Ui, m: &mut ObjectMaterial, patterns: &[Pattern], gl
         return;
     }
     crate::inspector::gradient_editor(ui, &mut m.gradient, glass);
+    crate::inspector::bands_editor(ui, &m.gradient, &mut m.bands, m.repeat, "object");
     widgets::grid(ui, "obj-mat", |ui| {
         if primitive {
             widgets::label(ui, "Pattern", "How the shape picks its colors from the gradient");
@@ -551,6 +552,7 @@ fn object_material(ui: &mut Ui, m: &mut ObjectMaterial, patterns: &[Pattern], gl
         }
         widgets::slider_log(ui, "Scale", "How fast the colors change with the value", &mut m.color_scale, -10.0..=10.0, if primitive { 1.0 } else { 0.15 });
         widgets::slider(ui, "Offset", "Shifts the gradient (with a solid pattern: picks the color)", &mut m.color_offset, -5.0..=5.0, 0.0);
+        widgets::drag(ui, "Rotation", "Animation: the gradient (with its glow bands) turns by this many gradient lengths per second (palette rotation; 0 = off)", &mut m.rotation, 0.005, 0.0);
         widgets::checkbox(ui, "Repeat", "Repeat the gradient (else clamp at its ends)", &mut m.repeat);
     });
     crate::layers::layers_editor(ui, &mut m.layers, "object");

@@ -58,6 +58,7 @@ struct U {
     glass: vec4<f32>,      // transmission on, refraction index, absorption, scattering
     bg2: vec4<f32>,        // background image brightness, screen coordinates, ambient from it, fog added
     emis: vec4<f32>,       // emissive colors: light, reach, glow, glow size (0 when nothing emits)
+    emis2: vec4<f32>,      // emissive colors: rays for their light
 }
 
 @group(0) @binding(0) var<uniform> u: U;
@@ -659,6 +660,8 @@ struct MatS {
     pattern: u32,
     psize: f32,
     base: u32,
+    // Material index (0 main, k the k-th object's own): glow bands.
+    index: u32,
 }
 
 fn mat_of(obj: u32) -> MatS {
@@ -672,6 +675,7 @@ fn mat_of(obj: u32) -> MatS {
         m.pattern = 0u;
         m.psize = 1.0;
         m.base = 0u;
+        m.index = 0u;
         return m;
     }
     let ob = objs[obj - 1u];
@@ -683,6 +687,7 @@ fn mat_of(obj: u32) -> MatS {
     m.pattern = u32(ob.mat2.y);
     m.psize = ob.mat2.z;
     m.base = u32(ob.mat2.w);
+    m.index = u32(ob.pos.w);
     return m;
 }
 
@@ -1315,6 +1320,21 @@ fn ambient_occlusion(p: vec3<f32>, n: vec3<f32>, t: f32) -> vec4<f32> {
                 emitted = emission_at(h.orbit, p + n * (eps * 2.0) + d * h.t, h.eps, t + h.t) * u.emis.x;
             }
         }
+        // More rays for the emitted light only; the average of all.
+        var rays = 1u;
+        if (light) {
+            rays = clamp(u32(u.emis2.x), 1u, 8u);
+        }
+        for (var r = 1u; r < rays; r++) {
+            let v1 = rnd();
+            let v2 = rnd();
+            let dr = cosine_dir(n, v1, v2);
+            let hr = march_ray(p + n * (eps * 2.0), dr, 0.0, u.emis.y * t, 96u, false);
+            if (hr.hit) {
+                emitted += emission_at(hr.orbit, p + n * (eps * 2.0) + dr * hr.t, hr.eps, t + hr.t) * u.emis.x;
+            }
+        }
+        emitted /= f32(rays);
     }
     return vec4<f32>(ao, emitted);
 }
@@ -1405,8 +1425,39 @@ fn gradient(obj: u32, v: f32, dist: f32) -> Colors {
     c.spec = mix(lut[i + 256u].xyz, lut[i + 257u].xyz, f);
     c.trans = mix(lut[i + 256u].w, lut[i + 257u].w, f);
     c.emis = mix(lut[i].w, lut[i + 1u].w, f);
+    // Glow bands at the exact gradient position (mirrors gradient::apply_bands).
+    for (var k = 0u; k < MAX_BANDS; k++) {
+        let e = LUT_BANDS + (ms.index * MAX_BANDS + k) * 2u;
+        let b1 = lut[e + 1u];
+        if (b1.w < 0.5) {
+            break;
+        }
+        let b0 = lut[e];
+        var d = abs(t - b0.x);
+        if (ms.rep) {
+            d = d - floor(d);
+            d = min(d, 1.0 - d);
+        }
+        var w = 0.0;
+        if (d < b0.y) {
+            if (d <= b0.z) {
+                w = 1.0;
+            } else {
+                let x = (b0.y - d) / (b0.y - b0.z);
+                w = x * x * (3.0 - 2.0 * x);
+            }
+        }
+        if (w > 0.0) {
+            c.base = c.base + (b1.xyz - c.base) * w;
+            c.emis = c.emis + (b0.w - c.emis) * w;
+        }
+    }
     return c;
 }
+
+// Glow bands (renderer.rs bands_gpu): per material MAX_BANDS bands of 2 entries from LUT_BANDS.
+const LUT_BANDS: u32 = 5500u;
+const MAX_BANDS: u32 = 4u;
 
 // Texture layers (mirrors rmb-core texture.rs). Per material m (0 main, k the k-th object's
 // own) 4 layers of 7 entries in `lut` from LUT_LAYERS: [0] mapping (< 0: no more layers),

@@ -57,7 +57,10 @@
       light cast by a hemisphere ray per sample, reach, glow and glow size)
   - [x] Like emission in MagicaVoxel:
         https://www.megavoxels.com/learn/how-to-create-lights-in-magicavoxel-using-emission/
-  - [ ] Possible: animated shimmer (flicker over time), emission from color maps
+  - [x] Glow bands (up to 4 per material, exact width), palette rotation and band speed in
+        animations, several rays for the emitted light, bloom (preview and export)
+  - [ ] Possible: animated shimmer (flicker over time), emission from color maps, streaks
+        (directional bloom), volumetric glow ("steam") around emissive parts
 - [x] Scene composition like Mandelbulber's boolean mode (as used by Julius Horsthuis): up to
       eight objects after the main fractal (fractals or plane, box, sphere, cylinder, torus,
       water), each with position, rotation, scale, operation (add, cut away, intersect, smooth

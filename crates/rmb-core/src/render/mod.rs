@@ -4,6 +4,7 @@
 //!
 //! The GPU kernel (`rmb-gpu/src/march.wgsl`) mirrors `cpu.rs` step by step; keep them in sync.
 
+pub mod bloom;
 pub mod cpu;
 pub mod denoise;
 pub mod oidn;

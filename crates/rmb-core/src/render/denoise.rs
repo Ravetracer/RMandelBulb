@@ -100,6 +100,7 @@ impl HdrImage {
             }
         };
         self.add_flares(scene);
+        super::bloom::apply(&mut self.color, self.width, self.height, post);
         (self.to_rgba8(post), outcome)
     }
 
@@ -112,6 +113,7 @@ impl HdrImage {
                 Err(e) => Outcome::Failed(e),
             }
         };
+        super::bloom::apply(&mut self.color, self.width, self.height, post);
         (self.to_rgba8(post), outcome)
     }
 }

@@ -760,6 +760,10 @@ impl Default for ColorMap {
 #[serde(default)]
 pub struct Material {
     pub gradient: Vec<ColorStop>,
+    /// Glowing stripes over the gradient.
+    pub bands: Vec<crate::gradient::GlowBand>,
+    /// Animation: the gradient turns by this many lengths per second (moves `color_offset`).
+    pub rotation: f64,
     pub color_mode: ColorMode,
     pub color_scale: f64,
     pub color_offset: f64,
@@ -808,12 +812,16 @@ pub struct Material {
     pub emission_glow: f64,
     /// Size of that glow, relative to the distance from the camera.
     pub emission_glow_size: f64,
+    /// Rays per sample that gather the light of emissive colors (1..8; more: less noise).
+    pub emission_rays: u32,
 }
 
 impl Default for Material {
     fn default() -> Self {
         Material {
             gradient: crate::gradient::preset("Copper").unwrap_or_default(),
+            bands: Vec::new(),
+            rotation: 0.0,
             color_mode: ColorMode::Iterations,
             color_scale: 0.15,
             color_offset: 0.0,
@@ -838,6 +846,7 @@ impl Default for Material {
             emission_reach: 0.5,
             emission_glow: 1.0,
             emission_glow_size: 0.02,
+            emission_rays: 1,
         }
     }
 }
@@ -1020,11 +1029,16 @@ pub struct Post {
     pub denoise: bool,
     /// Share of the denoised image (1 = only denoised, 0 = original).
     pub denoise_blend: f64,
+    /// Bloom: strength of the glow around bright parts (0 = off), the brightness above which
+    /// it starts (after exposure, 1 = white) and its size (0 small .. 1 wide).
+    pub bloom: f64,
+    pub bloom_threshold: f64,
+    pub bloom_size: f64,
 }
 
 impl Default for Post {
     fn default() -> Self {
-        Post { exposure: 0.0, gamma: 2.2, contrast: 1.0, saturation: 1.0, tone_map: true, vignette: 0.15, display_space: false, denoise: false, denoise_blend: 1.0 }
+        Post { exposure: 0.0, gamma: 2.2, contrast: 1.0, saturation: 1.0, tone_map: true, vignette: 0.15, display_space: false, denoise: false, denoise_blend: 1.0, bloom: 0.0, bloom_threshold: 1.0, bloom_size: 0.6 }
     }
 }
 

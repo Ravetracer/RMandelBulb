@@ -34,6 +34,8 @@ pub struct Mat {
     pub lut_spec: Vec<[f32; 3]>,
     pub lut_trans: Vec<f32>,
     pub lut_emis: Vec<f32>,
+    /// Glow bands over the gradient.
+    pub bands: Vec<crate::gradient::GlowBand>,
     pub mode: ColorMode,
     pub scale: f64,
     pub offset: f64,
@@ -48,12 +50,13 @@ pub struct Mat {
 
 impl Mat {
     #[allow(clippy::too_many_arguments)]
-    fn new(g: &[crate::scene::ColorStop], mode: ColorMode, scale: f64, offset: f64, repeat: bool, saturation: f64, pattern: u32, pattern_size: f64, layers: &[crate::texture::TextureLayer]) -> Mat {
+    fn new(g: &[crate::scene::ColorStop], bands: &[crate::gradient::GlowBand], mode: ColorMode, scale: f64, offset: f64, repeat: bool, saturation: f64, pattern: u32, pattern_size: f64, layers: &[crate::texture::TextureLayer]) -> Mat {
         Mat {
             lut: crate::gradient::lut(g),
             lut_spec: crate::gradient::lut_specular(g),
             lut_trans: crate::gradient::lut_transparency(g),
             lut_emis: crate::gradient::lut_emission(g),
+            bands: crate::gradient::active_bands(bands),
             mode,
             scale,
             offset,
@@ -68,10 +71,10 @@ impl Mat {
     /// The materials of a scene: the main one, then one per object.
     pub fn of_scene(scene: &Scene) -> Vec<Mat> {
         let m = &scene.material;
-        let mut out = vec![Mat::new(&m.gradient, m.color_mode, m.color_scale, m.color_offset, m.repeat, m.saturation, 0, 1.0, &m.layers)];
+        let mut out = vec![Mat::new(&m.gradient, &m.bands, m.color_mode, m.color_scale, m.color_offset, m.repeat, m.saturation, 0, 1.0, &m.layers)];
         for o in &scene.objects {
             let om = &o.material;
-            out.push(Mat::new(&om.gradient, om.color_mode, om.color_scale, om.color_offset, om.repeat, 1.0, om.pattern.index(), om.pattern_size, &om.layers));
+            out.push(Mat::new(&om.gradient, &om.bands, om.color_mode, om.color_scale, om.color_offset, om.repeat, 1.0, om.pattern.index(), om.pattern_size, &om.layers));
         }
         out
     }
@@ -90,7 +93,7 @@ impl<'a> Shader<'a> {
         let materials = Mat::of_scene(scene);
         // Only materials that are used count for emission.
         let used = |k: usize| k == 0 || prog.objects.iter().any(|o| o.material == k);
-        let glows = |m: &Mat| m.lut_emis.iter().any(|e| *e > 0.0) || m.layers.iter().any(|l| l.layer.target == crate::texture::Target::Emission);
+        let glows = |m: &Mat| m.lut_emis.iter().any(|e| *e > 0.0) || m.bands.iter().any(|b| b.emission > 0.0) || m.layers.iter().any(|l| l.layer.target == crate::texture::Target::Emission);
         let emissive = materials.iter().enumerate().any(|(k, m)| used(k) && glows(m));
         Shader {
             scene,
@@ -371,6 +374,18 @@ impl<'a> Shader<'a> {
                     emitted = e.map(|v| v * m.emission_light);
                 }
             }
+            // More rays for the emitted light only; the average of all.
+            let rays = if light { m.emission_rays.clamp(1, 8) } else { 1 };
+            for _ in 1..rays {
+                let d = cosine_dir(n, rng.next_f64(), rng.next_f64());
+                if let (Some(h), _, _) = self.march(ev, p + n * (eps * 2.0), d, 0.0, m.emission_reach * t, 96) {
+                    let e = self.emission_at(&h.orbit, h.pos, h.eps, t + h.t);
+                    for k in 0..3 {
+                        emitted[k] += e[k] * m.emission_light;
+                    }
+                }
+            }
+            emitted = emitted.map(|v| v / rays as f64);
         }
         (ao, emitted)
     }
@@ -569,12 +584,11 @@ impl<'a> Shader<'a> {
         let mix = |l: &[[f32; 3]]| [0, 1, 2].map(|k| l[i][k] as f64 + (l[i + 1][k] as f64 - l[i][k] as f64) * f);
         let base = mix(&m.lut);
         let first = m.lut[0];
-        (
-            [0, 1, 2].map(|k| first[k] as f64 + (base[k] - first[k] as f64) * m.saturation),
-            mix(&m.lut_spec),
-            m.lut_trans[i] as f64 + (m.lut_trans[i + 1] as f64 - m.lut_trans[i] as f64) * f,
-            m.lut_emis[i] as f64 + (m.lut_emis[i + 1] as f64 - m.lut_emis[i] as f64) * f,
-        )
+        let base = [0, 1, 2].map(|k| first[k] as f64 + (base[k] - first[k] as f64) * m.saturation);
+        let emis = m.lut_emis[i] as f64 + (m.lut_emis[i + 1] as f64 - m.lut_emis[i] as f64) * f;
+        // Glow bands at the exact gradient position (not through the table).
+        let (base, emis) = crate::gradient::apply_bands(&m.bands, t, m.repeat, base, emis);
+        (base, mix(&m.lut_spec), m.lut_trans[i] as f64 + (m.lut_trans[i + 1] as f64 - m.lut_trans[i] as f64) * f, emis)
     }
 
     /// Linear radiance of one sample of pixel (`px`, `py`).
@@ -1008,10 +1022,13 @@ impl CpuRenderer {
     pub fn rgba8(&self) -> Vec<u8> {
         let n = self.samples.max(1) as f64;
         let (w, h) = (self.width as f64, self.height as f64);
+        // Bloom works on the whole image (like the GPU preview, without lens flares here).
+        let mut lin: Vec<f32> = self.accum.iter().flat_map(|a| a.map(|v| (v / n) as f32)).collect();
+        super::bloom::apply(&mut lin, self.width, self.height, &self.scene.post);
         let mut out = Vec::with_capacity(self.accum.len() * 4);
-        for (i, a) in self.accum.iter().enumerate() {
+        for (i, a) in lin.as_chunks::<3>().0.iter().enumerate() {
             let (x, y) = ((i as u32 % self.width) as f64, (i as u32 / self.width) as f64);
-            let c = post_process(a.map(|v| v / n), &self.scene.post, (x + 0.5) / w, (y + 0.5) / h);
+            let c = post_process(a.map(|v| v as f64), &self.scene.post, (x + 0.5) / w, (y + 0.5) / h);
             out.extend_from_slice(&[(c[0] * 255.0 + 0.5) as u8, (c[1] * 255.0 + 0.5) as u8, (c[2] * 255.0 + 0.5) as u8, 255]);
         }
         out

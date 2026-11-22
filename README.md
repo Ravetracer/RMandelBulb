@@ -57,7 +57,9 @@ modern egui interface and import of Mandelbulb3D parameters.
   or as glow. Triplanar, planar, spherical, cylindrical or orbit mapping, in object or world
   space.
 - **Emissive colors**: gradient colors can shine by themselves, light their surroundings in
-  their color and glow (MagicaVoxel-style emission).
+  their color and glow (MagicaVoxel-style emission). **Glow bands** lay thin glowing stripes
+  over a gradient, independent of its colors; palette rotation and each band's own speed make
+  them sweep through the fractal in animations. **Bloom** adds soft halos around bright parts.
 - **Animation** (Animation button, timeline under the view):
   - Keyframes are whole scenes. The camera follows a smooth path through them that never
     overshoots, and every other setting blends between them.

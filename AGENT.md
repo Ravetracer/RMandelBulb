@@ -105,6 +105,15 @@ cargo clippy -j 8 --workspace --all-targets
   type changes the shader signature (recompile); everything else is buffer data.
 - `cargo run --release -p rmb-core --example compose_demo -- out.rmb` writes a demo scene.
 
+## Colors, glow bands, bloom
+
+- `gradient.rs`: stops are sampled into 256-entry tables; `GlowBand`s are evaluated exactly at
+  the gradient position (`apply_bands`, GPU: `gradient()` in march.wgsl, LUT from `LUT_BANDS`).
+  `Material::rotation` and `GlowBand::speed` are integrated over the frames in
+  `animation.rs` (`color_phases`), so they only act in animations.
+- `render/bloom.rs`: bloom pyramid applied in `HdrImage::finish*` and `CpuRenderer::rgba8`; the
+  GPU preview runs the same passes (`bloom.wgsl`, composite in display.wgsl).
+
 ## 3D models and texture layers
 
 - `mesh.rs` loads OBJ/STL/PLY/glTF (materials by name, colors, color textures; images that

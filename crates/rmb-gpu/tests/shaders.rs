@@ -55,6 +55,32 @@ fn gpu_matches_cpu() {
 }
 
 #[test]
+fn gpu_matches_cpu_with_glow_bands_and_bloom() {
+    let mut scene = Scene::default();
+    scene.lighting.ao_mode = rmb_core::scene::AoMode::Fast;
+    scene.material.bands = vec![
+        // Two halves of the gradient: one glows, one has a hard-edged plain color.
+        rmb_core::gradient::GlowBand { pos: 0.25, width: 0.5, emission: 6.0, ..Default::default() },
+        rmb_core::gradient::GlowBand { pos: 0.75, width: 0.45, softness: 0.0, color: [1.0, 0.2, 0.05], emission: 0.0, ..Default::default() },
+    ];
+    scene.material.emission_light = 1.0;
+    scene.material.emission_rays = 3;
+    scene.post.bloom = 0.8;
+    scene.post.bloom_threshold = 0.6;
+    let cpu = |s: &Scene| {
+        let mut r = rmb_core::render::cpu::CpuRenderer::new(s.clone(), 48, 32);
+        r.render_pass();
+        r.rgba8()
+    };
+    let mut plain = scene.clone();
+    plain.material.bands.clear();
+    plain.post.bloom = 0.0;
+    let changed = cpu(&scene).iter().zip(cpu(&plain)).filter(|(a, b)| (**a as i32 - *b as i32).abs() > 8).count();
+    assert!(changed > 300, "bands and bloom change only {changed} channels");
+    parity(scene);
+}
+
+#[test]
 fn gpu_matches_cpu_with_de_combination_and_4d_rotation() {
     let mut scene = Scene::default();
     scene.lighting.ao_mode = rmb_core::scene::AoMode::Fast;

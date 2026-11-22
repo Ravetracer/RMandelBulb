@@ -115,6 +115,7 @@ struct Uniforms {
     glass: [f32; 4],
     bg2: [f32; 4],
     emis: [f32; 4],
+    emis2: [f32; 4],
 }
 
 /// A composed object (march.wgsl `Obj`).
@@ -254,6 +255,30 @@ fn layers_gpu(scene: &Scene, lut: &mut Vec<[f32; 4]>) {
     }
 }
 
+/// LUT entries before the glow bands (march.wgsl `LUT_BANDS`): after the texture layers of 9
+/// materials.
+const LUT_BANDS: usize = LUT_LAYERS + 9 * rmb_core::texture::MAX_LAYERS * 7;
+
+/// The glow bands of the main material and the objects' own ones (appended to `lut` at
+/// `LUT_BANDS`: per material `MAX_BANDS` bands of 2 entries: position, half width, core half
+/// width, emission; color, 1 = in use).
+fn bands_gpu(scene: &Scene, lut: &mut Vec<[f32; 4]>) {
+    use rmb_core::gradient::{MAX_BANDS, active_bands};
+    lut.resize(LUT_BANDS, [0.0; 4]);
+    let lists = std::iter::once(&scene.material.bands).chain(scene.objects.iter().map(|o| &o.material.bands));
+    for (m, bands) in lists.take(9).enumerate() {
+        let base = LUT_BANDS + m * MAX_BANDS * 2;
+        lut.resize(base + MAX_BANDS * 2, [0.0; 4]);
+        for (i, b) in active_bands(bands).iter().enumerate() {
+            let (half, inner) = b.extent();
+            lut[base + 2 * i] = [b.pos as f32, half as f32, inner as f32, b.emission];
+            lut[base + 2 * i + 1] = [b.color[0], b.color[1], b.color[2], 1.0];
+        }
+    }
+}
+
+const _: () = assert!(LUT_BANDS == 5500, "march.wgsl LUT_BANDS");
+
 /// The object buffer and the LUT blocks of their materials (appended to `lut`).
 fn objects_gpu(scene: &Scene, prog: &Program, lut: &mut Vec<[f32; 4]>) -> Vec<ObjGpu> {
     use rmb_core::fractal::ObjectShape;
@@ -318,6 +343,31 @@ struct PostUniforms {
     a: [f32; 4],
     b: [f32; 4],
     size: [u32; 4],
+    bloom: [f32; 4],
+    lv: [[u32; 4]; 6],
+    lw: [[f32; 4]; 6],
+}
+
+/// The bloom pyramid of a `w` × `h` image: per level its first texel, width and height, and
+/// the texels of all levels.
+fn bloom_levels(w: u32, h: u32) -> (Vec<[u32; 4]>, u32) {
+    let mut off = 0;
+    let mut out = Vec::new();
+    for (lw, lh) in rmb_core::render::bloom::level_sizes(w, h) {
+        out.push([off, lw, lh, 0]);
+        off += lw * lh;
+    }
+    (out, off)
+}
+
+/// Uniforms of one bloom pass (bloom.wgsl `BP`).
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct BloomPass {
+    dst: [u32; 4],
+    src: [u32; 4],
+    img: [u32; 4],
+    prm: [f32; 4],
 }
 
 fn v4(v: rmb_core::V3, w: f64) -> [f32; 4] {
@@ -463,12 +513,16 @@ fn uniforms(scene: &Scene, prog: &Program, w: u32, h: u32, fast: bool) -> Unifor
             let own = prog.objects.iter().filter_map(|o| scene.objects.get(o.material.wrapping_sub(1)).filter(|_| o.material > 0));
             let own: Vec<_> = own.collect();
             let glow_layer = |l: &[rmb_core::texture::TextureLayer]| l.iter().any(|l| l.enabled && l.target == rmb_core::texture::Target::Emission);
+            let band = |b: &[rmb_core::gradient::GlowBand]| rmb_core::gradient::active_bands(b).iter().any(|b| b.emission > 0.0);
             let any = m.gradient.iter().chain(own.iter().flat_map(|so| so.material.gradient.iter())).any(|s| s.emission > 0.0)
+                || band(&m.bands)
+                || own.iter().any(|so| band(&so.material.bands))
                 || glow_layer(&m.layers)
                 || own.iter().any(|so| glow_layer(&so.material.layers));
             let on = |v: f64| if any { v.max(0.0) as f32 } else { 0.0 };
             [on(m.emission_light), m.emission_reach as f32, on(m.emission_glow), m.emission_glow_size as f32]
         },
+        emis2: [m.emission_rays.clamp(1, 8) as f32, 0.0, 0.0, 0.0],
         bg2: [
             bg.image_intensity as f32,
             if bg.image_screen { 1.0 } else { 0.0 },
@@ -484,6 +538,25 @@ fn post_uniforms(scene: &Scene, w: u32, h: u32) -> PostUniforms {
         a: [p.exposure as f32, p.gamma as f32, p.contrast as f32, p.saturation as f32],
         b: [if p.tone_map { 1.0 } else { 0.0 }, p.vignette as f32, if p.display_space { 1.0 } else { 0.0 }, 0.0],
         size: [w, h, 0, 0],
+        bloom: {
+            let n = bloom_levels(w, h).0.len();
+            [if p.bloom > 0.0 { p.bloom as f32 } else { 0.0 }, n as f32, p.bloom_threshold as f32, 0.0]
+        },
+        lv: {
+            let mut lv = [[0u32; 4]; 6];
+            for (d, l) in lv.iter_mut().zip(bloom_levels(w, h).0) {
+                *d = l;
+            }
+            lv
+        },
+        lw: {
+            let (levels, _) = bloom_levels(w, h);
+            let mut lw = [[0f32; 4]; 6];
+            for (d, wt) in lw.iter_mut().zip(rmb_core::render::bloom::level_weights(p.bloom_size, levels.len())) {
+                d[0] = wt;
+            }
+            lw
+        },
     }
 }
 
@@ -520,6 +593,12 @@ struct Key {
 pub struct GpuRenderer {
     ctx: GpuContext,
     display_pipeline: wgpu::ComputePipeline,
+    /// Bloom passes (bloom.wgsl): bright, down, blur_h, blur_v.
+    bloom_pipelines: [wgpu::ComputePipeline; 4],
+    /// Bloom pyramid, its blur scratch and one uniform buffer per pass.
+    bloom_levels: wgpu::Buffer,
+    bloom_tmp: wgpu::Buffer,
+    bloom_passes: Vec<wgpu::Buffer>,
     /// Explicit layout of the march bindings: a shader that does not read a binding (formulas
     /// without parameters never touch `prm`) must still accept the full bind group.
     march_layout: wgpu::BindGroupLayout,
@@ -582,6 +661,17 @@ impl GpuRenderer {
             compilation_options: Default::default(),
             cache: None,
         });
+        let bloom_module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("bloom"), source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("bloom.wgsl"))) });
+        let bloom_pipelines = ["bloom_bright", "bloom_down", "bloom_blur_h", "bloom_blur_v"].map(|entry| {
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some(entry),
+                layout: None,
+                module: &bloom_module,
+                entry_point: Some(entry),
+                compilation_options: Default::default(),
+                cache: None,
+            })
+        });
         let uniform = |label: &str, size: usize| {
             device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some(label),
@@ -629,6 +719,10 @@ impl GpuRenderer {
             map_background: String::new(),
             maps_generation: rmb_core::maps::generation(),
             display_pipeline,
+            bloom_pipelines,
+            bloom_levels: storage_buffer(device, "bloom-levels", 16),
+            bloom_tmp: storage_buffer(device, "bloom-tmp", 16),
+            bloom_passes: Vec::new(),
             march_pipeline_layout: device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("march"), bind_group_layouts: &[Some(&march_layout)], immediate_size: 0 }),
             march_layout,
             pipeline: None,
@@ -748,6 +842,7 @@ impl GpuRenderer {
         lut.extend(ib.iter().chain(&is).map(|c| [c[0], c[1], c[2], 1.0]));
         let objs = objects_gpu(&shade, &prog, &mut lut);
         layers_gpu(&shade, &mut lut);
+        bands_gpu(&shade, &mut lut);
         let device = self.ctx.device.clone();
         let device = &device;
         let obj_bytes = (objs.len() * std::mem::size_of::<ObjGpu>()) as u64;
@@ -1021,6 +1116,10 @@ impl GpuRenderer {
             return;
         }
         self.dirty_display = false;
+        let (width, height) = (t.width, t.height);
+        let mut enc = self.ctx.device.create_command_encoder(&Default::default());
+        self.bloom_passes(&mut enc, width, height);
+        let Some(t) = self.target.as_ref() else { return };
         let device = &self.ctx.device;
         let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("display"),
@@ -1030,9 +1129,9 @@ impl GpuRenderer {
                 wgpu::BindGroupEntry { binding: 1, resource: t.accum.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&t.view) },
                 wgpu::BindGroupEntry { binding: 3, resource: self.flare.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 4, resource: self.bloom_levels.as_entire_binding() },
             ],
         });
-        let mut enc = device.create_command_encoder(&Default::default());
         {
             let mut pass = enc.begin_compute_pass(&Default::default());
             pass.set_pipeline(&self.display_pipeline);
@@ -1041,6 +1140,60 @@ impl GpuRenderer {
         }
         self.ctx.queue.submit(Some(enc.finish()));
         self.generation += 1;
+    }
+
+    /// Records the bloom pyramid passes (bloom.wgsl) when the post processing has bloom.
+    fn bloom_passes(&mut self, enc: &mut wgpu::CommandEncoder, width: u32, height: u32) {
+        let Some(post) = self.post else { return };
+        if post.bloom[0] <= 0.0 {
+            return;
+        }
+        let Some(t) = self.target.as_ref() else { return };
+        let device = &self.ctx.device;
+        let (levels, texels) = bloom_levels(width, height);
+        let bytes = texels as u64 * 16;
+        if self.bloom_levels.size() < bytes {
+            self.bloom_levels = storage_buffer(device, "bloom-levels", bytes.next_power_of_two());
+            self.bloom_tmp = storage_buffer(device, "bloom-tmp", bytes.next_power_of_two());
+        }
+        // Passes: bright into level 0, down into each further level, then blur h + v per level.
+        let mut passes: Vec<(usize, BloomPass)> = Vec::new();
+        let img = [width, height, post.size[2], post.size[3]];
+        let prm = [post.a[0].exp2(), post.bloom[2], 0.0, 0.0];
+        for (k, l) in levels.iter().enumerate() {
+            let src = if k == 0 { [0; 4] } else { levels[k - 1] };
+            passes.push((if k == 0 { 0 } else { 1 }, BloomPass { dst: *l, src, img, prm }));
+        }
+        for l in &levels {
+            passes.push((2, BloomPass { dst: *l, src: *l, img, prm }));
+            passes.push((3, BloomPass { dst: *l, src: *l, img, prm }));
+        }
+        while self.bloom_passes.len() < passes.len() {
+            self.bloom_passes.push(device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("bloom-pass"),
+                size: std::mem::size_of::<BloomPass>() as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+        }
+        for (i, (kind, bp)) in passes.iter().enumerate() {
+            self.ctx.queue.write_buffer(&self.bloom_passes[i], 0, bytemuck::bytes_of(bp));
+            let pipe = &self.bloom_pipelines[*kind];
+            let mut entries = vec![wgpu::BindGroupEntry { binding: 0, resource: self.bloom_passes[i].as_entire_binding() }];
+            if *kind == 0 {
+                entries.push(wgpu::BindGroupEntry { binding: 1, resource: t.accum.as_entire_binding() });
+                entries.push(wgpu::BindGroupEntry { binding: 2, resource: self.flare.as_entire_binding() });
+            }
+            entries.push(wgpu::BindGroupEntry { binding: 3, resource: self.bloom_levels.as_entire_binding() });
+            if *kind >= 2 {
+                entries.push(wgpu::BindGroupEntry { binding: 4, resource: self.bloom_tmp.as_entire_binding() });
+            }
+            let bind = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("bloom"), layout: &pipe.get_bind_group_layout(0), entries: &entries });
+            let mut pass = enc.begin_compute_pass(&Default::default());
+            pass.set_pipeline(pipe);
+            pass.set_bind_group(0, &bind, &[]);
+            pass.dispatch_workgroups(bp.dst[1].div_ceil(8), bp.dst[2].div_ceil(8), 1);
+        }
     }
 
     /// Blocks until the current shader is compiled (headless rendering). Returns the error, if any.

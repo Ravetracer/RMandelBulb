@@ -15,6 +15,8 @@
 //! keyframe values: the scenes are blended as JSON, numbers interpolated (integers rounded,
 //! some magnitudes on a log scale), everything else held from the keyframe before.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -421,6 +423,58 @@ pub struct AnimationPlan {
     keys: Vec<Scene>,
     frames: Vec<FrameCam>,
     fps: f64,
+    /// Per frame: how far each palette and glow band has turned (see `color_speeds`).
+    phases: Vec<BTreeMap<String, f64>>,
+}
+
+/// The palette rotations and glow band speeds of a scene by name ("m": the main material,
+/// "m.b2": its third band, "o1", "o1.b0": the first object's).
+fn color_speeds(s: &Scene) -> BTreeMap<String, f64> {
+    let mut out = BTreeMap::new();
+    let mut add = |name: String, rotation: f64, bands: &[crate::gradient::GlowBand]| {
+        out.insert(name.clone(), rotation);
+        for (i, b) in bands.iter().enumerate() {
+            out.insert(format!("{name}.b{i}"), b.speed);
+        }
+    };
+    add("m".into(), s.material.rotation, &s.material.bands);
+    for (k, o) in s.objects.iter().enumerate() {
+        add(format!("o{k}"), o.material.rotation, &o.material.bands);
+    }
+    out
+}
+
+/// The phases of every frame: the speeds (linear between the keyframes, by the frames'
+/// keyframe positions `us`) summed over the frames before.
+fn color_phases(keys: &[Scene], us: &[f64], fps: f64) -> Vec<BTreeMap<String, f64>> {
+    let speeds: Vec<BTreeMap<String, f64>> = keys.iter().map(color_speeds).collect();
+    let n = keys.len();
+    let mut acc: BTreeMap<String, f64> = BTreeMap::new();
+    let mut out = Vec::with_capacity(us.len());
+    for &u in us {
+        out.push(acc.clone());
+        let i = (u.floor().max(0.0) as usize).min(n.saturating_sub(2));
+        let t = (u - i as f64).clamp(0.0, 1.0);
+        for (name, &a) in &speeds[i] {
+            let b = speeds.get(i + 1).and_then(|s| s.get(name)).copied().unwrap_or(a);
+            *acc.entry(name.clone()).or_insert(0.0) += (a + (b - a) * t) / fps;
+        }
+    }
+    out
+}
+
+/// Turns the palettes and moves the glow bands of `s` by `phase`.
+fn apply_phases(s: &mut Scene, phase: &BTreeMap<String, f64>) {
+    let turn = |name: String, offset: &mut f64, bands: &mut [crate::gradient::GlowBand]| {
+        *offset += phase.get(&name).copied().unwrap_or(0.0);
+        for (i, b) in bands.iter_mut().enumerate() {
+            b.pos += phase.get(&format!("{name}.b{i}")).copied().unwrap_or(0.0);
+        }
+    };
+    turn("m".into(), &mut s.material.color_offset, &mut s.material.bands);
+    for (k, o) in s.objects.iter_mut().enumerate() {
+        turn(format!("o{k}"), &mut o.material.color_offset, &mut o.material.bands);
+    }
 }
 
 impl AnimationPlan {
@@ -441,7 +495,8 @@ impl AnimationPlan {
         if anim.camera.on {
             cameraman(&mut frames, &anim.camera, fps, &keys);
         }
-        Ok(AnimationPlan { values, keys, frames, fps })
+        let phases = color_phases(&keys, &us, fps);
+        Ok(AnimationPlan { values, keys, frames, fps, phases })
     }
 
     pub fn frame_count(&self) -> usize {
@@ -499,6 +554,9 @@ impl AnimationPlan {
         scene.camera.set_orientation(fc.rot);
         scene.camera.fov = fc.fov;
         scene.animation = None;
+        if let Some(p) = self.phases.get(frame.min(self.frames.len() - 1)) {
+            apply_phases(&mut scene, p);
+        }
         scene
     }
 }
@@ -809,6 +867,29 @@ mod tests {
         for (a, b) in [(c.right, s.camera.right), (c.up, s.camera.up), (c.forward, s.camera.forward)] {
             assert!((a - b).length() < 1e-9);
         }
+    }
+
+    #[test]
+    fn palettes_turn_and_bands_wander() {
+        let mut keys = orbit_keys(2);
+        for k in &mut keys {
+            k.scene.material.rotation = 0.5;
+            k.scene.material.bands = vec![crate::gradient::GlowBand { pos: 0.2, speed: -0.25, ..Default::default() }];
+        }
+        // The second key turns twice as fast: the speed blends linearly.
+        keys[1].scene.material.rotation = 1.0;
+        let anim = Animation { keyframes: keys, ..Default::default() };
+        let plan = AnimationPlan::new(&anim).unwrap();
+        let fps = plan.fps();
+        let last = plan.frame_count() - 1;
+        let s0 = plan.scene_at(0);
+        assert_eq!(s0.material.color_offset, 0.0);
+        assert_eq!(s0.material.bands[0].pos, 0.2);
+        let s = plan.scene_at(last);
+        let secs = last as f64 / fps;
+        // Average speed 0.75 turns per second over the whole time.
+        assert!((s.material.color_offset - 0.75 * secs).abs() < 0.02, "{}", s.material.color_offset);
+        assert!((s.material.bands[0].pos - (0.2 - 0.25 * secs)).abs() < 1e-9);
     }
 
     #[test]
