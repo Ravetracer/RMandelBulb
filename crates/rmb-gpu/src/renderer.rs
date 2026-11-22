@@ -680,6 +680,8 @@ pub struct GpuRenderer {
     /// Next row of the running pass.
     row: u32,
     band_rows: u32,
+    /// Time per submission the band height adapts to.
+    band_target: Duration,
     dirty_display: bool,
     generation: u64,
     last_error: Option<String>,
@@ -692,6 +694,8 @@ pub struct GpuRenderer {
 const CACHE_SIZE: usize = 8;
 /// Time per band submission we aim for.
 const BAND_TARGET: Duration = Duration::from_millis(12);
+/// Submission time of renders without a window.
+const OFFLINE_BAND_TARGET: Duration = Duration::from_millis(50);
 
 impl GpuRenderer {
     pub fn new(ctx: GpuContext) -> Self {
@@ -779,6 +783,7 @@ impl GpuRenderer {
             samples: 0,
             row: 0,
             band_rows: 16,
+            band_target: BAND_TARGET,
             dirty_display: false,
             generation: 0,
             last_error: None,
@@ -787,6 +792,12 @@ impl GpuRenderer {
             signature: String::new(),
             ctx,
         }
+    }
+
+    /// Sets the time per submission (default 12 ms, which keeps a window responsive). Renders
+    /// without a window use longer submissions: fewer round trips to the GPU.
+    pub fn set_band_target(&mut self, target: Duration) {
+        self.band_target = target;
     }
 
     pub fn context(&self) -> &GpuContext {
@@ -1107,7 +1118,7 @@ impl GpuRenderer {
             let dt = t0.elapsed();
             worked = true;
             // Adapt the band height toward the target time per submission.
-            let ratio = BAND_TARGET.as_secs_f64() / dt.as_secs_f64().max(1e-5);
+            let ratio = self.band_target.as_secs_f64() / dt.as_secs_f64().max(1e-5);
             let wanted = (rows as f64 * ratio.clamp(0.5, 2.0)).round() as u32;
             self.band_rows = wanted.clamp(8, height.max(8)).next_multiple_of(8);
             self.row += rows;
@@ -1392,12 +1403,45 @@ pub fn render_animation(
     frame_scene: impl Fn(usize) -> Scene,
     cancel: &std::sync::atomic::AtomicBool,
     mut progress: impl FnMut(f32),
-    mut on_frame: impl FnMut(usize, Vec<u8>) -> Result<(), String>,
+    mut on_frame: impl FnMut(usize, Vec<u8>) -> Result<(), String> + Send,
+) -> Result<(), String> {
+    // `on_frame` (encoding, writing) runs on a second thread while the next frame renders.
+    std::thread::scope(|s| {
+        let (tx, rx) = mpsc::sync_channel::<(usize, Vec<u8>)>(1);
+        let writer = s.spawn(move || -> Result<(), String> {
+            for (f, rgba) in rx {
+                on_frame(f, rgba)?;
+            }
+            Ok(())
+        });
+        let rendered = render_frames(ctx, frames, width, height, samples, frame_scene, cancel, &mut progress, &tx);
+        drop(tx);
+        let written = writer.join().unwrap_or_else(|_| Err("writing a frame failed".into()));
+        // A writer error ends the rendering too (the channel closes): report it first.
+        written.and(rendered)
+    })
+}
+
+/// The rendering part of [`render_animation`]: hands each frame to `tx`.
+#[allow(clippy::too_many_arguments)]
+fn render_frames(
+    ctx: Option<GpuContext>,
+    frames: std::ops::Range<usize>,
+    width: u32,
+    height: u32,
+    samples: u32,
+    frame_scene: impl Fn(usize) -> Scene,
+    cancel: &std::sync::atomic::AtomicBool,
+    progress: &mut impl FnMut(f32),
+    tx: &mpsc::SyncSender<(usize, Vec<u8>)>,
 ) -> Result<(), String> {
     use std::sync::atomic::Ordering;
     let samples = samples.max(1);
     let total = frames.len().max(1) as f32;
     let mut gpu = ctx.map(GpuRenderer::new);
+    if let Some(r) = gpu.as_mut() {
+        r.set_band_target(OFFLINE_BAND_TARGET);
+    }
     for (done, f) in frames.enumerate() {
         if cancel.load(Ordering::Relaxed) {
             return Err("cancelled".into());
@@ -1433,11 +1477,15 @@ pub fn render_animation(
             }
         };
         let (rgba, _) = image.finish_scene(&scene);
-        on_frame(f, rgba)?;
+        if tx.send((f, rgba)).is_err() {
+            // The writer stopped with an error.
+            return Ok(());
+        }
         progress((done + 1) as f32 / total);
     }
     Ok(())
 }
+
 
 /// Renders like [`render_blocking_hdr`] and hands intermediate images to `snapshot` (the image
 /// and the samples in it) after 1, 2, 4, 8 … samples, at most about once a second after the
@@ -1476,6 +1524,7 @@ fn render_to(ctx: GpuContext, scene: &Scene, width: u32, height: u32, samples: u
     // Final renders wait for the 3D models to bake.
     rmb_core::compose::load_models(scene);
     let mut r = GpuRenderer::new(ctx);
+    r.set_band_target(OFFLINE_BAND_TARGET);
     r.set_scene(scene, width, height, false);
     r.wait_for_pipeline()?;
     let samples = samples.max(1);

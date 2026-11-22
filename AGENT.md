@@ -39,7 +39,9 @@ cargo clippy -j 8 --workspace --all-targets
 - Performance: `cargo run -j 8 --release -p rmb-gpu --example bench -- <scene…> -W 640 -H 360`
   times GPU passes with features switched off one at a time (AO, shadows, lights, refine,
   normal smoothing). Build the CLI separately (`-p rmb-cli` without `--example`) before
-  comparing images: `--example` builds only the example.
+  comparing images: `--example` builds only the example. A CLI built elsewhere (e.g. a
+  worktree for a baseline) finds the denoiser only with `RMB_OIDN_DIR=<repo>/oidn`; check its
+  "denoised on …" line before comparing timings.
 
 ## Design notes
 

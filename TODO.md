@@ -115,14 +115,24 @@ raytraced AO, shadows and area lights from scratch. Ordered by expected gain:
         samples); passes 1.15-2.6x faster (MB3D test scenes at 640 x 360)
 - [ ] Fewer samples plus OIDN (e.g. 16 instead of 64, about 4×); check frame-to-frame flicker
       of the per-frame denoiser in animations
-- [ ] Adaptive sampling: stop sampling pixels whose variance has converged (typically 2-3×)
-- [ ] Hit-distance caching: start the primary ray of later passes at the previous hit distance
-      minus a margin (minimum over neighbor pixels to stay safe at silhouettes and with jitter;
-      not with DOF); saves most of the primary march
+- [x] ~~Adaptive sampling~~ (estimated, dropped): stopping pixels whose noise (standard error
+      of the luminance) is below 0.2-1 % after at least 8 of 32 samples. A GPU warp (8 x 4
+      pixels) only saves time when all its pixels stop: that leaves 99-100 % of the work on
+      AboxShapes-Misty and 75 % on the temple, where the savings are mostly sky (cheap misses).
+      Fractal surfaces stay noisy (AO, soft shadows) until the end
+- [x] ~~Hit-distance caching~~ (tried, dropped): starting the camera ray of later passes
+      shortly before the hits of the first pass saves only 10-20 % (the skipped steps far from
+      the surface bail out after few iterations). With inexact distance estimates (common in
+      MB3D scenes, step factor 0.2-0.5) the hit depends on the step sequence from the camera:
+      thin parts that rays only hit at some step phases disappear, and overshoots into the
+      surface land elsewhere (shadowed vs. lit). Keeping that would need the arrival step and a
+      random phase per pixel; not worth the state and the risk
 - [ ] Final-render shader specialization: iteration counts and feature flags as constants
       (maybe 10-30%, costs a recompile per render; keep the buffer path for the preview)
-- [ ] Animation pipelining: denoise and PNG/ffmpeg encoding of frame N on the CPU while the GPU
-      renders frame N+1 (check whether `animate` / export already overlap)
+- [x] Animation pipelining: encoding and writing of frame N on a second thread while frame N+1
+      renders (PNG sequences about 17 % faster at 1280 x 720, 16 samples; movies unchanged, as
+      ffmpeg already encodes in its own process). The denoiser stays on the render thread.
+      Renders without a window also use 50 ms submissions instead of 12 ms (0-5 %)
 - [ ] Optional "deep zoom" mode: f32 breaks down at roughly 1e5-1e6 zoom. Consumer GPUs run
       FP64 at 1/64 rate (wgpu `SHADER_F64` not worth it); use double-float emulation (df64, two
       f32 per value) for the position and the first iterations instead
