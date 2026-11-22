@@ -111,8 +111,14 @@ cargo clippy -j 8 --workspace --all-targets
   the gradient position (`apply_bands`, GPU: `gradient()` in march.wgsl, LUT from `LUT_BANDS`).
   `Material::rotation` and `GlowBand::speed` are integrated over the frames in
   `animation.rs` (`color_phases`), so they only act in animations.
-- `render/bloom.rs`: bloom pyramid applied in `HdrImage::finish*` and `CpuRenderer::rgba8`; the
-  GPU preview runs the same passes (`bloom.wgsl`, composite in display.wgsl).
+- `render/bloom.rs`: bloom pyramid and streaks (Kawase streak filter) applied in
+  `HdrImage::finish*` and `CpuRenderer::rgba8`; the GPU preview runs the same passes
+  (`bloom.wgsl`, composite in display.wgsl; streak regions after the pyramid in one buffer).
+- Steam (`Material::steam*`): `march_ex` picks one point of the haze per primary ray
+  (reservoir sampling with `hash3`, weight = noise density × falloff from the surface); `trace`
+  casts one ray from it toward the falling distance and adds the emission it hits. GPU: the
+  same in `march_ray`/`trace` (private `steam_*` variables). The drift moves `steam_offset` in
+  animations (`color_phases`).
 
 ## 3D models and texture layers
 

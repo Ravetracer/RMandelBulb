@@ -814,6 +814,19 @@ pub struct Material {
     pub emission_glow_size: f64,
     /// Rays per sample that gather the light of emissive colors (1..8; more: less noise).
     pub emission_rays: u32,
+    /// Steam: glowing haze around emissive parts in their color, shaped by 3D noise (0 = off).
+    pub steam: f64,
+    /// How far the haze reaches from the surface, relative to the distance from the camera.
+    pub steam_size: f64,
+    /// Size of the noise blobs (world units).
+    pub steam_grain: f64,
+    /// Share of the space the haze fills (0..1).
+    pub steam_cover: f64,
+    /// Shift of the noise pattern (world units: the pattern moves by minus this); animations
+    /// move it by `steam_drift`.
+    pub steam_offset: [f64; 3],
+    /// Animation: the pattern drifts by this much per second (world units; z is up).
+    pub steam_drift: [f64; 3],
 }
 
 impl Default for Material {
@@ -847,6 +860,12 @@ impl Default for Material {
             emission_glow: 1.0,
             emission_glow_size: 0.02,
             emission_rays: 1,
+            steam: 0.0,
+            steam_size: 0.08,
+            steam_grain: 0.1,
+            steam_cover: 0.5,
+            steam_offset: [0.0; 3],
+            steam_drift: [0.0, 0.0, 0.05],
         }
     }
 }
@@ -1034,11 +1053,39 @@ pub struct Post {
     pub bloom: f64,
     pub bloom_threshold: f64,
     pub bloom_size: f64,
+    /// Streaks: lines of light through very bright parts (0 = off), the brightness above
+    /// which they start, their length (share of the image width), angle (degrees), number of
+    /// directions (1: a line, 2: a cross, 3 and 4: stars) and tint.
+    pub streak: f64,
+    pub streak_threshold: f64,
+    pub streak_length: f64,
+    pub streak_angle: f64,
+    pub streak_count: u32,
+    pub streak_tint: [f32; 3],
 }
 
 impl Default for Post {
     fn default() -> Self {
-        Post { exposure: 0.0, gamma: 2.2, contrast: 1.0, saturation: 1.0, tone_map: true, vignette: 0.15, display_space: false, denoise: false, denoise_blend: 1.0, bloom: 0.0, bloom_threshold: 1.0, bloom_size: 0.6 }
+        Post {
+            exposure: 0.0,
+            gamma: 2.2,
+            contrast: 1.0,
+            saturation: 1.0,
+            tone_map: true,
+            vignette: 0.15,
+            display_space: false,
+            denoise: false,
+            denoise_blend: 1.0,
+            bloom: 0.0,
+            bloom_threshold: 1.0,
+            bloom_size: 0.6,
+            streak: 0.0,
+            streak_threshold: 2.0,
+            streak_length: 0.3,
+            streak_angle: 0.0,
+            streak_count: 1,
+            streak_tint: [0.6, 0.8, 1.0],
+        }
     }
 }
 

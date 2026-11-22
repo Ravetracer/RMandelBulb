@@ -427,8 +427,8 @@ pub struct AnimationPlan {
     phases: Vec<BTreeMap<String, f64>>,
 }
 
-/// The palette rotations and glow band speeds of a scene by name ("m": the main material,
-/// "m.b2": its third band, "o1", "o1.b0": the first object's).
+/// The palette rotations, glow band speeds and the steam drift of a scene by name ("m": the
+/// main material, "m.b2": its third band, "o1", "o1.b0": the first object's, "steam0..2").
 fn color_speeds(s: &Scene) -> BTreeMap<String, f64> {
     let mut out = BTreeMap::new();
     let mut add = |name: String, rotation: f64, bands: &[crate::gradient::GlowBand]| {
@@ -440,6 +440,9 @@ fn color_speeds(s: &Scene) -> BTreeMap<String, f64> {
     add("m".into(), s.material.rotation, &s.material.bands);
     for (k, o) in s.objects.iter().enumerate() {
         add(format!("o{k}"), o.material.rotation, &o.material.bands);
+    }
+    for (k, v) in s.material.steam_drift.iter().enumerate() {
+        out.insert(format!("steam{k}"), *v);
     }
     out
 }
@@ -472,6 +475,10 @@ fn apply_phases(s: &mut Scene, phase: &BTreeMap<String, f64>) {
         }
     };
     turn("m".into(), &mut s.material.color_offset, &mut s.material.bands);
+    // The steam pattern moves with its drift.
+    for k in 0..3 {
+        s.material.steam_offset[k] -= phase.get(&format!("steam{k}")).copied().unwrap_or(0.0);
+    }
     for (k, o) in s.objects.iter_mut().enumerate() {
         turn(format!("o{k}"), &mut o.material.color_offset, &mut o.material.bands);
     }

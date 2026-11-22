@@ -28,6 +28,20 @@ pub struct Shader<'a> {
     pub emissive: bool,
 }
 
+/// Tetrahedron directions of the distance gradient at a steam point (march.wgsl `STEAM_TETRA`).
+const STEAM_TETRA: [[f64; 3]; 4] = [[1.0, -1.0, -1.0], [-1.0, -1.0, 1.0], [-1.0, 1.0, -1.0], [1.0, 1.0, 1.0]];
+
+/// The steam sample of a ray: random seed, total weight, the picked point, its falloff size and
+/// ray distance (march.wgsl `SteamPick`).
+#[derive(Clone, Copy, Default)]
+pub struct SteamPick {
+    pub seed: u32,
+    pub w: f64,
+    pub pos: V3,
+    pub rs: f64,
+    pub t: f64,
+}
+
 /// A material prepared for shading: its gradient tables and how a color value picks a color.
 pub struct Mat {
     pub lut: Vec<[f32; 3]>,
@@ -120,17 +134,19 @@ impl<'a> Shader<'a> {
     /// Marches a ray. Returns the hit (if any), the number of steps taken and the number of
     /// glowing steps (see `Fog::glow_iteration`).
     pub fn march(&self, ev: &mut Evaluator, o: V3, d: V3, t0: f64, max_t: f64, max_steps: u32) -> (Option<Hit>, u32, u32) {
-        let (h, s, g, _) = self.march_ex(ev, o, d, t0, max_t, max_steps, false);
+        let (h, s, g, _) = self.march_ex(ev, o, d, t0, max_t, max_steps, false, None);
         (h, s, g)
     }
 
     /// [`Shader::march`] that with `halo` also collects the glow of emissive colors the ray
     /// passes close to: per step the emission at the point times exp(-distance / R) over R,
-    /// R = glow size · ray distance.
+    /// R = glow size · ray distance, times the glow strength. With `steam` it also picks the
+    /// steam sample of the ray (see [`SteamPick`]).
     #[allow(clippy::too_many_arguments)]
-    fn march_ex(&self, ev: &mut Evaluator, o: V3, d: V3, t0: f64, max_t: f64, max_steps: u32, halo: bool) -> (Option<Hit>, u32, u32, [f64; 3]) {
+    fn march_ex(&self, ev: &mut Evaluator, o: V3, d: V3, t0: f64, max_t: f64, max_steps: u32, halo: bool, mut steam: Option<&mut SteamPick>) -> (Option<Hit>, u32, u32, [f64; 3]) {
         let m = &self.scene.march;
-        let halo = halo && self.emissive && self.scene.material.emission_glow > 0.0;
+        let sm = &self.scene.material;
+        let halo = halo && self.emissive && (sm.emission_glow > 0.0 || sm.steam > 0.0);
         let mut glow_e = [0.0; 3];
         let glow_it = self.scene.fog.glow_iteration;
         let mut t = t0;
@@ -163,12 +179,29 @@ impl<'a> Shader<'a> {
             // At least a tenth of the threshold: no stalling where the estimate is near zero.
             last_step = (orbit.de * m.step).max(eps * 0.1);
             if halo {
-                let r = (self.scene.material.emission_glow_size * t).max(eps);
-                if orbit.de < 8.0 * r {
+                let r = (sm.emission_glow_size * t).max(eps);
+                let rs = (sm.steam_size * t).max(eps);
+                if sm.emission_glow > 0.0 && orbit.de < 8.0 * r {
+                    let w = (-orbit.de / r).exp() * last_step.min(r) / r * sm.emission_glow;
                     let e = self.emission_at(&orbit, p, eps, t);
-                    let w = (-orbit.de / r).exp() * last_step.min(r) / r;
                     for k in 0..3 {
                         glow_e[k] += e[k] * w;
+                    }
+                }
+                if let Some(st) = steam.as_deref_mut()
+                    && orbit.de < 8.0 * rs
+                {
+                    // Steam: pick one point along the ray in proportion to its weight
+                    // (reservoir sampling with hashed random numbers).
+                    let dens = super::steam_density(p, sm.steam_grain, sm.steam_offset, sm.steam_cover);
+                    let w = (-orbit.de / rs).exp() * last_step.min(rs) / rs * dens;
+                    if w > 0.0 {
+                        st.w += w;
+                        if (super::hash3(step as i32, st.seed as i32, 0x51ea) as f64) * st.w < w {
+                            st.pos = p;
+                            st.rs = rs;
+                            st.t = t;
+                        }
                     }
                 }
             }
@@ -739,7 +772,34 @@ impl<'a> Shader<'a> {
         let Seg { o, d, t0, max_t, t_base, sx, sy, inside, glass } = seg;
         let sc = self.scene;
         let fr = &self.frame;
-        let (hit, _, steps, halo) = self.march_ex(ev, o, d, t0, max_t, sc.march.max_steps, true);
+        // Steam: the light of emissive parts scattered by the haze along the ray. One point is
+        // picked in proportion to the haze's weight (density times the falloff from the
+        // surface, per length); a random ray from it toward the nearest surface (cosine
+        // weighted around the falling distance) finds the emissive light reaching it.
+        let steam_on = self.emissive && sc.material.steam > 0.0;
+        let mut pick = SteamPick { seed: if steam_on { (rng.next_f64() * 16_777_216.0) as u32 } else { 0 }, ..SteamPick::default() };
+        let (hit, _, steps, mut halo) = self.march_ex(ev, o, d, t0, max_t, sc.march.max_steps, true, steam_on.then_some(&mut pick));
+        if steam_on {
+            let (u1, u2) = (rng.next_f64(), rng.next_f64());
+            if pick.w > 0.0 {
+                // Toward the surface: around the falling distance (tetrahedron differences).
+                let hh = pick.rs * 0.05;
+                let mut g = V3::ZERO;
+                for k in STEAM_TETRA {
+                    let kv = v3(k[0], k[1], k[2]);
+                    g += kv * ev.orbit(pick.pos + kv * hh, self.eps_at(pick.t) * 0.5).de;
+                }
+                let n = if g.length() > 0.0 { -g.normalize() } else { -d };
+                let dir = cosine_dir(n, u1, u2);
+                if let (Some(h), _, _) = self.march(ev, pick.pos, dir, 0.0, 8.0 * pick.rs, 64) {
+                    let e = self.emission_at(&h.orbit, h.pos, h.eps, pick.t + h.t);
+                    let f = pick.w * (-h.t / pick.rs).exp() * sc.material.steam;
+                    for k in 0..3 {
+                        halo[k] += e[k] * f;
+                    }
+                }
+            }
+        }
         let (glow, glow_mix) = sc.fog.glow_at(steps as f64, sc.march.max_steps as f64);
         let grad = self.background(d, sy);
         let bg = self.background_image(d, sx, sy).unwrap_or(grad);
@@ -839,10 +899,9 @@ impl<'a> Shader<'a> {
                 [0, 1, 2].map(|k| lit[k] * (1.0 - f) + fog_col[k] * f.max(0.0))
             }
         };
-        // Glow of the emissive colors the ray passed.
-        let eg = sc.material.emission_glow;
+        // Glow and steam of the emissive colors the ray passed (strengths included).
         for k in 0..3 {
-            c[k] += halo[k] * eg;
+            c[k] += halo[k];
         }
         if inside {
             // Inside glass: no glow and no visible lights.

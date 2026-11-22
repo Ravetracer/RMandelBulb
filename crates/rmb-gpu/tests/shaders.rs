@@ -55,7 +55,7 @@ fn gpu_matches_cpu() {
 }
 
 #[test]
-fn gpu_matches_cpu_with_glow_bands_and_bloom() {
+fn gpu_matches_cpu_with_glow_bands_bloom_streaks_and_steam() {
     let mut scene = Scene::default();
     scene.lighting.ao_mode = rmb_core::scene::AoMode::Fast;
     scene.material.bands = vec![
@@ -67,6 +67,13 @@ fn gpu_matches_cpu_with_glow_bands_and_bloom() {
     scene.material.emission_rays = 3;
     scene.post.bloom = 0.8;
     scene.post.bloom_threshold = 0.6;
+    scene.post.streak = 0.7;
+    scene.post.streak_threshold = 0.5;
+    scene.post.streak_count = 2;
+    scene.post.streak_angle = 20.0;
+    scene.material.steam = 1.5;
+    scene.material.steam_size = 0.15;
+    scene.material.steam_grain = 0.2;
     let cpu = |s: &Scene| {
         let mut r = rmb_core::render::cpu::CpuRenderer::new(s.clone(), 48, 32);
         r.render_pass();
@@ -75,6 +82,8 @@ fn gpu_matches_cpu_with_glow_bands_and_bloom() {
     let mut plain = scene.clone();
     plain.material.bands.clear();
     plain.post.bloom = 0.0;
+    plain.post.streak = 0.0;
+    plain.material.steam = 0.0;
     let changed = cpu(&scene).iter().zip(cpu(&plain)).filter(|(a, b)| (**a as i32 - *b as i32).abs() > 8).count();
     assert!(changed > 300, "bands and bloom change only {changed} channels");
     parity(scene);

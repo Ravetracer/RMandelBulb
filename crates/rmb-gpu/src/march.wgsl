@@ -58,7 +58,8 @@ struct U {
     glass: vec4<f32>,      // transmission on, refraction index, absorption, scattering
     bg2: vec4<f32>,        // background image brightness, screen coordinates, ambient from it, fog added
     emis: vec4<f32>,       // emissive colors: light, reach, glow, glow size (0 when nothing emits)
-    emis2: vec4<f32>,      // emissive colors: rays for their light
+    emis2: vec4<f32>,      // emissive colors: rays for their light; steam strength (0 when nothing emits), size, grain
+    emis3: vec4<f32>,      // steam offset, cover
 }
 
 @group(0) @binding(0) var<uniform> u: U;
@@ -1053,12 +1054,65 @@ fn eps_at(t: f32) -> f32 {
     return max(u.march.x * u.cam_up.w * t, 1.0e-7);
 }
 
+// Mirrors render::hash3.
+fn hash3(x: i32, y: i32, z: i32) -> f32 {
+    var h = (bitcast<u32>(x) * 0x8da6b343u) ^ (bitcast<u32>(y) * 0xd8163841u) ^ (bitcast<u32>(z) * 0xcb1ab31fu);
+    h ^= h >> 16u;
+    h *= 0x7feb352du;
+    h ^= h >> 15u;
+    h *= 0x846ca68bu;
+    h ^= h >> 16u;
+    return f32(h >> 8u) / 16777216.0;
+}
+
+// Mirrors render::value_noise.
+fn value_noise(p: vec3<f32>) -> f32 {
+    let i = floor(p);
+    let f = p - i;
+    let u_ = f * f * (3.0 - 2.0 * f);
+    let x = i32(i.x);
+    let y = i32(i.y);
+    let z = i32(i.z);
+    let x00 = mix(hash3(x, y, z), hash3(x + 1, y, z), u_.x);
+    let x10 = mix(hash3(x, y + 1, z), hash3(x + 1, y + 1, z), u_.x);
+    let x01 = mix(hash3(x, y, z + 1), hash3(x + 1, y, z + 1), u_.x);
+    let x11 = mix(hash3(x, y + 1, z + 1), hash3(x + 1, y + 1, z + 1), u_.x);
+    return mix(mix(x00, x10, u_.y), mix(x01, x11, u_.y), u_.z);
+}
+
+const STEAM_TETRA = array<vec3<f32>, 4>(vec3<f32>(1.0, -1.0, -1.0), vec3<f32>(-1.0, -1.0, 1.0), vec3<f32>(-1.0, 1.0, -1.0), vec3<f32>(1.0, 1.0, 1.0));
+
+// The steam sample of the primary march (Shader::trace, SteamPick): on, seed, total weight,
+// picked point, its falloff size and ray distance.
+var<private> steam_pick: bool;
+var<private> steam_seed: u32;
+var<private> steam_w: f32;
+var<private> steam_pos: vec3<f32>;
+var<private> steam_rs: f32;
+var<private> steam_t: f32;
+
+// Mirrors render::steam_density.
+fn steam_density(p: vec3<f32>) -> f32 {
+    var q = (p + u.emis3.xyz) / max(u.emis2.w, 1.0e-9);
+    var n = 0.0;
+    var amp = 0.5;
+    for (var o = 0; o < 4; o++) {
+        n += value_noise(q) * amp;
+        q *= 2.03;
+        amp *= 0.5;
+    }
+    n /= 0.9375;
+    let lo = 1.0 - clamp(u.emis3.w, 0.0, 1.0) - 0.15;
+    let x = clamp((n - lo) / 0.3, 0.0, 1.0);
+    return x * x * (3.0 - 2.0 * x);
+}
+
 // Mirrors Shader::march_ex (`halo`: collect the glow of emissive colors).
 fn march_ray(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, max_steps: u32, halo_on: bool) -> Hit {
     var h: Hit;
     h.hit = false;
     h.halo = vec3<f32>(0.0);
-    let halo = halo_on && u.emis.z > 0.0;
+    let halo = halo_on && (u.emis.z > 0.0 || u.emis2.y > 0.0);
     var t = t0;
     var last_step = 0.0;
     var step = 0u;
@@ -1099,9 +1153,22 @@ fn march_ray(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, max_steps: u32, ha
         last_step = max(ob.de * u.march.y, eps * 0.1);
         if (halo) {
             let r = max(u.emis.w * t, eps);
-            if (ob.de < 8.0 * r) {
-                let e = emission_at(ob, o + d * t, eps, t);
-                h.halo += e * (exp(-ob.de / r) * min(last_step, r) / r);
+            let rs = max(u.emis2.z * t, eps);
+            let p = o + d * t;
+            if (u.emis.z > 0.0 && ob.de < 8.0 * r) {
+                h.halo += emission_at(ob, p, eps, t) * (exp(-ob.de / r) * min(last_step, r) / r * u.emis.z);
+            }
+            if (steam_pick && ob.de < 8.0 * rs) {
+                // Mirrors Shader::march_ex: reservoir sampling of the steam point.
+                let w = exp(-ob.de / rs) * min(last_step, rs) / rs * steam_density(p);
+                if (w > 0.0) {
+                    steam_w += w;
+                    if (hash3(i32(step), bitcast<i32>(steam_seed), 0x51ea) * steam_w < w) {
+                        steam_pos = p;
+                        steam_rs = rs;
+                        steam_t = t;
+                    }
+                }
             }
         }
         t += last_step;
@@ -1955,7 +2022,37 @@ struct Traced {
 fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sx: f32, sy: f32, inside: bool, glass: f32) -> Traced {
     var tr: Traced;
     tr.hit = false;
-    let h = march_ray(o, d, t0, max_t, u.band.z, true);
+    // Steam (mirrors Shader::trace): pick a point in the haze, a random ray from it finds the
+    // emissive light that reaches it.
+    let steam_on = u.emis2.y > 0.0;
+    steam_w = 0.0;
+    steam_seed = 0u;
+    if (steam_on) {
+        steam_seed = u32(rnd() * 16777216.0);
+    }
+    steam_pick = steam_on;
+    var h = march_ray(o, d, t0, max_t, u.band.z, true);
+    steam_pick = false;
+    if (steam_on) {
+        let u1 = rnd();
+        let u2 = rnd();
+        if (steam_w > 0.0) {
+            let hh = steam_rs * 0.05;
+            var g = vec3<f32>(0.0);
+            for (var k = 0u; k < 4u; k++) {
+                g += STEAM_TETRA[k] * de_at(steam_pos + STEAM_TETRA[k] * hh, eps_at(steam_t) * 0.5);
+            }
+            var n = -d;
+            if (length(g) > 0.0) {
+                n = -normalize(g);
+            }
+            let dir = cosine_dir(n, u1, u2);
+            let sh = march_ray(steam_pos, dir, 0.0, 8.0 * steam_rs, 64u, false);
+            if (sh.hit) {
+                h.halo += emission_at(sh.orbit, steam_pos + dir * sh.t, sh.eps, steam_t + sh.t) * (steam_w * exp(-sh.t / steam_rs) * u.emis2.y);
+            }
+        }
+    }
     let glow = u.glow.w * max(f32(h.glow_steps) - u.glow3.x, 0.0) / f32(max(u.band.z, 1u));
     var glow_mix = 0.0;
     if (u.glow2.w > 0.0) {
@@ -2126,8 +2223,8 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sx: f32, 
         tr.spec = cols.spec;
         tr.fog = f;
     }
-    // Glow of the emissive colors the ray passed.
-    c += h.halo * u.emis.z;
+    // Glow and steam of the emissive colors the ray passed (strengths included).
+    c += h.halo;
     if (inside) {
         // Inside glass: no glow and no visible lights.
         tr.c = c;

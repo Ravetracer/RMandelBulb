@@ -8,7 +8,8 @@ struct BP {
     dst: vec4<u32>, // first texel, width, height of the level written
     src: vec4<u32>, // first texel, width, height of the level read
     img: vec4<u32>, // image width, height, lens flare layer width, height (0: none)
-    prm: vec4<f32>, // exposure factor, threshold
+    prm: vec4<f32>, // exposure factor, threshold, streak: 0 write / 1 add
+    prm2: vec4<f32>, // streak direction (x, y), step, falloff per pixel
 }
 
 @group(0) @binding(0) var<uniform> bp: BP;
@@ -82,6 +83,52 @@ fn bloom_blur_h(@builtin(global_invocation_id) gid: vec3<u32>) {
         s += levels[bp.dst.x + gid.y * bp.dst.y + x].xyz * TAPS[t];
     }
     tmp[bp.dst.x + gid.y * bp.dst.y + gid.x] = vec4<f32>(s, 0.0);
+}
+
+// Mirrors bloom::sample_zero on the level `src` (taps outside are black).
+fn src_zero(fx: f32, fy: f32) -> vec3<f32> {
+    let x0 = floor(fx);
+    let y0 = floor(fy);
+    let tx = fx - x0;
+    let ty = fy - y0;
+    var c: array<vec3<f32>, 4>;
+    for (var k = 0; k < 4; k++) {
+        let x = x0 + f32(k & 1);
+        let y = y0 + f32(k >> 1u);
+        if (x < 0.0 || y < 0.0 || x >= f32(bp.src.y) || y >= f32(bp.src.z)) {
+            c[k] = vec3<f32>(0.0);
+        } else {
+            c[k] = levels[bp.src.x + u32(y) * bp.src.y + u32(x)].xyz;
+        }
+    }
+    let top = c[0] + (c[1] - c[0]) * tx;
+    let bottom = c[2] + (c[3] - c[2]) * tx;
+    return top + (bottom - top) * ty;
+}
+
+// Mirrors bloom::streak_pass (and streak_weights).
+@compute @workgroup_size(8, 8)
+fn bloom_streak(@builtin(global_invocation_id) gid: vec3<u32>) {
+    if (gid.x >= bp.dst.y || gid.y >= bp.dst.z) {
+        return;
+    }
+    let step = bp.prm2.z;
+    var w: array<f32, 4>;
+    var sum = 0.0;
+    for (var k = 0; k < 4; k++) {
+        w[k] = pow(bp.prm2.w, f32(k) * step);
+        sum += w[k];
+    }
+    var s = vec3<f32>(0.0);
+    for (var k = 0; k < 4; k++) {
+        let off = f32(k) * step;
+        s += src_zero(f32(gid.x) + bp.prm2.x * off, f32(gid.y) + bp.prm2.y * off) * (w[k] / sum);
+    }
+    let i = bp.dst.x + gid.y * bp.dst.y + gid.x;
+    if (bp.prm.z > 0.5) {
+        s += levels[i].xyz;
+    }
+    levels[i] = vec4<f32>(s, 0.0);
 }
 
 @compute @workgroup_size(8, 8)

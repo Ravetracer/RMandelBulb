@@ -116,6 +116,7 @@ struct Uniforms {
     bg2: [f32; 4],
     emis: [f32; 4],
     emis2: [f32; 4],
+    emis3: [f32; 4],
 }
 
 /// A composed object (march.wgsl `Obj`).
@@ -346,6 +347,19 @@ struct PostUniforms {
     bloom: [f32; 4],
     lv: [[u32; 4]; 6],
     lw: [[f32; 4]; 6],
+    streak: [f32; 4],
+    slv: [u32; 4],
+    /// Streak threshold, length, angle, directions (used by the bloom passes).
+    sprm: [f32; 4],
+}
+
+/// Streak regions after the bloom pyramid: source, two scratch levels, the sum (first texel,
+/// width, height each) and the texels of pyramid and regions.
+fn streak_regions(w: u32, h: u32) -> ([[u32; 4]; 4], u32) {
+    let (levels, total) = bloom_levels(w, h);
+    let (lw, lh) = (levels[0][1], levels[0][2]);
+    let n = lw * lh;
+    (std::array::from_fn(|k| [total + k as u32 * n, lw, lh, 0]), total + 4 * n)
 }
 
 /// The bloom pyramid of a `w` × `h` image: per level its first texel, width and height, and
@@ -368,6 +382,7 @@ struct BloomPass {
     src: [u32; 4],
     img: [u32; 4],
     prm: [f32; 4],
+    prm2: [f32; 4],
 }
 
 fn v4(v: rmb_core::V3, w: f64) -> [f32; 4] {
@@ -376,6 +391,19 @@ fn v4(v: rmb_core::V3, w: f64) -> [f32; 4] {
 
 fn c4(c: [f32; 3], w: f64) -> [f32; 4] {
     [c[0], c[1], c[2], w as f32]
+}
+
+/// Whether a material in use (the main one and the objects' own ones) emits light.
+fn emissive_any(scene: &Scene, prog: &Program) -> bool {
+    let m = &scene.material;
+    let own: Vec<_> = prog.objects.iter().filter_map(|o| scene.objects.get(o.material.wrapping_sub(1)).filter(|_| o.material > 0)).collect();
+    let glow_layer = |l: &[rmb_core::texture::TextureLayer]| l.iter().any(|l| l.enabled && l.target == rmb_core::texture::Target::Emission);
+    let band = |b: &[rmb_core::gradient::GlowBand]| rmb_core::gradient::active_bands(b).iter().any(|b| b.emission > 0.0);
+    m.gradient.iter().chain(own.iter().flat_map(|so| so.material.gradient.iter())).any(|s| s.emission > 0.0)
+        || band(&m.bands)
+        || own.iter().any(|so| band(&so.material.bands))
+        || glow_layer(&m.layers)
+        || own.iter().any(|so| glow_layer(&so.material.layers))
 }
 
 fn uniforms(scene: &Scene, prog: &Program, w: u32, h: u32, fast: bool) -> Uniforms {
@@ -509,20 +537,15 @@ fn uniforms(scene: &Scene, prog: &Program, w: u32, h: u32, fast: bool) -> Unifor
         },
         glass: [if m.transmission && m.reflection > 0.0 { 1.0 } else { 0.0 }, m.refraction_index as f32, m.absorption as f32, m.scattering as f32],
         emis: {
-            // Emission of the materials in use (the main one and the objects' own ones).
-            let own = prog.objects.iter().filter_map(|o| scene.objects.get(o.material.wrapping_sub(1)).filter(|_| o.material > 0));
-            let own: Vec<_> = own.collect();
-            let glow_layer = |l: &[rmb_core::texture::TextureLayer]| l.iter().any(|l| l.enabled && l.target == rmb_core::texture::Target::Emission);
-            let band = |b: &[rmb_core::gradient::GlowBand]| rmb_core::gradient::active_bands(b).iter().any(|b| b.emission > 0.0);
-            let any = m.gradient.iter().chain(own.iter().flat_map(|so| so.material.gradient.iter())).any(|s| s.emission > 0.0)
-                || band(&m.bands)
-                || own.iter().any(|so| band(&so.material.bands))
-                || glow_layer(&m.layers)
-                || own.iter().any(|so| glow_layer(&so.material.layers));
+            let any = emissive_any(scene, prog);
             let on = |v: f64| if any { v.max(0.0) as f32 } else { 0.0 };
             [on(m.emission_light), m.emission_reach as f32, on(m.emission_glow), m.emission_glow_size as f32]
         },
-        emis2: [m.emission_rays.clamp(1, 8) as f32, 0.0, 0.0, 0.0],
+        emis2: {
+            let any = emissive_any(scene, prog);
+            [m.emission_rays.clamp(1, 8) as f32, if any { m.steam.max(0.0) as f32 } else { 0.0 }, m.steam_size as f32, m.steam_grain as f32]
+        },
+        emis3: [m.steam_offset[0] as f32, m.steam_offset[1] as f32, m.steam_offset[2] as f32, m.steam_cover as f32],
         bg2: [
             bg.image_intensity as f32,
             if bg.image_screen { 1.0 } else { 0.0 },
@@ -557,6 +580,12 @@ fn post_uniforms(scene: &Scene, w: u32, h: u32) -> PostUniforms {
             }
             lw
         },
+        streak: {
+            let s = p.streak.max(0.0) as f32;
+            [p.streak_tint[0] * s, p.streak_tint[1] * s, p.streak_tint[2] * s, if p.streak > 0.0 { 1.0 } else { 0.0 }]
+        },
+        slv: streak_regions(w, h).0[3],
+        sprm: [p.streak_threshold as f32, p.streak_length as f32, p.streak_angle as f32, p.streak_count.clamp(1, 4) as f32],
     }
 }
 
@@ -593,8 +622,8 @@ struct Key {
 pub struct GpuRenderer {
     ctx: GpuContext,
     display_pipeline: wgpu::ComputePipeline,
-    /// Bloom passes (bloom.wgsl): bright, down, blur_h, blur_v.
-    bloom_pipelines: [wgpu::ComputePipeline; 4],
+    /// Bloom passes (bloom.wgsl): bright, down, blur_h, blur_v, streak.
+    bloom_pipelines: [wgpu::ComputePipeline; 5],
     /// Bloom pyramid, its blur scratch and one uniform buffer per pass.
     bloom_levels: wgpu::Buffer,
     bloom_tmp: wgpu::Buffer,
@@ -662,7 +691,7 @@ impl GpuRenderer {
             cache: None,
         });
         let bloom_module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("bloom"), source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("bloom.wgsl"))) });
-        let bloom_pipelines = ["bloom_bright", "bloom_down", "bloom_blur_h", "bloom_blur_v"].map(|entry| {
+        let bloom_pipelines = ["bloom_bright", "bloom_down", "bloom_blur_h", "bloom_blur_v", "bloom_streak"].map(|entry| {
             device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                 label: Some(entry),
                 layout: None,
@@ -1145,12 +1174,14 @@ impl GpuRenderer {
     /// Records the bloom pyramid passes (bloom.wgsl) when the post processing has bloom.
     fn bloom_passes(&mut self, enc: &mut wgpu::CommandEncoder, width: u32, height: u32) {
         let Some(post) = self.post else { return };
-        if post.bloom[0] <= 0.0 {
+        let (bloom_on, streak_on) = (post.bloom[0] > 0.0, post.streak[3] > 0.5);
+        if !bloom_on && !streak_on {
             return;
         }
         let Some(t) = self.target.as_ref() else { return };
         let device = &self.ctx.device;
-        let (levels, texels) = bloom_levels(width, height);
+        let (levels, _) = bloom_levels(width, height);
+        let (regions, texels) = streak_regions(width, height);
         let bytes = texels as u64 * 16;
         if self.bloom_levels.size() < bytes {
             self.bloom_levels = storage_buffer(device, "bloom-levels", bytes.next_power_of_two());
@@ -1160,13 +1191,31 @@ impl GpuRenderer {
         let mut passes: Vec<(usize, BloomPass)> = Vec::new();
         let img = [width, height, post.size[2], post.size[3]];
         let prm = [post.a[0].exp2(), post.bloom[2], 0.0, 0.0];
-        for (k, l) in levels.iter().enumerate() {
-            let src = if k == 0 { [0; 4] } else { levels[k - 1] };
-            passes.push((if k == 0 { 0 } else { 1 }, BloomPass { dst: *l, src, img, prm }));
+        let prm2 = [0.0; 4];
+        if bloom_on {
+            for (k, l) in levels.iter().enumerate() {
+                let src = if k == 0 { [0; 4] } else { levels[k - 1] };
+                passes.push((if k == 0 { 0 } else { 1 }, BloomPass { dst: *l, src, img, prm, prm2 }));
+            }
+            for l in &levels {
+                passes.push((2, BloomPass { dst: *l, src: *l, img, prm, prm2 }));
+                passes.push((3, BloomPass { dst: *l, src: *l, img, prm, prm2 }));
+            }
         }
-        for l in &levels {
-            passes.push((2, BloomPass { dst: *l, src: *l, img, prm }));
-            passes.push((3, BloomPass { dst: *l, src: *l, img, prm }));
+        if streak_on {
+            // Bright part into the source region, then per direction three passes through the
+            // scratch regions into the sum (the first direction writes, the others add).
+            let [src, t1, t2, sum] = regions;
+            passes.push((0, BloomPass { dst: src, src: [0; 4], img, prm: [prm[0], post.sprm[0], 0.0, 0.0], prm2 }));
+            let (step0, a) = rmb_core::render::bloom::streak_params(post.sprm[1] as f64, src[1]);
+            for (i, dir) in rmb_core::render::bloom::streak_dirs(post.sprm[2] as f64, post.sprm[3] as u32).into_iter().enumerate() {
+                let chain = [(src, t1), (t1, t2), (t2, sum)];
+                for (p, (from, to)) in chain.into_iter().enumerate() {
+                    let add = p == 2 && i > 0;
+                    let step = step0 * 4f32.powi(p as i32);
+                    passes.push((4, BloomPass { dst: to, src: from, img, prm: [prm[0], 0.0, if add { 1.0 } else { 0.0 }, 0.0], prm2: [dir[0], dir[1], step, a] }));
+                }
+            }
         }
         while self.bloom_passes.len() < passes.len() {
             self.bloom_passes.push(device.create_buffer(&wgpu::BufferDescriptor {
@@ -1185,7 +1234,7 @@ impl GpuRenderer {
                 entries.push(wgpu::BindGroupEntry { binding: 2, resource: self.flare.as_entire_binding() });
             }
             entries.push(wgpu::BindGroupEntry { binding: 3, resource: self.bloom_levels.as_entire_binding() });
-            if *kind >= 2 {
+            if *kind == 2 || *kind == 3 {
                 entries.push(wgpu::BindGroupEntry { binding: 4, resource: self.bloom_tmp.as_entire_binding() });
             }
             let bind = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("bloom"), layout: &pipe.get_bind_group_layout(0), entries: &entries });

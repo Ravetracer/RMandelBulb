@@ -651,6 +651,12 @@ fn emissive(ui: &mut Ui, m: &mut rmb_core::scene::Material) {
         m.emission_glow = d.emission_glow;
         m.emission_glow_size = d.emission_glow_size;
         m.emission_rays = d.emission_rays;
+        m.steam = d.steam;
+        m.steam_size = d.steam_size;
+        m.steam_grain = d.steam_grain;
+        m.steam_cover = d.steam_cover;
+        m.steam_offset = d.steam_offset;
+        m.steam_drift = d.steam_drift;
     }
     let glow_layer = m.layers.iter().any(|l| l.enabled && l.target == rmb_core::texture::Target::Emission);
     if !glow_layer && !m.gradient.iter().any(|s| s.emission > 0.0) && !m.bands.iter().any(|b| b.enabled && b.emission > 0.0) {
@@ -666,6 +672,18 @@ fn emissive(ui: &mut Ui, m: &mut rmb_core::scene::Material) {
         widgets::slider_log(ui, "Glow", "Glow around emissive parts, also in the air in front of them", &mut m.emission_glow, 0.0..=20.0, d.emission_glow);
         if m.emission_glow > 0.0 {
             widgets::slider_log(ui, "Glow size", "Size of the glow, relative to the distance from the camera", &mut m.emission_glow_size, 0.001..=0.5, d.emission_glow_size);
+        }
+        widgets::slider_log(ui, "Steam", "Glowing haze around emissive parts in their color, broken up by 3D noise like steam or smoke (0 = off)", &mut m.steam, 0.0..=20.0, d.steam);
+        if m.steam > 0.0 {
+            widgets::slider_log(ui, "Steam size", "How far the haze reaches from the surface, relative to the distance from the camera", &mut m.steam_size, 0.001..=1.0, d.steam_size);
+            widgets::slider_log(ui, "Steam grain", "Size of the clouds in world units (small: fine wisps, large: big clouds)", &mut m.steam_grain, 0.0001..=10.0, d.steam_grain);
+            widgets::slider(ui, "Steam cover", "How much of the space the clouds fill (0: a few wisps, 1: everywhere)", &mut m.steam_cover, 0.0..=1.0, d.steam_cover);
+            for (k, axis) in ["Steam drift X", "Steam drift Y", "Steam drift Z"].iter().enumerate() {
+                widgets::drag(ui, axis, "Animation: the clouds move by this much per second (world units; z is up, so a positive z rises like steam)", &mut m.steam_drift[k], 0.001, d.steam_drift[k]);
+            }
+            for (k, axis) in ["Steam offset X", "Steam offset Y", "Steam offset Z"].iter().enumerate() {
+                widgets::drag(ui, axis, "Moves the cloud pattern (world units) to pick another look; animations add the drift", &mut m.steam_offset[k], 0.001, d.steam_offset[k]);
+            }
         }
     });
 }
@@ -855,6 +873,14 @@ fn effects(ui: &mut Ui, scene: &mut Scene) {
         if p.bloom > 0.0 {
             widgets::slider_log(ui, "Bloom threshold", "Brightness above which parts bloom (after exposure; 1 = white). Lower: more of the image glows", &mut p.bloom_threshold, 0.0..=10.0, dp.bloom_threshold);
             widgets::slider(ui, "Bloom size", "0: a tight halo; 1: a wide glow over large parts of the image", &mut p.bloom_size, 0.0..=1.0, dp.bloom_size);
+        }
+        widgets::slider(ui, "Streaks", "Lines of light through very bright parts, like a camera lens shows them (0 = off)", &mut p.streak, 0.0..=3.0, dp.streak);
+        if p.streak > 0.0 {
+            widgets::slider_log(ui, "Streak threshold", "Brightness above which parts make streaks (after exposure; 1 = white)", &mut p.streak_threshold, 0.0..=20.0, dp.streak_threshold);
+            widgets::slider(ui, "Streak length", "Length of the streaks as a share of the image width", &mut p.streak_length, 0.01..=1.0, dp.streak_length);
+            widgets::slider(ui, "Streak angle", "Direction of the streaks in degrees (0: horizontal, like anamorphic lenses)", &mut p.streak_angle, -90.0..=90.0, dp.streak_angle);
+            widgets::slider_u32(ui, "Streak directions", "1: a line, 2: a cross, 3 and 4: stars", &mut p.streak_count, 1..=4, dp.streak_count);
+            widgets::color(ui, "Streak tint", "Color of the streaks (multiplies the light they spread)", &mut p.streak_tint);
         }
         let note = match rmb_core::render::denoise::available() {
             Ok(p) => format!("Intel Open Image Denoise on saved images (and the \"Denoised\" preview). Library: {}", p.display()),

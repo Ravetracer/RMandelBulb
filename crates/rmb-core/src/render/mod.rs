@@ -352,6 +352,49 @@ pub fn srgb_decode(v: f64) -> f64 {
     if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
 }
 
+/// Hash of an integer lattice point to 0..1 (same bits on the GPU: march.wgsl `hash3`).
+pub fn hash3(x: i32, y: i32, z: i32) -> f32 {
+    let mut h = (x as u32).wrapping_mul(0x8da6_b343) ^ (y as u32).wrapping_mul(0xd816_3841) ^ (z as u32).wrapping_mul(0xcb1a_b31f);
+    h ^= h >> 16;
+    h = h.wrapping_mul(0x7feb_352d);
+    h ^= h >> 15;
+    h = h.wrapping_mul(0x846c_a68b);
+    h ^= h >> 16;
+    (h >> 8) as f32 / 16_777_216.0
+}
+
+/// Smooth value noise (0..1) at `p`.
+pub fn value_noise(p: [f64; 3]) -> f64 {
+    let i = p.map(|v| v.floor());
+    let f = [0, 1, 2].map(|k| p[k] - i[k]);
+    let u = f.map(|t| t * t * (3.0 - 2.0 * t));
+    let (x, y, z) = (i[0] as i32, i[1] as i32, i[2] as i32);
+    let h = |dx: i32, dy: i32, dz: i32| hash3(x.wrapping_add(dx), y.wrapping_add(dy), z.wrapping_add(dz)) as f64;
+    let lerp = |a: f64, b: f64, t: f64| a + (b - a) * t;
+    let x00 = lerp(h(0, 0, 0), h(1, 0, 0), u[0]);
+    let x10 = lerp(h(0, 1, 0), h(1, 1, 0), u[0]);
+    let x01 = lerp(h(0, 0, 1), h(1, 0, 1), u[0]);
+    let x11 = lerp(h(0, 1, 1), h(1, 1, 1), u[0]);
+    lerp(lerp(x00, x10, u[1]), lerp(x01, x11, u[1]), u[2])
+}
+
+/// Density (0..1) of the steam at world point `p`: four octaves of value noise over
+/// `grain`-sized blobs, shifted by `offset`, cut so that about `cover` of space is filled.
+pub fn steam_density(p: V3, grain: f64, offset: [f64; 3], cover: f64) -> f64 {
+    let g = grain.max(1e-9);
+    let mut q = [(p.x + offset[0]) / g, (p.y + offset[1]) / g, (p.z + offset[2]) / g];
+    let (mut n, mut amp) = (0.0, 0.5);
+    for _ in 0..4 {
+        n += value_noise(q) * amp;
+        q = q.map(|v| v * 2.03);
+        amp *= 0.5;
+    }
+    let n = n / 0.9375;
+    let lo = 1.0 - cover.clamp(0.0, 1.0) - 0.15;
+    let x = ((n - lo) / 0.3).clamp(0.0, 1.0);
+    x * x * (3.0 - 2.0 * x)
+}
+
 /// Linear light (clamped to 0..1) to an sRGB value.
 pub fn srgb_encode(v: f64) -> f64 {
     let v = v.clamp(0.0, 1.0);

@@ -59,7 +59,9 @@ modern egui interface and import of Mandelbulb3D parameters.
 - **Emissive colors**: gradient colors can shine by themselves, light their surroundings in
   their color and glow (MagicaVoxel-style emission). **Glow bands** lay thin glowing stripes
   over a gradient, independent of its colors; palette rotation and each band's own speed make
-  them sweep through the fractal in animations. **Bloom** adds soft halos around bright parts.
+  them sweep through the fractal in animations. **Steam**: glowing haze around emissive parts,
+  shaped by 3D noise and drifting in animations. **Bloom** and **streaks** add soft halos and
+  lines of light around bright parts.
 - **Animation** (Animation button, timeline under the view):
   - Keyframes are whole scenes. The camera follows a smooth path through them that never
     overshoots, and every other setting blends between them.

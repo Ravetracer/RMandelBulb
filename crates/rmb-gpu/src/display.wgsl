@@ -10,6 +10,9 @@ struct P {
     bloom: vec4<f32>, // strength (0: off), pyramid levels, threshold
     lv: array<vec4<u32>, 6>, // bloom levels: first texel, width, height
     lw: array<vec4<f32>, 6>, // bloom level weights
+    streak: vec4<f32>, // streak tint times strength, on
+    slv: vec4<u32>, // streaks: first texel, width, height
+    sprm: vec4<f32>, // streak settings (bloom passes only)
 }
 
 @group(0) @binding(0) var<uniform> p: P;
@@ -22,7 +25,10 @@ struct P {
 
 // Mirrors bloom::sample: bilinear, edges clamped.
 fn bloom_sample(k: u32, u: f32, v: f32) -> vec3<f32> {
-    let l = p.lv[k];
+    return level_sample(p.lv[k], u, v);
+}
+
+fn level_sample(l: vec4<u32>, u: f32, v: f32) -> vec3<f32> {
     let fx = clamp(u * f32(l.y) - 0.5, 0.0, f32(l.y) - 1.0);
     let fy = clamp(v * f32(l.z) - 0.5, 0.0, f32(l.z) - 1.0);
     let x0 = u32(floor(fx));
@@ -64,6 +70,11 @@ fn display_main(@builtin(global_invocation_id) gid: vec3<u32>) {
             s += bloom_sample(k, u, v) * p.lw[k].x;
         }
         lin += s * p.bloom.x;
+    }
+    if (p.streak.w > 0.5) {
+        let u = (f32(gid.x) + 0.5) / f32(p.size.x);
+        let v = (f32(gid.y) + 0.5) / f32(p.size.y);
+        lin += level_sample(p.slv, u, v) * p.streak.xyz;
     }
     var c = max(lin * exp2(p.a.x), vec3<f32>(0.0));
     if (p.b.x > 0.5) {

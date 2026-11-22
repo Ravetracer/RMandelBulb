@@ -59,8 +59,10 @@
         https://www.megavoxels.com/learn/how-to-create-lights-in-magicavoxel-using-emission/
   - [x] Glow bands (up to 4 per material, exact width), palette rotation and band speed in
         animations, several rays for the emitted light, bloom (preview and export)
-  - [ ] Possible: animated shimmer (flicker over time), emission from color maps, streaks
-        (directional bloom), volumetric glow ("steam") around emissive parts
+  - [x] Streaks (directional bloom: 1-4 directions, length, angle, tint) and steam (glowing
+        haze shaped by 3D noise, lit by the emissive surfaces through one scattered ray per
+        sample, drifting in animations)
+  - [ ] Possible: animated shimmer (flicker over time), emission from color maps
 - [x] Scene composition like Mandelbulber's boolean mode (as used by Julius Horsthuis): up to
       eight objects after the main fractal (fractals or plane, box, sphere, cylinder, torus,
       water), each with position, rotation, scale, operation (add, cut away, intersect, smooth
@@ -79,6 +81,18 @@
   - [ ] Possible: alpha channel masks, normal maps, roughness/specular layers, texture
         animation (offset over time)
 - [x] AI denoiser (Intel Open Image Denoise, from RWildFire) with albedo and normal helper images
+- [ ] Monte Carlo rendering (path tracing) as an option of the renderer, in the app (progressive
+      preview) and in the export (images and movies), for more realistic light: global
+      illumination with diffuse and glossy bounces (light from all surfaces, not only the
+      emissive ones), importance sampling (cosine / BRDF), next-event estimation toward the
+      lights, Russian roulette to end paths, progressive accumulation with the existing sample
+      loop and the denoiser. The renderer already samples stochastically (AO and emission rays,
+      soft shadows, area lights, DOF); this extends it to full multi-bounce paths.
+      References: scratchapixel.com "Monte Carlo Methods in Practice: Monte Carlo Rendering
+      Practical Example"
+      (https://www.scratchapixel.com/lessons/mathematics-physics-for-computer-graphics/monte-carlo-methods-in-practice/monte-carlo-rendering-practical-example.html),
+      Ghete, "Monte Carlo Rendering" (TU Wien seminar 2007,
+      https://www.cg.tuwien.ac.at/courses/Seminar/SS2007/MontecarloRendering-Ghete.pdf)
 
 ## Performance
 
