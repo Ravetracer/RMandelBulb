@@ -11,6 +11,7 @@ use super::post_process;
 use crate::scene::Post;
 
 /// Averaged render result before post processing; RGB triples, top row first.
+#[derive(Clone, Debug)]
 pub struct HdrImage {
     pub width: u32,
     pub height: u32,

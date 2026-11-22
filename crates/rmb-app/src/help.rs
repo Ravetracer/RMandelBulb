@@ -49,6 +49,7 @@ const SHORTCUTS: &[(&str, &str)] = &[
     ("Ctrl+C / Ctrl+V", "Copy scene / paste scene or Mandelbulb3D parameters"),
     ("Tab", "Switch Orbit / Fly navigation"),
     ("F1", "Help"),
+    ("F12", "Test render window (with denoiser, flares, bloom, streaks)"),
     ("Orbit: left drag", "Orbit around the point under the cursor"),
     ("Orbit: Shift+drag, middle drag", "Look around"),
     ("Right drag", "Pan"),

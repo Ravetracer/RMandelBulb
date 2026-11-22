@@ -1423,6 +1423,39 @@ pub fn render_animation(
     Ok(())
 }
 
+/// Renders like [`render_blocking_hdr`] and hands intermediate images to `snapshot` (the image
+/// and the samples in it) after 1, 2, 4, 8 … samples, at most about once a second after the
+/// first. `progress` gets the finished fraction and returns false to cancel.
+pub fn render_progressive(ctx: GpuContext, scene: &Scene, width: u32, height: u32, samples: u32, mut progress: impl FnMut(f32) -> bool, mut snapshot: impl FnMut(HdrImage, u32)) -> Result<HdrImage, String> {
+    rmb_core::compose::load_models(scene);
+    let mut r = GpuRenderer::new(ctx);
+    r.set_scene(scene, width, height, false);
+    r.wait_for_pipeline()?;
+    let samples = samples.max(1);
+    let mut next = 1;
+    let mut last = std::time::Instant::now();
+    while r.samples() < samples {
+        r.work(Duration::from_millis(100), samples);
+        if let Some(e) = r.last_error() {
+            return Err(e);
+        }
+        let done = r.samples();
+        if done >= next && done < samples && (done == 1 || last.elapsed() >= Duration::from_millis(900)) {
+            if let Some(img) = r.read_hdr() {
+                snapshot(img, done);
+            }
+            last = std::time::Instant::now();
+            while next <= done {
+                next *= 2;
+            }
+        }
+        if !progress((done as f32 + r.pass_progress()) / samples as f32) {
+            return Err("cancelled".into());
+        }
+    }
+    r.read_hdr().ok_or_else(|| "reading the image back failed".to_string())
+}
+
 fn render_to(ctx: GpuContext, scene: &Scene, width: u32, height: u32, samples: u32, mut progress: impl FnMut(f32) -> bool) -> Result<GpuRenderer, String> {
     // Final renders wait for the 3D models to bake.
     rmb_core::compose::load_models(scene);

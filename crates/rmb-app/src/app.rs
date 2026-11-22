@@ -26,6 +26,7 @@ enum Action {
     SaveAs,
     Export,
     ExportAnimation,
+    Render,
     Undo,
     Redo,
     Copy,
@@ -41,6 +42,7 @@ pub struct App {
     formulas: FormulasPanel,
     inspector: Inspector,
     export: Export,
+    render: crate::render_view::RenderView,
     timeline: crate::timeline::Timeline,
     help: Help,
     prefs: Prefs,
@@ -66,6 +68,7 @@ impl App {
             formulas: FormulasPanel::default(),
             inspector: Inspector::default(),
             export: Export::new(prefs.export_samples),
+            render: crate::render_view::RenderView::new(prefs.export_samples),
             timeline: crate::timeline::Timeline::default(),
             help: Help::default(),
             prefs,
@@ -172,6 +175,7 @@ impl App {
                 }
             }
             Action::Export => self.export.open_for(&self.doc.scene, self.doc.path.as_ref()),
+            Action::Render => self.render.open_and_render(&self.doc.scene, self.view.gpu_context()),
             Action::ExportAnimation => self.export.open_animation(&self.doc.scene, self.doc.path.as_ref()),
             Action::Undo => self.doc.undo(),
             Action::Redo => self.doc.redo(),
@@ -228,6 +232,9 @@ impl App {
             }
             if i.consume_key(Modifiers::NONE, Key::F1) {
                 return Some(Action::Help);
+            }
+            if i.consume_key(Modifiers::NONE, Key::F12) {
+                return Some(Action::Render);
             }
             None
         })
@@ -381,6 +388,14 @@ impl App {
                 let label = if self.export.busy() { format!("{}  Exporting…", icons::EXPORT) } else { format!("{}  Export", icons::EXPORT) };
                 if ui.add(egui::Button::new(RichText::new(label).strong()).fill(theme::ACCENT_DIM)).on_hover_text("Render and save an image (Ctrl+E)").clicked() {
                     action = Some(Action::Export);
+                }
+                let label = if self.render.busy() { format!("{}  Rendering…", egui_phosphor::regular::IMAGE) } else { format!("{}  Render", egui_phosphor::regular::IMAGE) };
+                if ui
+                    .button(label)
+                    .on_hover_text("Test render in a window with everything the export applies: denoiser, lens flares, bloom, streaks (F12). Post processing changes show there at once.")
+                    .clicked()
+                {
+                    action = Some(Action::Render);
                 }
                 ui.add_space(8.0);
                 ui.label(RichText::new(self.doc.title()).color(theme::TEXT_MUTED));
@@ -622,13 +637,20 @@ impl eframe::App for App {
             self.view.overlay = None;
         }
         egui::CentralPanel::default().frame(egui::Frame::new().fill(theme::CANVAS)).show(ui, |ui| {
-            let paused = self.export.busy();
+            let paused = self.export.busy() || self.render.busy();
             self.view.paused = paused;
             self.view.show(ui, frame, &mut self.doc, &self.prefs);
         });
 
         self.help.show(&ctx);
         self.prefs_window(&ctx);
+        if let Some(msg) = self.render.show(&ctx, &self.doc.scene, self.view.gpu_context(), self.prefs.last_dir.as_ref()) {
+            if msg.starts_with("Saving failed") {
+                self.notify_err(msg);
+            } else {
+                self.notify(msg);
+            }
+        }
         if let Some(msg) = self.export.show(&ctx, &self.doc.scene, self.view.gpu_context(), self.prefs.last_dir.as_ref(), self.prefs.ffmpeg.as_deref()) {
             if msg.starts_with("Export failed") {
                 self.notify_err(msg);
