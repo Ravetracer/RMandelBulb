@@ -111,7 +111,7 @@ pub enum ObjectShape {
     /// `Primitive::index` and parameters.
     Primitive(u32, [f64; 4]),
     /// A baked 3D model (None while it bakes or when it does not load: no surface).
-    Model(Option<std::sync::Arc<crate::mesh::Volume>>),
+    Model(Option<crate::mesh::Model>),
 }
 
 /// Result of iterating one point.
@@ -294,7 +294,7 @@ impl Program {
                 }
                 Shape::Primitive(pr) => ObjectShape::Primitive(pr.index(), pr.params()),
                 Shape::Model(m) => match crate::mesh::request(&m.path, &m.options) {
-                    crate::mesh::Status::Ready(v) => ObjectShape::Model(Some(v)),
+                    crate::mesh::Status::Ready(v) => ObjectShape::Model(Some(crate::mesh::Model::new(v, m))),
                     _ => ObjectShape::Model(None),
                 },
             };
@@ -655,7 +655,7 @@ impl Evaluator<'_> {
                     (d, oo)
                 }
                 ObjectShape::Primitive(kind, a) => (crate::compose::primitive_distance(*kind, *a, q) * ob.scale, Orbit { dr: 1.0, escaped: true, ..Orbit::default() }),
-                ObjectShape::Model(v) => (v.as_ref().map_or(crate::compose::NO_MODEL, |v| v.distance(q.to_array())) * ob.scale, Orbit { dr: 1.0, escaped: true, ..Orbit::default() }),
+                ObjectShape::Model(m) => (m.as_ref().map_or(crate::compose::NO_MODEL, |m| m.vol.distance(q.to_array())) * ob.scale, Orbit { dr: 1.0, escaped: true, ..Orbit::default() }),
             };
             let (nd, wins) = crate::compose::combine(ob.op, de, d, ob.smooth);
             de = nd;

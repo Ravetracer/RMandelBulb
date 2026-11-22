@@ -73,29 +73,58 @@ impl ModelOptions {
 #[derive(Clone, Debug, Default)]
 pub struct Mesh {
     pub triangles: Vec<[[f64; 3]; 3]>,
-    /// Color information per triangle: empty when the model has no colors, otherwise one entry
-    /// per triangle.
+    /// Color information per triangle: empty when the model has neither materials nor vertex
+    /// colors, otherwise one entry per triangle.
     pub shading: Vec<Shading>,
-    /// Textures referenced by [`Shading::texture`].
+    /// Materials referenced by [`Shading::material`].
+    pub materials: Vec<MeshMaterial>,
+    /// Textures referenced by [`MeshMaterial::texture`].
     pub textures: Vec<Texture>,
 }
+
+/// Material index of triangles without a material (plain white).
+pub const NO_MATERIAL: u32 = u32::MAX;
 
 /// Color information of one triangle.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Shading {
-    /// Corner colors in linear RGB (material color times vertex color).
+    /// Corner vertex colors in linear RGB (white without vertex colors).
     pub colors: [[f32; 3]; 3],
-    /// Corner texture coordinates (used with `texture`).
+    /// Corner texture coordinates.
     pub uv: [[f32; 2]; 3],
-    /// Index into [`Mesh::textures`]; the texture color multiplies the corner colors.
-    pub texture: Option<u32>,
+    /// Index into [`Mesh::materials`] or [`NO_MATERIAL`].
+    pub material: u32,
 }
 
 impl Default for Shading {
     fn default() -> Self {
-        Self { colors: [[1.0; 3]; 3], uv: [[0.0; 2]; 3], texture: None }
+        Self { colors: [[1.0; 3]; 3], uv: [[0.0; 2]; 3], material: NO_MATERIAL }
     }
 }
+
+/// A material of a model file.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MeshMaterial {
+    pub name: String,
+    /// Base color in linear RGB.
+    pub color: [f32; 3],
+    /// Color texture (index into [`Mesh::textures`]).
+    pub texture: Option<u32>,
+    /// Image files the model names for color, bump and specular ("" if none; the color one may
+    /// be set although it could not be loaded).
+    pub texture_file: String,
+    pub bump_file: String,
+    pub specular_file: String,
+}
+
+impl Default for MeshMaterial {
+    fn default() -> Self {
+        Self { name: String::new(), color: [1.0; 3], texture: None, texture_file: String::new(), bump_file: String::new(), specular_file: String::new() }
+    }
+}
+
+/// Largest texture side; larger images are scaled down when loaded.
+pub const MAX_TEXTURE: u32 = 2048;
 
 /// Texture addressing outside 0..1.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -120,6 +149,11 @@ pub struct Texture {
 impl Texture {
     fn from_rgb(img: image::RgbImage, wrap: [Wrap; 2], v_up: bool) -> Option<Texture> {
         let (width, height) = img.dimensions();
+        if width.max(height) > MAX_TEXTURE {
+            let s = MAX_TEXTURE as f64 / width.max(height) as f64;
+            let (w, h) = (((width as f64 * s).round() as u32).max(1), ((height as f64 * s).round() as u32).max(1));
+            return Texture::from_rgb(image::imageops::resize(&img, w, h, image::imageops::FilterType::Triangle), wrap, v_up);
+        }
         if width == 0 || height == 0 {
             return None;
         }
@@ -187,8 +221,10 @@ impl Mesh {
         bounds_of(&self.triangles)
     }
 
+    /// Whether the model has any color information (a material color, texture or vertex color
+    /// other than white).
     pub fn has_colors(&self) -> bool {
-        !self.shading.is_empty()
+        self.materials.iter().any(|m| m.color != [1.0; 3] || m.texture.is_some()) || self.shading.iter().any(|s| s.colors != [[1.0; 3]; 3])
     }
 
     /// Converts Y-up coordinates to Z-up: (x, y, z) -> (x, -z, y).
@@ -198,22 +234,6 @@ impl Mesh {
                 *p = [p[0], -p[2], p[1]];
             }
         }
-    }
-
-    /// Linear RGB of triangle `tri` at the barycentric weights of its second and third corner.
-    pub fn color_at(&self, tri: usize, v: f64, w: f64) -> [f64; 3] {
-        let Some(s) = self.shading.get(tri) else { return [1.0; 3] };
-        let u = 1.0 - v - w;
-        let mut c: [f64; 3] = std::array::from_fn(|k| s.colors[0][k] as f64 * u + s.colors[1][k] as f64 * v + s.colors[2][k] as f64 * w);
-        if let Some(tex) = s.texture.and_then(|i| self.textures.get(i as usize)) {
-            let tu = s.uv[0][0] as f64 * u + s.uv[1][0] as f64 * v + s.uv[2][0] as f64 * w;
-            let tv = s.uv[0][1] as f64 * u + s.uv[1][1] as f64 * v + s.uv[2][1] as f64 * w;
-            let t = tex.sample(tu, tv);
-            for k in 0..3 {
-                c[k] *= t[k] as f64;
-            }
-        }
-        c
     }
 }
 
@@ -292,67 +312,135 @@ fn load_obj(path: &Path) -> Result<Mesh, String> {
     let (models, materials) = tobj::load_obj(path, &opts).map_err(|e| err(&e))?;
     // A missing or broken MTL file only loses the colors.
     let materials = materials.unwrap_or_default();
-    let dir = path.parent().unwrap_or(Path::new("."));
     let mut mesh = Mesh::default();
     let mut textures: HashMap<String, Option<u32>> = HashMap::new();
-    let mut colored = false;
+    for mat in &materials {
+        let texture = mat.diffuse_texture.as_ref().and_then(|name| {
+            *textures.entry(name.clone()).or_insert_with(|| {
+                let tex = load_texture_file(path, name, [Wrap::Repeat; 2], true)?;
+                mesh.textures.push(tex);
+                Some(mesh.textures.len() as u32 - 1)
+            })
+        });
+        mesh.materials.push(MeshMaterial {
+            name: mat.name.clone(),
+            color: mat.diffuse.map(display_to_linear).unwrap_or([1.0; 3]),
+            texture,
+            texture_file: mat.diffuse_texture.as_deref().map(texture_name).unwrap_or_default(),
+            bump_file: mat.normal_texture.as_deref().map(texture_name).unwrap_or_default(),
+            specular_file: mat.specular_texture.as_deref().map(texture_name).unwrap_or_default(),
+        });
+    }
+    let mut detailed = !mesh.materials.is_empty();
     for model in &models {
         let m = &model.mesh;
         let pos = |i: u32| {
             let i = i as usize * 3;
             [m.positions[i] as f64, m.positions[i + 1] as f64, m.positions[i + 2] as f64]
         };
-        let material = m.material_id.and_then(|i| materials.get(i));
-        let kd = material.and_then(|mat| mat.diffuse).map(display_to_linear);
+        let material = m.material_id.filter(|&i| i < materials.len()).map_or(NO_MATERIAL, |i| i as u32);
         let has_uv = m.texcoords.len() >= m.positions.len() / 3 * 2;
-        let texture = match material.and_then(|mat| mat.diffuse_texture.as_ref()) {
-            Some(name) if has_uv => *textures.entry(name.clone()).or_insert_with(|| {
-                let tex = load_texture_file(dir, name, [Wrap::Repeat; 2], true)?;
-                mesh.textures.push(tex);
-                Some(mesh.textures.len() as u32 - 1)
-            }),
-            _ => None,
-        };
         let vertex_colors = !m.vertex_color.is_empty() && m.vertex_color.len() >= m.positions.len();
-        colored |= kd.is_some() || texture.is_some() || vertex_colors;
+        detailed |= vertex_colors;
         for f in m.indices.as_chunks::<3>().0 {
             if f.iter().any(|&i| i as usize * 3 + 2 >= m.positions.len()) {
                 continue;
             }
-            let mut s = Shading { texture, ..Shading::default() };
+            let mut s = Shading { material, ..Shading::default() };
             for (c, &i) in f.iter().enumerate() {
                 let i = i as usize;
-                let mut col = [1.0f32; 3];
                 if vertex_colors {
-                    col = display_to_linear([m.vertex_color[i * 3], m.vertex_color[i * 3 + 1], m.vertex_color[i * 3 + 2]]);
+                    s.colors[c] = display_to_linear([m.vertex_color[i * 3], m.vertex_color[i * 3 + 1], m.vertex_color[i * 3 + 2]]);
                 }
-                if let Some(kd) = kd {
-                    col = [col[0] * kd[0], col[1] * kd[1], col[2] * kd[2]];
-                }
-                s.colors[c] = col;
-                if texture.is_some() {
+                if has_uv {
                     s.uv[c] = [m.texcoords[i * 2], m.texcoords[i * 2 + 1]];
                 }
             }
             mesh.push([pos(f[0]), pos(f[1]), pos(f[2])], s);
         }
     }
-    if !colored {
+    if !detailed {
         mesh.shading.clear();
-        mesh.textures.clear();
     }
     Ok(mesh)
 }
 
-/// Loads an image named in an MTL file. Options before the file name (`-s 1 1 1 tex.png`) are
-/// skipped; the name is tried relative to the model folder, then by its file name alone.
-fn load_texture_file(dir: &Path, spec: &str, wrap: [Wrap; 2], v_up: bool) -> Option<Texture> {
+/// The image file name of an MTL texture statement (options like `-s 1 1 1` before the name are
+/// skipped; backslashes become slashes).
+fn texture_name(spec: &str) -> String {
     let spec = spec.trim();
-    let name = if spec.starts_with('-') { spec.split_whitespace().last()? } else { spec };
-    let name = name.replace('\\', "/");
+    let name = if spec.starts_with('-') { spec.split_whitespace().last().unwrap_or("") } else { spec };
+    name.replace('\\', "/")
+}
+
+/// Finds the image `name` that a model file refers to: relative to the model's folder, then
+/// by its file name among the images near the model ([`nearby_images`], case-insensitive).
+pub fn find_image(model: &Path, name: &str) -> Option<PathBuf> {
+    let name = texture_name(name);
+    if name.is_empty() {
+        return None;
+    }
     let rel = Path::new(&name);
-    let candidates = [dir.join(rel), dir.join(rel.file_name()?)];
-    let file = candidates.iter().find(|p| p.is_file())?;
+    if rel.is_absolute() && rel.is_file() {
+        return Some(rel.to_path_buf());
+    }
+    let dir = model.parent().unwrap_or(Path::new("."));
+    let file = rel.file_name()?;
+    for p in [dir.join(rel), dir.join(file)] {
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    let file = file.to_string_lossy().to_lowercase();
+    nearby_images(model).into_iter().find(|p| p.file_name().is_some_and(|f| f.to_string_lossy().to_lowercase() == file))
+}
+
+/// Image extensions the texture loader reads.
+pub const IMAGE_EXTENSIONS: [&str; 9] = ["png", "jpg", "jpeg", "bmp", "tga", "webp", "ppm", "pgm", "pnm"];
+
+fn is_image(p: &Path) -> bool {
+    p.is_file() && p.extension().and_then(|e| e.to_str()).is_some_and(|e| IMAGE_EXTENSIONS.contains(&e.to_ascii_lowercase().as_str()))
+}
+
+/// Images near a model file: in its folder, in the folders inside it (two levels deep) and in
+/// a `textures` folder next to the model's folder. Sorted by path.
+pub fn nearby_images(model: &Path) -> Vec<PathBuf> {
+    let dir = model.parent().map(|d| if d.as_os_str().is_empty() { Path::new(".") } else { d }).unwrap_or(Path::new("."));
+    let mut out = Vec::new();
+    collect_images(dir, 2, &mut out);
+    if let Some(parent) = dir.parent() {
+        for name in ["textures", "Textures", "tex", "maps", "images"] {
+            let d = parent.join(name);
+            if d.is_dir() && d != dir {
+                collect_images(&d, 1, &mut out);
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// Adds the images in `d` and, `depth` levels down, in its subfolders (at most 4096 files).
+fn collect_images(d: &Path, depth: usize, out: &mut Vec<PathBuf>) {
+    let Ok(rd) = std::fs::read_dir(d) else { return };
+    let mut entries: Vec<PathBuf> = rd.flatten().map(|e| e.path()).collect();
+    entries.sort();
+    for p in entries {
+        if out.len() >= 4096 {
+            return;
+        }
+        if is_image(&p) {
+            out.push(p);
+        } else if depth > 0 && p.is_dir() {
+            collect_images(&p, depth - 1, out);
+        }
+    }
+}
+
+/// Loads an image a model file refers to (see [`find_image`]).
+fn load_texture_file(model: &Path, spec: &str, wrap: [Wrap; 2], v_up: bool) -> Option<Texture> {
+    let file = find_image(model, spec)?;
     Texture::from_rgb(image::open(file).ok()?.to_rgb8(), wrap, v_up)
 }
 
@@ -464,10 +552,12 @@ fn mat_apply(m: &Mat4, p: [f32; 3]) -> [f64; 3] {
 struct GltfLoader<'a> {
     buffers: Vec<gltf::buffer::Data>,
     base: Option<&'a Path>,
+    path: &'a Path,
     /// Texture index per (image, wrap u, wrap v); None if the image cannot be decoded.
     textures: HashMap<(usize, [u8; 2]), Option<u32>>,
     mesh: Mesh,
-    colored: bool,
+    /// Whether the shading is worth keeping (materials, vertex colors).
+    detailed: bool,
 }
 
 fn gltf_wrap(m: gltf::texture::WrappingMode) -> Wrap {
@@ -516,8 +606,16 @@ impl GltfLoader<'_> {
         let t = doc
             .images()
             .nth(image)
-            .and_then(|img| gltf::image::Data::from_source(img.source(), self.base, &self.buffers).ok())
-            .and_then(|data| gltf_image_rgb(&data))
+            .and_then(|img| {
+                gltf::image::Data::from_source(img.source(), self.base, &self.buffers).ok().and_then(|data| gltf_image_rgb(&data)).or_else(|| match img.source() {
+                    // A file that is not where the model says: look for it near the model.
+                    gltf::image::Source::Uri { uri, .. } if !uri.starts_with("data:") => {
+                        let name = percent_decode(uri);
+                        Some(image::open(find_image(self.path, &name)?).ok()?.to_rgb8())
+                    }
+                    _ => None,
+                })
+            })
             .and_then(|rgb| Texture::from_rgb(rgb, wrap, false))
             .map(|t| {
                 self.mesh.textures.push(t);
@@ -525,6 +623,24 @@ impl GltfLoader<'_> {
             });
         self.textures.insert(key, t);
         t
+    }
+
+    /// Fills `mesh.materials` from the document (same indices).
+    fn materials(&mut self, doc: &gltf::Document) {
+        for (i, m) in doc.materials().enumerate() {
+            let pbr = m.pbr_metallic_roughness();
+            let f = pbr.base_color_factor();
+            let file = |t: Option<gltf::Texture>| match t.map(|t| t.source().source()) {
+                Some(gltf::image::Source::Uri { uri, .. }) if !uri.starts_with("data:") => percent_decode(uri),
+                Some(_) => "(embedded)".to_string(),
+                None => String::new(),
+            };
+            let texture_file = file(pbr.base_color_texture().map(|t| t.texture()));
+            self.mesh
+                .materials
+                .push(MeshMaterial { name: m.name().map_or_else(|| format!("Material {}", i + 1), str::to_string), color: [f[0], f[1], f[2]], texture: None, texture_file, ..MeshMaterial::default() });
+        }
+        self.detailed |= !self.mesh.materials.is_empty();
     }
 
     fn node(&mut self, doc: &gltf::Document, node: &gltf::Node, parent: &Mat4, depth: usize) {
@@ -558,18 +674,21 @@ impl GltfLoader<'_> {
             };
             let vcolors: Option<Vec<[f32; 4]>> = reader.read_colors(0).map(|c| c.into_rgba_f32().collect());
             let material = prim.material();
-            let pbr = material.pbr_metallic_roughness();
-            let factor = pbr.base_color_factor();
-            let tex_info = pbr.base_color_texture();
-            let uvs: Option<Vec<[f32; 2]>> = tex_info.as_ref().and_then(|info| reader.read_tex_coords(info.tex_coord())).map(|t| t.into_f32().collect());
-            let texture = match (&tex_info, &uvs) {
-                (Some(info), Some(_)) => self.texture(doc, &info.texture()),
-                _ => None,
-            };
+            let mat_index = material.index().filter(|&i| i < self.mesh.materials.len()).map_or(NO_MATERIAL, |i| i as u32);
+            let tex_info = material.pbr_metallic_roughness().base_color_texture();
+            let uv_set = tex_info.as_ref().map_or(0, |info| info.tex_coord());
+            let uvs: Option<Vec<[f32; 2]>> = reader.read_tex_coords(uv_set).map(|t| t.into_f32().collect());
+            if let Some(info) = &tex_info
+                && uvs.is_some()
+                && mat_index != NO_MATERIAL
+                && self.mesh.materials[mat_index as usize].texture.is_none()
+            {
+                let t = self.texture(doc, &info.texture());
+                self.mesh.materials[mat_index as usize].texture = t;
+            }
             let vcolors = vcolors.filter(|c| c.len() >= pos.len());
             let uvs = uvs.filter(|u| u.len() >= pos.len());
-            let texture = texture.filter(|_| uvs.is_some());
-            self.colored |= factor[..3] != [1.0; 3] || texture.is_some() || vcolors.is_some();
+            self.detailed |= vcolors.is_some();
             let n = indices.len();
             let corners: Vec<[usize; 3]> = match mode {
                 Mode::TriangleStrip => (0..n.saturating_sub(2)).map(|i| if i % 2 == 0 { [i, i + 1, i + 2] } else { [i + 1, i, i + 2] }).collect(),
@@ -581,10 +700,11 @@ impl GltfLoader<'_> {
                 if v.iter().any(|&i| i >= pos.len()) {
                     continue;
                 }
-                let mut s = Shading { texture, ..Shading::default() };
+                let mut s = Shading { material: mat_index, ..Shading::default() };
                 for (k, &i) in v.iter().enumerate() {
-                    let vc = vcolors.as_ref().map_or([1.0; 4], |c| c[i]);
-                    s.colors[k] = [factor[0] * vc[0], factor[1] * vc[1], factor[2] * vc[2]];
+                    if let Some(c) = &vcolors {
+                        s.colors[k] = [c[i][0], c[i][1], c[i][2]];
+                    }
                     if let Some(u) = &uvs {
                         s.uv[k] = u[i];
                     }
@@ -600,7 +720,8 @@ fn load_gltf(path: &Path) -> Result<Mesh, String> {
     let gltf::Gltf { document, blob } = gltf::Gltf::open(path).map_err(|e| err(&e))?;
     let base = path.parent();
     let buffers = gltf::import_buffers(&document, base, blob).map_err(|e| err(&e))?;
-    let mut l = GltfLoader { buffers, base, textures: HashMap::new(), mesh: Mesh::default(), colored: false };
+    let mut l = GltfLoader { buffers, base, path, textures: HashMap::new(), mesh: Mesh::default(), detailed: false };
+    l.materials(&document);
     const IDENTITY: Mat4 = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]];
     match document.default_scene().or_else(|| document.scenes().next()) {
         Some(scene) => {
@@ -616,11 +737,30 @@ fn load_gltf(path: &Path) -> Result<Mesh, String> {
         }
     }
     let mut mesh = l.mesh;
-    if !l.colored {
+    if !l.detailed {
         mesh.shading.clear();
-        mesh.textures.clear();
     }
     Ok(mesh)
+}
+
+/// Decodes `%xx` escapes of a URI.
+fn percent_decode(uri: &str) -> String {
+    let b = uri.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%'
+            && i + 2 < b.len()
+            && let Ok(v) = u8::from_str_radix(std::str::from_utf8(&b[i + 1..i + 3]).unwrap_or("zz"), 16)
+        {
+            out.push(v);
+            i += 3;
+        } else {
+            out.push(b[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -946,7 +1086,31 @@ impl LineHits {
 // ---------------------------------------------------------------------------------------------
 // Volume
 
-/// A baked model: signed distances on a regular grid, optionally colors on a coarser grid.
+/// Largest error of the interpolated grid distance, in voxels: the distance from a point to the
+/// farthest corner of its grid cell (a distance changes by at most that much in between).
+pub const GRID_ERROR: f64 = 1.732_050_807_568_877_2;
+/// Where the grid distance is below this many voxels, the exact distance to the triangles is
+/// used: models keep their detail (thin parts, sharp edges) at any viewing distance.
+pub const NEAR: f64 = 2.75;
+/// The exact search looks this many voxels far (at least `NEAR + GRID_ERROR`, so it finds the
+/// nearest triangle of every point in the near zone).
+pub const SEARCH_RANGE: f64 = 4.5;
+/// Depth of the traversal stack of the triangle search (CPU and GPU).
+pub const STACK: usize = 32;
+
+/// A node of the triangle hierarchy (march.wgsl reads the same 8 words).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TreeNode {
+    pub lo: [f32; 3],
+    pub hi: [f32; 3],
+    /// Leaf: first triangle; inner node: the left child (the right one follows).
+    pub start: u32,
+    /// Triangles of a leaf; 0 for inner nodes.
+    pub count: u32,
+}
+
+/// A baked model: signed distances on a regular grid for the distance away from the surface,
+/// the triangles with per-cell lists for the exact distance and the colors near it.
 #[derive(Clone, Debug)]
 pub struct Volume {
     /// Grid points per axis.
@@ -959,13 +1123,20 @@ pub struct Volume {
     pub bounds: [[f64; 3]; 2],
     /// Distances, x fastest, then y, then z: `clamp(d / (voxel * DIST_RANGE), -1, 1) * 32767`.
     pub dist: Vec<i16>,
-    /// Color grid points per axis (`res / 2 + 1`, spacing `2 * voxel`, same origin: it covers
-    /// the distance grid's box).
-    pub color_res: [u32; 3],
-    pub color_min: [f64; 3],
-    pub color_voxel: f64,
-    /// sRGB display colors (alpha 255), x fastest; empty if the model has no colors.
-    pub colors: Vec<[u8; 4]>,
+    /// Triangles in model space (corner a, edges ab and ac), in the leaf order of `nodes`.
+    pub tris: Vec<[f32; 9]>,
+    /// Bounding volume hierarchy over `tris` (node 0 is the root; empty without triangles).
+    pub nodes: Vec<TreeNode>,
+    /// Per triangle: material (index into `materials` or [`NO_MATERIAL`]).
+    pub tri_material: Vec<u32>,
+    /// Per triangle: texture coordinates u, v of the three corners.
+    pub tri_uv: Vec<[f32; 6]>,
+    /// Per triangle: corner vertex colors as sRGB RGBA8 (r in the low byte); empty without
+    /// vertex colors.
+    pub tri_colors: Vec<[u32; 3]>,
+    pub materials: Vec<MeshMaterial>,
+    /// Textures of the model file (referenced by the materials).
+    pub textures: Vec<Arc<Texture>>,
 }
 
 /// Grid cell of `q`: lower corner index and fractions (the clamping scheme of the GPU lookup).
@@ -994,6 +1165,22 @@ fn trilinear(res: [u32; 3], i0: [usize; 3], f: [f64; 3], value: impl Fn(usize) -
     lerp(lerp(x00, x10, f[1]), lerp(x01, x11, f[1]), f[2])
 }
 
+/// The nearest triangle of a point: squared distance, triangle index and the barycentric
+/// weights (v, w) of the closest point's second and third corner.
+#[derive(Clone, Copy, Debug)]
+pub struct Nearest {
+    pub d2: f64,
+    pub tri: u32,
+    pub v: f64,
+    pub w: f64,
+}
+
+/// sRGB RGBA8 (r in the low byte) as linear RGB.
+fn unpack_linear(c: u32) -> [f64; 3] {
+    let lut = srgb_lut();
+    [lut[(c & 255) as usize] as f64, lut[(c >> 8 & 255) as usize] as f64, lut[(c >> 16 & 255) as usize] as f64]
+}
+
 impl Volume {
     /// Upper corner of the grid box.
     pub fn grid_max(&self) -> [f64; 3] {
@@ -1005,42 +1192,199 @@ impl Volume {
         v as f64 / 32767.0 * DIST_RANGE * self.voxel
     }
 
-    /// Signed distance at model-space point `q`. Inside the grid box: trilinear interpolation
-    /// of the decoded grid values with `g = (q - min) / voxel` clamped to `[0, res - 1]`,
-    /// `i0 = floor(g)` clamped to `res - 2`, `f = g - i0`. Outside the grid box: the larger of
-    /// the distance from `q` to `bounds` (the tight mesh box) and the value at the nearest point
-    /// of the grid box minus the distance to it; both are lower bounds.
+    /// Grid distance at `q`: trilinear interpolation of the decoded grid values with
+    /// `g = (q - min) / voxel` clamped to `[0, res - 1]`, `i0 = floor(g)` clamped to `res - 2`,
+    /// `f = g - i0`.
+    fn grid_distance(&self, q: [f64; 3]) -> f64 {
+        let (i0, f) = lattice(self.res, self.min, self.voxel, q);
+        trilinear(self.res, i0, f, |i| self.decode(self.dist[i]))
+    }
+
+    /// Triangle `i` for closest-point queries.
+    fn tri(&self, i: u32) -> Tri {
+        let t = &self.tris[i as usize];
+        let f = |k: usize| [t[k] as f64, t[k + 1] as f64, t[k + 2] as f64];
+        Tri { a: f(0), ab: f(3), ac: f(6) }
+    }
+
+    /// The nearest triangle closer than `limit` (None if there is none). Traversal: a stack of
+    /// `STACK` (node, squared box distance) entries; a node is skipped when its box is not
+    /// closer than the best triangle so far; children are pushed far one first; when the stack
+    /// is full, further children are dropped.
+    pub fn nearest(&self, q: [f64; 3], limit: f64) -> Option<Nearest> {
+        let node_d2 = |n: &TreeNode| box_d2(q, &n.lo.map(|v| v as f64), &n.hi.map(|v| v as f64));
+        let root = self.nodes.first()?;
+        let mut best_d2 = limit * limit;
+        let mut best: Option<Nearest> = None;
+        let mut stack = [(0u32, 0.0f64); STACK];
+        stack[0] = (0, node_d2(root));
+        let mut sp = 1;
+        while sp > 0 {
+            sp -= 1;
+            let (ni, nd) = stack[sp];
+            if nd >= best_d2 {
+                continue;
+            }
+            let n = &self.nodes[ni as usize];
+            if n.count > 0 {
+                for t in n.start..n.start + n.count {
+                    let (d2, v, w) = self.tri(t).closest(q);
+                    if d2 < best_d2 {
+                        best_d2 = d2;
+                        best = Some(Nearest { d2, tri: t, v, w });
+                    }
+                }
+                continue;
+            }
+            let (l, r) = (n.start, n.start + 1);
+            let (dl, dr) = (node_d2(&self.nodes[l as usize]), node_d2(&self.nodes[r as usize]));
+            let ((near, dn), (far, df)) = if dl <= dr { ((l, dl), (r, dr)) } else { ((r, dr), (l, dl)) };
+            if df < best_d2 && sp < STACK {
+                stack[sp] = (far, df);
+                sp += 1;
+            }
+            if dn < best_d2 && sp < STACK {
+                stack[sp] = (near, dn);
+                sp += 1;
+            }
+        }
+        best
+    }
+
+    /// Whether `q` is behind the face of its nearest triangle `n`.
+    fn behind(&self, q: [f64; 3], n: &Nearest) -> bool {
+        let t = self.tri(n.tri);
+        let p: [f64; 3] = std::array::from_fn(|k| t.a[k] + n.v * t.ab[k] + n.w * t.ac[k]);
+        dot(sub(q, p), cross(t.ab, t.ac)) < 0.0
+    }
+
+    /// Signed distance at model-space point `q` (a lower bound of the true distance).
+    ///
+    /// Inside the grid box: the grid distance `g`. Where `|g| < NEAR` voxels, the exact distance
+    /// to the nearest triangle (searched up to `SEARCH_RANGE` voxels), negative where
+    /// `g < -voxel` or where `g < 0` and `q` is behind that triangle's face (parts thinner
+    /// than the grid and open surfaces are shells). Elsewhere `g` moved toward
+    /// zero by `GRID_ERROR` voxels. Outside the grid box: the larger of the distance from `q` to
+    /// `bounds` (the tight mesh box) and the value at the nearest point of the grid box minus
+    /// the distance to it; both are lower bounds.
     pub fn distance(&self, q: [f64; 3]) -> f64 {
         if self.dist.is_empty() {
             return box_distance(q, &self.bounds);
         }
         let hi = self.grid_max();
-        let (i0, f) = lattice(self.res, self.min, self.voxel, q);
-        let d = trilinear(self.res, i0, f, |i| self.decode(self.dist[i]));
+        let g = self.grid_distance(q);
+        let e = GRID_ERROR * self.voxel;
+        let far = if g > 0.0 { (g - e).max(0.0) } else { (g + e).min(0.0) };
         if (0..3).any(|k| !(q[k] >= self.min[k] && q[k] <= hi[k])) {
-            // Outside the grid: the larger of two lower bounds, the distance to the mesh box and
-            // the value at the nearest grid point minus the way there (continuous at the grid
-            // faces, so soft shadows and occlusion see no box edges).
+            // Continuous at the grid faces, so soft shadows and occlusion see no box edges.
             let c: [f64; 3] = std::array::from_fn(|k| q[k].clamp(self.min[k], hi[k]));
             let away = (0..3).map(|k| (q[k] - c[k]) * (q[k] - c[k])).sum::<f64>().sqrt();
-            return box_distance(q, &self.bounds).max(d - away);
+            return box_distance(q, &self.bounds).max(far - away);
         }
-        d
+        if g.abs() >= NEAR * self.voxel {
+            return far;
+        }
+        let range = SEARCH_RANGE * self.voxel;
+        let Some(n) = self.nearest(q, range) else { return if g < -self.voxel { -range } else { range } };
+        let d = n.d2.sqrt();
+        let inside = g < -self.voxel || (g < 0.0 && self.behind(q, &n));
+        if inside { -d } else { d }
     }
 
-    /// Color (0..1 display values) at `q`, trilinear on the color grid with the same clamping
-    /// scheme; None without colors.
-    pub fn color(&self, q: [f64; 3]) -> Option<[f64; 3]> {
-        if self.colors.is_empty() {
+    /// Linear RGB at `q` with the materials of `look`: the nearest triangle's material color
+    /// times its interpolated vertex color times its texture. None if the look has no colors or
+    /// no triangle is near.
+    pub fn color(&self, q: [f64; 3], look: &Look) -> Option<[f64; 3]> {
+        if !look.colored {
             return None;
         }
-        let (i0, f) = lattice(self.color_res, self.color_min, self.color_voxel, q);
-        Some(std::array::from_fn(|c| trilinear(self.color_res, i0, f, |i| self.colors[i][c] as f64) / 255.0))
+        let n = self.nearest(q, SEARCH_RANGE * self.voxel)?;
+        let t = n.tri as usize;
+        let u = 1.0 - n.v - n.w;
+        let m = look.materials.get(self.tri_material[t] as usize);
+        let mut c = m.map_or([1.0; 3], |m| m.color.map(|v| v as f64));
+        if let Some(vc) = self.tri_colors.get(t) {
+            let [a, b, d] = vc.map(unpack_linear);
+            for k in 0..3 {
+                c[k] *= a[k] * u + b[k] * n.v + d[k] * n.w;
+            }
+        }
+        if let Some(tex) = m.and_then(|m| m.texture).and_then(|i| look.textures.get(i as usize)) {
+            let uv = &self.tri_uv[t];
+            let tu = uv[0] as f64 * u + uv[2] as f64 * n.v + uv[4] as f64 * n.w;
+            let tv = uv[1] as f64 * u + uv[3] as f64 * n.v + uv[5] as f64 * n.w;
+            let s = tex.sample(tu, tv);
+            for k in 0..3 {
+                c[k] *= s[k] as f64;
+            }
+        }
+        Some(c)
+    }
+
+    /// The look of the model as its file describes it.
+    pub fn file_look(&self) -> Look {
+        let materials: Vec<LookMaterial> = self.materials.iter().map(|m| LookMaterial { color: m.color, texture: m.texture }).collect();
+        let colored = materials.iter().any(|m| m.color != [1.0; 3] || m.texture.is_some()) || !self.tri_colors.is_empty();
+        Look { materials, textures: self.textures.clone(), colored }
     }
 }
 
-/// Bakes `mesh` into a distance (and color) volume. `progress` receives 0..1 and may be called
-/// from worker threads.
+/// A baked model with the look it is shown with.
+#[derive(Clone, Debug)]
+pub struct Model {
+    pub vol: Arc<Volume>,
+    pub look: Arc<Look>,
+}
+
+impl Model {
+    /// The model `vol` of the scene's model reference `m`. Looks are cached per volume and
+    /// settings, so that an unchanged model keeps the same `look` (renderers upload a model
+    /// again only when its volume or look changes).
+    pub fn new(vol: Arc<Volume>, _m: &crate::compose::ModelRef) -> Model {
+        type Entry = (std::sync::Weak<Volume>, String, Arc<Look>);
+        static LOOKS: OnceLock<Mutex<Vec<Entry>>> = OnceLock::new();
+        let fingerprint = String::new();
+        let mut looks = LOOKS.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
+        looks.retain(|(w, _, _)| w.strong_count() > 0);
+        if let Some((_, _, look)) = looks.iter().find(|(w, f, _)| w.as_ptr() == Arc::as_ptr(&vol) && *f == fingerprint) {
+            return Model { look: look.clone(), vol };
+        }
+        let look = Arc::new(vol.file_look());
+        looks.push((Arc::downgrade(&vol), fingerprint, look.clone()));
+        Model { vol, look }
+    }
+}
+
+/// How a model's materials are shown: per material of the [`Volume`] a color and texture.
+#[derive(Clone, Debug, Default)]
+pub struct Look {
+    pub materials: Vec<LookMaterial>,
+    pub textures: Vec<Arc<Texture>>,
+    /// Whether there is any color (otherwise the object's own material colors are used).
+    pub colored: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LookMaterial {
+    /// Linear RGB.
+    pub color: [f32; 3],
+    /// Index into [`Look::textures`].
+    pub texture: Option<u32>,
+}
+
+/// `v` as f32, rounded toward negative infinity (boxes stay conservative).
+fn round_down(v: f64) -> f32 {
+    let f = v as f32;
+    if f as f64 > v { f.next_down() } else { f }
+}
+
+/// `v` as f32, rounded toward positive infinity.
+fn round_up(v: f64) -> f32 {
+    let f = v as f32;
+    if (f as f64) < v { f.next_up() } else { f }
+}
+
+/// Bakes `mesh` into a volume. `progress` receives 0..1 and may be called from worker threads.
 pub fn bake(mesh: &Mesh, opts: &ModelOptions, progress: &(dyn Fn(f32) + Sync)) -> Volume {
     let resolution = opts.clamped_resolution();
     progress(0.0);
@@ -1088,8 +1432,7 @@ pub fn bake(mesh: &Mesh, opts: &ModelOptions, progress: &(dyn Fn(f32) + Sync)) -
 
     // Sign: ray parity along every axis.
     let lines: Vec<LineHits> = (0..3).map(|a| cast_lines(&valid, a, res, min, voxel)).collect();
-    let has_colors = mesh.has_colors();
-    let (p_sign, p_dist) = (0.05, if has_colors { 0.8 } else { 1.0 });
+    let (p_sign, p_dist) = (0.05, 0.8);
     progress(p_sign as f32);
 
     // Distances, z-slices in parallel.
@@ -1136,36 +1479,17 @@ pub fn bake(mesh: &Mesh, opts: &ModelOptions, progress: &(dyn Fn(f32) + Sync)) -
         progress((p_sign + (p_dist - p_sign) * n as f64 / nz as f64) as f32);
     });
 
-    // Colors at the nearest surface point, at half resolution.
-    let color_res = res.map(|n| n / 2 + 1);
-    let color_voxel = 2.0 * voxel;
-    let mut colors = Vec::new();
-    if has_colors {
-        let (cx, cy, cz) = (color_res[0] as usize, color_res[1] as usize, color_res[2] as usize);
-        colors = vec![[0u8; 4]; cx * cy * cz];
-        let done = AtomicUsize::new(0);
-        colors.par_chunks_mut(cx * cy).enumerate().for_each(|(k, slice)| {
-            let z = min[2] + k as f64 * color_voxel;
-            let mut hint = NONE;
-            for j in 0..cy {
-                for i in 0..cx {
-                    let p = [min[0] + i as f64 * color_voxel, min[1] + j as f64 * color_voxel, z];
-                    let (_, tri) = bvh.nearest_from(p, hint, f64::INFINITY);
-                    if tri == NONE {
-                        slice[i + j * cx] = [255; 4];
-                        continue;
-                    }
-                    hint = tri;
-                    let (_, v, w) = bvh.tris[tri as usize].closest(p);
-                    slice[i + j * cx] = linear_to_display_u8(mesh.color_at(bvh.ids[tri as usize] as usize, v, w));
-                }
-            }
-            let n = done.fetch_add(1, Ordering::Relaxed) + 1;
-            progress((p_dist + (1.0 - p_dist) * n as f64 / cz as f64) as f32);
-        });
-    }
+    // Triangles in the hierarchy's leaf order, the hierarchy and the shading.
+    let tris_f32: Vec<[f32; 9]> = bvh.tris.iter().map(|t| [t.a[0], t.a[1], t.a[2], t.ab[0], t.ab[1], t.ab[2], t.ac[0], t.ac[1], t.ac[2]].map(|v| v as f32)).collect();
+    let nodes: Vec<TreeNode> = bvh.nodes.iter().map(|n| TreeNode { lo: n.lo.map(round_down), hi: n.hi.map(round_up), start: n.start, count: n.count }).collect();
+    let shading = |i: u32| mesh.shading.get(i as usize).copied().unwrap_or_default();
+    let ids = &bvh.ids;
+    let tri_material = ids.iter().map(|&i| shading(i).material).collect();
+    let tri_uv = ids.iter().map(|&i| shading(i).uv.as_flattened().try_into().unwrap_or([0.0; 6])).collect();
+    let vertex_colors = mesh.shading.iter().any(|s| s.colors != [[1.0; 3]; 3]);
+    let tri_colors = if vertex_colors { ids.iter().map(|&i| shading(i).colors.map(|c| u32::from_le_bytes(linear_to_display_u8(c.map(|v| v as f64))))).collect() } else { Vec::new() };
     progress(1.0);
-    Volume { res, min, voxel, bounds, dist, color_res, color_min: min, color_voxel, colors }
+    Volume { res, min, voxel, bounds, dist, tris: tris_f32, nodes, tri_material, tri_uv, tri_colors, materials: mesh.materials.clone(), textures: mesh.textures.iter().cloned().map(Arc::new).collect() }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1385,24 +1709,35 @@ mod tests {
         dot(out, out).sqrt() + q[0].max(q[1]).max(q[2]).min(0.0)
     }
 
-    /// Compares the volume with `sdf` at random points of the grid box: error below one voxel
-    /// (plus `slack`) where the stored value is not saturated.
+    /// Compares the volume with `sdf` at random points of the grid box: exact near the surface,
+    /// a lower bound everywhere, within the grid error elsewhere (`slack`: tessellation error).
     fn check_sdf(vol: &Volume, sdf: impl Fn([f64; 3]) -> f64, slack: f64) {
         let hi = vol.grid_max();
         let mut rng = Lcg(7);
         let cap = DIST_RANGE * vol.voxel;
-        let mut worst = 0.0f64;
-        for _ in 0..3000 {
-            let p: [f64; 3] = std::array::from_fn(|k| vol.min[k] + rng.next() * (hi[k] - vol.min[k]));
+        let v = vol.voxel;
+        for i in 0..6000 {
+            // Half of the points close to the surface.
+            let mut p: [f64; 3] = std::array::from_fn(|k| vol.min[k] + rng.next() * (hi[k] - vol.min[k]));
+            if i % 2 == 0 {
+                for _ in 0..40 {
+                    if sdf(p).abs() < 2.0 * v {
+                        break;
+                    }
+                    p = std::array::from_fn(|k| vol.min[k] + rng.next() * (hi[k] - vol.min[k]));
+                }
+            }
             let want = sdf(p).clamp(-cap, cap);
             let got = vol.distance(p);
-            worst = worst.max((got - want).abs() / vol.voxel);
-            assert!((got - want).abs() < vol.voxel + slack, "at {p:?}: got {got}, want {want}, voxel {}", vol.voxel);
-            if want.abs() > vol.voxel {
-                assert_eq!(got < 0.0, want < 0.0, "sign at {p:?}");
+            assert!(got.abs() <= want.abs() + slack + 1e-5, "not a lower bound at {p:?}: got {got}, want {want}, voxel {v}");
+            assert!((got - want).abs() < (2.0 * GRID_ERROR + 1.0) * v + slack, "at {p:?}: got {got}, want {want}, voxel {v}");
+            if want.abs() < NEAR * v - GRID_ERROR * v {
+                assert!((got.abs() - want.abs()).abs() < slack + 1e-5, "not exact at {p:?}: got {got}, want {want}");
+            }
+            if want > 0.0 || want < -(NEAR + GRID_ERROR) * v {
+                assert_eq!(got < 0.0, want < 0.0, "sign at {p:?}: got {got}, want {want}");
             }
         }
-        eprintln!("worst error {worst:.3} voxels");
     }
 
     #[test]
@@ -1410,8 +1745,8 @@ mod tests {
         let vol = bake(&sphere(48, 24), &opts(40), &no_progress);
         assert_eq!(vol.res, [40, 40, 40]);
         check_sdf(&vol, |p| dot(p, p).sqrt() - 1.0, 0.01);
-        assert!(vol.distance([0.0; 3]) < -0.9);
-        assert!(vol.color([0.0; 3]).is_none());
+        assert!(vol.distance([0.0; 3]) < -0.75);
+        assert!(vol.color([0.0; 3], &vol.file_look()).is_none());
     }
 
     #[test]
@@ -1441,6 +1776,31 @@ mod tests {
     }
 
     #[test]
+    fn thin_parts_are_exact() {
+        // A plate much thinner than a voxel and an open quad above it.
+        let mut m = box_mesh([1.0, 1.0, 0.002]);
+        let q = [[-1.0, -1.0, 0.5], [1.0, -1.0, 0.5], [1.0, 1.0, 0.5], [-1.0, 1.0, 0.5]];
+        m.push([q[0], q[1], q[2]], Shading::default());
+        m.push([q[0], q[2], q[3]], Shading::default());
+        m.shading.clear();
+        let vol = bake(&m, &ModelOptions { keep_units: true, ..opts(32) }, &no_progress);
+        assert!(vol.voxel > 0.05);
+        for z in [0.0025, 0.004, 0.01, 0.05] {
+            let d = vol.distance([0.2, 0.1, z]);
+            assert!((d - (z - 0.002)).abs() < 1e-6, "plate at z {z}: {d}");
+            let d = vol.distance([0.2, 0.1, -z]);
+            assert!((d - (z - 0.002)).abs() < 1e-6, "plate below at z {z}: {d}");
+        }
+        // Inside a part thinner than the grid: the distance to its faces (a shell).
+        assert!((vol.distance([0.2, 0.1, 0.001]) - 0.001).abs() < 1e-6);
+        // The open quad is a surface seen from both sides.
+        for dz in [0.001, 0.01, 0.1] {
+            assert!((vol.distance([-0.3, 0.4, 0.5 + dz]) - dz).abs() < 1e-6);
+            assert!((vol.distance([-0.3, 0.4, 0.5 - dz]) - dz).abs() < 1e-6);
+        }
+    }
+
+    #[test]
     fn sphere_with_hole_keeps_sign() {
         let mut m = sphere(32, 16);
         // Remove the triangles at the top pole and one near the equator.
@@ -1453,9 +1813,9 @@ mod tests {
         });
         assert!(m.triangles.len() < before && m.triangles.len() + 40 > before && before - m.triangles.len() > 4, "removed {}", before - m.triangles.len());
         let vol = bake(&m, &opts(40), &no_progress);
-        assert!(vol.distance([0.0; 3]) < -0.9);
-        assert!(vol.distance([0.0, 0.0, 0.5]) < -0.4);
-        assert!(vol.distance([0.5, 0.0, 0.0]) < -0.4);
+        assert!(vol.distance([0.0; 3]) < -0.75);
+        assert!(vol.distance([0.0, 0.0, 0.5]) < -0.3);
+        assert!(vol.distance([0.5, 0.0, 0.0]) < -0.3);
         // Every grid point away from the surface has the right sign.
         let (nx, ny) = (vol.res[0] as usize, vol.res[1] as usize);
         for (n, &v) in vol.dist.iter().enumerate() {
@@ -1474,7 +1834,7 @@ mod tests {
         for _ in 0..500 {
             let p: [f64; 3] = std::array::from_fn(|_| (rng.next() - 0.5) * 8.0);
             let d = vol.distance(p);
-            assert!(d <= dot(p, p).sqrt() - 1.0 + vol.voxel, "at {p:?}: {d}");
+            assert!(d.abs() <= (dot(p, p).sqrt() - 1.0).abs() + vol.voxel, "at {p:?}: {d}");
         }
         assert!((vol.distance([3.0, 0.0, 0.0]) - 2.0).abs() < 1e-9);
     }
@@ -1519,7 +1879,7 @@ mod tests {
     }
 
     fn assert_color(vol: &Volume, q: [f64; 3], want: [f64; 3]) {
-        let c = vol.color(q).expect("colors");
+        let c = vol.color(q, &vol.file_look()).expect("colors");
         for k in 0..3 {
             assert!((c[k] - want[k]).abs() < 0.01, "color {c:?}, want {want:?}");
         }
@@ -1583,7 +1943,7 @@ mod tests {
         assert_eq!(mesh.triangles, src.triangles);
         assert!(!mesh.has_colors());
         let vol = bake(&mesh, &opts(24), &no_progress);
-        assert!(vol.distance([0.0; 3]) < -0.4 && vol.colors.is_empty());
+        assert!(vol.distance([0.0; 3]) < -0.25 && !vol.file_look().colored);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1604,7 +1964,7 @@ mod tests {
         assert_eq!(mesh.triangles.len(), 12);
         let vol = bake(&mesh, &opts(24), &no_progress);
         assert_color(&vol, [0.3, 0.2, 1.1], [0.0, 0.0, 1.0]);
-        assert!(vol.distance([0.0; 3]) < -0.9);
+        assert!(vol.distance([0.0; 3]) < -0.75);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1653,7 +2013,7 @@ mod tests {
         // Scaled by 2 in x, moved by 10 in x; Y-up to Z-up keeps x.
         assert_eq!(mesh.bounds().unwrap(), [[8.0, -1.0, -1.0], [12.0, 1.0, 1.0]]);
         let vol = bake(&mesh, &ModelOptions { keep_units: true, ..opts(24) }, &no_progress);
-        assert_color(&vol, [10.0, 0.0, 1.05], [0.5, 0.0, 1.0]);
+        assert_color(&vol, [10.0, 0.0, 1.05], [0.214041, 0.0, 1.0]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

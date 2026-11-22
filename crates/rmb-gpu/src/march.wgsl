@@ -110,14 +110,29 @@ struct Obj {
 
 @group(0) @binding(6) var<storage, read> objs: array<Obj>;
 
-// Baked 3D models (rmb-core mesh.rs, filled by renderer.rs): per object j a header of 20
-// words at 20 j: grid points (3), first word of the distances, grid origin (3 f32), spacing
-// (f32), mesh box min (3 f32) and max (3 f32), first word of the colors (0: none), color grid
-// points (3), color spacing (f32). Distances are 16-bit, two per word; colors RGBA8.
+// Baked 3D models (rmb-core mesh.rs, filled by renderer.rs::volumes_gpu): per object j a header
+// of 32 words at 32 j: grid points (3), first word of the distances, grid origin (3 f32), spacing
+// (f32), mesh box min (3 f32) and max (3 f32), first word of the triangles (9 f32 each: corner,
+// two edges), of the hierarchy nodes (8 words: box min, max, start, count), node count, first
+// word of the shading (0: no colors; 7 words per triangle: material, 3 uv pairs), of the vertex
+// colors (0: none; 3 RGBA8 words per triangle), of the materials (4 words: linear rgb, texture),
+// material count, first word of the texture table (4 words: first texel, width, height, flags:
+// wrap u, wrap v, v up), texture count. Distances are 16-bit, two per word; texels sRGB RGBA8.
 @group(0) @binding(7) var<storage, read> vols: array<u32>;
+
+const MODEL_HEADER: u32 = 32u;
+// mesh.rs GRID_ERROR, NEAR, SEARCH_RANGE, STACK.
+const MODEL_GRID_ERROR: f32 = 1.7320508;
+const MODEL_NEAR: f32 = 2.75;
+const MODEL_RANGE: f32 = 4.5;
+const MODEL_STACK: u32 = 32u;
 
 fn vol_f(i: u32) -> f32 {
     return bitcast<f32>(vols[i]);
+}
+
+fn vol_v3(i: u32) -> vec3<f32> {
+    return vec3<f32>(vol_f(i), vol_f(i + 1u), vol_f(i + 2u));
 }
 
 fn vol_dist(off: u32, i: u32) -> f32 {
@@ -126,9 +141,154 @@ fn vol_dist(off: u32, i: u32) -> f32 {
     return f32(v) / 32767.0;
 }
 
+fn box_d2(q: vec3<f32>, lo: vec3<f32>, hi: vec3<f32>) -> f32 {
+    let d = max(max(lo - q, q - hi), vec3<f32>(0.0));
+    return dot(d, d);
+}
+
+// Mirrors mesh::Tri::closest: squared distance and the barycentric weights (v, w).
+fn tri_closest(p: vec3<f32>, a: vec3<f32>, ab: vec3<f32>, ac: vec3<f32>) -> vec3<f32> {
+    let ap = p - a;
+    let d1 = dot(ab, ap);
+    let d2 = dot(ac, ap);
+    var vw = vec2<f32>(0.0);
+    loop {
+        if (d1 <= 0.0 && d2 <= 0.0) {
+            break;
+        }
+        let bp = ap - ab;
+        let d3 = dot(ab, bp);
+        let d4 = dot(ac, bp);
+        if (d3 >= 0.0 && d4 <= d3) {
+            vw = vec2<f32>(1.0, 0.0);
+            break;
+        }
+        let vc = d1 * d4 - d3 * d2;
+        if (vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0) {
+            vw = vec2<f32>(d1 / (d1 - d3), 0.0);
+            break;
+        }
+        let cp = ap - ac;
+        let d5 = dot(ab, cp);
+        let d6 = dot(ac, cp);
+        if (d6 >= 0.0 && d5 <= d6) {
+            vw = vec2<f32>(0.0, 1.0);
+            break;
+        }
+        let vb = d5 * d2 - d1 * d6;
+        if (vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0) {
+            vw = vec2<f32>(0.0, d2 / (d2 - d6));
+            break;
+        }
+        let va = d3 * d6 - d5 * d4;
+        if (va <= 0.0 && d4 - d3 >= 0.0 && d5 - d6 >= 0.0) {
+            let w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
+            vw = vec2<f32>(1.0 - w, w);
+            break;
+        }
+        let s = va + vb + vc;
+        if (s > 0.0) {
+            vw = vec2<f32>(vb / s, vc / s);
+        }
+        break;
+    }
+    let d = ap - vw.x * ab - vw.y * ac;
+    return vec3<f32>(dot(d, d), vw);
+}
+
+struct TriHit {
+    d2: f32,
+    tri: u32,
+    v: f32,
+    w: f32,
+    found: bool,
+}
+
+fn node_d2(nodes: u32, i: u32, q: vec3<f32>) -> f32 {
+    let b = nodes + i * 8u;
+    return box_d2(q, vol_v3(b), vol_v3(b + 3u));
+}
+
+// Mirrors mesh::Volume::nearest (header at h).
+fn model_nearest(h: u32, q: vec3<f32>, limit: f32) -> TriHit {
+    var r: TriHit;
+    r.d2 = limit * limit;
+    r.found = false;
+    let tris = vols[h + 14u];
+    let nodes = vols[h + 15u];
+    if (vols[h + 16u] == 0u) {
+        return r;
+    }
+    var st_n: array<u32, MODEL_STACK>;
+    var st_d: array<f32, MODEL_STACK>;
+    st_n[0] = 0u;
+    st_d[0] = node_d2(nodes, 0u, q);
+    var sp = 1u;
+    loop {
+        if (sp == 0u) {
+            break;
+        }
+        sp -= 1u;
+        let ni = st_n[sp];
+        if (st_d[sp] >= r.d2) {
+            continue;
+        }
+        let b = nodes + ni * 8u;
+        let start = vols[b + 6u];
+        let count = vols[b + 7u];
+        if (count > 0u) {
+            for (var t = start; t < start + count; t++) {
+                let o = tris + t * 9u;
+                let c = tri_closest(q, vol_v3(o), vol_v3(o + 3u), vol_v3(o + 6u));
+                if (c.x < r.d2) {
+                    r.d2 = c.x;
+                    r.tri = t;
+                    r.v = c.y;
+                    r.w = c.z;
+                    r.found = true;
+                }
+            }
+            continue;
+        }
+        let dl = node_d2(nodes, start, q);
+        let dr = node_d2(nodes, start + 1u, q);
+        var near = start;
+        var far = start + 1u;
+        var dn = dl;
+        var df = dr;
+        if (dl > dr) {
+            near = start + 1u;
+            far = start;
+            dn = dr;
+            df = dl;
+        }
+        if (df < r.d2 && sp < MODEL_STACK) {
+            st_n[sp] = far;
+            st_d[sp] = df;
+            sp += 1u;
+        }
+        if (dn < r.d2 && sp < MODEL_STACK) {
+            st_n[sp] = near;
+            st_d[sp] = dn;
+            sp += 1u;
+        }
+    }
+    return r;
+}
+
+// Mirrors mesh::Volume::behind.
+fn model_behind(h: u32, q: vec3<f32>, n: TriHit) -> bool {
+    let o = vols[h + 14u] + n.tri * 9u;
+    let a = vol_v3(o);
+    let ab = vol_v3(o + 3u);
+    let ac = vol_v3(o + 6u);
+    let p = a + n.v * ab + n.w * ac;
+    return dot(q - p, cross(ab, ac)) < 0.0;
+}
+
 // Mirrors mesh::Volume::distance.
 fn model_de(j: u32, q: vec3<f32>) -> f32 {
-    let h = j * 20u;
+    let h = j * MODEL_HEADER;
     let res = vec3<u32>(vols[h], vols[h + 1u], vols[h + 2u]);
     if (res.x == 0u) {
         return 1.0e10;
@@ -137,9 +297,9 @@ fn model_de(j: u32, q: vec3<f32>) -> f32 {
     let voxel = vol_f(h + 7u);
     let nf = vec3<f32>(res);
     let hi = mn + (nf - 1.0) * voxel;
-    let g = clamp((q - mn) / voxel, vec3<f32>(0.0), nf - 1.0);
-    let i0 = min(floor(g), nf - 2.0);
-    let f = g - i0;
+    let g3 = clamp((q - mn) / voxel, vec3<f32>(0.0), nf - 1.0);
+    let i0 = min(floor(g3), nf - 2.0);
+    let f = g3 - i0;
     let i = vec3<u32>(i0);
     let off = vols[h + 3u];
     let nx = res.x;
@@ -149,44 +309,119 @@ fn model_de(j: u32, q: vec3<f32>) -> f32 {
     let x10 = mix(vol_dist(off, b + nx), vol_dist(off, b + nx + 1u), f.x);
     let x01 = mix(vol_dist(off, b + nxy), vol_dist(off, b + nxy + 1u), f.x);
     let x11 = mix(vol_dist(off, b + nxy + nx), vol_dist(off, b + nxy + nx + 1u), f.x);
-    let d = mix(mix(x00, x10, f.y), mix(x01, x11, f.y), f.z) * 64.0 * voxel;
+    let g = mix(mix(x00, x10, f.y), mix(x01, x11, f.y), f.z) * 64.0 * voxel;
+    let e = MODEL_GRID_ERROR * voxel;
+    let far = select(min(g + e, 0.0), max(g - e, 0.0), g > 0.0);
     if (any(q < mn) || any(q > hi)) {
-        let lo = vec3<f32>(vol_f(h + 8u), vol_f(h + 9u), vol_f(h + 10u));
-        let up = vec3<f32>(vol_f(h + 11u), vol_f(h + 12u), vol_f(h + 13u));
+        let lo = vol_v3(h + 8u);
+        let up = vol_v3(h + 11u);
         let away = length(q - clamp(q, mn, hi));
-        return max(length(max(max(lo - q, q - up), vec3<f32>(0.0))), d - away);
+        return max(length(max(max(lo - q, q - up), vec3<f32>(0.0))), far - away);
     }
-    return d;
+    if (abs(g) >= MODEL_NEAR * voxel) {
+        return far;
+    }
+    let range = MODEL_RANGE * voxel;
+    let n = model_nearest(h, q, range);
+    if (!n.found) {
+        return select(range, -range, g < -voxel);
+    }
+    let d = sqrt(n.d2);
+    var inside = g < -voxel;
+    if (!inside && g < 0.0) {
+        inside = model_behind(h, q, n);
+    }
+    return select(d, -d, inside);
 }
 
-fn vol_rgb(off: u32, i: u32) -> vec3<f32> {
-    let w = vols[off + i];
-    return vec3<f32>(f32(w & 255u), f32((w >> 8u) & 255u), f32((w >> 16u) & 255u));
+fn srgb8_linear(p: u32) -> vec3<f32> {
+    return srgb_decode3(vec3<f32>(f32(p & 255u), f32((p >> 8u) & 255u), f32((p >> 16u) & 255u)) / 255.0);
 }
 
-// Mirrors mesh::Volume::color (display values; -1 without colors).
+// Mirrors mesh::Texture::texel (wrap mode 0 repeat, 1 clamp, 2 mirror).
+fn wrap_index(i: i32, n: i32, mode: u32) -> i32 {
+    if (mode == 1u) {
+        return clamp(i, 0, n - 1);
+    }
+    if (mode == 2u) {
+        let m = ((i % (2 * n)) + 2 * n) % (2 * n);
+        return select(m, 2 * n - 1 - m, m >= n);
+    }
+    return ((i % n) + n) % n;
+}
+
+// Mirrors mesh::reduce_coord.
+fn reduce_coord(t: f32, mode: u32) -> f32 {
+    if (mode == 1u) {
+        return clamp(t, -1.0, 2.0);
+    }
+    if (mode == 2u) {
+        return t - 2.0 * floor(t * 0.5);
+    }
+    return t - floor(t);
+}
+
+// Mirrors mesh::Texture::sample (texture table entry at e).
+fn model_texture(e: u32, u_: f32, v_: f32) -> vec3<f32> {
+    let base = vols[e];
+    let w = i32(vols[e + 1u]);
+    let h = i32(vols[e + 2u]);
+    let flags = vols[e + 3u];
+    let wu = flags & 3u;
+    let wv = (flags >> 2u) & 3u;
+    let v = select(v_, 1.0 - v_, (flags & 16u) != 0u);
+    let x = reduce_coord(u_, wu) * f32(w) - 0.5;
+    let y = reduce_coord(v, wv) * f32(h) - 0.5;
+    let x0 = floor(x);
+    let y0 = floor(y);
+    let fx = x - x0;
+    let fy = y - y0;
+    let xa = wrap_index(i32(x0), w, wu);
+    let xb = wrap_index(i32(x0) + 1, w, wu);
+    let ya = wrap_index(i32(y0), h, wv);
+    let yb = wrap_index(i32(y0) + 1, h, wv);
+    let a = srgb8_linear(vols[base + u32(ya * w + xa)]);
+    let b = srgb8_linear(vols[base + u32(ya * w + xb)]);
+    let c = srgb8_linear(vols[base + u32(yb * w + xa)]);
+    let d = srgb8_linear(vols[base + u32(yb * w + xb)]);
+    let top = a + (b - a) * fx;
+    let bottom = c + (d - c) * fx;
+    return top + (bottom - top) * fy;
+}
+
+// Mirrors mesh::Volume::color (linear rgb; -1 without colors).
 fn model_rgb(j: u32, q: vec3<f32>) -> vec3<f32> {
-    let h = j * 20u;
-    let off = vols[h + 14u];
-    if (vols[h] == 0u || off == 0u) {
+    let h = j * MODEL_HEADER;
+    let sh = vols[h + 17u];
+    if (vols[h] == 0u || sh == 0u) {
         return vec3<f32>(-1.0);
     }
-    let res = vec3<u32>(vols[h + 15u], vols[h + 16u], vols[h + 17u]);
-    let mn = vec3<f32>(vol_f(h + 4u), vol_f(h + 5u), vol_f(h + 6u));
-    let voxel = vol_f(h + 18u);
-    let nf = vec3<f32>(res);
-    let g = clamp((q - mn) / voxel, vec3<f32>(0.0), nf - 1.0);
-    let i0 = min(floor(g), nf - 2.0);
-    let f = g - i0;
-    let i = vec3<u32>(i0);
-    let nx = res.x;
-    let nxy = res.x * res.y;
-    let b = i.x + i.y * nx + i.z * nxy;
-    let x00 = mix(vol_rgb(off, b), vol_rgb(off, b + 1u), f.x);
-    let x10 = mix(vol_rgb(off, b + nx), vol_rgb(off, b + nx + 1u), f.x);
-    let x01 = mix(vol_rgb(off, b + nxy), vol_rgb(off, b + nxy + 1u), f.x);
-    let x11 = mix(vol_rgb(off, b + nxy + nx), vol_rgb(off, b + nxy + nx + 1u), f.x);
-    return mix(mix(x00, x10, f.y), mix(x01, x11, f.y), f.z) / 255.0;
+    let n = model_nearest(h, q, MODEL_RANGE * vol_f(h + 7u));
+    if (!n.found) {
+        return vec3<f32>(-1.0);
+    }
+    let t = n.tri;
+    let u_ = 1.0 - n.v - n.w;
+    let s = sh + t * 7u;
+    let mat = vols[s];
+    var c = vec3<f32>(1.0);
+    var tex = 0xffffffffu;
+    if (mat < vols[h + 20u]) {
+        let m = vols[h + 19u] + mat * 4u;
+        c = vol_v3(m);
+        tex = vols[m + 3u];
+    }
+    let vc = vols[h + 18u];
+    if (vc != 0u) {
+        let o = vc + t * 3u;
+        c *= srgb8_linear(vols[o]) * u_ + srgb8_linear(vols[o + 1u]) * n.v + srgb8_linear(vols[o + 2u]) * n.w;
+    }
+    if (tex < vols[h + 22u]) {
+        let tu = vol_f(s + 1u) * u_ + vol_f(s + 3u) * n.v + vol_f(s + 5u) * n.w;
+        let tv = vol_f(s + 2u) * u_ + vol_f(s + 4u) * n.v + vol_f(s + 6u) * n.w;
+        c *= model_texture(vols[h + 21u] + tex * 4u, tu, tv);
+    }
+    return c;
 }
 
 // Mirrors Shader::model_color.
@@ -202,8 +437,8 @@ fn model_color(obj: u32, pos: vec3<f32>, base: vec3<f32>) -> vec3<f32> {
     if (c.x < 0.0) {
         return base;
     }
-    if (u.bg_rot[1].w < 0.5) {
-        return srgb_decode3(c);
+    if (u.bg_rot[1].w > 0.5) {
+        return srgb_encode3(c);
     }
     return c;
 }
@@ -471,6 +706,12 @@ fn map_tiled(i: i32, pu: f32, pv: f32) -> vec3<f32> {
 
 fn srgb_decode3(c: vec3<f32>) -> vec3<f32> {
     return select(pow((c + 0.055) / 1.055, vec3<f32>(2.4)), c / 12.92, c <= vec3<f32>(0.04045));
+}
+
+// Mirrors render::srgb_encode.
+fn srgb_encode3(c_: vec3<f32>) -> vec3<f32> {
+    let c = clamp(c_, vec3<f32>(0.0), vec3<f32>(1.0));
+    return select(1.055 * pow(c, vec3<f32>(1.0 / 2.4)) - 0.055, c * 12.92, c <= vec3<f32>(0.0031308));
 }
 
 // Mirrors Shader::background_image (maps.rs: panorama_uv, sample_panorama).

@@ -568,9 +568,8 @@ fn model_editor(ui: &mut Ui, m: &mut ModelRef) {
     });
     match rmb_core::mesh::request(&m.path, &m.options) {
         Status::Ready(v) => {
-            let colors = if v.colors.is_empty() { "no colors" } else { "with colors" };
-            ui.label(RichText::new(format!("Baked: {} × {} × {} grid, {colors}", v.res[0], v.res[1], v.res[2])).size(theme::fs(11.0)).color(theme::TEXT_MUTED))
-                .on_hover_text("The model is turned into a distance grid; detail smaller than one grid cell is rounded off");
+            ui.label(RichText::new(format!("{} triangles, {} materials, {} × {} × {} grid", v.tris.len(), v.materials.len(), v.res[0], v.res[1], v.res[2])).size(theme::fs(11.0)).color(theme::TEXT_MUTED))
+                .on_hover_text("The grid gives the distance away from the model; near its surface the triangles themselves are used, so detail stays sharp at any distance");
         }
         Status::Baking(p) => {
             ui.add(egui::ProgressBar::new(p).show_percentage().text("Baking…")).on_hover_text("Turning the model into a distance grid (it appears when done)");
@@ -581,7 +580,7 @@ fn model_editor(ui: &mut Ui, m: &mut ModelRef) {
     }
     let o = &mut m.options;
     widgets::grid(ui, "model", |ui| {
-        widgets::label(ui, "Resolution", "Grid points along the longest side. Higher keeps finer detail but bakes longer and needs more memory (256: about 32 MB)");
+        widgets::label(ui, "Resolution", "Grid points along the longest side of the distance grid used away from the surface. Higher makes rendering faster near complex models but bakes longer and needs more memory (256: about 32 MB)");
         egui::ComboBox::from_id_salt("model-res").selected_text(o.resolution.to_string()).show_ui(ui, |ui| {
             for r in [64, 96, 128, 192, 256] {
                 ui.selectable_value(&mut o.resolution, r, r.to_string());

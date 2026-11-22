@@ -132,16 +132,20 @@ struct ObjGpu {
     slots: [[u32; 4]; 2],
 }
 
-/// The baked models of the objects (march.wgsl `vols`: a header of 20 words per object, then
-/// the data).
+/// Words per model header in the `vols` buffer (march.wgsl `MODEL_HEADER`).
+const MODEL_HEADER: usize = 32;
+
+/// The baked models of the objects with their looks (march.wgsl `vols`: a header of
+/// `MODEL_HEADER` words per object, then the data).
 fn volumes_gpu(prog: &Program) -> Vec<u32> {
     use rmb_core::fractal::ObjectShape;
     let n = prog.objects.len().max(1);
-    let mut out = vec![0u32; 20 * n];
+    let mut out = vec![0u32; MODEL_HEADER * n];
+    let f = |x: f64| (x as f32).to_bits();
     for (j, o) in prog.objects.iter().enumerate() {
-        let ObjectShape::Model(Some(v)) = &o.shape else { continue };
-        let h = 20 * j;
-        let f = |x: f64| (x as f32).to_bits();
+        let ObjectShape::Model(Some(m)) = &o.shape else { continue };
+        let (v, look) = (&m.vol, &m.look);
+        let h = MODEL_HEADER * j;
         out[h..h + 3].copy_from_slice(&v.res);
         out[h + 3] = out.len() as u32;
         for k in 0..3 {
@@ -151,13 +155,43 @@ fn volumes_gpu(prog: &Program) -> Vec<u32> {
         }
         out[h + 7] = f(v.voxel);
         out.extend(v.dist.chunks(2).map(|c| c[0] as u16 as u32 | (c.get(1).copied().unwrap_or(0) as u16 as u32) << 16));
-        if !v.colors.is_empty() {
-            // The color grid shares the distance grid's origin.
-            debug_assert_eq!(v.color_min, v.min);
-            out[h + 14] = out.len() as u32;
-            out[h + 15..h + 18].copy_from_slice(&v.color_res);
-            out[h + 18] = f(v.color_voxel);
-            out.extend(v.colors.iter().map(|c| c[0] as u32 | (c[1] as u32) << 8 | (c[2] as u32) << 16 | (c[3] as u32) << 24));
+        out[h + 14] = out.len() as u32;
+        out.extend(v.tris.iter().flatten().map(|x| x.to_bits()));
+        out[h + 15] = out.len() as u32;
+        out[h + 16] = v.nodes.len() as u32;
+        for nd in &v.nodes {
+            out.extend(nd.lo.iter().chain(&nd.hi).map(|x| x.to_bits()));
+            out.extend([nd.start, nd.count]);
+        }
+        if !look.colored {
+            continue;
+        }
+        out[h + 17] = out.len() as u32;
+        for (mat, uv) in v.tri_material.iter().zip(&v.tri_uv) {
+            out.push(*mat);
+            out.extend(uv.iter().map(|x| x.to_bits()));
+        }
+        if !v.tri_colors.is_empty() {
+            out[h + 18] = out.len() as u32;
+            out.extend(v.tri_colors.iter().flatten());
+        }
+        out[h + 19] = out.len() as u32;
+        out[h + 20] = look.materials.len() as u32;
+        for lm in &look.materials {
+            out.extend(lm.color.map(|c| c.to_bits()));
+            out.push(lm.texture.unwrap_or(u32::MAX));
+        }
+        out[h + 21] = out.len() as u32;
+        out[h + 22] = look.textures.len() as u32;
+        let table = out.len();
+        out.resize(table + 4 * look.textures.len(), 0);
+        for (k, t) in look.textures.iter().enumerate() {
+            let e = table + 4 * k;
+            out[e] = out.len() as u32;
+            out[e + 1] = t.width;
+            out[e + 2] = t.height;
+            out[e + 3] = t.wrap[0] as u32 | (t.wrap[1] as u32) << 2 | (t.v_up as u32) << 4;
+            out.extend(t.texels.iter().map(|p| p[0] as u32 | (p[1] as u32) << 8 | (p[2] as u32) << 16));
         }
     }
     out
@@ -732,8 +766,15 @@ impl GpuRenderer {
     /// Uploads the baked models (only when they change).
     fn upload_volumes(&mut self, prog: &Program) {
         use rmb_core::fractal::ObjectShape;
-        let key: Vec<usize> = prog.objects.iter().map(|o| if let ObjectShape::Model(Some(v)) = &o.shape { std::sync::Arc::as_ptr(v) as usize } else { 0 }).collect();
-        if key == self.vols_key && self.vols.size() >= 80 * prog.objects.len().max(1) as u64 {
+        let key: Vec<usize> = prog
+            .objects
+            .iter()
+            .flat_map(|o| match &o.shape {
+                ObjectShape::Model(Some(m)) => [std::sync::Arc::as_ptr(&m.vol) as usize, std::sync::Arc::as_ptr(&m.look) as usize],
+                _ => [0, 0],
+            })
+            .collect();
+        if key == self.vols_key && self.vols.size() >= (4 * MODEL_HEADER * prog.objects.len().max(1)) as u64 {
             return;
         }
         let data = volumes_gpu(prog);

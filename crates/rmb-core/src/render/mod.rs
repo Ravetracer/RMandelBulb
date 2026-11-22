@@ -351,6 +351,12 @@ pub fn srgb_decode(v: f64) -> f64 {
     if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
 }
 
+/// Linear light (clamped to 0..1) to an sRGB value.
+pub fn srgb_encode(v: f64) -> f64 {
+    let v = v.clamp(0.0, 1.0);
+    if v <= 0.0031308 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 }
+}
+
 /// Distance from the camera where primary rays start: the near distance; inside rendering
 /// needs a positive one (the step size grows with the distance).
 pub fn start_distance(scene: &Scene) -> f64 {

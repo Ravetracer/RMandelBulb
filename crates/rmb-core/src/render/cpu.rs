@@ -197,10 +197,10 @@ impl<'a> Shader<'a> {
             return base;
         }
         let Some(ob) = (h.orbit.object > 0).then(|| self.prog.objects.get(h.orbit.object as usize - 1)).flatten() else { return base };
-        let crate::fractal::ObjectShape::Model(Some(v)) = &ob.shape else { return base };
+        let crate::fractal::ObjectShape::Model(Some(m)) = &ob.shape else { return base };
         let q = crate::compose::to_local(&ob.inv, ob.pos, ob.scale, h.pos);
-        match v.color(q.to_array()) {
-            Some(c) if !self.scene.post.display_space => c.map(super::srgb_decode),
+        match m.vol.color(q.to_array(), &m.look) {
+            Some(c) if self.scene.post.display_space => c.map(super::srgb_encode),
             Some(c) => c,
             None => base,
         }

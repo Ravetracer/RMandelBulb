@@ -107,12 +107,20 @@ cargo clippy -j 8 --workspace --all-targets
 
 ## 3D models and texture layers
 
-- `mesh.rs` loads OBJ/STL/PLY/glTF and bakes a signed distance grid (exact triangle distances
-  through a BVH; sign by ray parity along three axes, majority vote) plus a color grid at half
-  resolution. `mesh::request` bakes in the background (cache keyed by file, modification time
-  and options; `generation()` changes when a bake finishes), `compose::load_models` waits for
-  all models of a scene (CLI, exports). GPU: `vols` buffer (binding 7, `volumes_gpu`), sampled
-  by `model_de` / `model_rgb` in march.wgsl exactly like `Volume::distance` / `color`.
+- `mesh.rs` loads OBJ/STL/PLY/glTF (materials by name, colors, color textures; images that
+  are not where the file says are looked up near the model, `nearby_images`) and bakes a signed
+  distance grid (exact triangle distances through a BVH; sign by ray parity along three axes,
+  majority vote) plus the triangles with a BVH. `Volume::distance` uses the grid away from the
+  surface (moved toward zero by `GRID_ERROR` voxels, so it stays a lower bound) and the exact
+  nearest-triangle distance within `NEAR` voxels: thin parts and open surfaces become shells and
+  stay visible at any distance. Colors come from the nearest triangle (material color × vertex
+  color × texture), resolved through a `Look` (cached per volume, `Model::new`).
+  `mesh::request` bakes in the background (cache keyed by file, modification time and options;
+  `generation()` changes when a bake finishes), `compose::load_models` waits for all models of a
+  scene (CLI, exports). GPU: `vols` buffer (binding 7, `volumes_gpu`, 32-word header per object),
+  read by `model_de` / `model_nearest` / `model_rgb` in march.wgsl exactly like
+  `Volume::distance` / `nearest` / `color`. `cargo run --release -p rmb-core --example model_info
+  -- model.glb` prints materials and bake statistics.
 - `texture.rs` holds the layers (mapping, blend modes, bump, emission). GPU: layer parameters
   in `lut` from `LUT_LAYERS` (4 layers × 7 entries per material), layer images in the `maps`
   buffer under 0xffffffef − index (`renderer.rs::layer_images`).

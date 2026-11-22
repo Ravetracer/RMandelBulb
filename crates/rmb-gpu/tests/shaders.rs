@@ -578,7 +578,7 @@ fn gpu_matches_cpu_with_a_3d_model() {
     ];
     assert!(rmb_core::compose::load_models(&scene).is_empty());
     let prog = Program::for_scene(&scene);
-    assert!(matches!(&prog.objects[0].shape, rmb_core::fractal::ObjectShape::Model(Some(v)) if !v.colors.is_empty()));
+    assert!(matches!(&prog.objects[0].shape, rmb_core::fractal::ObjectShape::Model(Some(m)) if m.look.colored));
     validate(&rmb_gpu::codegen::march_shader(&prog), "3D model");
     let cpu = |s: &Scene| {
         let mut r = rmb_core::render::cpu::CpuRenderer::new(s.clone(), 48, 32);
