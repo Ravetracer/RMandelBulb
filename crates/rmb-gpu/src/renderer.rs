@@ -8,6 +8,7 @@
 //! are compiled on a background thread; the previous image stays visible meanwhile.
 
 use std::borrow::Cow;
+use std::fmt::Write as _;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -685,6 +686,10 @@ pub struct GpuRenderer {
     dirty_display: bool,
     generation: u64,
     last_error: Option<String>,
+    /// The scene has more formula parameters than the parameter buffer holds.
+    prm_error: Option<String>,
+    /// Which formula parameters go into the shader as constants (see `set_baking`).
+    bake: Option<Vec<bool>>,
     /// Validation errors outside error scopes (instead of the default panic).
     device_error: std::sync::Arc<std::sync::Mutex<Option<String>>>,
     compiling: bool,
@@ -693,6 +698,8 @@ pub struct GpuRenderer {
 
 const CACHE_SIZE: usize = 8;
 /// Time per band submission we aim for.
+/// Size of the formula parameter buffer (march.wgsl `prm`).
+const PRM_BYTES: usize = 16384;
 const BAND_TARGET: Duration = Duration::from_millis(12);
 /// Submission time of renders without a window.
 const OFFLINE_BAND_TARGET: Duration = Duration::from_millis(50);
@@ -734,12 +741,12 @@ impl GpuRenderer {
             label: Some("march"),
             entries: &[
                 entry(0, wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }),
-                entry(1, storage(true)),
+                entry(1, wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }),
                 entry(2, storage(true)),
                 entry(3, storage(false)),
                 entry(4, storage(false)),
                 entry(5, storage(true)),
-                entry(6, storage(true)),
+                entry(6, wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }),
                 entry(7, storage(true)),
             ],
         });
@@ -754,10 +761,10 @@ impl GpuRenderer {
         GpuRenderer {
             uniform_buf: uniform("march-uniforms", std::mem::size_of::<Uniforms>()),
             post_buf: uniform("post-uniforms", std::mem::size_of::<PostUniforms>()),
-            prm: storage_buffer(device, "prm", 1024),
+            prm: uniform("prm", PRM_BYTES),
             lut: storage_buffer(device, "lut", ((rmb_core::gradient::LUT_SIZE * 4 + 128) * 16) as u64),
             maps: storage_buffer(device, "maps", 16),
-            objs: storage_buffer(device, "objs", std::mem::size_of::<ObjGpu>() as u64),
+            objs: uniform("objs", std::mem::size_of::<ObjGpu>() * rmb_core::compose::MAX_OBJECTS),
             vols: storage_buffer(device, "vols", 80),
             vols_key: Vec::new(),
             mesh_generation: rmb_core::mesh::generation(),
@@ -787,6 +794,8 @@ impl GpuRenderer {
             dirty_display: false,
             generation: 0,
             last_error: None,
+            prm_error: None,
+            bake: None,
             device_error,
             compiling: false,
             signature: String::new(),
@@ -805,7 +814,7 @@ impl GpuRenderer {
     }
 
     pub fn last_error(&self) -> Option<String> {
-        self.last_error.clone().or_else(|| self.device_error.lock().ok().and_then(|g| g.clone()))
+        self.prm_error.clone().or_else(|| self.last_error.clone()).or_else(|| self.device_error.lock().ok().and_then(|g| g.clone()))
     }
 
     /// A shader for the current formulas is being compiled.
@@ -872,14 +881,11 @@ impl GpuRenderer {
         // Path tracing needs the bounce loop too.
         prog.reflections = scene.material.reflection > 0.0 || scene.lighting.render_mode == rmb_core::scene::RenderMode::PathTraced;
         self.ensure_target(width, height);
-        let device = &self.ctx.device;
         // Parameters
         let consts: Vec<f32> = prog.constants.iter().map(|v| *v as f32).collect();
         let bytes = (consts.len() * 4).max(16) as u64;
-        if self.prm.size() < bytes {
-            self.prm = storage_buffer(device, "prm", bytes.next_power_of_two());
-        }
-        if !consts.is_empty() {
+        self.prm_error = (bytes as usize > PRM_BYTES).then(|| format!("too many formula parameters ({} of at most {})", consts.len(), PRM_BYTES / 4));
+        if self.prm_error.is_none() && !consts.is_empty() {
             self.ctx.queue.write_buffer(&self.prm, 0, bytemuck::cast_slice(&consts));
         }
         self.upload_maps(&prog, scene);
@@ -901,11 +907,8 @@ impl GpuRenderer {
         bands_gpu(&shade, &mut lut);
         let device = self.ctx.device.clone();
         let device = &device;
-        let obj_bytes = (objs.len() * std::mem::size_of::<ObjGpu>()) as u64;
-        if self.objs.size() < obj_bytes {
-            self.objs = storage_buffer(device, "objs", obj_bytes.next_power_of_two());
-        }
-        self.ctx.queue.write_buffer(&self.objs, 0, bytemuck::cast_slice(&objs));
+        let n = objs.len().min(rmb_core::compose::MAX_OBJECTS);
+        self.ctx.queue.write_buffer(&self.objs, 0, bytemuck::cast_slice(&objs[..n]));
         let lut_bytes = (lut.len() * 16) as u64;
         if self.lut.size() < lut_bytes {
             self.lut = storage_buffer(device, "lut", lut_bytes.next_power_of_two());
@@ -1009,8 +1012,31 @@ impl GpuRenderer {
         self.row = 0;
     }
 
+    /// Formula parameters to write into the shader as constants (see
+    /// [`crate::codegen::march_shader_baked`]): `None` none (the default; changing parameters never
+    /// recompiles), else per constant of the program whether to bake it (`true` beyond the
+    /// slice). Renders without a window compile their own shader anyway and bake all parameters;
+    /// animations bake the ones that stay the same in all frames.
+    pub fn set_baking(&mut self, mask: Option<Vec<bool>>) {
+        self.bake = mask;
+    }
+
+    /// The parameter values to bake for `prog` (see [`GpuRenderer::set_baking`]).
+    fn baked(&self, prog: &Program) -> Vec<Option<f32>> {
+        let Some(mask) = &self.bake else { return Vec::new() };
+        prog.constants.iter().enumerate().map(|(i, v)| mask.get(i).copied().unwrap_or(true).then_some(*v as f32)).collect()
+    }
+
     fn request_pipeline(&mut self, prog: &Program) {
-        let sig = prog.signature();
+        let baked = self.baked(prog);
+        let mut sig = prog.signature();
+        if baked.iter().any(Option::is_some) {
+            // Baked values are part of the shader.
+            sig.push_str("|baked:");
+            for v in &baked {
+                let _ = write!(sig, "{},", v.map_or(String::new(), |x| format!("{:08x}", x.to_bits())));
+            }
+        }
         if self.signature == sig {
             return;
         }
@@ -1025,7 +1051,7 @@ impl GpuRenderer {
             self.last_error = None;
             return;
         }
-        let src = crate::codegen::march_shader(prog);
+        let src = crate::codegen::march_shader_baked(prog, &baked);
         let device = self.ctx.device.clone();
         let layout = self.march_pipeline_layout.clone();
         let (tx, rx) = mpsc::channel();
@@ -1422,6 +1448,31 @@ pub fn render_animation(
     })
 }
 
+/// Per formula constant whether it is the same in all `frames` (all false where the formulas
+/// themselves change): those can be baked into one shader for the whole animation.
+fn invariant_constants(frames: std::ops::Range<usize>, frame_scene: &impl Fn(usize) -> Scene) -> Vec<bool> {
+    let mut first: Option<(String, Vec<f64>)> = None;
+    let mut mask = Vec::new();
+    for f in frames {
+        let p = Program::for_scene(&frame_scene(f));
+        match &first {
+            None => {
+                mask = vec![true; p.constants.len()];
+                first = Some((p.signature(), p.constants));
+            }
+            Some((sig, c)) => {
+                if p.signature() != *sig || p.constants.len() != c.len() {
+                    return vec![false; c.len().max(p.constants.len())];
+                }
+                for (m, (a, b)) in mask.iter_mut().zip(c.iter().zip(&p.constants)) {
+                    *m &= a == b;
+                }
+            }
+        }
+    }
+    mask
+}
+
 /// The rendering part of [`render_animation`]: hands each frame to `tx`.
 #[allow(clippy::too_many_arguments)]
 fn render_frames(
@@ -1441,6 +1492,7 @@ fn render_frames(
     let mut gpu = ctx.map(GpuRenderer::new);
     if let Some(r) = gpu.as_mut() {
         r.set_band_target(OFFLINE_BAND_TARGET);
+        r.set_baking(Some(invariant_constants(frames.clone(), &frame_scene)));
     }
     for (done, f) in frames.enumerate() {
         if cancel.load(Ordering::Relaxed) {
@@ -1493,6 +1545,8 @@ fn render_frames(
 pub fn render_progressive(ctx: GpuContext, scene: &Scene, width: u32, height: u32, samples: u32, mut progress: impl FnMut(f32) -> bool, mut snapshot: impl FnMut(HdrImage, u32)) -> Result<HdrImage, String> {
     rmb_core::compose::load_models(scene);
     let mut r = GpuRenderer::new(ctx);
+    // Its own shader anyway: with the parameters as constants.
+    r.set_baking(Some(Vec::new()));
     r.set_scene(scene, width, height, false);
     r.wait_for_pipeline()?;
     let samples = samples.max(1);
@@ -1525,6 +1579,7 @@ fn render_to(ctx: GpuContext, scene: &Scene, width: u32, height: u32, samples: u
     rmb_core::compose::load_models(scene);
     let mut r = GpuRenderer::new(ctx);
     r.set_band_target(OFFLINE_BAND_TARGET);
+    r.set_baking(Some(Vec::new()));
     r.set_scene(scene, width, height, false);
     r.wait_for_pipeline()?;
     let samples = samples.max(1);

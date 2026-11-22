@@ -37,7 +37,9 @@ pub fn emit_iter(f: &FormulaDef, offset: usize, indent: usize) -> String {
     for (k, u) in used.iter().enumerate() {
         if *u {
             let pad = "    ".repeat(indent);
-            let _ = writeln!(e.out, "{pad}let c{k} = fl(prm[{}u]);", offset + k);
+            // `prm` is a uniform array of vec4 (uniform reads are much faster than storage).
+            let i = offset + k;
+            let _ = writeln!(e.out, "{pad}let c{k} = fl(prm[{}u][{}u]);", i / 4, i % 4);
         }
     }
     for s in &f.iter {

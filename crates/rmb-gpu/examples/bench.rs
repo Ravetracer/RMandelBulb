@@ -1,6 +1,6 @@
 //! Times GPU render passes with features switched off one at a time, to see where the pass
-//! time goes: `bench [scene…] [-W width] [-H height] [-s samples]` (default scene without
-//! arguments).
+//! time goes: `bench [scene…] [-W width] [-H height] [-s samples] [--bake]` (default scene
+//! without arguments; `--bake`: formula parameters as shader constants, as final renders do).
 use std::time::{Duration, Instant};
 
 use rmb_core::scene::AoMode;
@@ -11,13 +11,14 @@ type Variant = (&'static str, Box<dyn Fn(&mut Scene)>);
 
 fn main() {
     let mut scenes = Vec::new();
-    let (mut w, mut h, mut samples) = (1920u32, 1080u32, 8u32);
+    let (mut w, mut h, mut samples, mut bake) = (1920u32, 1080u32, 8u32, false);
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         match a.as_str() {
             "-W" => w = it.next().and_then(|v| v.parse().ok()).expect("width"),
             "-H" => h = it.next().and_then(|v| v.parse().ok()).expect("height"),
             "-s" => samples = it.next().and_then(|v| v.parse().ok()).expect("samples"),
+            "--bake" => bake = true,
             p => scenes.push((p.to_string(), rmb_core::io::load(std::path::Path::new(p)).expect("load"))),
         }
     }
@@ -45,6 +46,9 @@ fn main() {
             change(&mut s);
             let ctx = GpuContext::new_headless().expect("gpu");
             let mut r = GpuRenderer::new(ctx);
+            if bake {
+                r.set_baking(Some(Vec::new()));
+            }
             let t = Instant::now();
             r.set_scene(&s, w, h, false);
             r.wait_for_pipeline().expect("pipeline");

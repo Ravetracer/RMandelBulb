@@ -51,12 +51,19 @@ cargo clippy -j 8 --workspace --all-targets
   including the random number order. Change both together.
 - The shader only changes with the formulas of the slots and the DE variant
   (`Program::signature`). Parameters, iteration counts and all render settings are buffers, so
-  changing them never recompiles.
+  changing them never recompiles (renders without a window bake the parameters, see below).
 - **Cost model**: points far from the fractal bail out after a few iterations, points at the
   surface run the full iteration count. The pass time is mostly the evaluations at the
   surface: the hit refinement, the normal, the first steps of AO and shadow rays. The binary
   refinement stops at steps below threshold/128 (`REFINE_TOLERANCE`; `refine_steps` is the
   maximum). AO, emission and scatter rays skip the refinement (`march_rough`).
+- Renders without a window bake the formula parameters into the shader as constants
+  (`GpuRenderer::set_baking`, `codegen::march_shader_baked`); the preview keeps reading them
+  from `prm`, so editing never recompiles.
+- Data read on every distance estimate (formula parameters `prm`, composed objects `objs`)
+  lives in uniform buffers: all threads read the same values, which the constant cache serves
+  far faster than a storage buffer (1.4-1.8x on whole passes). Large or per-pixel data (LUT,
+  maps, model volumes, accumulation) stays in storage buffers.
 - The renderer splits every pass into row bands, one submission each, with adaptive band
   height (about 12 ms). This avoids driver timeouts and keeps the UI responsive.
 - MB3D's spec notes (parameter format, render math, .m3f analysis) came from studying the source.

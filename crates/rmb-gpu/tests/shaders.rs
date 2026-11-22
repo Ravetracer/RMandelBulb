@@ -22,6 +22,9 @@ fn every_formula_compiles_to_valid_wgsl() {
             s.fractal.de_mode = if numeric { rmb_core::scene::DeMode::NumericLog } else { rmb_core::scene::DeMode::Auto };
             let mut prog = Program::for_scene(&s);
             validate(&rmb_gpu::codegen::march_shader(&prog), &f.def.name);
+            // Final renders: the parameters as constants.
+            let baked: Vec<Option<f32>> = prog.constants.iter().map(|v| Some(*v as f32)).collect();
+            validate(&rmb_gpu::codegen::march_shader_baked(&prog, &baked), &f.def.name);
             prog.reflections = true;
             validate(&rmb_gpu::codegen::march_shader(&prog), &f.def.name);
         }

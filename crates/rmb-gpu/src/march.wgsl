@@ -67,7 +67,9 @@ struct U {
 }
 
 @group(0) @binding(0) var<uniform> u: U;
-@group(0) @binding(1) var<storage, read> prm: array<f32>;
+// Formula parameters (Program::constants, 4 per entry). A uniform buffer: every thread reads the
+// same values, which the constant cache serves far faster than a storage buffer.
+@group(0) @binding(1) var<uniform> prm: array<vec4<f32>, 1024>;
 // Surface colors (w: emission) at 0..255, highlight colors (w: transparency) at 256..511, rough diffuse tables at 512..639
 // (one table per component), interior colors at 640..895 and their highlights at 896..1151.
 @group(0) @binding(2) var<storage, read> lut: array<vec4<f32>>;
@@ -117,7 +119,8 @@ struct Obj {
     size: vec4<f32>,  // scale per own axis
 }
 
-@group(0) @binding(6) var<storage, read> objs: array<Obj>;
+// A uniform buffer like prm (read on every distance estimate); compose::MAX_OBJECTS entries.
+@group(0) @binding(6) var<uniform> objs: array<Obj, 8>;
 
 // Baked 3D models (rmb-core mesh.rs, filled by renderer.rs::volumes_gpu): per object j a header
 // of 32 words at 32 j: grid points (3), first word of the distances, grid origin (3 f32), spacing

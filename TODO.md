@@ -101,9 +101,12 @@
 
 ## Performance
 
-A 1920 × 1080 GPU render (64 samples, the CLI default) takes about 2 minutes on the RTX A2000
+A 1920 × 1080 GPU render (64 samples, the CLI default) took about 2 minutes on the RTX A2000
 Laptop GPU (about 1.9 s per pass). Every pass marches the primary ray (up to 400 steps), normal,
-raytraced AO, shadows and area lights from scratch. Ordered by expected gain:
+raytraced AO, shadows and area lights from scratch. After the items below, passes of the MB3D
+test scenes are 1.8-4.3x faster than at the start (640 x 360: Hydra 727 -> 169 ms,
+Curvichrome 1052 -> 254 ms, AboxShapes-Misty 44 -> 17 ms, temple 71 -> 35 ms, Housing problem
+1697 -> 949 ms).
 
 - [x] Profile first (`rmb-gpu` example `bench`: feature toggles per scene). Points at the
       surface run the full iteration count, so the evaluations there dominate: the binary hit
@@ -127,8 +130,14 @@ raytraced AO, shadows and area lights from scratch. Ordered by expected gain:
       thin parts that rays only hit at some step phases disappear, and overshoots into the
       surface land elsewhere (shadowed vs. lit). Keeping that would need the arrival step and a
       random phase per pixel; not worth the state and the risk
-- [ ] Final-render shader specialization: iteration counts and feature flags as constants
-      (maybe 10-30%, costs a recompile per render; keep the buffer path for the preview)
+- [x] Formula parameters and composed objects in uniform instead of storage buffers: passes
+      1.3-1.8x faster (same image)
+- [x] Final-render shader specialization: renders without a window (CLI, export, render
+      window) write the formula parameters into their shader as constants, animations the ones
+      that stay the same in all frames (`GpuRenderer::set_baking`). They compile their own
+      shader anyway; another 8-38 % (Hydra 173 -> 108 ms, AboxShapes-Misty 16 -> 14 ms)
+  - [ ] Possible: the preview could switch to a baked shader once the view rests (compile
+        1-7 s in the background); iteration counts and feature flags as constants
 - [x] Animation pipelining: encoding and writing of frame N on a second thread while frame N+1
       renders (PNG sequences about 17 % faster at 1280 x 720, 16 samples; movies unchanged, as
       ffmpeg already encodes in its own process). The denoiser stays on the render thread.
