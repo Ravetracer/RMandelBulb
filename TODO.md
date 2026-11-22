@@ -105,8 +105,14 @@ A 1920 × 1080 GPU render (64 samples, the CLI default) takes about 2 minutes on
 Laptop GPU (about 1.9 s per pass). Every pass marches the primary ray (up to 400 steps), normal,
 raytraced AO, shadows and area lights from scratch. Ordered by expected gain:
 
-- [ ] Profile first: split the pass time into primary march, normal, AO, shadows, area lights
-      and emission (e.g. timestamp queries or feature toggles on a test scene) before optimizing
+- [x] Profile first (`rmb-gpu` example `bench`: feature toggles per scene). Points at the
+      surface run the full iteration count, so the evaluations there dominate: the binary hit
+      refinement cost 20-60 % of a pass (up to 15 evaluations), raytraced AO 35-70 % (its hit
+      refinement included; random directions also make whole warps wait for the longest ray),
+      shadows 3-12 %
+  - [x] Refinement stops at steps below threshold/128 (`refine_steps` is the maximum);
+        AO, emission and scatter rays skip it. Same image (mean difference below 1/255 at 64
+        samples); passes 1.15-2.6x faster (MB3D test scenes at 640 x 360)
 - [ ] Fewer samples plus OIDN (e.g. 16 instead of 64, about 4×); check frame-to-frame flicker
       of the per-frame denoiser in animations
 - [ ] Adaptive sampling: stop sampling pixels whose variance has converged (typically 2-3×)

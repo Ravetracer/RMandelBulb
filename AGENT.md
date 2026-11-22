@@ -36,6 +36,10 @@ cargo clippy -j 8 --workspace --all-targets
   a GPU render with the CPU one (mean difference must stay below 4 out of 255; it is
   currently 0.02).
 - `rmb-core` tests import all `../mb3d/M3Parameter/*.m3p` files.
+- Performance: `cargo run -j 8 --release -p rmb-gpu --example bench -- <scene…> -W 640 -H 360`
+  times GPU passes with features switched off one at a time (AO, shadows, lights, refine,
+  normal smoothing). Build the CLI separately (`-p rmb-cli` without `--example`) before
+  comparing images: `--example` builds only the example.
 
 ## Design notes
 
@@ -46,6 +50,11 @@ cargo clippy -j 8 --workspace --all-targets
 - The shader only changes with the formulas of the slots and the DE variant
   (`Program::signature`). Parameters, iteration counts and all render settings are buffers, so
   changing them never recompiles.
+- **Cost model**: points far from the fractal bail out after a few iterations, points at the
+  surface run the full iteration count. The pass time is mostly the evaluations at the
+  surface: the hit refinement, the normal, the first steps of AO and shadow rays. The binary
+  refinement stops at steps below threshold/128 (`REFINE_TOLERANCE`; `refine_steps` is the
+  maximum). AO, emission and scatter rays skip the refinement (`march_rough`).
 - The renderer splits every pass into row bands, one submission each, with adaptive band
   height (about 12 ms). This avoids driver timeouts and keeps the UI responsive.
 - MB3D's spec notes (parameter format, render math, .m3f analysis) came from studying the source.

@@ -1183,11 +1183,13 @@ fn steam_density(p: vec3<f32>) -> f32 {
 }
 
 // Mirrors Shader::march_ex (`halo`: collect the glow of emissive colors).
-fn march_ray(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, max_steps: u32, halo_on: bool) -> Hit {
+// `primary`: the camera, reflection or bounce ray (refined hit, glow and steam points); else
+// an ambient occlusion, emission or scatter ray (mirrors Shader::march_rough).
+fn march_ray(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, max_steps: u32, primary: bool) -> Hit {
     var h: Hit;
     h.hit = false;
     h.halo = vec3<f32>(0.0);
-    let halo = halo_on && pick_on;
+    let halo = primary && pick_on;
     var t = t0;
     var last_step = 0.0;
     var step = 0u;
@@ -1206,8 +1208,12 @@ fn march_ray(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, max_steps: u32, ha
             var t_hit = t;
             var ob_hit = ob;
             var dt = last_step * 0.5;
-            if (step > 0u) {
+            if (step > 0u && primary) {
                 for (var k = 0u; k < u.band.w; k++) {
+                    // Mirrors cpu::REFINE_TOLERANCE.
+                    if (dt < eps * (1.0 / 128.0)) {
+                        break;
+                    }
                     let tt = t_hit - dt;
                     let o2 = orbit(o + d * tt, eps_at(tt) * 0.5);
                     if (o2.de < eps_at(tt)) {
@@ -1445,13 +1451,14 @@ fn ambient_occlusion(p: vec3<f32>, n: vec3<f32>, t: f32) -> vec4<f32> {
         if (light) {
             steps = 96u;
         }
-        let h = march_ray(p + n * (eps * 2.0), d, 0.0, reach, steps, false);
+        let o = p + n * (eps * 2.0);
+        let h = march_ray(o, d, 0.0, reach, steps, false);
         if (h.hit) {
             if (traced && h.t < radius) {
                 ao = ao_curve(clamp(1.0 - h.t / radius, 0.0, 1.0));
             }
             if (light) {
-                emitted = emission_at(h.orbit, p + n * (eps * 2.0) + d * h.t, h.eps, t + h.t) * u.emis.x;
+                emitted = emission_at(h.orbit, o + d * h.t, h.eps, t + h.t) * u.emis.x;
             }
         }
         // More rays for the emitted light only; the average of all.
@@ -1463,9 +1470,9 @@ fn ambient_occlusion(p: vec3<f32>, n: vec3<f32>, t: f32) -> vec4<f32> {
             let v1 = rnd();
             let v2 = rnd();
             let dr = cosine_dir(n, v1, v2);
-            let hr = march_ray(p + n * (eps * 2.0), dr, 0.0, u.emis.y * t, 96u, false);
+            let hr = march_ray(o, dr, 0.0, u.emis.y * t, 96u, false);
             if (hr.hit) {
-                emitted += emission_at(hr.orbit, p + n * (eps * 2.0) + dr * hr.t, hr.eps, t + hr.t) * u.emis.x;
+                emitted += emission_at(hr.orbit, o + dr * hr.t, hr.eps, t + hr.t) * u.emis.x;
             }
         }
         emitted /= f32(rays);

@@ -28,6 +28,9 @@ pub struct Shader<'a> {
     pub emissive: bool,
 }
 
+/// The binary refinement of a hit stops at steps below this part of the threshold.
+pub const REFINE_TOLERANCE: f64 = 1.0 / 128.0;
+
 /// Tetrahedron directions of the distance gradient at a steam point (march.wgsl `STEAM_TETRA`).
 const STEAM_TETRA: [[f64; 3]; 4] = [[1.0, -1.0, -1.0], [-1.0, -1.0, 1.0], [-1.0, 1.0, -1.0], [1.0, 1.0, 1.0]];
 
@@ -184,13 +187,19 @@ impl<'a> Shader<'a> {
     /// Marches a ray. Returns the hit (if any), the number of steps taken and the number of
     /// glowing steps (see `Fog::glow_iteration`).
     pub fn march(&self, ev: &mut Evaluator, o: V3, d: V3, t0: f64, max_t: f64, max_steps: u32) -> (Option<Hit>, u32, u32) {
-        self.march_ex(ev, o, d, t0, max_t, max_steps, None)
+        self.march_ex(ev, o, d, t0, max_t, max_steps, true, None)
+    }
+
+    /// [`Shader::march`] without the binary refinement of the hit: for the ambient occlusion,
+    /// emission and scatter rays, which need neither the exact distance nor the exact point.
+    pub fn march_rough(&self, ev: &mut Evaluator, o: V3, d: V3, t0: f64, max_t: f64, max_steps: u32) -> Option<Hit> {
+        self.march_ex(ev, o, d, t0, max_t, max_steps, false, None).0
     }
 
     /// [`Shader::march`] that with `pick` also offers the points near emissive parts for the
     /// glow and the steam (see [`SteamPick`]).
     #[allow(clippy::too_many_arguments)]
-    fn march_ex(&self, ev: &mut Evaluator, o: V3, d: V3, t0: f64, max_t: f64, max_steps: u32, mut pick: Option<&mut SteamPick>) -> (Option<Hit>, u32, u32) {
+    fn march_ex(&self, ev: &mut Evaluator, o: V3, d: V3, t0: f64, max_t: f64, max_steps: u32, refine: bool, mut pick: Option<&mut SteamPick>) -> (Option<Hit>, u32, u32) {
         let m = &self.scene.march;
         let sm = &self.scene.material;
         let glow_it = self.scene.fog.glow_iteration;
@@ -205,11 +214,15 @@ impl<'a> Shader<'a> {
                 glow += 1;
             }
             if orbit.de < eps {
-                // Binary refinement toward the threshold.
+                // Binary refinement toward the threshold, until the step is a small part of the
+                // threshold (the evaluations at the surface are the most expensive ones).
                 let (mut t_hit, mut orbit_hit) = (t, orbit);
                 let mut dt = last_step * 0.5;
-                if step > 0 {
+                if step > 0 && refine {
                     for _ in 0..m.refine_steps {
+                        if dt < eps * REFINE_TOLERANCE {
+                            break;
+                        }
                         let tt = t_hit - dt;
                         let ob = ev.orbit(o + d * tt, self.eps_at(tt) * 0.5);
                         if ob.de < self.eps_at(tt) {
@@ -428,8 +441,8 @@ impl<'a> Shader<'a> {
             let d = cosine_dir(n, rng.next_f64(), rng.next_f64());
             let eps = self.eps_at(t);
             let reach = if traced { radius } else { 0.0 }.max(if light { m.emission_reach * t } else { 0.0 });
-            let (hit, _, _) = self.march(ev, p + n * (eps * 2.0), d, 0.0, reach, if light { 96 } else { 48 });
-            if let Some(h) = hit {
+            let o = p + n * (eps * 2.0);
+            if let Some(h) = self.march_rough(ev, o, d, 0.0, reach, if light { 96 } else { 48 }) {
                 if traced && h.t < radius {
                     ao = ao_curve((1.0 - h.t / radius).clamp(0.0, 1.0), l.ao_strength);
                 }
@@ -442,7 +455,7 @@ impl<'a> Shader<'a> {
             let rays = if light { m.emission_rays.clamp(1, 8) } else { 1 };
             for _ in 1..rays {
                 let d = cosine_dir(n, rng.next_f64(), rng.next_f64());
-                if let (Some(h), _, _) = self.march(ev, p + n * (eps * 2.0), d, 0.0, m.emission_reach * t, 96) {
+                if let Some(h) = self.march_rough(ev, o, d, 0.0, m.emission_reach * t, 96) {
                     let e = self.emission_at(&h.orbit, h.pos, h.eps, t + h.t);
                     for k in 0..3 {
                         emitted[k] += e[k] * m.emission_light;
@@ -866,7 +879,7 @@ impl<'a> Shader<'a> {
         // of that surface, so glow and steam take the color of the glowing parts themselves.
         let steam_on = self.emissive && (sc.material.steam > 0.0 || sc.material.emission_glow > 0.0);
         let mut pick = SteamPick { seed: if steam_on { (rng.next_f64() * 16_777_216.0) as u32 } else { 0 }, ..SteamPick::default() };
-        let (hit, _, steps) = self.march_ex(ev, o, d, t0, max_t, sc.march.max_steps, steam_on.then_some(&mut pick));
+        let (hit, _, steps) = self.march_ex(ev, o, d, t0, max_t, sc.march.max_steps, true, steam_on.then_some(&mut pick));
         let mut halo = [0.0; 3];
         if steam_on {
             let (u1, u2) = (rng.next_f64(), rng.next_f64());
@@ -880,7 +893,7 @@ impl<'a> Shader<'a> {
                 }
                 let n = if g.length() > 0.0 { -g.normalize() } else { -d };
                 let dir = cosine_dir(n, u1, u2);
-                if let (Some(h), _, _) = self.march(ev, pick.pos, dir, 0.0, 8.0 * pick.rs, 64) {
+                if let Some(h) = self.march_rough(ev, pick.pos, dir, 0.0, 8.0 * pick.rs, 64) {
                     let e = self.emission_at(&h.orbit, h.pos, h.eps, pick.t + h.t);
                     let f = pick.w * if pick.fall { (-h.t / pick.rs).exp() } else { 1.0 };
                     for k in 0..3 {
