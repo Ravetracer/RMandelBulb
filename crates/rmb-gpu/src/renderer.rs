@@ -120,6 +120,7 @@ struct Uniforms {
     path: [f32; 4],
     ccenter: [f32; 4],
     cdir: [f32; 4],
+    c2opt: [f32; 4],
 }
 
 /// A composed object (march.wgsl `Obj`).
@@ -548,6 +549,7 @@ fn uniforms(scene: &Scene, prog: &Program, w: u32, h: u32, fast: bool) -> Unifor
             let any = emissive_any(scene, prog);
             [m.emission_rays.clamp(1, 8) as f32, if any { m.steam.max(0.0) as f32 } else { 0.0 }, m.steam_size as f32, m.steam_grain as f32]
         },
+        c2opt: [m.second_choice.index() as f32, m.lli_multiplier as f32, m.color_on_iteration as f32, 0.0],
         ccenter: [m.color_center[0] as f32, m.color_center[1] as f32, m.color_center[2] as f32, 0.0],
         cdir: {
             let d = m.color_direction;

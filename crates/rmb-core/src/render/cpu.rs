@@ -143,6 +143,7 @@ impl Mat {
     }
 }
 
+#[derive(Clone, Copy)]
 pub struct Hit {
     pub t: f64,
     pub pos: V3,
@@ -572,6 +573,7 @@ impl<'a> Shader<'a> {
             ColorMode::Radius => hit.pos.length() * 4.0,
             ColorMode::Normal => n.z * 2.0 + 2.0,
             ColorMode::Plane | ColorMode::Sphere => position_value(&self.scene.material, mat.mode, hit.pos),
+            ColorMode::SecondChoice => o.color2,
         }
     }
 
@@ -586,7 +588,8 @@ impl<'a> Shader<'a> {
         let mut c = match cm.mode {
             MapMode::Orbit => {
                 // Orbit trap (MB3D: 15-bit trap · 4096) and iteration value, both around 0.
-                let a = (h.orbit.trap * 4096.0).clamp(0.0, 32767.0) / 32768.0 - 0.5;
+                // MB3D's OTrap field holds the second color choice (the orbit trap by default).
+                let a = h.orbit.color2 * 32767.0 / 32768.0 - 0.5;
                 let b = (v * cm.iter_scale + cm.iter_offset).clamp(0.0, 1.0) - 0.5;
                 let (s, co) = cm.rotation[2].to_radians().sin_cos();
                 m.rgb_tiled(frac((co * a + s * b + cm.offset[0]) * cm.scale), frac((co * b - s * a + cm.offset[1]) * cm.scale))
@@ -906,6 +909,9 @@ impl<'a> Shader<'a> {
             }
             Some(h) => {
                 let (n, rough) = self.normal_rough(ev, h.pos, h.eps, h.t);
+                // Mandelbulb3D's color on iteration: the colors from another point of the orbit.
+                let recolored = ev.color_orbit(h.pos, &h.orbit).map(|orbit| Hit { orbit, ..*h });
+                let h = recolored.as_ref().unwrap_or(h);
                 let n = if n.dot(d) > 0.0 { -n } else { n };
                 // Roughness dulls the highlights toward 1/p (Phong p ~ shininess / 4) and
                 // softens the diffuse curves (PaintThread.CalcPixelColor2).

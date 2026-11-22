@@ -693,10 +693,52 @@ pub enum ColorMode {
     /// Distance from `Material::color_center` (world units): the gradient runs outward in
     /// shells; one glow band is one sphere of light.
     Sphere,
+    /// Mandelbulb3D's second color choice (`Material::second_choice`), 0..1.
+    SecondChoice,
+}
+
+/// Mandelbulb3D's "mode for 2. color choice": a value from the end of the orbit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum SecondChoice {
+    /// Smallest squared length along the orbit.
+    #[default]
+    OrbitTrap,
+    /// Logarithm of how much the last iteration grew the length (times `lli_multiplier`).
+    LastLengthIncrease,
+    /// Angle of the final vector relative to the constant in the x-y, x-z or y-z plane.
+    AngleXY,
+    AngleXZ,
+    AngleYZ,
+    /// Angle of the final vector around z (MB3D's "map on output vector").
+    OutputVector,
+}
+
+impl SecondChoice {
+    pub const ALL: [SecondChoice; 6] = [SecondChoice::OrbitTrap, SecondChoice::LastLengthIncrease, SecondChoice::AngleXY, SecondChoice::AngleXZ, SecondChoice::AngleYZ, SecondChoice::OutputVector];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SecondChoice::OrbitTrap => "Orbit trap (min. distance to 0)",
+            SecondChoice::LastLengthIncrease => "Last length increase",
+            SecondChoice::AngleXY => "Rout angle of X, Y",
+            SecondChoice::AngleXZ => "Rout angle of X, Z",
+            SecondChoice::AngleYZ => "Rout angle of Y, Z",
+            SecondChoice::OutputVector => "Map on output vector",
+        }
+    }
+
+    pub fn index(self) -> u32 {
+        self as u32
+    }
+
+    /// From Mandelbulb3D's `byColor2Option`.
+    pub fn from_mb3d(v: u8) -> SecondChoice {
+        SecondChoice::ALL[(v as usize).min(5)]
+    }
 }
 
 impl ColorMode {
-    pub const ALL: [ColorMode; 7] = [ColorMode::Iterations, ColorMode::IterationsRatio, ColorMode::OrbitTrap, ColorMode::Radius, ColorMode::Normal, ColorMode::Plane, ColorMode::Sphere];
+    pub const ALL: [ColorMode; 8] = [ColorMode::Iterations, ColorMode::IterationsRatio, ColorMode::OrbitTrap, ColorMode::SecondChoice, ColorMode::Radius, ColorMode::Normal, ColorMode::Plane, ColorMode::Sphere];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -707,6 +749,7 @@ impl ColorMode {
             ColorMode::IterationsRatio => "Iterations (MB3D)",
             ColorMode::Plane => "Position: plane",
             ColorMode::Sphere => "Position: sphere",
+            ColorMode::SecondChoice => "MB3D 2nd choice",
         }
     }
 
@@ -806,6 +849,13 @@ pub struct Material {
     pub color_center: [f64; 3],
     /// Direction of the plane color mode (normalized when used).
     pub color_direction: [f64; 3],
+    /// Mandelbulb3D's second color choice (color mode "MB3D 2nd choice", all materials).
+    pub second_choice: SecondChoice,
+    /// Multiplier of the "last length increase" choice.
+    pub lli_multiplier: f64,
+    /// Mandelbulb3D's "color on iteration": the colors come from the orbit after this many
+    /// iterations (0: the start point) instead of the bailout; -1 = off. Main fractal only.
+    pub color_on_iteration: i32,
     /// Glowing stripes over the gradient.
     pub bands: Vec<crate::gradient::GlowBand>,
     /// Animation: the gradient turns by this many lengths per second (moves `color_offset`).
@@ -881,6 +931,9 @@ impl Default for Material {
             gradient: crate::gradient::preset("Copper").unwrap_or_default(),
             color_center: [0.0; 3],
             color_direction: [0.0, 0.0, 1.0],
+            second_choice: SecondChoice::OrbitTrap,
+            lli_multiplier: 1.0,
+            color_on_iteration: -1,
             bands: Vec::new(),
             rotation: 0.0,
             color_mode: ColorMode::Iterations,

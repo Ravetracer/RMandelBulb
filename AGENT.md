@@ -129,6 +129,13 @@ cargo clippy -j 8 --workspace --all-targets
   falloff from the surface, steam also × noise density); `trace` casts one ray from the picked
   point toward the falling distance and adds the emission of the surface it hits (so glow and
   steam take the color of the glowing surface, not of the empty space).
+- Mandelbulb3D's second color choice (`ColorMode::SecondChoice`, `Material::second_choice`,
+  `lli_multiplier`): every chain computes `Orbit::color2` at its end (`fractal::color2_value`,
+  GPU `color2_value` at the end of `iterate_K`), the 15-bit value / 32767; the m3p import maps
+  TBoptions bit 17 to it with MB3D's color start/end. The orbit mode of color maps reads it
+  too (MB3D's OTrap field). Color on iteration (`color_on_iteration`, MB3D `bColorOnIt`):
+  `Evaluator::color_orbit` iterates again at the hit with a fixed count and the bailout raised
+  to bailout² · 64; GPU behind the `COLOR_ON_IT` switch (`color_orbit`, private `color_bail`).
 - Position color modes (`ColorMode::Plane` / `Sphere`, `Material::color_center` /
   `color_direction`, shared by all materials): the gradient runs through world space, so a glow
   band becomes one front of light. GPU: the

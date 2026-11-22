@@ -542,7 +542,7 @@ fn object_material(ui: &mut Ui, m: &mut ObjectMaterial, patterns: &[Pattern], gl
                 widgets::slider_log(ui, "Pattern size", "Size of the checker cells, or the height / distance per gradient length", &mut m.pattern_size, 0.001..=100.0, 1.0);
             }
         } else {
-            widgets::label(ui, "Color by", "Which value of the orbit picks the gradient color (the position modes use the center and direction of the main material, Color tab)");
+            widgets::label(ui, "Color by", "Which value of the orbit picks the gradient color (the position modes and MB3D's 2nd choice use the settings of the main material, Color tab)");
             egui::ComboBox::from_id_salt("obj-color-mode").selected_text(m.color_mode.label()).show_ui(ui, |ui| {
                 for c in ColorMode::ALL {
                     ui.selectable_value(&mut m.color_mode, c, c.label());

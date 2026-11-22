@@ -529,26 +529,45 @@ pub fn import_binary(b: &[u8]) -> Result<Import, String> {
     s.material.repeat = cycling;
     // The stops carry the specular colors.
     s.material.specular = 1.0;
+    // Mandelbulb3D's color start and end (HeaderTrafos.CalcSCstartAndSCmul), shared by both
+    // color choices: position = (index - start) / (end - start).
+    let slider = |v: i32| ((v + 30) as f64 / 90.0).powi(2) * 32767.0 - 10900.0;
+    let (mut c_start, mut c_end) = (slider(tb(9)), slider(tb(10)));
+    if tb_options & 0x10000 != 0 {
+        let span = c_end - c_start;
+        let (f1, f2) = (r.u8(light + 48) as f64, r.u8(light + 49) as f64);
+        c_end = c_start + span * (f2 - 30.0) / 60.0;
+        c_start += span * (f1 - 30.0) / 60.0;
+    }
+    let mut span = c_end - c_start;
+    if span.abs() < 1e-3 {
+        span = 1e-3f64.copysign(span);
+    }
+    // The second color choice (byColor2Option #342, last length increase multiplier #338) and
+    // color on iteration (bColorOnIt, byte 19), with the conversions of older files.
+    let (mut option, mut color_on_it) = (r.u8(342), r.u8(19));
+    let mut lli = r.f32(338);
+    if mand_id < 22 {
+        option = 0;
+        lli = 1.0;
+    }
+    if mand_id < 43 {
+        color_on_it = u8::from(option == 5);
+        if option == 6 {
+            option = 5;
+        }
+    }
+    s.material.second_choice = crate::scene::SecondChoice::from_mb3d(option);
+    s.material.lli_multiplier = if lli.is_finite() { lli } else { 1.0 };
+    s.material.color_on_iteration = color_on_it as i32 - 1;
     if tb_options & (1 << 17) != 0 {
-        s.material.color_mode = ColorMode::OrbitTrap;
-        s.material.color_scale = 1.0 / s.fractal.max_iterations.max(1) as f64;
-        s.material.color_offset = ((tb(9) + 30) as f64 / 90.0).clamp(0.0, 1.0) * 0.25;
+        // Colors on the second choice (CalcColors: index = the 15-bit value).
+        s.material.color_mode = ColorMode::SecondChoice;
+        s.material.color_scale = 32767.0 / span;
+        s.material.color_offset = -c_start / span;
     } else {
         // Mandelbulb3D's color index (CalcThread, CalcColors):
         //   index = 32767 - (smooth its + col_plus + var_mul * ln(threshold)) * 32767 / (max its + 1)
-        //   position = (index - start) / (end - start)
-        let slider = |v: i32| ((v + 30) as f64 / 90.0).powi(2) * 32767.0 - 10900.0;
-        let (mut c_start, mut c_end) = (slider(tb(9)), slider(tb(10)));
-        if tb_options & 0x10000 != 0 {
-            let span = c_end - c_start;
-            let (f1, f2) = (r.u8(light + 48) as f64, r.u8(light + 49) as f64);
-            c_end = c_start + span * (f2 - 30.0) / 60.0;
-            c_start += span * (f1 - 30.0) / 60.0;
-        }
-        let mut span = c_end - c_start;
-        if span.abs() < 1e-3 {
-            span = 1e-3f64.copysign(span);
-        }
         let max_its = s.fractal.combine.as_ref().map_or(s.fractal.max_iterations, |c| c.max_iterations.max(s.fractal.max_iterations));
         let m = 32767.0 / (max_its as f64 + 1.0);
         let (mut y1, mut z1, mut box_sum, mut box_its) = (0.0, 0.0, 0.0, 0.0);

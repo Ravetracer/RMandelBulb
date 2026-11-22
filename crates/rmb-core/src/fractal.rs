@@ -89,6 +89,10 @@ pub struct Program {
     /// then: it compiles faster without).
     pub layers: bool,
     pub bump: bool,
+    /// Mandelbulb3D's second color choice (`SecondChoice::index`) and its multiplier.
+    pub color2: (u32, f64),
+    /// Mandelbulb3D's color on iteration (-1 off).
+    pub color_on_it: i32,
 }
 
 /// An object of the scene composition prepared for evaluation.
@@ -127,6 +131,8 @@ pub struct Orbit {
     pub dr: f64,
     /// Smallest squared radius along the orbit.
     pub trap: f64,
+    /// Mandelbulb3D's second color choice of the orbit (0..1, see [`color2_value`]).
+    pub color2: f64,
     pub escaped: bool,
     /// The object that forms the surface here: 0 the main fractal, k the k-th object.
     pub object: u32,
@@ -272,6 +278,8 @@ impl Program {
             mix_pow: 2.0,
             blend: None,
             reflections: false,
+            color2: (0, 1.0),
+            color_on_it: -1,
             inside: f.inside,
             objects: Vec::new(),
             layers: false,
@@ -283,6 +291,9 @@ impl Program {
     pub fn for_scene(scene: &crate::Scene) -> Program {
         use crate::compose::{MAX_OBJECTS, Shape};
         let mut p = Program::new(&scene.fractal, &scene.cut);
+        let m = &scene.material;
+        p.color2 = (m.second_choice.index(), m.lli_multiplier);
+        p.color_on_it = m.color_on_iteration;
         for (i, o) in scene.objects.iter().enumerate().take(MAX_OBJECTS) {
             if !o.enabled {
                 continue;
@@ -290,6 +301,7 @@ impl Program {
             let shape = match &o.shape {
                 Shape::Fractal(f) => {
                     let mut op = Self::build(f, &f.slots, 0, f.repeat_from, f.max_iterations, p.constants.len());
+                    op.color2 = p.color2;
                     p.constants.append(&mut op.constants);
                     p.missing.append(&mut op.missing);
                     ObjectShape::Fractal(Box::new(op))
@@ -344,6 +356,7 @@ impl Program {
         s.push_str(if self.rotation_4d.is_some() { "|r4" } else { "" });
         s.push_str(if self.blend.is_some() { "|blend" } else { "" });
         s.push_str(if self.reflections { "|refl" } else { "" });
+        s.push_str(if self.color_on_it >= 0 { "|coi" } else { "" });
         s.push_str(if self.is_mix() { "|mix" } else { "" });
         s.push_str(if self.layers { "|layers" } else { "" });
         s.push_str(if self.bump { "|bump" } else { "" });
@@ -403,15 +416,39 @@ struct Iterated {
     escaped: bool,
     /// dIFS: smallest distance over the iterations.
     difs_de: f64,
+    /// The constant (Julia seed or start point).
+    c: [f64; 3],
+}
+
+/// Mandelbulb3D's second color choice (CalcThread / Calc.RMdoColor) as 0..1: the 15-bit value
+/// divided by 32767. `option` is `SecondChoice::index`, `mul` the last-length-increase
+/// multiplier, `s` the final vector, `c` the constant, `r2` / `rold` the last two squared
+/// lengths, `trap` the smallest squared length (march.wgsl `color2_value`).
+pub fn color2_value(option: u32, mul: f64, s: [f64; 4], c: [f64; 3], r2: f64, rold: f64, trap: f64) -> f64 {
+    let pi = std::f64::consts::PI;
+    let v = match option {
+        1 => (r2 / (rold + 1.0)).ln() * mul * 512.0,
+        2 => ((s[1] - c[1]).atan2(s[0] - c[0]) + pi) * 5200.0,
+        3 => ((s[2] - c[2]).atan2(s[0] - c[0]) + pi) * 5200.0,
+        4 => ((s[2] - c[2]).atan2(s[1] - c[1]) + pi) * 5200.0,
+        5 => (s[0].atan2(s[1]) + pi) * 5215.0,
+        _ => trap * 4096.0,
+    };
+    if v.is_finite() { (v / 32767.0).clamp(0.0, 1.0) } else { 0.0 }
 }
 
 /// Iterates `p` through the chain `prog`. `top` holds the shared settings (Julia, 4D rotation).
 fn iterate(top: &Program, prog: &Program, regs: &mut [Vec<f64>], p: V3, fixed: Option<u32>) -> Iterated {
-    iterate_from(top, prog, regs, p, fixed, None)
+    iterate_from(top, prog, regs, p, fixed, None, false)
 }
 
 /// [`iterate`] that starts from `start` instead of the point (the second chain of a mix).
-fn iterate_from(top: &Program, prog: &Program, regs: &mut [Vec<f64>], p: V3, fixed: Option<u32>, start: Option<[f64; 4]>) -> Iterated {
+/// [`iterate`] from `start` (a mix's second chain). With `fixed` the count is fixed and there is
+/// no bailout, unless `color_bail`: then the bailout is raised to `bailout² · 64` (Mandelbulb3D's
+/// color on iteration, march.wgsl `color_bail`).
+fn iterate_from(top: &Program, prog: &Program, regs: &mut [Vec<f64>], p: V3, fixed: Option<u32>, start: Option<[f64; 4]>, color_bail: bool) -> Iterated {
+    let bail2 = if color_bail { prog.bailout2 * prog.bailout2 * 64.0 } else { prog.bailout2 };
+    let check = fixed.is_none() || color_bail;
     let mut st = [0.0; STATE_COUNT];
     let mut v = [p.x, p.y, p.z, top.w_slice];
     if let Some(m) = &top.rotation_4d {
@@ -433,7 +470,7 @@ fn iterate_from(top: &Program, prog: &Program, regs: &mut [Vec<f64>], p: V3, fix
     st[STATE_PX..STATE_PX + 3].copy_from_slice(&[p.x, p.y, p.z]);
     debug_assert_eq!(STATE_AUX + 9, STATE_COUNT);
     st[STATE_JULIA] = if top.julia { 1.0 } else { 0.0 };
-    let mut out = Iterated { state: [0.0; 4], rold: 0.0, dr: 1.0, n: 0, trap: f64::MAX, escaped: false, difs_de: 65535.0 };
+    let mut out = Iterated { state: [0.0; 4], rold: 0.0, dr: 1.0, n: 0, trap: f64::MAX, escaped: false, difs_de: 65535.0, c: [st[4], st[5], st[6]] };
     if prog.difs {
         // VaryScale starts at 1; the shapes' distances are divided by it.
         st[STATE_AUX] = 1.0;
@@ -473,7 +510,7 @@ fn iterate_from(top: &Program, prog: &Program, regs: &mut [Vec<f64>], p: V3, fix
             st[STATE_ROUT] = r2;
             out.trap = out.trap.min(r2);
             // NaN counts as escaped.
-            if fixed.is_none() && (r2.is_nan() || r2 > prog.bailout2) {
+            if check && (r2.is_nan() || r2 > bail2) {
                 out.escaped = true;
                 break;
             }
@@ -524,8 +561,8 @@ fn iterate_from(top: &Program, prog: &Program, regs: &mut [Vec<f64>], p: V3, fix
             out.trap = out.trap.min(r2);
             st[STATE_ROUT] = r2;
             // NaN counts as escaped (it never comes back): `inside` is false for NaN.
-            let inside = r2 <= prog.bailout2;
-            if fixed.is_none() && !inside {
+            let inside = r2 <= bail2;
+            if check && !inside {
                 out.escaped = true;
                 // Overflow in the last step: the estimate uses the state before it.
                 if !r2.is_finite() {
@@ -582,7 +619,8 @@ fn chain_orbit(top: &Program, prog: &Program, regs: &mut [Vec<f64>], p: V3, h: f
     if !de.is_finite() {
         de = if it.escaped { 1.0e-3 } else { 0.0 };
     }
-    Orbit { de: de * prog.de_scale, iterations: it.n, r2, r2_old: it.rold, dr: it.dr, trap: it.trap, escaped: it.escaped || prog.difs, object: 0 }
+    let color2 = color2_value(top.color2.0, top.color2.1, it.state, it.c, r2, it.rold, it.trap);
+    Orbit { de: de * prog.de_scale, iterations: it.n, r2, r2_old: it.rold, dr: it.dr, trap: it.trap, color2, escaped: it.escaped || prog.difs, object: 0 }
 }
 
 /// Combines the estimates of the two chains (Mandelbulb3D's DE combination).
@@ -625,6 +663,25 @@ pub fn combine(mode: CombineMode, smooth: f64, a: Orbit, b: Orbit) -> Orbit {
 impl Evaluator<'_> {
     /// Iterates `p` and estimates its distance to the surface. `h` is the offset of the
     /// numerical gradient (about the surface threshold).
+    /// Mandelbulb3D's color on iteration (`Program::color_on_it` ≥ 0) for a surface of the main
+    /// fractal at `p` with orbit `o`: the color values of the orbit after that many iterations
+    /// (no bailout; 0: the constant itself), the rest of `o` kept. None when it is off or does
+    /// not apply (DE combinations, objects).
+    pub fn color_orbit(&mut self, p: V3, o: &Orbit) -> Option<Orbit> {
+        let prog = self.prog;
+        if prog.color_on_it < 0 || o.object != 0 || prog.part2.is_some() || prog.slots.is_empty() {
+            return None;
+        }
+        let mut it = iterate_from(prog, prog, &mut self.regs, p, Some(prog.color_on_it as u32), None, true);
+        if prog.color_on_it == 0 {
+            it.state = [it.c[0], it.c[1], it.c[2], 0.0];
+        }
+        let r2 = it.state.iter().map(|v| v * v).sum::<f64>();
+        let trap = if it.trap == f64::MAX { r2 } else { it.trap };
+        let color2 = color2_value(prog.color2.0, prog.color2.1, it.state, it.c, r2, it.rold, trap);
+        Some(Orbit { iterations: it.n, r2, r2_old: it.rold, trap, color2, escaped: false, ..*o })
+    }
+
     pub fn orbit(&mut self, p: V3, h: f64) -> Orbit {
         let prog = self.prog;
         let mut o;
@@ -632,10 +689,12 @@ impl Evaluator<'_> {
             // Mix: the first chain transforms the point, the dIFS measures the distance there,
             // scaled back by the first chain's derivative (Calc.pas DEcomb types 6/7).
             let a = iterate(prog, prog, &mut self.regs, p, None);
-            let b = iterate_from(prog, p2, &mut self.regs2, p, None, Some(a.state));
+            let b = iterate_from(prog, p2, &mut self.regs2, p, None, Some(a.state), false);
             let d = b.difs_de.max(0.0) * p2.de_scale;
             let de = if prog.de_kind == DeKind::Linear && !prog.difs { d / a.dr.abs().max(1e-30) } else { d * prog.mix_pow.abs().max(1e-30).powf(-1.0 - a.n as f64) };
-            o = Orbit { de, iterations: b.n, r2: a.state.iter().map(|v| v * v).sum(), r2_old: a.rold, dr: a.dr, trap: b.trap, escaped: true, object: 0 };
+            let b_r2 = b.state.iter().map(|v| v * v).sum();
+            let color2 = color2_value(prog.color2.0, prog.color2.1, b.state, b.c, b_r2, b.rold, b.trap);
+            o = Orbit { de, iterations: b.n, r2: a.state.iter().map(|v| v * v).sum(), r2_old: a.rold, dr: a.dr, trap: b.trap, color2, escaped: true, object: 0 };
         } else {
             o = chain_orbit(prog, prog, &mut self.regs, p, h);
             if let Some(p2) = prog.part2.as_deref() {

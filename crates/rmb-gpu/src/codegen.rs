@@ -22,6 +22,7 @@ pub fn march_shader(prog: &Program) -> String {
     let _ = writeln!(s, "const REFLECT: bool = {};", prog.reflections);
     let _ = writeln!(s, "const LAYERS: bool = {};", prog.layers);
     let _ = writeln!(s, "const BUMP: bool = {};", prog.bump);
+    let _ = writeln!(s, "const COLOR_ON_IT: bool = {};", prog.color_on_it >= 0 && prog.part2.is_none() && !prog.slots.is_empty());
     let _ = writeln!(s, "const MODELS: bool = {};", prog.objects.iter().any(|o| matches!(o.shape, rmb_core::fractal::ObjectShape::Model(_))));
     s.push_str(&chain(prog, "1", &Uni::main(0, "u.frac.z", "u.frac.w", "u.scales.x")));
     match prog.part2.as_deref() {
@@ -31,7 +32,7 @@ pub fn march_shader(prog: &Program) -> String {
                 // Mix (mirrors fractal.rs Evaluator::orbit): the dIFS from where chain 1 ends.
                 let _ = writeln!(s, "const MIX_LINEAR: bool = {};", prog.de_kind == DeKind::Linear && !prog.difs);
                 s.push_str(
-                    "\nfn fractal_de(p: vec3<f32>, h: f32) -> Orbit {\n    let a = iterate_1(p, 0u, false, vec4<f32>(0.0), false);\n    let b = iterate_2(p, 0u, false, a.s, true);\n    let d = max(b.de, 0.0) * u.scales.y;\n    var o: Orbit;\n    if (MIX_LINEAR) {\n        o.de = d / max(abs(a.dr), 1.0e-30);\n    } else {\n        o.de = d * pow(max(abs(u.interior.w), 1.0e-30), -1.0 - f32(a.n));\n    }\n    o.n = b.n;\n    o.r2 = dot(a.s, a.s);\n    o.r2_old = a.rold;\n    o.trap = b.trap;\n    o.escaped = true;\n    return o;\n}\n",
+                    "\nfn fractal_de(p: vec3<f32>, h: f32) -> Orbit {\n    let a = iterate_1(p, 0u, false, vec4<f32>(0.0), false);\n    let b = iterate_2(p, 0u, false, a.s, true);\n    let d = max(b.de, 0.0) * u.scales.y;\n    var o: Orbit;\n    if (MIX_LINEAR) {\n        o.de = d / max(abs(a.dr), 1.0e-30);\n    } else {\n        o.de = d * pow(max(abs(u.interior.w), 1.0e-30), -1.0 - f32(a.n));\n    }\n    o.n = b.n;\n    o.r2 = dot(a.s, a.s);\n    o.r2_old = a.rold;\n    o.trap = b.trap;\n    o.c2 = b.c2;\n    o.escaped = true;\n    return o;\n}\n",
                 );
             } else {
                 s.push_str(
@@ -173,7 +174,7 @@ fn chain(prog: &Program, k: &str, cfg: &Uni) -> String {
         s.push_str(&emit_iter(&prog.slots[1].formula.def, prog.slots[1].offset, 3));
         let _ = writeln!(
             s,
-            "        }}\n        let w1 = fl(u.blend.x);\n        let w2 = fl(u.blend.y);\n        let len_b = sqrt({x} * {x} + {y} * {y} + {z} * {z});\n        let l = length(a_s.xyz) * w1 + len_b * w2;\n        {x} = a_s.x * w1 + {x} * w2;\n        {y} = a_s.y * w1 + {y} * w2;\n        {z} = a_s.z * w1 + {z} * w2;\n        {w} = a_s.w * w1 + {w} * w2;\n        {dr} = abs(a_dr) * w1 + abs({dr}) * w2;\n        let f = l / sqrt({x} * {x} + {y} * {y} + {z} * {z} + 1.0e-40);\n        {x} = {x} * f;\n        {y} = {y} * f;\n        {z} = {z} * f;\n        n += 1u;\n        let r2 = f32(l * l);\n        {rout} = fl(r2);\n        out.trap = min(out.trap, r2);\n        if (!use_fixed && !(r2 <= u.march.z)) {{\n            out.escaped = true;\n            break;\n        }}\n    }}\n    // The normal hybrid loop is not used.\n    if (false) {{"
+            "        }}\n        let w1 = fl(u.blend.x);\n        let w2 = fl(u.blend.y);\n        let len_b = sqrt({x} * {x} + {y} * {y} + {z} * {z});\n        let l = length(a_s.xyz) * w1 + len_b * w2;\n        {x} = a_s.x * w1 + {x} * w2;\n        {y} = a_s.y * w1 + {y} * w2;\n        {z} = a_s.z * w1 + {z} * w2;\n        {w} = a_s.w * w1 + {w} * w2;\n        {dr} = abs(a_dr) * w1 + abs({dr}) * w2;\n        let f = l / sqrt({x} * {x} + {y} * {y} + {z} * {z} + 1.0e-40);\n        {x} = {x} * f;\n        {y} = {y} * f;\n        {z} = {z} * f;\n        n += 1u;\n        let r2 = f32(l * l);\n        {rout} = fl(r2);\n        out.trap = min(out.trap, r2);\n        if ((!use_fixed || color_bail) && !(r2 <= select(u.march.z, u.march.z * u.march.z * 64.0, color_bail))) {{\n            out.escaped = true;\n            break;\n        }}\n    }}\n    // The normal hybrid loop is not used.\n    if (false) {{"
         );
     }
     s.push_str("    var slot = 0u;\n    var count = 0u;\n    let cap = limit * 8u + 64u;\n    var steps = 0u;\n");
@@ -198,7 +199,7 @@ fn chain(prog: &Program, k: &str, cfg: &Uni) -> String {
         "        if (!transform) {{\n            n += 1u;\n        }}\n        count += 1u;\n        if (count >= {slot_iter}) {{\n            count = 0u;\n            slot += 1u;\n            if (slot >= NSLOTS_{k}) {{\n                slot = repeat_from;\n            }}\n        }}\n\
          \x20       if (DIFS_{k}) {{\n            if (!transform) {{\n                let de_i = f32({rout} / {a0});\n                if (de_i < out.de) {{\n                    out.de = de_i;\n                    out.trap = f32({a2} * {a2});\n                }}\n            }}\n            continue;\n        }}\n\
          \x20       if (!transform) {{\n            let r2 = f32({x} * {x} + {y} * {y} + {z} * {z} + {w} * {w});\n            out.trap = min(out.trap, r2);\n            {rout} = fl(r2);\n\
-         \x20           if (!use_fixed && !(r2 <= {bail2})) {{\n                out.escaped = true;\n                if (!is_finite(r2)) {{\n                    {x} = prev_s.x;\n                    {y} = prev_s.y;\n                    {z} = prev_s.z;\n                    {w} = prev_s.w;\n                    {dr} = prev_dr;\n                }}\n                break;\n            }}\n        }}\n    }}\n",
+         \x20           if ((!use_fixed || color_bail) && !(r2 <= select({bail2}, {bail2} * {bail2} * 64.0, color_bail))) {{\n                out.escaped = true;\n                if (!is_finite(r2)) {{\n                    {x} = prev_s.x;\n                    {y} = prev_s.y;\n                    {z} = prev_s.z;\n                    {w} = prev_s.w;\n                    {dr} = prev_dr;\n                }}\n                break;\n            }}\n        }}\n    }}\n",
         x = names[0],
         y = names[1],
         z = names[2],
@@ -213,7 +214,9 @@ fn chain(prog: &Program, k: &str, cfg: &Uni) -> String {
     if blend {
         s.push_str("    }\n");
     }
-    let _ = writeln!(s, "    out.s = vec4<f32>(f32({}), f32({}), f32({}), f32({}));\n    out.rold = f32({});\n    out.dr = f32({});\n    out.n = n;\n    return out;\n}}", names[0], names[1], names[2], names[3], names[STATE_ROLD], names[8]);
+    let _ = writeln!(s, "    out.s = vec4<f32>(f32({}), f32({}), f32({}), f32({}));\n    out.rold = f32({});\n    out.dr = f32({});\n    out.n = n;", names[0], names[1], names[2], names[3], names[STATE_ROLD], names[8]);
+    // Mandelbulb3D's second color choice (mirrors fractal.rs chain_orbit).
+    let _ = writeln!(s, "    out.c = vec3<f32>(f32({}), f32({}), f32({}));\n    out.c2 = color2_value(out.s, out.c, dot(out.s, out.s), out.rold, out.trap);\n    return out;\n}}", names[4], names[5], names[6]);
     s.push_str(&CHAIN_DE.replace("SCALE_K", &cfg.scale).replace("_K", &format!("_{k}")));
     s
 }
@@ -265,6 +268,7 @@ fn chain_de_K(p: vec3<f32>, h: f32) -> Orbit {
     o.r2 = r2;
     o.r2_old = it.rold;
     o.trap = it.trap;
+    o.c2 = it.c2;
     o.escaped = it.escaped || DIFS_K;
     return o;
 }

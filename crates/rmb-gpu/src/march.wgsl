@@ -63,6 +63,7 @@ struct U {
     path: vec4<f32>,       // path tracing: on, bounces, firefly clamp
     ccenter: vec4<f32>,    // position color modes: center
     cdir: vec4<f32>,       // plane color mode: direction (normalized)
+    c2opt: vec4<f32>,      // MB3D second color choice: option, multiplier, color on iteration
 }
 
 @group(0) @binding(0) var<uniform> u: U;
@@ -93,6 +94,8 @@ struct Orbit {
     r2: f32,
     r2_old: f32,
     trap: f32,
+    // Mandelbulb3D's second color choice (fractal.rs color2_value).
+    c2: f32,
     escaped: bool,
     // The object that forms the surface: 0 the main fractal, k the k-th composed object.
     obj: u32,
@@ -704,6 +707,59 @@ struct Iterated {
     escaped: bool,
     // dIFS: smallest distance over the iterations.
     de: f32,
+    // Mandelbulb3D's second color choice.
+    c2: f32,
+    // The constant (Julia seed or start point).
+    c: vec3<f32>,
+}
+
+// Fixed iteration counts keep a bailout, raised to bailout² · 64 (fractal.rs iterate_from).
+var<private> color_bail: bool;
+
+// Mirrors fractal.rs Evaluator::color_orbit (only compiled in with COLOR_ON_IT).
+fn color_orbit(p: vec3<f32>, o: Orbit) -> Orbit {
+    let n = u32(max(u.c2opt.z, 0.0));
+    color_bail = true;
+    var it = iterate_1(p, n, true, vec4<f32>(0.0), false);
+    color_bail = false;
+    if (n == 0u) {
+        it.s = vec4<f32>(it.c, 0.0);
+    }
+    let r2 = dot(it.s, it.s);
+    var trap = it.trap;
+    if (trap >= 3.0e38) {
+        trap = r2;
+    }
+    var r = o;
+    r.n = it.n;
+    r.r2 = r2;
+    r.r2_old = it.rold;
+    r.trap = trap;
+    r.c2 = color2_value(it.s, it.c, r2, it.rold, trap);
+    r.escaped = false;
+    return r;
+}
+
+// Mirrors fractal.rs color2_value (u.c2opt: option, last length increase multiplier).
+fn color2_value(s: vec4<f32>, c: vec3<f32>, r2: f32, rold: f32, trap: f32) -> f32 {
+    let opt = u32(u.c2opt.x);
+    let pi = 3.14159265358979;
+    var v = trap * 4096.0;
+    if (opt == 1u) {
+        v = log(r2 / (rold + 1.0)) * u.c2opt.y * 512.0;
+    } else if (opt == 2u) {
+        v = (atan2(s.y - c.y, s.x - c.x) + pi) * 5200.0;
+    } else if (opt == 3u) {
+        v = (atan2(s.z - c.z, s.x - c.x) + pi) * 5200.0;
+    } else if (opt == 4u) {
+        v = (atan2(s.z - c.z, s.y - c.y) + pi) * 5200.0;
+    } else if (opt == 5u) {
+        v = (atan2(s.x, s.y) + pi) * 5215.0;
+    }
+    if (!is_finite(v)) {
+        return 0.0;
+    }
+    return clamp(v / 32767.0, 0.0, 1.0);
 }
 
 struct Hit {
@@ -902,7 +958,8 @@ fn map_color(h: Hit, pos: vec3<f32>, n: vec3<f32>, v: f32, base: vec3<f32>, roug
             var pv = 0.0;
             var wk = 1.0;
             if (mode == 0u) {
-                let a = clamp(h.orbit.trap * 4096.0, 0.0, 32767.0) / 32768.0 - 0.5;
+                // MB3D's OTrap field holds the second color choice (the orbit trap by default).
+                let a = h.orbit.c2 * 32767.0 / 32768.0 - 0.5;
                 let b = clamp(v * u.cmap1.z + u.cmap1.w, 0.0, 1.0) - 0.5;
                 let qu = (u.cmap1.x * a + u.cmap1.y * b + ox) * scale;
                 let qv = (u.cmap1.x * b - u.cmap1.y * a + oy) * scale;
@@ -1480,6 +1537,9 @@ fn color_value(h: Hit, n: vec3<f32>, pos: vec3<f32>) -> f32 {
     }
     if (mode == 5u) {
         return dot(pos - u.ccenter.xyz, u.cdir.xyz);
+    }
+    if (mode == 7u) {
+        return o.c2;
     }
     return n.z * 2.0 + 2.0;
 }
@@ -2133,6 +2193,10 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sx: f32, 
     } else {
         let pos = o + d * h.t;
         let nr = surface_normal_rough(pos, h.eps, h.t);
+        // Mandelbulb3D's color on iteration: the colors from another point of the orbit.
+        if (COLOR_ON_IT && h.orbit.obj == 0u) {
+            h.orbit = color_orbit(pos, h.orbit);
+        }
         var n = nr.xyz;
         if (dot(n, d) > 0.0) {
             n = -n;

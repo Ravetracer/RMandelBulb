@@ -69,6 +69,22 @@ fn gpu_matches_cpu_with_position_coloring() {
 }
 
 #[test]
+fn gpu_matches_cpu_with_mb3d_second_choice() {
+    use rmb_core::scene::SecondChoice;
+    for (k, choice) in SecondChoice::ALL.into_iter().enumerate() {
+        let mut scene = Scene::default();
+        scene.lighting.ao_mode = rmb_core::scene::AoMode::Fast;
+        scene.material.color_mode = rmb_core::scene::ColorMode::SecondChoice;
+        scene.material.second_choice = choice;
+        scene.material.color_scale = 3.0;
+        scene.material.lli_multiplier = 2.0;
+        // Color on iteration for some of them (0: the constant).
+        scene.material.color_on_iteration = [-1, 3, -1, 0, -1, 5][k];
+        parity(scene);
+    }
+}
+
+#[test]
 fn gpu_matches_cpu_path_traced() {
     let mut scene = Scene::default();
     scene.lighting.render_mode = rmb_core::scene::RenderMode::PathTraced;

@@ -652,6 +652,26 @@ fn mapping(ui: &mut Ui, m: &mut rmb_core::scene::Material, d: &rmb_core::scene::
             }
         });
         ui.end_row();
+        if m.color_mode == ColorMode::SecondChoice {
+            widgets::label(ui, "2nd choice", "Mandelbulb3D's second color choice: a value from the end of the orbit (also used by the orbit mode of color maps)");
+            egui::ComboBox::from_id_salt("second-choice").selected_text(m.second_choice.label()).show_ui(ui, |ui| {
+                for c in rmb_core::scene::SecondChoice::ALL {
+                    ui.selectable_value(&mut m.second_choice, c, c.label());
+                }
+            });
+            ui.end_row();
+            if m.second_choice == rmb_core::scene::SecondChoice::LastLengthIncrease {
+                widgets::slider_log(ui, "LLI multiplier", "Multiplier of the last length increase: lower on high powers, higher on formulas with low scales (Mandelbulb3D)", &mut m.lli_multiplier, 0.001..=100.0, d.lli_multiplier);
+            }
+        }
+        widgets::label(ui, "Color on iteration", "Mandelbulb3D's 'color on iteration': the colors come from the orbit after this many iterations instead of from where it escaped (0: the start point; -1: off). Main fractal only.");
+        let r = ui
+            .add(egui::DragValue::new(&mut m.color_on_iteration).range(-1..=255).speed(0.1).custom_formatter(|v, _| if v < 0.0 { "off".to_string() } else { format!("{v:.0}") }))
+            .on_hover_text("Mandelbulb3D's 'color on iteration': the colors come from the orbit after this many iterations instead of from where it escaped (0: the start point; -1: off). Main fractal only. Double click: off");
+        if r.double_clicked() {
+            m.color_on_iteration = -1;
+        }
+        ui.end_row();
         if matches!(m.color_mode, ColorMode::Plane | ColorMode::Sphere) {
             let what = if m.color_mode == ColorMode::Sphere { "Center of the spheres" } else { "A point on the plane where the gradient starts" };
             for (k, axis) in ["Center X", "Center Y", "Center Z"].iter().enumerate() {
