@@ -56,6 +56,11 @@ modern egui interface and import of Mandelbulb3D parameters.
   over the gradient colors with blend modes (multiply, screen, overlay, soft light, …), as bumps
   or as glow. Triplanar, planar, spherical, cylindrical or orbit mapping, in object or world
   space.
+- **Path tracing** (optional, Lighting › Global illumination): Monte Carlo global illumination
+  with diffuse and reflection bounces; glowing colors light their surroundings, the ambient
+  colors become sky light. Classic Mandelbulb3D-style shading stays the default.
+- **Render window** (F12): a test render with everything the export applies; post processing
+  changes show there at once.
 - **Emissive colors**: gradient colors can shine by themselves, light their surroundings in
   their color and glow (MagicaVoxel-style emission). **Glow bands** lay thin glowing stripes
   over a gradient, independent of its colors; palette rotation and each band's own speed make

@@ -609,6 +609,37 @@ pub struct Lighting {
     /// The ambient light comes from a blurred copy of the background image (around the surface
     /// normal) instead of the sky and ground colors.
     pub ambient_from_background: bool,
+    /// How light is computed: classic (Mandelbulb3D style) or path traced (Monte Carlo).
+    pub render_mode: RenderMode,
+    /// Path tracing: light bounces per path (1..16).
+    pub path_bounces: u32,
+    /// Path tracing: the light one bounce adds is limited to this luminance (0 = no limit);
+    /// removes single bright pixels ("fireflies") at the cost of a little energy.
+    pub path_clamp: f64,
+}
+
+/// How the renderers compute the light.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum RenderMode {
+    /// Lights with shadows, ambient light with occlusion, emission light rays, reflections as
+    /// set (Mandelbulb3D style).
+    #[default]
+    Classic,
+    /// Monte Carlo path tracing: rays bounce between surfaces (diffuse and reflective), every
+    /// surface they meet adds the light of the lights and its emission; the ambient colors
+    /// become the light of the sky.
+    PathTraced,
+}
+
+impl RenderMode {
+    pub const ALL: [RenderMode; 2] = [RenderMode::Classic, RenderMode::PathTraced];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            RenderMode::Classic => "Classic",
+            RenderMode::PathTraced => "Path tracing",
+        }
+    }
 }
 
 impl Default for Lighting {
@@ -636,6 +667,9 @@ impl Default for Lighting {
             roughness: 0.0,
             ambient_camera_relative: false,
             ambient_from_background: false,
+            render_mode: RenderMode::Classic,
+            path_bounces: 4,
+            path_clamp: 10.0,
         }
     }
 }

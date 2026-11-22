@@ -31,6 +31,23 @@ pub struct Shader<'a> {
 /// Tetrahedron directions of the distance gradient at a steam point (march.wgsl `STEAM_TETRA`).
 const STEAM_TETRA: [[f64; 3]; 4] = [[1.0, -1.0, -1.0], [-1.0, -1.0, 1.0], [-1.0, 1.0, -1.0], [1.0, 1.0, 1.0]];
 
+/// Whether the scene is path traced.
+fn sc_path(sc: &Scene) -> bool {
+    sc.lighting.render_mode == crate::scene::RenderMode::PathTraced
+}
+
+/// Path tracing: probability of following the reflection / glass at a surface (else a diffuse
+/// bounce): the reflection amount times the highlight color's average, at least the glass
+/// transparency share, at most 0.9 (march.wgsl `path_specular_share`).
+pub fn path_specular_share(amount: f64, spec: [f64; 3], trans: f64, glass: f64) -> f64 {
+    if amount <= 0.0 {
+        return 0.0;
+    }
+    let s = amount * (spec[0] + spec[1] + spec[2]) / 3.0;
+    let g = if glass > 0.0 { trans * glass } else { 0.0 };
+    s.max(g).clamp(0.0, 0.9)
+}
+
 /// The steam sample of a ray: random seed, total weight, the picked point, its falloff size and
 /// ray distance (march.wgsl `SteamPick`).
 #[derive(Clone, Copy, Default)]
@@ -457,6 +474,20 @@ impl<'a> Shader<'a> {
     }
 
     /// Ambient light from the background image around the normal `n`.
+    /// Light of the surroundings in direction `d` for path tracing: the ambient sky and ground
+    /// colors (or the background image's ambient copy) times the ambient strength.
+    fn environment(&self, d: V3) -> [f64; 3] {
+        let l = &self.scene.lighting;
+        let a = match self.background_ambient(d).filter(|_| l.ambient_from_background) {
+            Some(a) => a,
+            None => {
+                let hemi = d.dot(self.frame.ambient_up) * 0.5 + 0.5;
+                [0, 1, 2].map(|k| l.ground_color[k] as f64 + (l.sky_color[k] - l.ground_color[k]) as f64 * hemi)
+            }
+        };
+        a.map(|v| v * l.ambient)
+    }
+
     pub fn background_ambient(&self, n: V3) -> Option<[f64; 3]> {
         let (m, (_, rot)) = (self.bg_ambient.as_ref()?, self.bg_image.as_ref()?);
         let (u, v) = crate::maps::panorama_uv(rot, n.to_array());
@@ -653,22 +684,54 @@ impl<'a> Shader<'a> {
         // Glass scales the diffuse light down by the transparency on every surface a path
         // continues from (Mandelbulb3D's bScaleAmbDiffDown).
         let glass = if m.transmission && amount > 0.0 { amount } else { 0.0 };
-        let first = self.trace(ev, Seg { o, d, t0, max_t: sc.march.max_distance, t_base: 0.0, sx, sy, inside: false, glass }, &mut rng);
+        let first = self.trace(ev, Seg { o, d, t0, max_t: sc.march.max_distance, t_base: 0.0, sx, sy, inside: false, glass, env: false }, &mut rng);
         let mut c = first.color;
         // Reflections and transmission (Mandelbulb3D's CalcSR): each part of the path adds the
         // scene it sees, weighted by the reflectance or transmittance of the surfaces before it,
         // the light amount and how much of those surfaces the fog leaves visible. Where Mandelbulb3D
         // follows both the reflected and the refracted ray, one of them is picked by its weight.
-        if amount > 0.0 {
+        // Path tracing continues every path: at each surface either the reflection / glass
+        // (probability `ps`) or a diffuse bounce (cosine weighted around the normal, weighted by
+        // the surface color), Russian roulette from the third bounce, the light of each bounce
+        // limited by the firefly clamp.
+        let path = sc_path(sc);
+        let max_b = if path { sc.lighting.path_bounces.clamp(1, 16) } else if amount > 0.0 { bounces } else { 0 };
+        if max_b > 0 {
             let mut weight = [1.0; 3];
             let mut surf = first.surface;
             let mut inside = false;
-            for b in 0..bounces {
+            for b in 0..max_b {
                 let Some(s) = surf else { break };
-                let (dir, f, refract) = self.bounce(&s, inside, &mut rng);
                 let vis = (1.0 - s.fog).clamp(0.0, 1.0);
-                for (w, fk) in weight.iter_mut().zip(f) {
-                    *w *= fk * amount * vis;
+                let (dir, refract) = if path {
+                    let ps = path_specular_share(amount, s.spec, s.trans, glass);
+                    if ps > 0.0 && rng.next_f64() < ps {
+                        let (dir, f, refract) = self.bounce(&s, inside, &mut rng);
+                        for (w, fk) in weight.iter_mut().zip(f) {
+                            *w *= fk * amount / ps * vis;
+                        }
+                        (dir, refract)
+                    } else {
+                        let (u1, u2) = (rng.next_f64(), rng.next_f64());
+                        let keep = (1.0 - s.trans * glass).max(0.0);
+                        for (w, bk) in weight.iter_mut().zip(s.base) {
+                            *w *= bk * keep / (1.0 - ps) * vis;
+                        }
+                        (cosine_dir(s.n, u1, u2), false)
+                    }
+                } else {
+                    let (dir, f, refract) = self.bounce(&s, inside, &mut rng);
+                    for (w, fk) in weight.iter_mut().zip(f) {
+                        *w *= fk * amount * vis;
+                    }
+                    (dir, refract)
+                };
+                if path && b >= 2 {
+                    let q = weight[0].max(weight[1]).max(weight[2]).clamp(0.05, 1.0);
+                    if rng.next_f64() > q {
+                        break;
+                    }
+                    weight = weight.map(|w| w / q);
                 }
                 if weight.iter().all(|w| *w < 1e-4) {
                     break;
@@ -683,7 +746,7 @@ impl<'a> Shader<'a> {
                 }
                 let syr = (2.0 * dir.dot(cam.up).clamp(-1.0, 1.0).asin() / cam.fov.to_radians()).clamp(-1.0, 1.0);
                 let sxr = (dir.dot(cam.right).atan2(dir.dot(cam.forward)) / (fr.tan_half * fr.aspect).atan()).clamp(-1.0, 1.0);
-                let seg = Seg { o: start - dir * s.t, d: dir, t0: s.t, max_t: s.t + sc.march.max_distance, t_base: s.t, sx: sxr, sy: syr, inside, glass: if b + 1 < bounces { glass } else { 0.0 } };
+                let seg = Seg { o: start - dir * s.t, d: dir, t0: s.t, max_t: s.t + sc.march.max_distance, t_base: s.t, sx: sxr, sy: syr, inside, glass: if b + 1 < max_b { glass } else { 0.0 }, env: path };
                 let tr = self.trace(ev, seg, &mut rng);
                 if inside {
                     // Absorbed by the color where the ray entered; light scattered on the way.
@@ -701,8 +764,14 @@ impl<'a> Shader<'a> {
                         *w *= a;
                     }
                 }
+                let mut add: [f64; 3] = std::array::from_fn(|k| weight[k] * tr.color[k]);
+                let limit = sc.lighting.path_clamp;
+                let y = 0.2126 * add[0] + 0.7152 * add[1] + 0.0722 * add[2];
+                if path && limit > 0.0 && y > limit {
+                    add = add.map(|v| v * limit / y);
+                }
                 for k in 0..3 {
-                    c[k] += weight[k] * tr.color[k];
+                    c[k] += add[k];
                 }
                 surf = tr.surface;
             }
@@ -769,7 +838,8 @@ impl<'a> Shader<'a> {
 
     /// Traces one part of a path: its color and the surface it hit.
     fn trace(&self, ev: &mut Evaluator, seg: Seg, rng: &mut Rng) -> Traced {
-        let Seg { o, d, t0, max_t, t_base, sx, sy, inside, glass } = seg;
+        let Seg { o, d, t0, max_t, t_base, sx, sy, inside, glass, env } = seg;
+        let path = sc_path(self.scene);
         let sc = self.scene;
         let fr = &self.frame;
         // Steam: the light of emissive parts scattered by the haze along the ray. One point is
@@ -802,7 +872,7 @@ impl<'a> Shader<'a> {
         }
         let (glow, glow_mix) = sc.fog.glow_at(steps as f64, sc.march.max_steps as f64);
         let grad = self.background(d, sy);
-        let bg = self.background_image(d, sx, sy).unwrap_or(grad);
+        let bg = if env { self.environment(d) } else { self.background_image(d, sx, sy).unwrap_or(grad) };
         let fog_col = if sc.fog.from_background { grad } else { sc.fog.color.map(|x| x as f64) };
         let (near, far) = (super::start_distance(sc), sc.march.max_distance);
         let albedo: [f64; 3];
@@ -843,7 +913,8 @@ impl<'a> Shader<'a> {
                 // Shading point just off the surface; inside rendering puts the surface one
                 // threshold into the solid, so it needs a larger offset.
                 let p = h.pos + n * (h.eps * if ev.inside() { 4.0 } else { 1.5 });
-                let (ao, emitted) = self.ambient_occlusion(ev, p, n, h.t, rng);
+                // Path tracing: the bounces bring the ambient and emitted light.
+                let (ao, emitted) = if path { (1.0, [0.0; 3]) } else { self.ambient_occlusion(ev, p, n, h.t, rng) };
                 // Lighting uses the bumped normal.
                 let n = n_bump;
                 let l = &sc.lighting;
@@ -858,7 +929,8 @@ impl<'a> Shader<'a> {
                     }
                     None => [0, 1, 2].map(|k| l.ground_color[k] as f64 + (l.sky_color[k] - l.ground_color[k]) as f64 * hemi),
                 };
-                let mut diffuse = [0, 1, 2].map(|k| amb[k] * l.ambient * ao + emitted[k]);
+                let ambient = if path { 0.0 } else { l.ambient };
+                let mut diffuse = [0, 1, 2].map(|k| amb[k] * ambient * ao + emitted[k]);
                 let mut spec = [0.0; 3];
                 for li in &fr.lights {
                     // Direction, falloff and shadow length; area and line lights at a random
@@ -962,6 +1034,8 @@ struct Seg {
     sy: f64,
     inside: bool,
     glass: f64,
+    /// Path tracing bounce: a miss sees the environment light instead of the background.
+    env: bool,
 }
 
 /// A surface hit, as far as a reflection or refraction needs it.

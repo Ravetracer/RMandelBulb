@@ -214,6 +214,34 @@ impl Inspector {
             widgets::slider_log(ui, "Shininess", "Size of the highlights: higher is smaller and sharper", &mut l.shininess, 2.0..=1024.0, d.shininess);
             widgets::slider(ui, "Roughness", "How much rough surface parts lose their highlights and get softer light (needs Smooth normals in the Render tab)", &mut l.roughness, 0.0..=1.0, d.roughness);
         });
+        if widgets::section(ui, "Global illumination", true) {
+            l.render_mode = d.render_mode;
+            l.path_bounces = d.path_bounces;
+            l.path_clamp = d.path_clamp;
+        }
+        widgets::segmented(
+            ui,
+            &mut l.render_mode,
+            &[
+                (rmb_core::scene::RenderMode::Classic, "Classic", "Lights with shadows, ambient light with occlusion, emission light rays (Mandelbulb3D style; fast)"),
+                (
+                    rmb_core::scene::RenderMode::PathTraced,
+                    "Path tracing",
+                    "Monte Carlo path tracing: light bounces between the surfaces (diffuse and reflections), glowing colors light everything around them, the ambient colors become the light of the sky. More realistic, needs more samples (use the denoiser).",
+                ),
+            ],
+        );
+        if l.render_mode == rmb_core::scene::RenderMode::PathTraced {
+            widgets::grid(ui, "path", |ui| {
+                widgets::slider_u32(ui, "Bounces", "How often light bounces at most: more give brighter, softer indirect light and cost more per sample", &mut l.path_bounces, 1..=16, d.path_bounces);
+                widgets::slider_log(ui, "Firefly clamp", "Limits the light a single bounce adds: removes lone bright pixels at the cost of a little light (0 = off)", &mut l.path_clamp, 0.0..=100.0, d.path_clamp);
+            });
+            ui.label(
+                RichText::new("Ambient occlusion and the emission light rays are not used: the bounces bring that light. While moving the view the preview is shaded classically.")
+                    .size(theme::fs(11.0))
+                    .color(theme::TEXT_MUTED),
+            );
+        }
         if widgets::section(ui, "Ambient occlusion", true) {
             l.ao_mode = d.ao_mode;
             l.ao_strength = d.ao_strength;

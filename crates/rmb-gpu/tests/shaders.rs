@@ -55,6 +55,25 @@ fn gpu_matches_cpu() {
 }
 
 #[test]
+fn gpu_matches_cpu_path_traced() {
+    let mut scene = Scene::default();
+    scene.lighting.render_mode = rmb_core::scene::RenderMode::PathTraced;
+    scene.lighting.path_bounces = 3;
+    scene.material.reflection = 0.3;
+    scene.material.bands = vec![rmb_core::gradient::GlowBand { pos: 0.3, width: 0.2, emission: 3.0, ..Default::default() }];
+    let cpu = |s: &Scene| {
+        let mut r = rmb_core::render::cpu::CpuRenderer::new(s.clone(), 48, 32);
+        r.render_pass();
+        r.rgba8()
+    };
+    let mut classic = scene.clone();
+    classic.lighting.render_mode = rmb_core::scene::RenderMode::Classic;
+    let changed = cpu(&scene).iter().zip(cpu(&classic)).filter(|(a, b)| (**a as i32 - *b as i32).abs() > 8).count();
+    assert!(changed > 300, "path tracing changes only {changed} channels");
+    parity(scene);
+}
+
+#[test]
 fn gpu_matches_cpu_with_glow_bands_bloom_streaks_and_steam() {
     let mut scene = Scene::default();
     scene.lighting.ao_mode = rmb_core::scene::AoMode::Fast;

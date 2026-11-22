@@ -60,6 +60,7 @@ struct U {
     emis: vec4<f32>,       // emissive colors: light, reach, glow, glow size (0 when nothing emits)
     emis2: vec4<f32>,      // emissive colors: rays for their light; steam strength (0 when nothing emits), size, grain
     emis3: vec4<f32>,      // steam offset, cover
+    path: vec4<f32>,       // path tracing: on, bounces, firefly clamp
 }
 
 @group(0) @binding(0) var<uniform> u: U;
@@ -2019,7 +2020,34 @@ struct Traced {
 // Mirrors Shader::trace: one ray from `o` along `d` (distances `t0`..`max_t`; fog, glow and
 // visible lights measured from `t_base`; `inside`: inside glass; `glass`: light amount that
 // scales the diffuse light down by the transparency).
-fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sx: f32, sy: f32, inside: bool, glass: f32) -> Traced {
+// Mirrors scene::RenderMode::PathTraced (fast navigation previews are shaded classically).
+fn path_on() -> bool {
+    return u.path.x > 0.5 && u.dof.w < 0.5;
+}
+
+// Mirrors Shader::environment: the light of the surroundings for path tracing.
+fn environment(d: vec3<f32>) -> vec3<f32> {
+    var a = mix(u.ground.xyz, u.sky.xyz, dot(d, u.amb_up.xyz) * 0.5 + 0.5);
+    if (u.bg2.z > 0.5 && u.bg_rot[0].w > 0.5) {
+        a = background_ambient(d);
+    }
+    return a * u.ao.w;
+}
+
+// Mirrors render::cpu::path_specular_share.
+fn path_specular_share(amount: f32, spec: vec3<f32>, trans: f32, glass: f32) -> f32 {
+    if (amount <= 0.0) {
+        return 0.0;
+    }
+    let s = amount * (spec.x + spec.y + spec.z) / 3.0;
+    var g = 0.0;
+    if (glass > 0.0) {
+        g = trans * glass;
+    }
+    return clamp(max(s, g), 0.0, 0.9);
+}
+
+fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sx: f32, sy: f32, inside: bool, glass: f32, env: bool) -> Traced {
     var tr: Traced;
     tr.hit = false;
     // Steam (mirrors Shader::trace): pick a point in the haze, a random ray from it finds the
@@ -2060,7 +2088,9 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sx: f32, 
     }
     let grad = background(d, sy);
     var bg = grad;
-    if (u.bg_rot[0].w > 0.5) {
+    if (env) {
+        bg = environment(d);
+    } else if (u.bg_rot[0].w > 0.5) {
         bg = background_image(d, sx, sy);
     }
     var fog_col = u.fog.xyz;
@@ -2134,7 +2164,11 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sx: f32, 
         }
         let base = cols.base;
         let p = pos + n * (h.eps * select(1.5, 4.0, inside_now()));
-        let aol = ambient_occlusion(p, n, h.t);
+        // Path tracing: the bounces bring the ambient and emitted light.
+        var aol = vec4<f32>(1.0, 0.0, 0.0, 0.0);
+        if (!path_on()) {
+            aol = ambient_occlusion(p, n, h.t);
+        }
         let ao = aol.x;
         // Lighting uses the bumped normal.
         n = n_bump;
@@ -2148,7 +2182,11 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sx: f32, 
             }
             amb = background_ambient(n) * keep + fog_col * fi;
         }
-        var diffuse = amb * u.ao.w * ao + aol.yzw;
+        var ambient = u.ao.w;
+        if (path_on()) {
+            ambient = 0.0;
+        }
+        var diffuse = amb * ambient * ao + aol.yzw;
         var spec = vec3<f32>(0.0);
         let shin = u.sky.w;
         for (var i = 0u; i < u.size.w; i++) {
@@ -2269,7 +2307,7 @@ fn sample_pixel(px: u32, py: u32, sample: u32) -> vec3<f32> {
     }
     // Without reflections (most scenes) a single trace: compiles much faster.
     if (!REFLECT) {
-        let tr = trace(o, d, u.scales.w, u.cam_fwd.w, 0.0, sx, sy, false, 0.0);
+        let tr = trace(o, d, u.scales.w, u.cam_fwd.w, 0.0, sx, sy, false, 0.0, false);
         aux_albedo = tr.albedo;
         aux_normal = tr.normal;
         return tr.c;
@@ -2286,8 +2324,13 @@ fn sample_pixel(px: u32, py: u32, sample: u32) -> vec3<f32> {
     var sxr = sx;
     var syr = sy;
     let amount = u.glow3.w;
+    // Mirrors Shader::sample_aux: path tracing continues every path (diffuse or reflection /
+    // glass bounces, Russian roulette, firefly clamp).
+    let path = path_on();
     var bounces = 0u;
-    if (amount > 0.0) {
+    if (path) {
+        bounces = clamp(u32(u.path.y), 1u, 16u);
+    } else if (amount > 0.0) {
         bounces = clamp(u32(u.fog3.w), 1u, 8u);
     }
     var glass = 0.0;
@@ -2302,7 +2345,7 @@ fn sample_pixel(px: u32, py: u32, sample: u32) -> vec3<f32> {
         if (b == bounces) {
             g = 0.0;
         }
-        let tr = trace(ro, rd, t0, max_t, t_base, sxr, syr, inside, g);
+        let tr = trace(ro, rd, t0, max_t, t_base, sxr, syr, inside, g, path && b > 0u);
         if (b == 0u) {
             aux_albedo = tr.albedo;
             aux_normal = tr.normal;
@@ -2323,13 +2366,46 @@ fn sample_pixel(px: u32, py: u32, sample: u32) -> vec3<f32> {
                 }
                 weight *= ab;
             }
-            c += weight * tr.c;
+            var add = weight * tr.c;
+            let y = dot(add, vec3<f32>(0.2126, 0.7152, 0.0722));
+            if (path && u.path.z > 0.0 && y > u.path.z) {
+                add *= u.path.z / y;
+            }
+            c += add;
         }
         if (b == bounces || !tr.hit) {
             break;
         }
-        let bn = bounce(tr, inside);
-        weight *= bn.f * amount * clamp(1.0 - tr.fog, 0.0, 1.0);
+        let vis = clamp(1.0 - tr.fog, 0.0, 1.0);
+        var bn: Bounce;
+        if (path) {
+            let ps = path_specular_share(amount, tr.spec, tr.trans, glass);
+            var spec_lobe = false;
+            if (ps > 0.0) {
+                spec_lobe = rnd() < ps;
+            }
+            if (spec_lobe) {
+                bn = bounce(tr, inside);
+                weight *= bn.f * amount / ps * vis;
+            } else {
+                let u1 = rnd();
+                let u2 = rnd();
+                bn.dir = cosine_dir(tr.n, u1, u2);
+                bn.refract = false;
+                let keep = max(1.0 - tr.trans * glass, 0.0);
+                weight *= tr.base * keep / (1.0 - ps) * vis;
+            }
+            if (b >= 2u) {
+                let q = clamp(max(max(weight.x, weight.y), weight.z), 0.05, 1.0);
+                if (rnd() > q) {
+                    break;
+                }
+                weight /= q;
+            }
+        } else {
+            bn = bounce(tr, inside);
+            weight *= bn.f * amount * vis;
+        }
         if (all(weight < vec3<f32>(1.0e-4))) {
             break;
         }

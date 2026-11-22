@@ -81,7 +81,7 @@
   - [ ] Possible: alpha channel masks, normal maps, roughness/specular layers, texture
         animation (offset over time)
 - [x] AI denoiser (Intel Open Image Denoise, from RWildFire) with albedo and normal helper images
-- [ ] Monte Carlo rendering (path tracing) as an option of the renderer, in the app (progressive
+- [x] Monte Carlo rendering (path tracing) as an option of the renderer, in the app (progressive
       preview) and in the export (images and movies), for more realistic light: global
       illumination with diffuse and glossy bounces (light from all surfaces, not only the
       emissive ones), importance sampling (cosine / BRDF), next-event estimation toward the
@@ -93,6 +93,11 @@
       (https://www.scratchapixel.com/lessons/mathematics-physics-for-computer-graphics/monte-carlo-methods-in-practice/monte-carlo-rendering-practical-example.html),
       Ghete, "Monte Carlo Rendering" (TU Wien seminar 2007,
       https://www.cg.tuwien.ac.at/courses/Seminar/SS2007/MontecarloRendering-Ghete.pdf)
+  - Done: Lighting › Global illumination › Path tracing (optional; classic stays the default):
+    diffuse and reflection/glass bounces, next-event estimation through the existing light
+    loop, ambient colors as sky light, Russian roulette, firefly clamp.
+  - [ ] Possible: glossy (rough) reflections, multiple importance sampling for emissive
+        surfaces, volumetric scattering in fog, adaptive sampling
 
 ## Performance
 

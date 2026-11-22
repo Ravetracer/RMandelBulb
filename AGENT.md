@@ -105,6 +105,16 @@ cargo clippy -j 8 --workspace --all-targets
   type changes the shader signature (recompile); everything else is buffer data.
 - `cargo run --release -p rmb-core --example compose_demo -- out.rmb` writes a demo scene.
 
+## Path tracing
+
+- `Lighting::render_mode` (`RenderMode::Classic` default, `PathTraced`). `sample_aux` /
+  `sample_pixel` share one bounce loop with one `trace()` call: classic follows reflections /
+  glass as before; path tracing picks per surface the reflection/glass lobe (probability
+  `path_specular_share`) or a cosine-weighted diffuse bounce, Russian roulette from the third
+  bounce, `path_clamp` limits each bounce's light. `trace()` in path mode skips ambient, AO and
+  the emission rays; bounce misses see `environment()` (ambient colors × ambient). GPU: uniform
+  `path`, `REFLECT` is on for path tracing, fast navigation shades classically (`path_on`).
+
 ## Colors, glow bands, bloom
 
 - `gradient.rs`: stops are sampled into 256-entry tables; `GlowBand`s are evaluated exactly at

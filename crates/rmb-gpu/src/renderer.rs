@@ -117,6 +117,7 @@ struct Uniforms {
     emis: [f32; 4],
     emis2: [f32; 4],
     emis3: [f32; 4],
+    path: [f32; 4],
 }
 
 /// A composed object (march.wgsl `Obj`).
@@ -545,6 +546,10 @@ fn uniforms(scene: &Scene, prog: &Program, w: u32, h: u32, fast: bool) -> Unifor
             let any = emissive_any(scene, prog);
             [m.emission_rays.clamp(1, 8) as f32, if any { m.steam.max(0.0) as f32 } else { 0.0 }, m.steam_size as f32, m.steam_grain as f32]
         },
+        path: {
+            let on = l.render_mode == rmb_core::scene::RenderMode::PathTraced;
+            [if on { 1.0 } else { 0.0 }, l.path_bounces.clamp(1, 16) as f32, l.path_clamp.max(0.0) as f32, 0.0]
+        },
         emis3: [m.steam_offset[0] as f32, m.steam_offset[1] as f32, m.steam_offset[2] as f32, m.steam_cover as f32],
         bg2: [
             bg.image_intensity as f32,
@@ -843,7 +848,8 @@ impl GpuRenderer {
             return;
         }
         let mut prog = Program::for_scene(scene);
-        prog.reflections = scene.material.reflection > 0.0;
+        // Path tracing needs the bounce loop too.
+        prog.reflections = scene.material.reflection > 0.0 || scene.lighting.render_mode == rmb_core::scene::RenderMode::PathTraced;
         self.ensure_target(width, height);
         let device = &self.ctx.device;
         // Parameters

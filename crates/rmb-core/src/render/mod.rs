@@ -461,6 +461,28 @@ mod tests {
     }
 
     #[test]
+    fn path_tracing_adds_indirect_light() {
+        // No ambient light: in classic mode the shadows stay dark, path tracing brings in the
+        // light bounced off the lit surfaces.
+        let mut s = Scene::default();
+        s.lighting.ambient = 0.0;
+        s.lighting.ao_mode = crate::scene::AoMode::Fast;
+        s.material.gradient = crate::gradient::preset("White").unwrap();
+        let mean = |s: &Scene| {
+            let mut r = cpu::CpuRenderer::new(s.clone(), 40, 30);
+            for _ in 0..4 {
+                r.render_pass();
+            }
+            let px = r.rgba8();
+            px.iter().map(|v| *v as f64).sum::<f64>() / px.len() as f64
+        };
+        let classic = mean(&s);
+        s.lighting.render_mode = crate::scene::RenderMode::PathTraced;
+        let path = mean(&s);
+        assert!(path > classic + 1.0, "classic {classic}, path traced {path}");
+    }
+
+    #[test]
     fn spot_area_and_line_lights_fall_off_correctly() {
         use crate::scene::LightKind;
         // Spot: full inside the cone, nothing outside.
