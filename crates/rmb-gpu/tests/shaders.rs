@@ -584,12 +584,12 @@ fn gpu_matches_cpu_with_a_3d_model() {
     if let Shape::Model(m) = &mut scene.objects[0].shape {
         m.materials = vec![
             rmb_core::mesh::MaterialOverride { name: "cool".into(), texture: Some("stripes.png".into()), ..Default::default() },
-            rmb_core::mesh::MaterialOverride { name: "warm".into(), color: Some([0.8, 0.05, 0.3]), ..Default::default() },
+            rmb_core::mesh::MaterialOverride { name: "warm".into(), color: Some([0.8, 0.05, 0.3]), bump: "stripes.png".into(), bump_strength: 3.0, specular: "stripes.png".into(), ..Default::default() },
         ];
     }
     assert!(rmb_core::compose::load_models(&scene).is_empty());
     let prog = Program::for_scene(&scene);
-    assert!(matches!(&prog.objects[0].shape, rmb_core::fractal::ObjectShape::Model(Some(m)) if m.look.colored && m.look.textures.len() == 1));
+    assert!(matches!(&prog.objects[0].shape, rmb_core::fractal::ObjectShape::Model(Some(m)) if m.look.colored && m.look.maps && m.look.textures.len() == 1));
     validate(&rmb_gpu::codegen::march_shader(&prog), "3D model");
     let cpu = |s: &Scene| {
         let mut r = rmb_core::render::cpu::CpuRenderer::new(s.clone(), 48, 32);

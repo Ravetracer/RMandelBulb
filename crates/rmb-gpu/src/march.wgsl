@@ -115,9 +115,10 @@ struct Obj {
 // (f32), mesh box min (3 f32) and max (3 f32), first word of the triangles (9 f32 each: corner,
 // two edges), of the hierarchy nodes (8 words: box min, max, start, count), node count, first
 // word of the shading (0: no colors; 7 words per triangle: material, 3 uv pairs), of the vertex
-// colors (0: none; 3 RGBA8 words per triangle), of the materials (4 words: linear rgb, texture),
-// material count, first word of the texture table (4 words: first texel, width, height, flags:
-// wrap u, wrap v, v up), texture count. Distances are 16-bit, two per word; texels sRGB RGBA8.
+// colors (0: none; 3 RGBA8 words per triangle), of the materials (8 words: linear rgb, texture,
+// bump map, bump height, specular map, unused; maps 0xffffffff: none), material count, first
+// word of the texture table (4 words: first texel, width, height, flags: wrap u, wrap v, v up),
+// texture count, colors on (1/0). Distances are 16-bit, two per word; texels sRGB RGBA8.
 @group(0) @binding(7) var<storage, read> vols: array<u32>;
 
 const MODEL_HEADER: u32 = 32u;
@@ -338,7 +339,21 @@ fn srgb8_linear(p: u32) -> vec3<f32> {
     return srgb_decode3(vec3<f32>(f32(p & 255u), f32((p >> 8u) & 255u), f32((p >> 16u) & 255u)) / 255.0);
 }
 
-// Mirrors mesh::Texture::texel (wrap mode 0 repeat, 1 clamp, 2 mirror).
+fn texel_value(p: u32, raw: bool) -> vec3<f32> {
+    let c = vec3<f32>(f32(p & 255u), f32((p >> 8u) & 255u), f32((p >> 16u) & 255u)) / 255.0;
+    if (raw) {
+        return c;
+    }
+    return srgb_decode3(c);
+}
+
+// Mirrors mesh::Texture::value.
+fn model_value(e: u32, u: f32, v: f32) -> f32 {
+    let c = model_texture(e, u, v, true);
+    return (c.x + c.y + c.z) / 3.0;
+}
+
+// Mirrors mesh::wrap_index (mode 0 repeat, 1 clamp, 2 mirror).
 fn wrap_index(i: i32, n: i32, mode: u32) -> i32 {
     if (mode == 1u) {
         return clamp(i, 0, n - 1);
@@ -361,8 +376,9 @@ fn reduce_coord(t: f32, mode: u32) -> f32 {
     return t - floor(t);
 }
 
-// Mirrors mesh::Texture::sample (texture table entry at e).
-fn model_texture(e: u32, u_: f32, v_: f32) -> vec3<f32> {
+// Mirrors mesh::Texture::sample (texture table entry at e; raw: Texture::value's stored values
+// without sRGB decoding).
+fn model_texture(e: u32, u_: f32, v_: f32, raw: bool) -> vec3<f32> {
     let base = vols[e];
     let w = i32(vols[e + 1u]);
     let h = i32(vols[e + 2u]);
@@ -380,48 +396,111 @@ fn model_texture(e: u32, u_: f32, v_: f32) -> vec3<f32> {
     let xb = wrap_index(i32(x0) + 1, w, wu);
     let ya = wrap_index(i32(y0), h, wv);
     let yb = wrap_index(i32(y0) + 1, h, wv);
-    let a = srgb8_linear(vols[base + u32(ya * w + xa)]);
-    let b = srgb8_linear(vols[base + u32(ya * w + xb)]);
-    let c = srgb8_linear(vols[base + u32(yb * w + xa)]);
-    let d = srgb8_linear(vols[base + u32(yb * w + xb)]);
+    let a = texel_value(vols[base + u32(ya * w + xa)], raw);
+    let b = texel_value(vols[base + u32(ya * w + xb)], raw);
+    let c = texel_value(vols[base + u32(yb * w + xa)], raw);
+    let d = texel_value(vols[base + u32(yb * w + xb)], raw);
     let top = a + (b - a) * fx;
     let bottom = c + (d - c) * fx;
     return top + (bottom - top) * fy;
 }
 
-// Mirrors mesh::Volume::color (linear rgb; -1 without colors).
-fn model_rgb(j: u32, q: vec3<f32>) -> vec3<f32> {
+struct ModelSurface {
+    base: vec3<f32>,
+    spec: f32,
+    n: vec3<f32>,
+    found: bool,
+}
+
+// Mirrors mesh::Volume::bump (texture table entry e, model-space normal n).
+fn model_bump(h: u32, tri: u32, e: u32, height: f32, u_: f32, v_: f32, n: vec3<f32>) -> vec3<f32> {
+    let o = vols[h + 14u] + tri * 9u;
+    let ab = vol_v3(o + 3u);
+    let ac = vol_v3(o + 6u);
+    let s = vols[h + 17u] + tri * 7u;
+    let du1 = vol_f(s + 3u) - vol_f(s + 1u);
+    let dv1 = vol_f(s + 4u) - vol_f(s + 2u);
+    let du2 = vol_f(s + 5u) - vol_f(s + 1u);
+    let dv2 = vol_f(s + 6u) - vol_f(s + 2u);
+    let det = du1 * dv2 - du2 * dv1;
+    if (abs(det) < 1.0e-20) {
+        return n;
+    }
+    let dpdu = (ab * dv2 - ac * dv1) / det;
+    let dpdv = (ac * du1 - ab * du2) / det;
+    let nn = dot(n, cross(dpdu, dpdv));
+    if (abs(nn) < 1.0e-20) {
+        return n;
+    }
+    let eu = 1.0 / f32(vols[e + 1u]);
+    let ev = 1.0 / f32(vols[e + 2u]);
+    let hu = (model_value(e, u_ + eu, v_) - model_value(e, u_ - eu, v_)) / (2.0 * eu) * height;
+    let hv = (model_value(e, u_, v_ + ev) - model_value(e, u_, v_ - ev)) / (2.0 * ev) * height;
+    let b = n - (hu * cross(dpdv, n) + hv * cross(n, dpdu)) / nn;
+    let len = length(b);
+    if (len > 0.0) {
+        return b / len;
+    }
+    return n;
+}
+
+// Mirrors mesh::Volume::surface (model j, model-space point q and normal n; base: -1 without
+// colors). bump: bend the normal.
+fn model_surf(j: u32, q: vec3<f32>, n: vec3<f32>, bump: bool) -> ModelSurface {
+    var r: ModelSurface;
+    r.base = vec3<f32>(-1.0);
+    r.spec = 1.0;
+    r.n = n;
+    r.found = false;
     let h = j * MODEL_HEADER;
     let sh = vols[h + 17u];
     if (vols[h] == 0u || sh == 0u) {
-        return vec3<f32>(-1.0);
+        return r;
     }
-    let n = model_nearest(h, q, MODEL_RANGE * vol_f(h + 7u));
-    if (!n.found) {
-        return vec3<f32>(-1.0);
+    let near = model_nearest(h, q, MODEL_RANGE * vol_f(h + 7u));
+    if (!near.found) {
+        return r;
     }
-    let t = n.tri;
-    let u_ = 1.0 - n.v - n.w;
+    r.found = true;
+    let t = near.tri;
+    let u_ = 1.0 - near.v - near.w;
     let s = sh + t * 7u;
     let mat = vols[s];
-    var c = vec3<f32>(1.0);
-    var tex = 0xffffffffu;
-    if (mat < vols[h + 20u]) {
-        let m = vols[h + 19u] + mat * 4u;
-        c = vol_v3(m);
-        tex = vols[m + 3u];
+    let has_mat = mat < vols[h + 20u];
+    let m = vols[h + 19u] + mat * 8u;
+    let tu = vol_f(s + 1u) * u_ + vol_f(s + 3u) * near.v + vol_f(s + 5u) * near.w;
+    let tv = vol_f(s + 2u) * u_ + vol_f(s + 4u) * near.v + vol_f(s + 6u) * near.w;
+    let ntex = vols[h + 22u];
+    let table = vols[h + 21u];
+    if (vols[h + 23u] != 0u) {
+        var c = vec3<f32>(1.0);
+        var tex = 0xffffffffu;
+        if (has_mat) {
+            c = vol_v3(m);
+            tex = vols[m + 3u];
+        }
+        let vc = vols[h + 18u];
+        if (vc != 0u) {
+            let o = vc + t * 3u;
+            c *= srgb8_linear(vols[o]) * u_ + srgb8_linear(vols[o + 1u]) * near.v + srgb8_linear(vols[o + 2u]) * near.w;
+        }
+        if (tex < ntex) {
+            c *= model_texture(table + tex * 4u, tu, tv, false);
+        }
+        r.base = c;
     }
-    let vc = vols[h + 18u];
-    if (vc != 0u) {
-        let o = vc + t * 3u;
-        c *= srgb8_linear(vols[o]) * u_ + srgb8_linear(vols[o + 1u]) * n.v + srgb8_linear(vols[o + 2u]) * n.w;
+    if (!has_mat) {
+        return r;
     }
-    if (tex < vols[h + 22u]) {
-        let tu = vol_f(s + 1u) * u_ + vol_f(s + 3u) * n.v + vol_f(s + 5u) * n.w;
-        let tv = vol_f(s + 2u) * u_ + vol_f(s + 4u) * n.v + vol_f(s + 6u) * n.w;
-        c *= model_texture(vols[h + 21u] + tex * 4u, tu, tv);
+    let spec = vols[m + 6u];
+    if (spec < ntex) {
+        r.spec = model_value(table + spec * 4u, tu, tv);
     }
-    return c;
+    let bmap = vols[m + 4u];
+    if (bump && bmap < ntex) {
+        r.n = model_bump(h, t, table + bmap * 4u, vol_f(m + 5u), tu, tv, n);
+    }
+    return r;
 }
 
 // Mirrors Shader::model_color.
@@ -433,7 +512,7 @@ fn model_color(obj: u32, pos: vec3<f32>, base: vec3<f32>) -> vec3<f32> {
     if (ob.misc.w < 1.5 || u32(ob.mat2.y) != 4u) {
         return base;
     }
-    let c = model_rgb(obj - 1u, obj_local(obj - 1u, pos));
+    let c = model_surf(obj - 1u, obj_local(obj - 1u, pos), vec3<f32>(0.0), false).base;
     if (c.x < 0.0) {
         return base;
     }
@@ -441,6 +520,36 @@ fn model_color(obj: u32, pos: vec3<f32>, base: vec3<f32>) -> vec3<f32> {
         return srgb_encode3(c);
     }
     return c;
+}
+
+// Mirrors Shader::model_surface: color, specular factor and world normal of a 3D model.
+fn model_surface(obj: u32, pos: vec3<f32>, base: vec3<f32>, n: vec3<f32>) -> ModelSurface {
+    var r: ModelSurface;
+    r.base = base;
+    r.spec = 1.0;
+    r.n = n;
+    if (obj == 0u) {
+        return r;
+    }
+    let ob = objs[obj - 1u];
+    if (ob.misc.w < 1.5 || u32(ob.mat2.y) != 4u) {
+        return r;
+    }
+    let nl = vec3<f32>(dot(ob.inv0.xyz, n), dot(ob.inv1.xyz, n), dot(ob.inv2.xyz, n));
+    let s = model_surf(obj - 1u, obj_local(obj - 1u, pos), nl, true);
+    if (!s.found) {
+        return r;
+    }
+    if (s.base.x >= 0.0) {
+        r.base = s.base;
+        if (u.bg_rot[1].w > 0.5) {
+            r.base = srgb_encode3(s.base);
+        }
+    }
+    r.spec = s.spec;
+    // The transpose undoes the inverse rotation.
+    r.n = ob.inv0.xyz * s.n.x + ob.inv1.xyz * s.n.y + ob.inv2.xyz * s.n.z;
+    return r;
 }
 
 // Mirrors compose::to_local.
@@ -1832,8 +1941,13 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sx: f32, 
         let spec_rough = 1.0 + min(2.0 * rr, 1.0) * (4.0 / max(u.sky.w, 1.0) - 1.0);
         let cv = color_value(h, n, pos);
         var cols = gradient(h.orbit.obj, cv, h.t);
+        // 3D models: their colors, specular and bump maps.
+        var n_model = n;
         if (MODELS) {
-            cols.base = model_color(h.orbit.obj, pos, cols.base);
+            let ms = model_surface(h.orbit.obj, pos, cols.base, n);
+            cols.base = ms.base;
+            cols.spec *= ms.spec;
+            n_model = ms.n;
         }
         // Interior colors where the orbit did not escape (mirrors Shader::interior_colors).
         if (u.interior.x > 0.5 && !h.orbit.escaped && h.orbit.obj == 0u) {
@@ -1856,13 +1970,13 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sx: f32, 
             cols.emis = 0.0;
         }
         if (LAYERS) {
-            let lay = apply_layers(h.orbit.obj, pos, n, cv, h.orbit.trap, cols.base, cols.emis);
+            let lay = apply_layers(h.orbit.obj, pos, n_model, cv, h.orbit.trap, cols.base, cols.emis);
             cols.base = lay.base;
             cols.emis = lay.emis;
         }
-        var n_bump = n;
+        var n_bump = n_model;
         if (BUMP) {
-            n_bump = bump_layers(h.orbit.obj, pos, n, cv, h.orbit.trap);
+            n_bump = bump_layers(h.orbit.obj, pos, n_model, cv, h.orbit.trap);
         }
         if (u.cmap0.x > 0.5 && h.orbit.obj == 0u) {
             cols.base = map_color(h, pos, n, cv, cols.base, rr);

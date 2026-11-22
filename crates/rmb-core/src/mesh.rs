@@ -162,22 +162,31 @@ impl Texture {
     }
 
     fn texel(&self, x: i64, y: i64) -> [f32; 3] {
-        let wrap = |i: i64, n: i64, mode: Wrap| match mode {
-            Wrap::Repeat => i.rem_euclid(n),
-            Wrap::Clamp => i.clamp(0, n - 1),
-            Wrap::Mirror => {
-                let m = i.rem_euclid(2 * n);
-                if m >= n { 2 * n - 1 - m } else { m }
-            }
-        };
         let (w, h) = (self.width as i64, self.height as i64);
-        let t = self.texels[(wrap(y, h, self.wrap[1]) * w + wrap(x, w, self.wrap[0])) as usize];
+        let t = self.texels[(wrap_index(y, h, self.wrap[1]) * w + wrap_index(x, w, self.wrap[0])) as usize];
         let lut = srgb_lut();
         t.map(|c| lut[c as usize])
     }
 
     /// Bilinear sample at texture coordinates `u`, `v`, in linear RGB.
     pub fn sample(&self, u: f64, v: f64) -> [f32; 3] {
+        self.bilinear(u, v, |x, y| self.texel(x, y))
+    }
+
+    /// Bilinear sample of the stored values (0..1, no sRGB decoding) averaged over the
+    /// channels: heights of bump maps, strengths of specular maps.
+    pub fn value(&self, u: f64, v: f64) -> f64 {
+        let c = self.bilinear(u, v, |x, y| self.raw_texel(x, y));
+        (c[0] + c[1] + c[2]) as f64 / 3.0
+    }
+
+    fn raw_texel(&self, x: i64, y: i64) -> [f32; 3] {
+        let (w, h) = (self.width as i64, self.height as i64);
+        let t = self.texels[(wrap_index(y, h, self.wrap[1]) * w + wrap_index(x, w, self.wrap[0])) as usize];
+        t.map(|c| c as f32 / 255.0)
+    }
+
+    fn bilinear(&self, u: f64, v: f64, texel: impl Fn(i64, i64) -> [f32; 3]) -> [f32; 3] {
         if !(u.is_finite() && v.is_finite()) {
             return [0.0; 3];
         }
@@ -189,13 +198,25 @@ impl Texture {
         let (x0, y0) = (x.floor(), y.floor());
         let (fx, fy) = ((x - x0) as f32, (y - y0) as f32);
         let (xi, yi) = (x0 as i64, y0 as i64);
-        let (a, b) = (self.texel(xi, yi), self.texel(xi + 1, yi));
-        let (c, d) = (self.texel(xi, yi + 1), self.texel(xi + 1, yi + 1));
+        let (a, b) = (texel(xi, yi), texel(xi + 1, yi));
+        let (c, d) = (texel(xi, yi + 1), texel(xi + 1, yi + 1));
         std::array::from_fn(|k| {
             let top = a[k] + (b[k] - a[k]) * fx;
             let bottom = c[k] + (d[k] - c[k]) * fx;
             top + (bottom - top) * fy
         })
+    }
+}
+
+/// Texel index `i` of `n` with the wrap mode applied.
+fn wrap_index(i: i64, n: i64, mode: Wrap) -> i64 {
+    match mode {
+        Wrap::Repeat => i.rem_euclid(n),
+        Wrap::Clamp => i.clamp(0, n - 1),
+        Wrap::Mirror => {
+            let m = i.rem_euclid(2 * n);
+            if m >= n { 2 * n - 1 - m } else { m }
+        }
     }
 }
 
@@ -1291,41 +1312,89 @@ impl Volume {
         if inside { -d } else { d }
     }
 
-    /// Linear RGB at `q` with the materials of `look`: the nearest triangle's material color
-    /// times its interpolated vertex color times its texture. None if the look has no colors or
-    /// no triangle is near.
+    /// Linear RGB at `q` with the materials of `look` ([`Volume::surface`] without bumps).
     pub fn color(&self, q: [f64; 3], look: &Look) -> Option<[f64; 3]> {
-        if !look.colored {
+        self.surface(q, look, None)?.color
+    }
+
+    /// The surface of the model at `q` with the materials of `look`, from the nearest triangle:
+    /// its color (material color times interpolated vertex color times texture; None if the
+    /// look has no colors), the specular factor of its specular map and, given the normal `n`
+    /// (model space), the normal bent by its bump map. None if the look has neither colors nor
+    /// maps or no triangle is near.
+    pub fn surface(&self, q: [f64; 3], look: &Look, n: Option<[f64; 3]>) -> Option<Surface> {
+        if !look.colored && !look.maps {
             return None;
         }
-        let n = self.nearest(q, SEARCH_RANGE * self.voxel)?;
-        let t = n.tri as usize;
-        let u = 1.0 - n.v - n.w;
+        let near = self.nearest(q, SEARCH_RANGE * self.voxel)?;
+        let t = near.tri as usize;
+        let u = 1.0 - near.v - near.w;
         let m = look.materials.get(self.tri_material[t] as usize);
-        let mut c = m.map_or([1.0; 3], |m| m.color.map(|v| v as f64));
-        if let Some(vc) = self.tri_colors.get(t) {
-            let [a, b, d] = vc.map(unpack_linear);
-            for k in 0..3 {
-                c[k] *= a[k] * u + b[k] * n.v + d[k] * n.w;
+        let uv = &self.tri_uv[t];
+        let tu = uv[0] as f64 * u + uv[2] as f64 * near.v + uv[4] as f64 * near.w;
+        let tv = uv[1] as f64 * u + uv[3] as f64 * near.v + uv[5] as f64 * near.w;
+        let tex = |i: Option<u32>| i.and_then(|i| look.textures.get(i as usize));
+        let mut out = Surface { color: None, specular: 1.0, normal: n.unwrap_or([0.0; 3]) };
+        if look.colored {
+            let mut c = m.map_or([1.0; 3], |m| m.color.map(|v| v as f64));
+            if let Some(vc) = self.tri_colors.get(t) {
+                let [a, b, d] = vc.map(unpack_linear);
+                for k in 0..3 {
+                    c[k] *= a[k] * u + b[k] * near.v + d[k] * near.w;
+                }
             }
-        }
-        if let Some(tex) = m.and_then(|m| m.texture).and_then(|i| look.textures.get(i as usize)) {
-            let uv = &self.tri_uv[t];
-            let tu = uv[0] as f64 * u + uv[2] as f64 * n.v + uv[4] as f64 * n.w;
-            let tv = uv[1] as f64 * u + uv[3] as f64 * n.v + uv[5] as f64 * n.w;
-            let s = tex.sample(tu, tv);
-            for k in 0..3 {
-                c[k] *= s[k] as f64;
+            if let Some(tx) = tex(m.and_then(|m| m.texture)) {
+                let s = tx.sample(tu, tv);
+                for k in 0..3 {
+                    c[k] *= s[k] as f64;
+                }
             }
+            out.color = Some(c);
         }
-        Some(c)
+        let Some(m) = m else { return Some(out) };
+        if let Some(tx) = tex(m.specular) {
+            out.specular = tx.value(tu, tv);
+        }
+        if let (Some(n), Some(tx)) = (n, tex(m.bump)) {
+            out.normal = self.bump(near.tri, tx, m.bump_height as f64, tu, tv, n);
+        }
+        Some(out)
+    }
+
+    /// Normal `n` bent by the height map `tex` (heights 0..1 times `height` model units) at
+    /// texture coordinates `u`, `v` on triangle `tri`: the surface gradient of the height
+    /// (central differences one texel apart, mapped through the triangle's texture
+    /// derivatives) is subtracted from the normal.
+    fn bump(&self, tri: u32, tex: &Texture, height: f64, u: f64, v: f64, n: [f64; 3]) -> [f64; 3] {
+        let t = self.tri(tri);
+        let uv = &self.tri_uv[tri as usize];
+        let (du1, dv1) = (uv[2] as f64 - uv[0] as f64, uv[3] as f64 - uv[1] as f64);
+        let (du2, dv2) = (uv[4] as f64 - uv[0] as f64, uv[5] as f64 - uv[1] as f64);
+        let det = du1 * dv2 - du2 * dv1;
+        if det.abs() < 1e-20 {
+            return n;
+        }
+        let dpdu: [f64; 3] = std::array::from_fn(|k| (t.ab[k] * dv2 - t.ac[k] * dv1) / det);
+        let dpdv: [f64; 3] = std::array::from_fn(|k| (t.ac[k] * du1 - t.ab[k] * du2) / det);
+        let nn = dot(n, cross(dpdu, dpdv));
+        if nn.abs() < 1e-20 {
+            return n;
+        }
+        let (eu, ev) = (1.0 / tex.width as f64, 1.0 / tex.height as f64);
+        let hu = (tex.value(u + eu, v) - tex.value(u - eu, v)) / (2.0 * eu) * height;
+        let hv = (tex.value(u, v + ev) - tex.value(u, v - ev)) / (2.0 * ev) * height;
+        let (gu, gv) = (cross(dpdv, n), cross(n, dpdu));
+        let b: [f64; 3] = std::array::from_fn(|k| n[k] - (hu * gu[k] + hv * gv[k]) / nn);
+        let len = dot(b, b).sqrt();
+        if len > 0.0 { b.map(|c| c / len) } else { n }
     }
 
     /// The look of the model as its file describes it.
     pub fn file_look(&self) -> Look {
-        let materials: Vec<LookMaterial> = self.materials.iter().map(|m| LookMaterial { color: m.color, texture: m.texture }).collect();
-        let colored = materials.iter().any(|m| m.color != [1.0; 3] || m.texture.is_some()) || !self.tri_colors.is_empty();
-        Look { materials, textures: self.textures.clone(), colored }
+        let materials: Vec<LookMaterial> = self.materials.iter().map(|m| LookMaterial { color: m.color, texture: m.texture, ..LookMaterial::default() }).collect();
+        let mut look = Look { materials, textures: self.textures.clone(), colored: false, maps: false };
+        look.update_flags(!self.tri_colors.is_empty());
+        look
     }
 }
 
@@ -1362,14 +1431,45 @@ pub struct Look {
     pub textures: Vec<Arc<Texture>>,
     /// Whether there is any color (otherwise the object's own material colors are used).
     pub colored: bool,
+    /// Whether a material has a bump or specular map.
+    pub maps: bool,
+}
+
+impl Look {
+    /// Sets `colored` and `maps` from the materials (`vertex_colors`: the model has some).
+    fn update_flags(&mut self, vertex_colors: bool) {
+        self.colored = vertex_colors || self.materials.iter().any(|m| m.color != [1.0; 3] || m.texture.is_some());
+        self.maps = self.materials.iter().any(|m| m.bump.is_some() || m.specular.is_some());
+    }
+}
+
+/// A model's surface at a point (see [`Volume::surface`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Surface {
+    /// Linear RGB.
+    pub color: Option<[f64; 3]>,
+    /// Factor of the specular highlights.
+    pub specular: f64,
+    /// Normal (model space).
+    pub normal: [f64; 3],
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LookMaterial {
     /// Linear RGB.
     pub color: [f32; 3],
-    /// Index into [`Look::textures`].
+    /// Color texture, bump map and specular map (indexes into [`Look::textures`]).
     pub texture: Option<u32>,
+    pub bump: Option<u32>,
+    /// Bump map height of white over black, in model units.
+    pub bump_height: f32,
+    pub specular: Option<u32>,
+}
+
+impl Default for LookMaterial {
+    fn default() -> Self {
+        Self { color: [1.0; 3], texture: None, bump: None, bump_height: 0.0, specular: None }
+    }
 }
 
 /// `v` as f32, rounded toward negative infinity (boxes stay conservative).
@@ -1606,37 +1706,45 @@ fn build_look(vol: &Volume, m: &crate::compose::ModelRef, wait: bool) -> (Look, 
     let mut look = vol.file_look();
     let mut fingerprint = String::new();
     let mut files: Vec<(PathBuf, Option<u32>)> = Vec::new();
+    let size = (0..3).map(|k| vol.bounds[1][k] - vol.bounds[0][k]).fold(0.0, f64::max);
+    let mut texture = |name: &str, look: &mut Look, fingerprint: &mut String| {
+        let path = image_path(&m.path, name);
+        if let Some((_, t)) = files.iter().find(|(p, _)| *p == path) {
+            return *t;
+        }
+        let t = texture_file(&path, v_up_for(&m.path), wait).map(|t| {
+            look.textures.push(t);
+            look.textures.len() as u32 - 1
+        });
+        fingerprint.push(if t.is_some() { '+' } else { '-' });
+        files.push((path, t));
+        t
+    };
     for o in m.materials.iter().filter(|o| !o.is_empty()) {
         let Some(i) = vol.materials.iter().position(|mm| mm.name == o.name) else { continue };
-        let lm = &mut look.materials[i];
         if let Some(c) = o.color {
-            lm.color = c;
+            look.materials[i].color = c;
         }
         match o.texture.as_deref() {
             None => {}
-            Some("") => lm.texture = None,
-            Some(name) => {
-                let path = image_path(&m.path, name);
-                let index = match files.iter().find(|(p, _)| *p == path) {
-                    Some((_, t)) => *t,
-                    None => {
-                        let t = texture_file(&path, v_up_for(&m.path), wait).map(|t| {
-                            look.textures.push(t);
-                            look.textures.len() as u32 - 1
-                        });
-                        files.push((path, t));
-                        t
-                    }
-                };
-                lm.texture = index;
-                fingerprint.push(if index.is_some() { '+' } else { '-' });
-            }
+            Some("") => look.materials[i].texture = None,
+            Some(name) => look.materials[i].texture = texture(name, &mut look, &mut fingerprint),
+        }
+        if !o.bump.is_empty() {
+            look.materials[i].bump = texture(&o.bump, &mut look, &mut fingerprint);
+            look.materials[i].bump_height = (o.bump_strength * BUMP_HEIGHT * size) as f32;
+        }
+        if !o.specular.is_empty() {
+            look.materials[i].specular = texture(&o.specular, &mut look, &mut fingerprint);
         }
     }
-    look.colored = look.materials.iter().any(|m| m.color != [1.0; 3] || m.texture.is_some()) || !vol.tri_colors.is_empty();
+    look.update_flags(!vol.tri_colors.is_empty());
     fingerprint.push_str(&format!("{:?}", m.materials));
     (look, fingerprint)
 }
+
+/// Bump map height at strength 1, relative to the model's longest side.
+pub const BUMP_HEIGHT: f64 = 0.003;
 
 /// Waits for the textures of the scene's models (renders that must show them call this first).
 pub fn load_textures(m: &crate::compose::ModelRef) {
@@ -2338,6 +2446,35 @@ mod tests {
         let c = vol.color([0.0, 0.0, 1.05], &model.look).unwrap();
         assert!(c[0].abs() < 1e-6 && (c[1] - 1.0).abs() < 1e-6);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn bump_maps_bend_the_normal() {
+        // A quad z = 0 over (-1..1)², u along x, v along y, and a height ramp rising along u.
+        let mut m = Mesh::default();
+        let p = [[-1.0, -1.0, 0.0], [1.0, -1.0, 0.0], [1.0, 1.0, 0.0], [-1.0, 1.0, 0.0]];
+        let uv = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+        m.materials.push(MeshMaterial { name: "m".into(), ..MeshMaterial::default() });
+        for f in [[0, 1, 2], [0, 2, 3]] {
+            m.push(f.map(|i| p[i]), Shading { uv: f.map(|i| uv[i]), material: 0, ..Shading::default() });
+        }
+        let vol = bake(&m, &ModelOptions { keep_units: true, ..opts(24) }, &no_progress);
+        let ramp = Texture { width: 64, height: 4, texels: (0..256).map(|i| [(i % 64 * 4) as u8; 3]).collect(), wrap: [Wrap::Clamp; 2], v_up: false };
+        let mut look = vol.file_look();
+        look.textures.push(Arc::new(ramp));
+        look.materials[0].bump = Some(0);
+        look.materials[0].bump_height = 0.1;
+        look.materials[0].specular = Some(0);
+        look.update_flags(false);
+        assert!(look.maps && !look.colored);
+        let s = vol.surface([0.0, 0.3, 0.01], &look, Some([0.0, 0.0, 1.0])).unwrap();
+        assert!(s.color.is_none());
+        // Height rises by 0.1 * 252/255 over 2 units along x: the normal leans toward -x.
+        let slope: f64 = 0.1 * (252.0 / 255.0) / 2.0 * 64.0 / 63.0;
+        assert!((s.normal[0] + slope / (1.0 + slope * slope).sqrt()).abs() < 2e-3, "{:?}", s.normal);
+        assert!(s.normal[1].abs() < 1e-9 && s.normal[2] > 0.99);
+        // The specular map at u = 0.5 is about half.
+        assert!((s.specular - 0.5).abs() < 0.02, "{}", s.specular);
     }
 
     #[test]

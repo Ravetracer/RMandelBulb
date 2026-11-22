@@ -722,29 +722,64 @@ fn materials_editor(ui: &mut Ui, m: &mut ModelRef, mats: &[rmb_core::mesh::MeshM
             }
         }
     });
-    egui::ScrollArea::vertical().id_salt(id.with("scroll")).max_height(320.0).show(ui, |ui| {
-        egui::Grid::new(id.with("grid")).num_columns(3).spacing([6.0, 3.0]).striped(true).show(ui, |ui| {
-            for mm in &shown {
-                let o = material_override(&mut m.materials, &mm.name);
+    let mut open: Option<String> = ui.data_mut(|d| d.get_temp(id.with("open")).unwrap_or_default());
+    egui::ScrollArea::vertical().id_salt(id.with("scroll")).min_scrolled_height(320.0).max_height(360.0).show(ui, |ui| {
+        for mm in &shown {
+            let o = material_override(&mut m.materials, &mm.name);
+            let expanded = open.as_deref() == Some(mm.name.as_str());
+            ui.horizontal(|ui| {
                 let mut c = o.color.unwrap_or(mm.color);
                 let r = widgets::color_button(ui, &mut c).on_hover_text("Base color (the texture multiplies it). Right click: the model file's color");
-                if r.changed() || c != o.color.unwrap_or(mm.color) {
+                if c != o.color.unwrap_or(mm.color) {
                     o.color = Some(c);
                 }
                 if r.secondary_clicked() {
                     o.color = None;
                 }
-                let name = if o.color.is_some() || o.texture.is_some() { RichText::new(&mm.name).strong() } else { RichText::new(&mm.name) };
-                ui.label(name).on_hover_text("Material name in the model file (bold: changed here)");
+                let maps = !o.bump.is_empty() || !o.specular.is_empty();
+                let changed = o.color.is_some() || o.texture.is_some() || maps;
+                let arrow = if expanded { egui_phosphor::regular::CARET_DOWN } else { egui_phosphor::regular::CARET_RIGHT };
+                let text = format!("{arrow} {}{}", mm.name, if maps { format!(" {}", egui_phosphor::regular::STACK) } else { String::new() });
+                let label = if changed { RichText::new(text).strong() } else { RichText::new(text) };
+                let size = egui::vec2(150.0, ui.spacing().interact_size.y);
+                let resp = ui
+                    .allocate_ui_with_layout(size, egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        ui.set_min_size(size);
+                        ui.add(egui::Button::new(label).frame(false).truncate())
+                    })
+                    .inner
+                    .on_hover_text(format!("{}: click for bump and specular maps (bold: changed here; layers icon: has maps)", mm.name));
+                if resp.clicked() {
+                    open = if expanded { None } else { Some(mm.name.clone()) };
+                }
                 image_combo(ui, &format!("mat-tex-{}", mm.name), &m.path, &mm.texture_file, &images, &mut o.texture, "Color texture (multiplies the base color)");
-                ui.end_row();
+            });
+            if expanded {
+                ui.indent(id.with(("maps", &mm.name)), |ui| {
+                    widgets::grid(ui, &format!("mat-maps-{}", mm.name), |ui| {
+                        widgets::label(ui, "Bump", "Height map: bright is high. Bends the surface normal for fine relief without changing the shape");
+                        let mut v = Some(o.bump.clone());
+                        image_combo(ui, &format!("mat-bump-{}", mm.name), &m.path, "", &images, &mut v, "Bump (height) map");
+                        o.bump = v.unwrap_or_default();
+                        ui.end_row();
+                        if !o.bump.is_empty() {
+                            widgets::slider_log(ui, "Strength", "Height of the bumps (1: white is 0.3 % of the model's size above black)", &mut o.bump_strength, 0.01..=20.0, 1.0);
+                        }
+                        widgets::label(ui, "Specular", "Specular map: bright parts shine, dark parts stay matte");
+                        let mut v = Some(o.specular.clone());
+                        image_combo(ui, &format!("mat-spec-{}", mm.name), &m.path, "", &images, &mut v, "Specular map");
+                        o.specular = v.unwrap_or_default();
+                        ui.end_row();
+                    });
+                });
             }
-        });
+        }
     });
     m.materials.retain(|o| !o.is_empty());
     ui.data_mut(|d| {
         d.insert_temp(id.with("filter"), filter);
         d.insert_temp(id.with("bulk"), bulk);
+        d.insert_temp(id.with("open"), open);
     });
 }
 

@@ -206,6 +206,29 @@ impl<'a> Shader<'a> {
         }
     }
 
+    /// Color, specular factor and normal of a 3D model at hit `h` with normal `n` (material
+    /// pattern "Model colors": the model's materials with their bump and specular maps; else
+    /// `base`, 1 and `n`).
+    fn model_surface(&self, h: &Hit, mat: usize, base: [f64; 3], n: V3) -> ([f64; 3], f64, V3) {
+        if mat == 0 || self.materials[mat].pattern != crate::compose::Pattern::Model.index() {
+            return (base, 1.0, n);
+        }
+        let Some(ob) = (h.orbit.object > 0).then(|| self.prog.objects.get(h.orbit.object as usize - 1)).flatten() else { return (base, 1.0, n) };
+        let crate::fractal::ObjectShape::Model(Some(m)) = &ob.shape else { return (base, 1.0, n) };
+        let q = crate::compose::to_local(&ob.inv, ob.pos, ob.scale, h.pos);
+        let nl = crate::compose::to_local(&ob.inv, V3::ZERO, 1.0, n);
+        let Some(s) = m.vol.surface(q.to_array(), &m.look, Some(nl.to_array())) else { return (base, 1.0, n) };
+        let color = match s.color {
+            Some(c) if self.scene.post.display_space => c.map(super::srgb_encode),
+            Some(c) => c,
+            None => base,
+        };
+        // The transpose undoes the inverse rotation.
+        let (i, b) = (&ob.inv, s.normal);
+        let nw = v3(i[0][0] * b[0] + i[1][0] * b[1] + i[2][0] * b[2], i[0][1] * b[0] + i[1][1] * b[1] + i[2][1] * b[2], i[0][2] * b[0] + i[1][2] * b[1] + i[2][2] * b[2]);
+        (color, s.specular, nw)
+    }
+
     /// Where the texture layers of a hit are evaluated (`n`: world normal, zero if unknown).
     fn layer_coord(&self, h: &Hit, n: V3, cv: f64) -> crate::texture::Coord {
         let mut c = crate::texture::Coord { obj: h.pos, world: h.pos, n_obj: n, n_world: n, value: cv, trap: h.orbit.trap };
@@ -733,14 +756,16 @@ impl<'a> Shader<'a> {
                 let cv = self.color_value(h, n);
                 let main = h.orbit.object == 0;
                 let mat = self.material_of(&h.orbit);
-                let (base, spec_col, trans, emis) = match self.interior_colors(h, n, h.t).filter(|_| main) {
-                    Some((b, s)) => (b, s, 0.0, 0.0),
+                // 3D models: their colors, specular and bump maps.
+                let (base, spec_col, trans, emis, n_model) = match self.interior_colors(h, n, h.t).filter(|_| main) {
+                    Some((b, s)) => (b, s, 0.0, 0.0, n),
                     None => {
                         let (b, s, tr, e) = self.gradient(mat, cv, h.t);
-                        (self.model_color(h, mat, b), s, tr, e)
+                        let (b, sf, nm) = self.model_surface(h, mat, b, n);
+                        (b, s.map(|c| c * sf), tr, e, nm)
                     }
                 };
-                let (base, emis, n_bump) = self.apply_layers(mat, h, n, cv, base, emis);
+                let (base, emis, n_bump) = self.apply_layers(mat, h, n_model, cv, base, emis);
                 // Color maps belong to the main fractal.
                 let base = if main { self.map_color(h, n, cv, base, rr) } else { base };
                 // Shading point just off the surface; inside rendering puts the surface one

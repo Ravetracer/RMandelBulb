@@ -163,9 +163,10 @@ fn volumes_gpu(prog: &Program) -> Vec<u32> {
             out.extend(nd.lo.iter().chain(&nd.hi).map(|x| x.to_bits()));
             out.extend([nd.start, nd.count]);
         }
-        if !look.colored {
+        if !look.colored && !look.maps {
             continue;
         }
+        out[h + 23] = look.colored as u32;
         out[h + 17] = out.len() as u32;
         for (mat, uv) in v.tri_material.iter().zip(&v.tri_uv) {
             out.push(*mat);
@@ -179,7 +180,8 @@ fn volumes_gpu(prog: &Program) -> Vec<u32> {
         out[h + 20] = look.materials.len() as u32;
         for lm in &look.materials {
             out.extend(lm.color.map(|c| c.to_bits()));
-            out.push(lm.texture.unwrap_or(u32::MAX));
+            let none = u32::MAX;
+            out.extend([lm.texture.unwrap_or(none), lm.bump.unwrap_or(none), lm.bump_height.to_bits(), lm.specular.unwrap_or(none), 0]);
         }
         out[h + 21] = out.len() as u32;
         out[h + 22] = look.textures.len() as u32;
