@@ -73,3 +73,30 @@
   - [ ] Possible: alpha channel masks, normal maps, roughness/specular layers, texture
         animation (offset over time)
 - [x] AI denoiser (Intel Open Image Denoise, from RWildFire) with albedo and normal helper images
+
+## Performance
+
+A 1920 × 1080 GPU render (64 samples, the CLI default) takes about 2 minutes on the RTX A2000
+Laptop GPU (about 1.9 s per pass). Every pass marches the primary ray (up to 400 steps), normal,
+raytraced AO, shadows and area lights from scratch. Ordered by expected gain:
+
+- [ ] Profile first: split the pass time into primary march, normal, AO, shadows, area lights
+      and emission (e.g. timestamp queries or feature toggles on a test scene) before optimizing
+- [ ] Fewer samples plus OIDN (e.g. 16 instead of 64, about 4×); check frame-to-frame flicker
+      of the per-frame denoiser in animations
+- [ ] Adaptive sampling: stop sampling pixels whose variance has converged (typically 2-3×)
+- [ ] Hit-distance caching: start the primary ray of later passes at the previous hit distance
+      minus a margin (minimum over neighbor pixels to stay safe at silhouettes and with jitter;
+      not with DOF); saves most of the primary march
+- [ ] Final-render shader specialization: iteration counts and feature flags as constants
+      (maybe 10-30%, costs a recompile per render; keep the buffer path for the preview)
+- [ ] Animation pipelining: denoise and PNG/ffmpeg encoding of frame N on the CPU while the GPU
+      renders frame N+1 (check whether `animate` / export already overlap)
+- [ ] Optional "deep zoom" mode: f32 breaks down at roughly 1e5-1e6 zoom. Consumer GPUs run
+      FP64 at 1/64 rate (wgpu `SHADER_F64` not worth it); use double-float emulation (df64, two
+      f32 per value) for the position and the first iterations instead
+- [ ] CPU renderer: replace the `Box<dyn Fn>` closure tree in `formula/cpu.rs` with a JIT
+      (Cranelift) that compiles `.mbf` formulas to native code, plus SIMD ray packets
+      (AVX2, 4 × f64 via `core::arch`); plausibly 5-20× on the CPU. Hand-written assembly is
+      not worth it (478 formulas; LLVM matches it)
+- [ ] Low priority: split rows between CPU and GPU (parity exists); expected gain only 5-10%

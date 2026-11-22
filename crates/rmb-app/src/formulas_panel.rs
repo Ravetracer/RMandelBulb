@@ -7,6 +7,7 @@
 use egui::{Color32, RichText, Ui};
 use rmb_core::compose::{BoolOp, MAX_OBJECTS, ModelRef, ObjectMaterial, Pattern, Primitive, SceneObject, Shape, Transform};
 use rmb_core::formula::{ParamKind, find, library};
+use rmb_core::mesh::MaterialOverride;
 use rmb_core::scene::{ColorMode, DeMode, Fractal, MAX_SLOTS, Scene, Slot};
 
 use crate::{icons, theme, widgets};
@@ -28,6 +29,7 @@ impl FormulasPanel {
         if baking {
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(150));
         }
+        auto_assign_textures(scene);
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             let before = *selected;
             self.objects(ui, scene, selected);
@@ -546,7 +548,7 @@ fn model_object(p: &std::path::Path, pos: rmb_core::V3) -> SceneObject {
     let name = p.file_stem().map_or_else(|| "Model".to_string(), |s| s.to_string_lossy().into_owned());
     SceneObject {
         name,
-        shape: Shape::Model(ModelRef { path: p.display().to_string(), options: Default::default() }),
+        shape: Shape::Model(ModelRef { path: p.display().to_string(), ..Default::default() }),
         transform: Transform { position: pos, scale: 0.5, ..Default::default() },
         material: ObjectMaterial { pattern: Pattern::Model, ..Default::default() },
         ..Default::default()
@@ -562,6 +564,8 @@ fn model_editor(ui: &mut Ui, m: &mut ModelRef) {
             && let Some(p) = rfd::FileDialog::new().add_filter("3D model", &MODEL_FILES).pick_file()
         {
             m.path = p.display().to_string();
+            m.materials.clear();
+            m.auto_assigned = false;
         }
         let name = std::path::Path::new(&m.path).file_name().map_or_else(|| m.path.clone(), |f| f.to_string_lossy().into_owned());
         ui.label(name).on_hover_text(m.path.clone());
@@ -599,6 +603,149 @@ fn model_editor(ui: &mut Ui, m: &mut ModelRef) {
     if o.resolution > 192 {
         ui.label(RichText::new("High resolutions take a few seconds to bake.").size(theme::fs(11.0)).color(theme::TEXT_MUTED));
     }
+    if let Status::Ready(v) = rmb_core::mesh::request(&m.path, &m.options) {
+        materials_editor(ui, m, &v.materials);
+    }
+}
+
+/// Assigns the images near each newly baked model to its materials by name (once per model).
+fn auto_assign_textures(scene: &mut Scene) {
+    for o in &mut scene.objects {
+        let Shape::Model(m) = &mut o.shape else { continue };
+        if m.auto_assigned {
+            continue;
+        }
+        if let rmb_core::mesh::Status::Ready(v) = rmb_core::mesh::request(&m.path, &m.options) {
+            let images = rmb_core::mesh::nearby_images(std::path::Path::new(&m.path));
+            m.materials = rmb_core::mesh::auto_assign(&m.path, &v.materials, &images);
+            m.auto_assigned = true;
+        }
+    }
+}
+
+/// The override of material `name` (created if missing).
+fn material_override<'a>(list: &'a mut Vec<MaterialOverride>, name: &str) -> &'a mut MaterialOverride {
+    let i = match list.iter().position(|o| o.name == name) {
+        Some(i) => i,
+        None => {
+            list.push(MaterialOverride { name: name.to_string(), ..Default::default() });
+            list.len() - 1
+        }
+    };
+    &mut list[i]
+}
+
+/// The file name of an image path for display.
+fn short_name(p: &str) -> String {
+    std::path::Path::new(p).file_name().map_or_else(|| p.to_string(), |f| f.to_string_lossy().into_owned())
+}
+
+/// Picks an image for a material: from the file, none, an image near the model or any file.
+/// `value`: None = the file's own, Some("") = none, else the image.
+fn image_combo(ui: &mut Ui, id: &str, model: &str, file: &str, images: &[std::path::PathBuf], value: &mut Option<String>, tip: &str) {
+    let text = match value.as_deref() {
+        None if file.is_empty() => "None".to_string(),
+        None => format!("{} (file)", short_name(file)),
+        Some("") => "None".to_string(),
+        Some(p) => short_name(p),
+    };
+    egui::ComboBox::from_id_salt(id)
+        .width(150.0)
+        .selected_text(text)
+        .show_ui(ui, |ui| {
+            if !file.is_empty() {
+                ui.selectable_value(value, None, format!("{} (from the model file)", short_name(file)));
+            }
+            ui.selectable_value(value, Some(String::new()), "None");
+            ui.separator();
+            for p in images {
+                let name = rmb_core::mesh::image_name(model, p);
+                let selected = value.as_deref() == Some(name.as_str());
+                if ui.selectable_label(selected, &name).clicked() {
+                    *value = Some(name);
+                }
+            }
+            if ui.button("Browse…").on_hover_text("Pick any image file").clicked()
+                && let Some(p) = rfd::FileDialog::new().add_filter("Image", &rmb_core::mesh::IMAGE_EXTENSIONS).pick_file()
+            {
+                *value = Some(rmb_core::mesh::image_name(model, &p));
+            }
+        })
+        .response
+        .on_hover_text(tip);
+}
+
+/// Colors and textures of the model's materials (changes are saved with the scene).
+fn materials_editor(ui: &mut Ui, m: &mut ModelRef, mats: &[rmb_core::mesh::MeshMaterial]) {
+    if mats.is_empty() {
+        return;
+    }
+    widgets::section(ui, "Materials", false);
+    let id = ui.id().with(("model-materials", &m.path));
+    let mut filter: String = ui.data_mut(|d| d.get_temp(id.with("filter")).unwrap_or_default());
+    let mut bulk: [f32; 3] = ui.data_mut(|d| d.get_temp(id.with("bulk")).unwrap_or([0.05, 0.12, 0.45]));
+    let images: std::sync::Arc<Vec<std::path::PathBuf>> = ui.data_mut(|d| d.get_temp(id.with("images"))).unwrap_or_else(|| {
+        let list = std::sync::Arc::new(rmb_core::mesh::nearby_images(std::path::Path::new(&m.path)));
+        ui.data_mut(|d| d.insert_temp(id.with("images"), list.clone()));
+        list
+    });
+    ui.horizontal(|ui| {
+        ui.add(egui::TextEdit::singleline(&mut filter).hint_text("Filter").desired_width(110.0)).on_hover_text("Show only the materials whose name contains this text");
+        if ui.button("Auto-assign").on_hover_text("Assign the images near the model file to the materials by name (replaces the image choices, keeps the colors)").clicked() {
+            let auto = rmb_core::mesh::auto_assign(&m.path, mats, &images);
+            for o in &mut m.materials {
+                o.texture = None;
+                o.bump.clear();
+                o.specular.clear();
+            }
+            for a in auto {
+                let o = material_override(&mut m.materials, &a.name);
+                o.texture = a.texture;
+                o.bump = a.bump;
+                o.specular = a.specular;
+            }
+        }
+        if ui.button("Rescan").on_hover_text(format!("Look for images near the model again ({} found)", images.len())).clicked() {
+            ui.data_mut(|d| d.remove::<std::sync::Arc<Vec<std::path::PathBuf>>>(id.with("images")));
+        }
+        if ui.button("Reset").on_hover_text("Use the materials exactly as the model file has them").clicked() {
+            m.materials.clear();
+        }
+    });
+    let needle = filter.to_lowercase();
+    let shown: Vec<&rmb_core::mesh::MeshMaterial> = mats.iter().filter(|mm| needle.is_empty() || mm.name.to_lowercase().contains(&needle)).collect();
+    ui.horizontal(|ui| {
+        widgets::color_button(ui, &mut bulk).on_hover_text("Color for 'Color all shown'");
+        if ui.button(format!("Color all shown ({})", shown.len())).on_hover_text("Gives every material in the list below this color (use the filter to pick them)").clicked() {
+            for mm in &shown {
+                material_override(&mut m.materials, &mm.name).color = Some(bulk);
+            }
+        }
+    });
+    egui::ScrollArea::vertical().id_salt(id.with("scroll")).max_height(320.0).show(ui, |ui| {
+        egui::Grid::new(id.with("grid")).num_columns(3).spacing([6.0, 3.0]).striped(true).show(ui, |ui| {
+            for mm in &shown {
+                let o = material_override(&mut m.materials, &mm.name);
+                let mut c = o.color.unwrap_or(mm.color);
+                let r = widgets::color_button(ui, &mut c).on_hover_text("Base color (the texture multiplies it). Right click: the model file's color");
+                if r.changed() || c != o.color.unwrap_or(mm.color) {
+                    o.color = Some(c);
+                }
+                if r.secondary_clicked() {
+                    o.color = None;
+                }
+                let name = if o.color.is_some() || o.texture.is_some() { RichText::new(&mm.name).strong() } else { RichText::new(&mm.name) };
+                ui.label(name).on_hover_text("Material name in the model file (bold: changed here)");
+                image_combo(ui, &format!("mat-tex-{}", mm.name), &m.path, &mm.texture_file, &images, &mut o.texture, "Color texture (multiplies the base color)");
+                ui.end_row();
+            }
+        });
+    });
+    m.materials.retain(|o| !o.is_empty());
+    ui.data_mut(|d| {
+        d.insert_temp(id.with("filter"), filter);
+        d.insert_temp(id.with("bulk"), bulk);
+    });
 }
 
 fn iteration(ui: &mut Ui, f: &mut Fractal, main: bool) {

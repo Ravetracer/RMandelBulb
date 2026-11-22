@@ -528,7 +528,8 @@ fn gpu_matches_cpu_with_texture_layers() {
     parity(scene);
 }
 
-/// Writes a torus as OBJ + MTL with two colored halves (materials "warm" and "cool").
+/// Writes a torus as OBJ + MTL with two colored halves (materials "warm" and "cool"), texture
+/// coordinates and a striped image `stripes.png` next to it.
 fn write_test_obj(dir: &std::path::Path) -> std::path::PathBuf {
     use std::fmt::Write;
     std::fs::create_dir_all(dir).expect("test dir");
@@ -540,6 +541,7 @@ fn write_test_obj(dir: &std::path::Path) -> std::path::PathBuf {
             let (a, b) = (i as f64 / n as f64 * std::f64::consts::TAU, j as f64 / m as f64 * std::f64::consts::TAU);
             let r = 1.0 + 0.35 * b.cos();
             let _ = writeln!(s, "v {} {} {}", r * a.cos(), 0.35 * b.sin(), r * a.sin());
+            let _ = writeln!(s, "vt {} {}", i as f64 / n as f64 * 3.0, j as f64 / m as f64);
         }
     }
     for half in [0, 1] {
@@ -547,11 +549,13 @@ fn write_test_obj(dir: &std::path::Path) -> std::path::PathBuf {
         for i in (half * n / 2)..((half + 1) * n / 2) {
             for j in 0..m {
                 let v = |i: usize, j: usize| (i % n) * m + (j % m) + 1;
-                let _ = writeln!(s, "f {} {} {}", v(i, j), v(i + 1, j), v(i + 1, j + 1));
-                let _ = writeln!(s, "f {} {} {}", v(i, j), v(i + 1, j + 1), v(i, j + 1));
+                let _ = writeln!(s, "f {0}/{0} {1}/{1} {2}/{2}", v(i, j), v(i + 1, j), v(i + 1, j + 1));
+                let _ = writeln!(s, "f {0}/{0} {1}/{1} {2}/{2}", v(i, j), v(i + 1, j + 1), v(i, j + 1));
             }
         }
     }
+    let img = image::RgbImage::from_fn(16, 8, |x, y| if (x / 2 + y / 2) % 2 == 0 { image::Rgb([250, 240, 40]) } else { image::Rgb([30, 90, 200]) });
+    img.save(dir.join("stripes.png")).expect("png");
     let p = dir.join("torus.obj");
     std::fs::write(&p, s).expect("obj");
     p
@@ -561,7 +565,7 @@ fn write_test_obj(dir: &std::path::Path) -> std::path::PathBuf {
 fn gpu_matches_cpu_with_a_3d_model() {
     use rmb_core::compose::{BoolOp, ModelRef, ObjectMaterial, Pattern, SceneObject, Shape, Transform};
     let path = write_test_obj(&std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("rmb_model_test"));
-    let model = ModelRef { path: path.to_string_lossy().into_owned(), options: rmb_core::mesh::ModelOptions { resolution: 64, ..Default::default() } };
+    let model = ModelRef { path: path.to_string_lossy().into_owned(), options: rmb_core::mesh::ModelOptions { resolution: 64, ..Default::default() }, ..Default::default() };
     let mut scene = Scene::default();
     scene.lighting.ao_mode = rmb_core::scene::AoMode::Fast;
     scene.objects = vec![
@@ -576,9 +580,16 @@ fn gpu_matches_cpu_with_a_3d_model() {
         // The same model cuts into the bulb from the side, smoothly.
         SceneObject { name: "Cut".into(), op: BoolOp::SmoothSubtract, smooth: 0.1, shape: Shape::Model(model), transform: Transform { position: rmb_core::v3(0.9, -0.5, 0.3), scale: 0.35, ..Default::default() }, ..Default::default() },
     ];
+    // The cool half gets a striped texture, the warm one a new color.
+    if let Shape::Model(m) = &mut scene.objects[0].shape {
+        m.materials = vec![
+            rmb_core::mesh::MaterialOverride { name: "cool".into(), texture: Some("stripes.png".into()), ..Default::default() },
+            rmb_core::mesh::MaterialOverride { name: "warm".into(), color: Some([0.8, 0.05, 0.3]), ..Default::default() },
+        ];
+    }
     assert!(rmb_core::compose::load_models(&scene).is_empty());
     let prog = Program::for_scene(&scene);
-    assert!(matches!(&prog.objects[0].shape, rmb_core::fractal::ObjectShape::Model(Some(m)) if m.look.colored));
+    assert!(matches!(&prog.objects[0].shape, rmb_core::fractal::ObjectShape::Model(Some(m)) if m.look.colored && m.look.textures.len() == 1));
     validate(&rmb_gpu::codegen::march_shader(&prog), "3D model");
     let cpu = |s: &Scene| {
         let mut r = rmb_core::render::cpu::CpuRenderer::new(s.clone(), 48, 32);

@@ -114,7 +114,12 @@ cargo clippy -j 8 --workspace --all-targets
   surface (moved toward zero by `GRID_ERROR` voxels, so it stays a lower bound) and the exact
   nearest-triangle distance within `NEAR` voxels: thin parts and open surfaces become shells and
   stay visible at any distance. Colors come from the nearest triangle (material color × vertex
-  color × texture), resolved through a `Look` (cached per volume, `Model::new`).
+  color × texture), resolved through a `Look` (cached per volume and settings, `Model::new`):
+  the file's materials with the scene's `ModelRef::materials` overrides (color, color texture,
+  bump and specular maps; image paths relative to the model). Override images load in the
+  background (`texture_file`, bumps `generation()`). `auto_assign` matches images near the
+  model to materials by name (kind from words like diffuse/bump/spec); the app runs it once per
+  imported model and from the Materials section.
   `mesh::request` bakes in the background (cache keyed by file, modification time and options;
   `generation()` changes when a bake finishes), `compose::load_models` waits for all models of a
   scene (CLI, exports). GPU: `vols` buffer (binding 7, `volumes_gpu`, 32-word header per object),

@@ -1340,16 +1340,16 @@ impl Model {
     /// The model `vol` of the scene's model reference `m`. Looks are cached per volume and
     /// settings, so that an unchanged model keeps the same `look` (renderers upload a model
     /// again only when its volume or look changes).
-    pub fn new(vol: Arc<Volume>, _m: &crate::compose::ModelRef) -> Model {
+    pub fn new(vol: Arc<Volume>, m: &crate::compose::ModelRef) -> Model {
         type Entry = (std::sync::Weak<Volume>, String, Arc<Look>);
         static LOOKS: OnceLock<Mutex<Vec<Entry>>> = OnceLock::new();
-        let fingerprint = String::new();
+        let (look, fingerprint) = build_look(&vol, m, false);
         let mut looks = LOOKS.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
         looks.retain(|(w, _, _)| w.strong_count() > 0);
         if let Some((_, _, look)) = looks.iter().find(|(w, f, _)| w.as_ptr() == Arc::as_ptr(&vol) && *f == fingerprint) {
             return Model { look: look.clone(), vol };
         }
-        let look = Arc::new(vol.file_look());
+        let look = Arc::new(look);
         looks.push((Arc::downgrade(&vol), fingerprint, look.clone()));
         Model { vol, look }
     }
@@ -1490,6 +1490,276 @@ pub fn bake(mesh: &Mesh, opts: &ModelOptions, progress: &(dyn Fn(f32) + Sync)) -
     let tri_colors = if vertex_colors { ids.iter().map(|&i| shading(i).colors.map(|c| u32::from_le_bytes(linear_to_display_u8(c.map(|v| v as f64))))).collect() } else { Vec::new() };
     progress(1.0);
     Volume { res, min, voxel, bounds, dist, tris: tris_f32, nodes, tri_material, tri_uv, tri_colors, materials: mesh.materials.clone(), textures: mesh.textures.iter().cloned().map(Arc::new).collect() }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Materials of a scene's model
+
+/// A change to one material of a model file (matched by name), saved with the scene.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MaterialOverride {
+    pub name: String,
+    /// Base color (linear RGB) instead of the file's.
+    pub color: Option<[f32; 3]>,
+    /// Color texture: None keeps the file's, `""` removes it, otherwise an image file (relative
+    /// to the model's folder, or absolute).
+    pub texture: Option<String>,
+    /// Bump (height) map ("" none) and its strength.
+    pub bump: String,
+    pub bump_strength: f64,
+    /// Specular map ("" none): scales the specular highlights.
+    pub specular: String,
+}
+
+impl Default for MaterialOverride {
+    fn default() -> Self {
+        Self { name: String::new(), color: None, texture: None, bump: String::new(), bump_strength: 1.0, specular: String::new() }
+    }
+}
+
+impl MaterialOverride {
+    pub fn is_empty(&self) -> bool {
+        self.color.is_none() && self.texture.is_none() && self.bump.is_empty() && self.specular.is_empty()
+    }
+}
+
+/// An image a model's material refers to, as a full path (`name` relative to the model's
+/// folder unless absolute).
+pub fn image_path(model: &str, name: &str) -> PathBuf {
+    let p = Path::new(name);
+    if p.is_absolute() { p.to_path_buf() } else { Path::new(model).parent().unwrap_or(Path::new(".")).join(p) }
+}
+
+/// `image` as a name relative to the model's folder when it lies inside it, else absolute.
+pub fn image_name(model: &str, image: &Path) -> String {
+    let dir = Path::new(model).parent().unwrap_or(Path::new("."));
+    image.strip_prefix(dir).unwrap_or(image).to_string_lossy().replace('\\', "/")
+}
+
+enum TexEntry {
+    Loading,
+    Ready(Arc<Texture>),
+    Failed,
+}
+
+/// Texture files by path, modification time and row order (`v_up`).
+type TexKey = (PathBuf, SystemTime, bool);
+
+fn texture_cache() -> &'static Mutex<HashMap<TexKey, TexEntry>> {
+    static C: OnceLock<Mutex<HashMap<TexKey, TexEntry>>> = OnceLock::new();
+    C.get_or_init(Default::default)
+}
+
+fn texture_key(path: &Path, v_up: bool) -> Option<TexKey> {
+    let p = std::fs::canonicalize(path).ok()?;
+    let t = std::fs::metadata(&p).and_then(|m| m.modified()).ok()?;
+    Some((p, t, v_up))
+}
+
+/// Whether texture coordinates of the model file count v from the bottom row (OBJ) or the top
+/// row (glTF).
+pub fn v_up_for(model: &str) -> bool {
+    Path::new(model).extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("obj"))
+}
+
+/// The texture in image file `path` (`v_up`: see [`Texture::v_up`]): from the cache, or None
+/// while it loads in the background (`generation()` changes when it is done) or when it cannot
+/// be read. `wait` loads it in the calling thread instead.
+pub fn texture_file(path: &Path, v_up: bool, wait: bool) -> Option<Arc<Texture>> {
+    let key = texture_key(path, v_up)?;
+    let cache = texture_cache();
+    {
+        let map = cache.lock().unwrap_or_else(|e| e.into_inner());
+        match map.get(&key) {
+            Some(TexEntry::Ready(t)) => return Some(t.clone()),
+            Some(TexEntry::Failed) => return None,
+            Some(TexEntry::Loading) if !wait => return None,
+            _ => {}
+        }
+    }
+    let store = move |key: TexKey| {
+        let t = image::open(&key.0).ok().and_then(|img| Texture::from_rgb(img.to_rgb8(), [Wrap::Repeat; 2], key.2)).map(Arc::new);
+        cache.lock().unwrap_or_else(|e| e.into_inner()).insert(key, t.clone().map_or(TexEntry::Failed, TexEntry::Ready));
+        GENERATION.fetch_add(1, Ordering::Relaxed);
+        t
+    };
+    if wait {
+        return store(key);
+    }
+    cache.lock().unwrap_or_else(|e| e.into_inner()).insert(key.clone(), TexEntry::Loading);
+    let spawned = std::thread::Builder::new().name("rmb-model-texture".into()).spawn({
+        let key = key.clone();
+        move || {
+            store(key);
+        }
+    });
+    if spawned.is_err() {
+        return store(key);
+    }
+    None
+}
+
+/// The look of `vol` with the overrides of `m`; textures load in the background unless `wait`.
+/// Returns the look and a fingerprint (overrides and the textures it could use).
+fn build_look(vol: &Volume, m: &crate::compose::ModelRef, wait: bool) -> (Look, String) {
+    let mut look = vol.file_look();
+    let mut fingerprint = String::new();
+    let mut files: Vec<(PathBuf, Option<u32>)> = Vec::new();
+    for o in m.materials.iter().filter(|o| !o.is_empty()) {
+        let Some(i) = vol.materials.iter().position(|mm| mm.name == o.name) else { continue };
+        let lm = &mut look.materials[i];
+        if let Some(c) = o.color {
+            lm.color = c;
+        }
+        match o.texture.as_deref() {
+            None => {}
+            Some("") => lm.texture = None,
+            Some(name) => {
+                let path = image_path(&m.path, name);
+                let index = match files.iter().find(|(p, _)| *p == path) {
+                    Some((_, t)) => *t,
+                    None => {
+                        let t = texture_file(&path, v_up_for(&m.path), wait).map(|t| {
+                            look.textures.push(t);
+                            look.textures.len() as u32 - 1
+                        });
+                        files.push((path, t));
+                        t
+                    }
+                };
+                lm.texture = index;
+                fingerprint.push(if index.is_some() { '+' } else { '-' });
+            }
+        }
+    }
+    look.colored = look.materials.iter().any(|m| m.color != [1.0; 3] || m.texture.is_some()) || !vol.tri_colors.is_empty();
+    fingerprint.push_str(&format!("{:?}", m.materials));
+    (look, fingerprint)
+}
+
+/// Waits for the textures of the scene's models (renders that must show them call this first).
+pub fn load_textures(m: &crate::compose::ModelRef) {
+    if let Ok(vol) = get(&m.path, &m.options) {
+        build_look(&vol, m, true);
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Matching image files to materials by name
+
+/// What an image file is for, judged by its name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ImageKind {
+    Color,
+    Bump,
+    Specular,
+    /// Normal maps, masks and the like: not used.
+    Other,
+}
+
+/// Words of a name: split at non-alphanumerics and lower-to-upper case changes, lowercase.
+fn words(s: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut prev_lower = false;
+    for ch in s.chars() {
+        if !ch.is_alphanumeric() {
+            if !cur.is_empty() {
+                out.push(std::mem::take(&mut cur));
+            }
+            prev_lower = false;
+            continue;
+        }
+        if ch.is_uppercase() && prev_lower && !cur.is_empty() {
+            out.push(std::mem::take(&mut cur));
+        }
+        prev_lower = ch.is_lowercase() || ch.is_ascii_digit();
+        cur.extend(ch.to_lowercase());
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+/// The kind of an image file and its name without the kind words (lowercase, alphanumerics).
+pub fn image_kind(path: &Path) -> (ImageKind, String) {
+    let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let mut kind = None;
+    let mut key = String::new();
+    for w in words(&stem) {
+        let base = w.trim_end_matches(|c: char| c.is_ascii_digit());
+        let k = match base {
+            "diffuse" | "diff" | "color" | "colour" | "col" | "albedo" | "basecolor" | "base_color" | "dif" | "tex" => Some(ImageKind::Color),
+            "bump" | "height" | "disp" | "displacement" | "displace" => Some(ImageKind::Bump),
+            "spec" | "specular" | "gloss" | "glossiness" | "rough" | "roughness" | "refl" | "reflection" | "metal" | "metallic" => Some(ImageKind::Specular),
+            "normal" | "nrm" | "norm" | "nor" | "alpha" | "opacity" | "mask" | "ao" | "occlusion" | "emission" | "emissive" => Some(ImageKind::Other),
+            _ => None,
+        };
+        match k {
+            Some(k) => kind = kind.or(Some(k)),
+            None => key.push_str(&w),
+        }
+    }
+    (kind.unwrap_or(ImageKind::Color), key)
+}
+
+/// Similarity of two names (lowercase alphanumerics): the longest common substring relative to
+/// the longer name.
+fn name_score(a: &str, b: &str) -> f64 {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.is_empty() || b.is_empty() {
+        return 0.0;
+    }
+    let mut best = 0;
+    let mut prev = vec![0usize; b.len() + 1];
+    for &x in a {
+        let mut cur = vec![0usize; b.len() + 1];
+        for (j, &y) in b.iter().enumerate() {
+            if x == y {
+                cur[j + 1] = prev[j] + 1;
+                best = best.max(cur[j + 1]);
+            }
+        }
+        prev = cur;
+    }
+    best as f64 / a.len().max(b.len()) as f64
+}
+
+/// Smallest name similarity for an automatic match.
+const MATCH_SCORE: f64 = 0.6;
+
+/// Assigns the images near the model (`images`) to the materials by name: per material the best
+/// matching color, bump and specular image. Materials whose file brings a texture keep it.
+/// Returns the overrides (only materials with a match).
+pub fn auto_assign(model: &str, materials: &[MeshMaterial], images: &[PathBuf]) -> Vec<MaterialOverride> {
+    let kinds: Vec<(ImageKind, String)> = images.iter().map(|p| image_kind(p)).collect();
+    let mut out = Vec::new();
+    for m in materials {
+        let key: String = words(&m.name).concat();
+        let best = |kind: ImageKind| {
+            let mut best: Option<(f64, usize)> = None;
+            for (i, (k, name)) in kinds.iter().enumerate() {
+                let s = name_score(&key, name);
+                if *k == kind && s >= MATCH_SCORE && best.is_none_or(|(b, _)| s > b) {
+                    best = Some((s, i));
+                }
+            }
+            best.map(|(_, i)| image_name(model, &images[i]))
+        };
+        let o = MaterialOverride {
+            name: m.name.clone(),
+            texture: if m.texture.is_some() { None } else { best(ImageKind::Color) },
+            bump: best(ImageKind::Bump).unwrap_or_default(),
+            specular: best(ImageKind::Specular).unwrap_or_default(),
+            ..MaterialOverride::default()
+        };
+        if !o.is_empty() {
+            out.push(o);
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -2014,6 +2284,59 @@ mod tests {
         assert_eq!(mesh.bounds().unwrap(), [[8.0, -1.0, -1.0], [12.0, 1.0, 1.0]]);
         let vol = bake(&mesh, &ModelOptions { keep_units: true, ..opts(24) }, &no_progress);
         assert_color(&vol, [10.0, 0.0, 1.05], [0.214041, 0.0, 1.0]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn images_match_materials_by_name() {
+        assert_eq!(words("doorBackPanel_spec2"), ["door", "back", "panel", "spec2"]);
+        assert_eq!(image_kind(Path::new("t/doorBackPanel_spec2.jpg")), (ImageKind::Specular, "doorbackpanel".to_string()));
+        assert_eq!(image_kind(Path::new("DoorSign2010.jpg")), (ImageKind::Color, "doorsign2010".to_string()));
+        assert_eq!(image_kind(Path::new("lamp_base_bump.jpg")).0, ImageKind::Bump);
+        assert_eq!(image_kind(Path::new("x_normal.png")).0, ImageKind::Other);
+        let images: Vec<PathBuf> = ["m/textures/DoorSign2010.jpg", "m/textures/lamp_base_bump.jpg", "m/textures/base_spec3.jpg", "m/textures/x_normal.png"].map(PathBuf::from).to_vec();
+        let mats: Vec<MeshMaterial> = ["Door Sign", "Lamp Base", "Base", "Glass"].map(|n| MeshMaterial { name: n.into(), ..MeshMaterial::default() }).to_vec();
+        let o = auto_assign("m/model.glb", &mats, &images);
+        assert_eq!(o.len(), 3);
+        assert_eq!(o[0].texture.as_deref(), Some("textures/DoorSign2010.jpg"));
+        assert_eq!(o[1].bump, "textures/lamp_base_bump.jpg");
+        assert!(o[1].texture.is_none() && o[1].specular.is_empty());
+        assert_eq!(o[2].specular, "textures/base_spec3.jpg");
+    }
+
+    #[test]
+    fn overrides_change_the_look() {
+        let dir = temp_dir("look");
+        let (v, f) = cube_quads();
+        let mut obj = String::from("mtllib m.mtl\n");
+        for p in v {
+            obj += &format!("v {} {} {}\n", p[0], p[1], p[2]);
+        }
+        obj += "vt 0 0\nvt 1 0\nvt 1 1\nvt 0 1\n";
+        for (n, q) in f.iter().enumerate() {
+            obj += if n < 3 { "usemtl a\n" } else { "usemtl b\n" };
+            obj += &format!("f {}/1 {}/2 {}/3 {}/4\n", q[0] + 1, q[1] + 1, q[2] + 1, q[3] + 1);
+        }
+        std::fs::write(dir.join("cube.obj"), obj).unwrap();
+        std::fs::write(dir.join("m.mtl"), "newmtl a\nnewmtl b\n").unwrap();
+        std::fs::create_dir_all(dir.join("textures")).unwrap();
+        image::RgbImage::from_pixel(4, 4, image::Rgb([0, 255, 0])).save(dir.join("textures/b_diffuse.png")).unwrap();
+        let path = dir.join("cube.obj").to_string_lossy().into_owned();
+        let mut m = crate::compose::ModelRef { path: path.clone(), options: opts(24), ..Default::default() };
+        let vol = get(&path, &m.options).unwrap();
+        // White materials without textures: no colors of their own.
+        assert!(!Model::new(vol.clone(), &m).look.colored);
+        m.materials = auto_assign(&path, &vol.materials, &nearby_images(Path::new(&path)));
+        assert_eq!(m.materials.len(), 1);
+        m.materials.push(MaterialOverride { name: "a".into(), color: Some([1.0, 0.0, 0.0]), ..Default::default() });
+        load_textures(&m);
+        let model = Model::new(vol.clone(), &m);
+        assert!(Arc::ptr_eq(&model.look, &Model::new(vol.clone(), &m).look), "looks are cached");
+        // OBJ is Y-up: the file's -z face (material a) is at +y, its +y face (b) at +z.
+        let c = vol.color([0.0, 1.05, 0.0], &model.look).unwrap();
+        assert!((c[0] - 1.0).abs() < 1e-6 && c[1].abs() < 1e-6);
+        let c = vol.color([0.0, 0.0, 1.05], &model.look).unwrap();
+        assert!(c[0].abs() < 1e-6 && (c[1] - 1.0).abs() < 1e-6);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

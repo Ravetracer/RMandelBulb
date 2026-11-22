@@ -22,15 +22,17 @@ pub const MAX_OBJECTS: usize = 8;
 /// Distance of a model that is not baked (yet): far away.
 pub const NO_MODEL: f64 = 1.0e10;
 
-/// Bakes the 3D models of the scene (blocking; renders that must show them call this first).
+/// Bakes the 3D models of the scene and loads their textures (blocking; renders that must show
+/// them call this first).
 /// Returns the models that failed, with the reason.
 pub fn load_models(scene: &crate::Scene) -> Vec<String> {
     let mut failed = Vec::new();
     for o in scene.objects.iter().filter(|o| o.enabled) {
-        if let Shape::Model(m) = &o.shape
-            && let Err(e) = crate::mesh::get(&m.path, &m.options)
-        {
-            failed.push(format!("{}: {e}", o.name));
+        if let Shape::Model(m) = &o.shape {
+            match crate::mesh::get(&m.path, &m.options) {
+                Ok(_) => crate::mesh::load_textures(m),
+                Err(e) => failed.push(format!("{}: {e}", o.name)),
+            }
         }
     }
     failed
@@ -69,6 +71,10 @@ pub enum Shape {
 pub struct ModelRef {
     pub path: String,
     pub options: crate::mesh::ModelOptions,
+    /// Changes to the file's materials (by material name).
+    pub materials: Vec<crate::mesh::MaterialOverride>,
+    /// Images near the model were assigned to its materials once (on import).
+    pub auto_assigned: bool,
 }
 
 /// Primitive shapes in their own coordinates (z is up).

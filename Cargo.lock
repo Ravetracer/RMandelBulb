@@ -2330,6 +2330,7 @@ name = "rmb-gpu"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
+ "image",
  "naga",
  "pollster 1.0.1",
  "rmb-core",

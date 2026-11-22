@@ -28,6 +28,11 @@ fn main() {
             mat.name, mat.color, mat.texture, mat.texture_file, mat.bump_file, mat.specular_file
         );
     }
+    let images = mesh::nearby_images(std::path::Path::new(&path));
+    println!("{} images near the model; automatic assignment:", images.len());
+    for o in mesh::auto_assign(&path, &m.materials, &images) {
+        println!("  {:30} color {:?} bump '{}' spec '{}'", o.name, o.texture, o.bump, o.specular);
+    }
     let t = std::time::Instant::now();
     let v = mesh::bake(
         &m,
