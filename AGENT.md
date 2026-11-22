@@ -123,6 +123,24 @@ cargo clippy -j 8 --workspace --all-targets
   type changes the shader signature (recompile); everything else is buffer data.
 - `cargo run --release -p rmb-core --example compose_demo -- out.rmb` writes a demo scene.
 
+## Deep zoom (double precision)
+
+- `march.precision` (Auto / Single / Double). `GpuRenderer::deep_mode` decides (Auto:
+  `render::zoom_ratio` below `DEEP_ZOOM_RATIO`, back to single only at twice the threshold).
+- Deep mode renders `render::shifted_scene(scene, camera)`: all world positions minus the camera
+  position, so marching, normals, AO and shadows are exact in f32 near the camera.
+  `Program::deep` holds the reference point; only the main fractal's iteration adds it back, in
+  double-float (`codegen::chain_dd`, `df64.wgsl`, `formula::wgsl::emit_iter_dd`). Composed
+  objects stay f32 (local coordinates).
+- df64 needs `dd_one` (1.0 read from the uniforms): without it the NVIDIA compiler simplifies
+  `(a + b) - a` to `b` and every result drops to f32 precision. `tests/df64.rs` checks every
+  function on the GPU against f64.
+- The iteration switches to f32 once `|dr| * h > 1e-5 |z|` (f32 rounding then moves the point
+  by a few percent of the surface threshold), not for numeric estimates (their differences need
+  df64) or interpolation hybrids. Parameter low parts live in `prm` from entry 1024 on.
+- `examples/deep_scene.rs` writes a zoomed scene (ten times closer per step: a hit is only
+  accurate to its threshold); `examples/dump_shader.rs <scene> deep` prints the deep shader.
+
 ## Path tracing
 
 - `Lighting::render_mode` (`RenderMode::Classic` default, `PathTraced`). `sample_aux` /

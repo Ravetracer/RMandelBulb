@@ -202,6 +202,11 @@ impl Viewport {
         self.gpu.as_ref().is_some_and(|g| g.compiling())
     }
 
+    /// The preview renders in double precision (deep zoom).
+    pub fn double_precision(&self) -> bool {
+        self.gpu.as_ref().is_some_and(|g| g.double_precision())
+    }
+
     pub fn navigating(&self) -> bool {
         self.last_nav.is_some_and(|t| t.elapsed() < SETTLE)
     }
@@ -781,6 +786,9 @@ impl Viewport {
         }
         if self.compiling() {
             y += pill(format!("{}  Compiling shader…", crate::icons::GEAR), theme::TEXT, y);
+        }
+        if self.double_precision() {
+            y += pill(format!("{}  Deep zoom: double precision (slower)", crate::icons::INFO), theme::TEXT_MUTED, y);
         }
         if let Some(e) = self.error() {
             y += pill(format!("{}  {}", crate::icons::WARNING, e.lines().next().unwrap_or("")), theme::WARN, y);

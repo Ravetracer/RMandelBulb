@@ -147,9 +147,15 @@ Curvichrome 1052 -> 254 ms, AboxShapes-Misty 44 -> 17 ms, temple 71 -> 35 ms, Ho
       renders (PNG sequences about 17 % faster at 1280 x 720, 16 samples; movies unchanged, as
       ffmpeg already encodes in its own process). The denoiser stays on the render thread.
       Renders without a window also use 50 ms submissions instead of 12 ms (0-5 %)
-- [ ] Optional "deep zoom" mode: f32 breaks down at roughly 1e5-1e6 zoom. Consumer GPUs run
-      FP64 at 1/64 rate (wgpu `SHADER_F64` not worth it); use double-float emulation (df64, two
-      f32 per value) for the position and the first iterations instead
+- [x] Deep zoom with double-float precision (df64, two f32 per value, ~48 bit): f32 gets grainy
+      at zoom ~3e4 (default bulb). Precision setting Auto (switches at ~5e3) / Single / Double.
+      The GPU renders relative to the camera, only the main fractal iterates in df64 (until the
+      derivative makes f32 rounding negligible, then f32). Same image as the CPU (f64) at 1e7.
+      Costs (640 x 360): Mandelbulb 17.5 -> 430 ms per pass (trig in df64), ABox 37 -> 90 ms;
+      the shader compiles 10-18 s instead of ~1 s (once per mode, the driver caches it)
+  - [ ] Possible: faster df64 trig (atan2 without the Newton step, shared sin/cos of the same
+        angle), fewer inlined copies of the fractal (compile time), composed fractal objects in
+        df64, zooms beyond ~1e11 (needs perturbation or more precision)
 - [ ] CPU renderer: replace the `Box<dyn Fn>` closure tree in `formula/cpu.rs` with a JIT
       (Cranelift) that compiles `.mbf` formulas to native code, plus SIMD ray packets
       (AVX2, 4 × f64 via `core::arch`); plausibly 5-20× on the CPU. Hand-written assembly is

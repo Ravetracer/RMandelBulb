@@ -23,8 +23,13 @@ fn every_formula_compiles_to_valid_wgsl() {
             let mut prog = Program::for_scene(&s);
             validate(&rmb_gpu::codegen::march_shader(&prog), &f.def.name);
             // Final renders: the parameters as constants.
-            let baked: Vec<Option<f32>> = prog.constants.iter().map(|v| Some(*v as f32)).collect();
+            let baked: Vec<Option<f64>> = prog.constants.iter().map(|v| Some(*v)).collect();
             validate(&rmb_gpu::codegen::march_shader_baked(&prog, &baked), &f.def.name);
+            // Deep zoom: double-float iteration (also baked: the low parts become constants).
+            prog.deep = Some([0.1, -0.2, 0.3]);
+            validate(&rmb_gpu::codegen::march_shader(&prog), &format!("{} (deep)", f.def.name));
+            validate(&rmb_gpu::codegen::march_shader_baked(&prog, &baked), &format!("{} (deep, baked)", f.def.name));
+            prog.deep = None;
             prog.reflections = true;
             validate(&rmb_gpu::codegen::march_shader(&prog), &f.def.name);
         }
@@ -33,9 +38,18 @@ fn every_formula_compiles_to_valid_wgsl() {
 }
 
 fn parity(scene: Scene) {
+    if let Some((mean, big, len)) = gpu_cpu_difference(scene) {
+        assert!(mean < 4.0, "mean difference {mean}");
+        assert!(big < len / 50, "{big} large differences");
+    }
+}
+
+/// Mean absolute difference of a GPU and a CPU render, the channels off by more than 40 and
+/// the channel count (`None` without a GPU).
+fn gpu_cpu_difference(scene: Scene) -> Option<(f64, usize, usize)> {
     let Ok(ctx) = rmb_gpu::GpuContext::new_headless() else {
         eprintln!("no GPU, skipped");
-        return;
+        return None;
     };
     let (w, h) = (96, 64);
     let gpu = rmb_gpu::render_blocking(ctx, &scene, w, h, 1, |_| true).expect("gpu render");
@@ -46,8 +60,43 @@ fn parity(scene: Scene) {
     let mean = diff.iter().sum::<i32>() as f64 / diff.len() as f64;
     let big = diff.iter().filter(|d| **d > 40).count();
     eprintln!("mean abs diff {mean:.2}, {big} channels off by more than 40");
-    assert!(mean < 4.0, "mean difference {mean}");
-    assert!(big < diff.len() / 50, "{big} large differences");
+    Some((mean, big, diff.len()))
+}
+
+/// The default bulb seen from `zoom` times closer to the surface at the image center (ten
+/// times closer per step, measuring the distance again each time).
+fn deep_zoom(mut s: Scene, zoom: f64) -> Scene {
+    let mut left = zoom;
+    while left > 1.0 + 1e-9 {
+        let f = left.min(10.0);
+        let (t, _) = rmb_core::render::cpu::pick(&s, 0.0, 0.0, 1024, 1024).expect("surface at the center");
+        s.camera.position += s.camera.forward * (t - t / f);
+        left /= f;
+    }
+    s
+}
+
+#[test]
+fn gpu_matches_cpu_in_deep_zoom() {
+    use rmb_core::scene::{DeMode, Precision};
+    // Analytic and numeric distance estimates; zoom 1e7 is far beyond single precision.
+    for numeric in [false, true] {
+        let mut scene = Scene::default();
+        scene.lighting.ao_mode = rmb_core::scene::AoMode::Fast;
+        if numeric {
+            scene.fractal.de_mode = DeMode::NumericLog;
+        }
+        let mut scene = deep_zoom(scene, 1e7);
+        let prog = Program::for_scene(&scene);
+        assert!(rmb_core::render::zoom_ratio(&scene, &prog, 64) < rmb_core::render::DEEP_ZOOM_RATIO, "Auto must pick double precision");
+        scene.march.precision = Precision::Double;
+        parity(scene.clone());
+        // Single precision fails there (the test can tell).
+        scene.march.precision = Precision::Single;
+        if let Some((mean, _, _)) = gpu_cpu_difference(scene) {
+            assert!(mean > 4.0, "single precision should fail at zoom 1e7 (mean difference {mean})");
+        }
+    }
 }
 
 #[test]

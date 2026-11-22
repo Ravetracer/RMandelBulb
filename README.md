@@ -117,6 +117,10 @@ denoiser the noise pattern stays the same from frame to frame and does not flick
 - Formulas that read Mandelbulb3D maps (height maps, map translations) find them by number in
   Mandelbulb3D's `M3Maps` folder: Preferences › Maps, `RMB_MAPS_DIR`, or a `maps` folder next
   to the program.
+- Deep zooms: the GPU renders in single precision up to a zoom of about 10,000 and switches to
+  double precision (two single numbers per value) beyond, to about 1e11 (Ray marching ›
+  Precision). Double precision is several times slower (formulas with sine and cosine about
+  25 times) and its shader takes 10-20 s to compile the first time.
 - Inside rendering (views from within the set) works like Mandelbulb3D's: rays step through the
   set in small steps, so it is slower.
 - Glass (MB3D's transmission) follows one branch (refracted or reflected) per sample and

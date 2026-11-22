@@ -352,11 +352,37 @@ pub struct March {
     /// Smoothed normals (Mandelbulb3D): the estimate is averaged over this many steps to each
     /// side along the surface; also measures the roughness (0 = off, 1..8).
     pub smooth_normals: u32,
+    /// Number precision of the GPU renderer (deep zooms need double precision).
+    pub precision: Precision,
 }
 
 impl Default for March {
     fn default() -> Self {
-        March { detail: 1.0, step: 0.8, max_steps: 400, max_distance: 40.0, refine_steps: 4, near: 0.0, smooth_normals: 0 }
+        March { detail: 1.0, step: 0.8, max_steps: 400, max_distance: 40.0, refine_steps: 4, near: 0.0, smooth_normals: 0, precision: Precision::Auto }
+    }
+}
+
+/// Number precision of the GPU renderer. Single precision (f32) holds up to a zoom of about
+/// 1e5; double precision (two f32 per value, about 14 digits) reaches about 1e11 but renders
+/// several times slower. The CPU renderer always uses f64.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Precision {
+    /// Double precision when the zoom needs it.
+    #[default]
+    Auto,
+    Single,
+    Double,
+}
+
+impl Precision {
+    pub const ALL: [Precision; 3] = [Precision::Auto, Precision::Single, Precision::Double];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Precision::Auto => "Auto",
+            Precision::Single => "Single",
+            Precision::Double => "Double",
+        }
     }
 }
 

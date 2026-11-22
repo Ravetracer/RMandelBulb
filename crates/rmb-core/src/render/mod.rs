@@ -408,6 +408,88 @@ pub fn start_distance(scene: &Scene) -> f64 {
     if scene.fractal.inside { n.max(scene.march.max_distance * 1.0e-4) } else { n }
 }
 
+/// Below this surface threshold relative to the size of the coordinates (see [`zoom_ratio`];
+/// about 32 f32 steps) `Precision::Auto` uses double-float. The single precision shader gets
+/// visibly grainy at about 4 steps (default bulb: zoom 3e4); this switches at about 5e3.
+pub const DEEP_ZOOM_RATIO: f64 = 2e-6;
+
+/// The zoom measure for the precision: the surface threshold where the ray through the image
+/// center meets the surface, relative to the size of the coordinates there (a short f64 march;
+/// a miss uses the distance estimate at the camera).
+pub fn zoom_ratio(scene: &Scene, prog: &crate::Program, height: u32) -> f64 {
+    let m = &scene.march;
+    let pixel = 2.0 * scene.camera.tan_half_fov() / height.max(1) as f64 * m.detail;
+    let (o, d) = (scene.camera.position, scene.camera.forward);
+    let mut ev = prog.evaluator();
+    let mut t = start_distance(scene);
+    for _ in 0..m.max_steps.min(1000) {
+        let p = o + d * t;
+        let eps = (pixel * t).max(1e-300);
+        let de = ev.de(p, eps * 0.5);
+        if !de.is_finite() {
+            break;
+        }
+        if de < eps {
+            return eps / p.length().max(1e-300);
+        }
+        t += (de * m.step).max(eps * 0.1);
+        if t > m.max_distance {
+            break;
+        }
+    }
+    let de = ev.de(o, 0.0).abs();
+    if !de.is_finite() {
+        return 1.0;
+    }
+    pixel * de / (o.length() + de).max(1e-300)
+}
+
+/// Whether the GPU renders `scene` in double precision (setting, else the zoom).
+pub fn wants_double(scene: &Scene, prog: &crate::Program, height: u32) -> bool {
+    use crate::scene::Precision;
+    match scene.march.precision {
+        Precision::Single => false,
+        Precision::Double => true,
+        Precision::Auto => zoom_ratio(scene, prog, height) < DEEP_ZOOM_RATIO,
+    }
+}
+
+/// Deep zoom: `scene` with every world position relative to `r` (minus `r`). The GPU renderer
+/// renders that in small local coordinates and adds `r` back only in the fractal iteration
+/// (double-float arithmetic). Texture layers in world space keep their look for planar and
+/// triplanar mappings (through their offset); spherical and cylindrical ones turn around `r`.
+pub fn shifted_scene(scene: &Scene, r: V3) -> Scene {
+    use crate::texture::{Mapping, Space, TextureLayer};
+    let shift_layers = |layers: &mut Vec<TextureLayer>, world_only: bool| {
+        for l in layers.iter_mut() {
+            if (world_only && l.space != Space::World) || !matches!(l.mapping, Mapping::Triplanar | Mapping::PlanarXY | Mapping::PlanarXZ | Mapping::PlanarYZ) {
+                continue;
+            }
+            let d = crate::texture::rotate(&crate::maps::rotation_matrix(l.rotation), r) * l.scale;
+            l.offset = [l.offset[0] + d.x, l.offset[1] + d.y, l.offset[2] + d.z];
+        }
+    };
+    let mut s = scene.clone();
+    s.camera.position = s.camera.position - r;
+    for l in &mut s.lighting.lights {
+        l.position = l.position - r;
+        l.target = l.target - r;
+    }
+    for o in &mut s.objects {
+        o.transform.position = o.transform.position - r;
+        shift_layers(&mut o.material.layers, true);
+    }
+    s.cut.x.position -= r.x;
+    s.cut.y.position -= r.y;
+    s.cut.z.position -= r.z;
+    let m = &mut s.material;
+    m.color_center = [m.color_center[0] - r.x, m.color_center[1] - r.y, m.color_center[2] - r.z];
+    // The steam noise is sampled at the world position plus the offset.
+    m.steam_offset = [m.steam_offset[0] + r.x, m.steam_offset[1] + r.y, m.steam_offset[2] + r.z];
+    shift_layers(&mut m.layers, false);
+    s
+}
+
 /// Random number stream of one pixel sample (same sequence on CPU and GPU).
 pub struct Rng(pub u32);
 
@@ -458,6 +540,31 @@ mod tests {
         edit(&mut l);
         s.lighting.lights = vec![l];
         Frame::new(&s, 64, 64).lights[0]
+    }
+
+    #[test]
+    fn deep_zoom_shift_and_precision() {
+        use crate::scene::Precision;
+        let mut s = Scene::default();
+        s.material.color_center = [0.5, 0.0, 0.0];
+        let r = s.camera.position;
+        let sh = shifted_scene(&s, r);
+        assert!(sh.camera.position.length() < 1e-12);
+        assert!((sh.lighting.lights[0].position - (s.lighting.lights[0].position - r)).length() < 1e-12);
+        assert!((sh.material.color_center[0] - (0.5 - r.x)).abs() < 1e-12);
+        // Auto: single precision for the default view, double close to the surface.
+        let prog = crate::Program::for_scene(&s);
+        assert!(zoom_ratio(&s, &prog, 720) > DEEP_ZOOM_RATIO);
+        assert!(!wants_double(&s, &prog, 720));
+        // Zoom 1e5: ten times closer per step (a hit is only accurate to its threshold).
+        let mut near = s.clone();
+        for _ in 0..5 {
+            let (t, _) = cpu::pick(&near, 0.0, 0.0, 1024, 1024).expect("surface");
+            near.camera.position += near.camera.forward * (t * 0.9);
+        }
+        assert!(wants_double(&near, &prog, 720));
+        near.march.precision = Precision::Single;
+        assert!(!wants_double(&near, &prog, 720));
     }
 
     #[test]

@@ -64,12 +64,19 @@ struct U {
     ccenter: vec4<f32>,    // position color modes: center
     cdir: vec4<f32>,       // plane color mode: direction (normalized)
     c2opt: vec4<f32>,      // MB3D second color choice: option, multiplier, color on iteration
+    // Deep zoom (Program::deep): the reference point as hi + lo (w of hi: 1.0 for dd_one; w of
+    // lo: low part of the w slice), low parts of the julia constant and blend weights.
+    deep_hi: vec4<f32>,
+    deep_lo: vec4<f32>,
+    julia_lo: vec4<f32>,
+    blend_lo: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> u: U;
-// Formula parameters (Program::constants, 4 per entry). A uniform buffer: every thread reads the
-// same values, which the constant cache serves far faster than a storage buffer.
-@group(0) @binding(1) var<uniform> prm: array<vec4<f32>, 1024>;
+// Formula parameters (Program::constants, 4 per entry; from entry 1024 on the low parts for
+// the double-float deep zoom). A uniform buffer: every thread reads the same values, which
+// the constant cache serves far faster than a storage buffer.
+@group(0) @binding(1) var<uniform> prm: array<vec4<f32>, 2048>;
 // Surface colors (w: emission) at 0..255, highlight colors (w: transparency) at 256..511, rough diffuse tables at 512..639
 // (one table per component), interior colors at 640..895 and their highlights at 896..1151.
 @group(0) @binding(2) var<storage, read> lut: array<vec4<f32>>;
@@ -714,7 +721,13 @@ struct Iterated {
     c2: f32,
     // The constant (Julia seed or start point).
     c: vec3<f32>,
+    // Deep zoom: the final point and its length in double-float (numeric estimate, mix).
+    sd: array<vec2<f32>, 4>,
+    rd: vec2<f32>,
 }
+
+// Deep zoom mix: the point where the first chain ended, for the second.
+var<private> mix_start: array<vec2<f32>, 4>;
 
 // Fixed iteration counts keep a bailout, raised to bailout² · 64 (fractal.rs iterate_from).
 var<private> color_bail: bool;
@@ -2597,6 +2610,8 @@ fn light_sum(a: vec3<f32>, b: vec3<f32>) -> vec3<f32> {
 
 @compute @workgroup_size(8, 8)
 fn march_main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    // 1.0 the compiler cannot see (df64.wgsl).
+    dd_one = u.deep_hi.w;
     let px = gid.x;
     let py = gid.y + u.band.x;
     if (px >= u.size.x || gid.y >= u.band.y || py >= u.size.y) {

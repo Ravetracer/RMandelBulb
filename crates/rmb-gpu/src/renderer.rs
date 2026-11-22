@@ -122,6 +122,16 @@ struct Uniforms {
     ccenter: [f32; 4],
     cdir: [f32; 4],
     c2opt: [f32; 4],
+    deep_hi: [f32; 4],
+    deep_lo: [f32; 4],
+    julia_lo: [f32; 4],
+    blend_lo: [f32; 4],
+}
+
+/// Splits an f64 into the high and low f32 of a double-float.
+fn split_dd(v: f64) -> (f32, f32) {
+    let hi = v as f32;
+    (hi, if hi.is_finite() { (v - hi as f64) as f32 } else { 0.0 })
 }
 
 /// A composed object (march.wgsl `Obj`).
@@ -551,6 +561,19 @@ fn uniforms(scene: &Scene, prog: &Program, w: u32, h: u32, fast: bool) -> Unifor
             [m.emission_rays.clamp(1, 8) as f32, if any { m.steam.max(0.0) as f32 } else { 0.0 }, m.steam_size as f32, m.steam_grain as f32]
         },
         c2opt: [m.second_choice.index() as f32, m.lli_multiplier as f32, m.color_on_iteration as f32, 0.0],
+        deep_hi: {
+            let r = prog.deep.unwrap_or([0.0; 3]);
+            [split_dd(r[0]).0, split_dd(r[1]).0, split_dd(r[2]).0, 1.0]
+        },
+        deep_lo: {
+            let r = prog.deep.unwrap_or([0.0; 3]);
+            [split_dd(r[0]).1, split_dd(r[1]).1, split_dd(r[2]).1, split_dd(prog.w_slice).1]
+        },
+        julia_lo: prog.julia_c.map(|v| split_dd(v).1),
+        blend_lo: {
+            let [a, b] = prog.blend.unwrap_or([0.0; 2]);
+            [split_dd(a).1, split_dd(b).1, 0.0, 0.0]
+        },
         ccenter: [m.color_center[0] as f32, m.color_center[1] as f32, m.color_center[2] as f32, 0.0],
         cdir: {
             let d = m.color_direction;
@@ -690,6 +713,8 @@ pub struct GpuRenderer {
     prm_error: Option<String>,
     /// Which formula parameters go into the shader as constants (see `set_baking`).
     bake: Option<Vec<bool>>,
+    /// The scene renders in double precision (deep zoom).
+    deep: bool,
     /// Validation errors outside error scopes (instead of the default panic).
     device_error: std::sync::Arc<std::sync::Mutex<Option<String>>>,
     compiling: bool,
@@ -698,8 +723,10 @@ pub struct GpuRenderer {
 
 const CACHE_SIZE: usize = 8;
 /// Time per band submission we aim for.
-/// Size of the formula parameter buffer (march.wgsl `prm`).
-const PRM_BYTES: usize = 16384;
+/// Size of the formula parameter buffer (march.wgsl `prm`): high parts, then the low parts
+/// from value `PRM_LO` on.
+const PRM_BYTES: usize = 32768;
+const PRM_LO: usize = 4096;
 const BAND_TARGET: Duration = Duration::from_millis(12);
 /// Submission time of renders without a window.
 const OFFLINE_BAND_TARGET: Duration = Duration::from_millis(50);
@@ -796,6 +823,7 @@ impl GpuRenderer {
             last_error: None,
             prm_error: None,
             bake: None,
+            deep: false,
             device_error,
             compiling: false,
             signature: String::new(),
@@ -878,15 +906,28 @@ impl GpuRenderer {
             return;
         }
         let mut prog = Program::for_scene(scene);
+        // Deep zoom: everything relative to the camera, the fractal in double-float.
+        let shifted;
+        let scene = if self.deep_mode(scene, &prog, height) {
+            let r = scene.camera.position;
+            shifted = rmb_core::render::shifted_scene(scene, r);
+            prog = Program::for_scene(&shifted);
+            prog.deep = Some(r.to_array());
+            &shifted
+        } else {
+            scene
+        };
         // Path tracing needs the bounce loop too.
         prog.reflections = scene.material.reflection > 0.0 || scene.lighting.render_mode == rmb_core::scene::RenderMode::PathTraced;
         self.ensure_target(width, height);
         // Parameters
-        let consts: Vec<f32> = prog.constants.iter().map(|v| *v as f32).collect();
-        let bytes = (consts.len() * 4).max(16) as u64;
-        self.prm_error = (bytes as usize > PRM_BYTES).then(|| format!("too many formula parameters ({} of at most {})", consts.len(), PRM_BYTES / 4));
+        // High parts, then from PRM_LO on the low parts (double-float deep zoom).
+        let consts: Vec<f32> = prog.constants.iter().map(|v| split_dd(*v).0).collect();
+        let lows: Vec<f32> = prog.constants.iter().map(|v| split_dd(*v).1).collect();
+        self.prm_error = (consts.len() > PRM_LO).then(|| format!("too many formula parameters ({} of at most {PRM_LO})", consts.len()));
         if self.prm_error.is_none() && !consts.is_empty() {
             self.ctx.queue.write_buffer(&self.prm, 0, bytemuck::cast_slice(&consts));
+            self.ctx.queue.write_buffer(&self.prm, (PRM_LO * 4) as u64, bytemuck::cast_slice(&lows));
         }
         self.upload_maps(&prog, scene);
         self.upload_volumes(&prog);
@@ -1012,6 +1053,27 @@ impl GpuRenderer {
         self.row = 0;
     }
 
+    /// Whether to render `scene` in double precision (`Precision::Auto`: by the zoom, switching
+    /// back to single precision only at twice the threshold, so flying around it does not
+    /// recompile the shader again and again).
+    fn deep_mode(&mut self, scene: &Scene, prog: &Program, height: u32) -> bool {
+        use rmb_core::scene::Precision;
+        self.deep = match scene.march.precision {
+            Precision::Single => false,
+            Precision::Double => true,
+            Precision::Auto => {
+                let limit = rmb_core::render::DEEP_ZOOM_RATIO * if self.deep { 2.0 } else { 1.0 };
+                rmb_core::render::zoom_ratio(scene, prog, height) < limit
+            }
+        };
+        self.deep
+    }
+
+    /// Whether the current scene renders in double precision (deep zoom).
+    pub fn double_precision(&self) -> bool {
+        self.deep
+    }
+
     /// Formula parameters to write into the shader as constants (see
     /// [`crate::codegen::march_shader_baked`]): `None` none (the default; changing parameters never
     /// recompiles), else per constant of the program whether to bake it (`true` beyond the
@@ -1022,9 +1084,9 @@ impl GpuRenderer {
     }
 
     /// The parameter values to bake for `prog` (see [`GpuRenderer::set_baking`]).
-    fn baked(&self, prog: &Program) -> Vec<Option<f32>> {
+    fn baked(&self, prog: &Program) -> Vec<Option<f64>> {
         let Some(mask) = &self.bake else { return Vec::new() };
-        prog.constants.iter().enumerate().map(|(i, v)| mask.get(i).copied().unwrap_or(true).then_some(*v as f32)).collect()
+        prog.constants.iter().enumerate().map(|(i, v)| mask.get(i).copied().unwrap_or(true).then_some(*v)).collect()
     }
 
     fn request_pipeline(&mut self, prog: &Program) {
@@ -1034,7 +1096,7 @@ impl GpuRenderer {
             // Baked values are part of the shader.
             sig.push_str("|baked:");
             for v in &baked {
-                let _ = write!(sig, "{},", v.map_or(String::new(), |x| format!("{:08x}", x.to_bits())));
+                let _ = write!(sig, "{},", v.map_or(String::new(), |x| format!("{:016x}", x.to_bits())));
             }
         }
         if self.signature == sig {

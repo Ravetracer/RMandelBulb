@@ -26,20 +26,38 @@ struct Emitter<'a> {
     indent: usize,
     /// Loops emitted so far (unique counter names).
     loops: usize,
+    /// Double-float code (`dd` values, arithmetic through the df64 functions of rmb-gpu's
+    /// df64.wgsl) for deep zooms.
+    dd: bool,
 }
 
 /// Emits the body of one iteration of `f` (a WGSL block, without braces). `offset` is the index
 /// of the formula's first constant in `prm`.
 pub fn emit_iter(f: &FormulaDef, offset: usize, indent: usize) -> String {
-    let mut e = Emitter { f, out: String::new(), indent, loops: 0 };
+    emit_iter_with(f, offset, indent, false)
+}
+
+/// [`emit_iter`] in double-float arithmetic: every value is a `dd` (hi + lo of two f32), the
+/// constants come from `prm` (high parts, then from entry 1024 on the low parts).
+pub fn emit_iter_dd(f: &FormulaDef, offset: usize, indent: usize) -> String {
+    emit_iter_with(f, offset, indent, true)
+}
+
+fn emit_iter_with(f: &FormulaDef, offset: usize, indent: usize, dd: bool) -> String {
+    let mut e = Emitter { f, out: String::new(), indent, loops: 0, dd };
     let mut used = vec![false; f.constant_count()];
     mark_params(&f.iter, &mut used);
     for (k, u) in used.iter().enumerate() {
         if *u {
             let pad = "    ".repeat(indent);
             // `prm` is a uniform array of vec4 (uniform reads are much faster than storage).
-            let i = offset + k;
-            let _ = writeln!(e.out, "{pad}let c{k} = fl(prm[{}u][{}u]);", i / 4, i % 4);
+            let (a, b) = ((offset + k) / 4, (offset + k) % 4);
+            if dd {
+                // The low parts follow the high ones from entry 1024 (4096 values) on.
+                let _ = writeln!(e.out, "{pad}let c{k} = dd(prm[{a}u][{b}u], prm[{}u][{b}u]);", a + 1024);
+            } else {
+                let _ = writeln!(e.out, "{pad}let c{k} = fl(prm[{a}u][{b}u]);");
+            }
         }
     }
     for s in &f.iter {
@@ -95,7 +113,7 @@ impl Emitter<'_> {
     fn stmt(&mut self, s: &Stmt) {
         match s {
             Stmt::Let(v, e) => {
-                let l = format!("var {}: fl = {};", self.var(*v), self.expr(e));
+                let l = format!("var {}: {} = {};", self.var(*v), if self.dd { "dd" } else { "fl" }, self.expr(e));
                 self.line(&l);
             }
             Stmt::Assign(v, e) => {
@@ -130,7 +148,11 @@ impl Emitter<'_> {
             Stmt::Continue => self.line("continue;"),
             Stmt::For(k, a, b, body) => {
                 let n = self.var(VarRef::Local(*k));
-                let l = format!("for (var {n}: fl = {}; {n} < {}; {n} += 1.0) {{", lit(*a as f64), lit(*b as f64));
+                let l = if self.dd {
+                    format!("for (var {n}: dd = dd_f({}); dd_lt({n}, dd_f({})); {n} = dd_add({n}, dd_f(1.0))) {{", lit(*a as f64), lit(*b as f64))
+                } else {
+                    format!("for (var {n}: fl = {}; {n} < {}; {n} += 1.0) {{", lit(*a as f64), lit(*b as f64))
+                };
                 self.line(&l);
                 self.block(body);
                 self.line("}");
@@ -147,6 +169,9 @@ impl Emitter<'_> {
     }
 
     fn expr(&self, e: &Expr) -> String {
+        if self.dd {
+            return self.expr_dd(e);
+        }
         match e {
             Expr::Num(v) => gpu_lit(*v),
             Expr::Var(v) => self.var(*v),
@@ -212,6 +237,85 @@ impl Emitter<'_> {
             }
         }
     }
+}
+
+impl Emitter<'_> {
+    /// [`Emitter::expr`] in double-float arithmetic.
+    fn expr_dd(&self, e: &Expr) -> String {
+        match e {
+            Expr::Num(v) => dd_lit(*v),
+            Expr::Var(v) => self.var(*v),
+            Expr::Neg(a) => format!("(-{})", self.expr_dd(a)),
+            Expr::Not(a) => format!("(!{})", self.expr_dd(a)),
+            Expr::Bin(op, a, b) => {
+                let (x, y) = (self.expr_dd(a), self.expr_dd(b));
+                let f = match op {
+                    BinOp::Add => "dd_add",
+                    BinOp::Sub => "dd_sub",
+                    BinOp::Mul => "dd_mul",
+                    BinOp::Div => "dd_div",
+                    BinOp::Rem => "dd_rem",
+                    BinOp::Lt => "dd_lt",
+                    BinOp::Le => "dd_le",
+                    BinOp::Gt => "dd_gt",
+                    BinOp::Ge => "dd_ge",
+                    BinOp::Eq => "dd_eq",
+                    BinOp::Ne => "dd_ne",
+                    BinOp::And => return format!("({x} && {y})"),
+                    BinOp::Or => return format!("({x} || {y})"),
+                };
+                format!("{f}({x}, {y})")
+            }
+            Expr::Call(f, args) => {
+                let a: Vec<String> = args.iter().map(|x| self.expr_dd(x)).collect();
+                use Func::*;
+                let name = match f {
+                    Abs => "dd_abs",
+                    Sqrt => "dd_sqrt",
+                    InvSqrt => "dd_inverse_sqrt",
+                    Sin => "dd_sin",
+                    Cos => "dd_cos",
+                    Tan => "dd_tan",
+                    Asin => "dd_asin",
+                    Acos => "dd_acos",
+                    Atan => "dd_atan",
+                    Atan2 => "dd_atan2",
+                    Exp => "dd_exp",
+                    Log => "dd_log",
+                    Pow => "dd_pow",
+                    Floor => "dd_floor",
+                    Ceil => "dd_ceil",
+                    Fract => "dd_fract",
+                    Round => "dd_round",
+                    Min => "dd_min",
+                    Max => "dd_max",
+                    Clamp => "dd_clamp",
+                    Sign => "dd_sign",
+                    Sinh => "dd_sinh",
+                    Cosh => "dd_cosh",
+                    Tanh => "dd_tanh",
+                    Mix => "dd_mix",
+                    Step => "dd_step",
+                    Smoothstep => "dd_smoothstep",
+                    Sqr => "dd_sqr",
+                    Single => return format!("dd_f(dd_hi({}))", a[0]),
+                    Select => return format!("select({}, {}, {})", a[2], a[1], a[0]),
+                    MapXY => return format!("dd_f(map_xy(dd_hi({}), dd_hi({}), dd_hi({}), dd_hi({})))", a[0], a[1], a[2], a[3]),
+                    MapSphere => return format!("dd_f(map_sph(dd_hi({}), dd_hi({}), dd_hi({}), dd_hi({}), dd_hi({})))", a[0], a[1], a[2], a[3], a[4]),
+                };
+                format!("{name}({})", a.join(", "))
+            }
+        }
+    }
+}
+
+/// A double-float literal `dd(hi, lo)`: `v` split into two f32 (within the f32 range).
+pub fn dd_lit(v: f64) -> String {
+    let v = if v.is_finite() { v.clamp(-3.0e38, 3.0e38) } else { v };
+    let hi = v as f32;
+    let lo = if hi.is_finite() { (v - hi as f64) as f32 } else { 0.0 };
+    let lo = if lo.abs() < 1.0e-37 { 0.0 } else { lo };
+    format!("dd({}, {})", gpu_lit(hi as f64), lit(lo as f64))
 }
 
 /// A float literal of the formula language / WGSL (abstract, so it adapts to f32 or f64).

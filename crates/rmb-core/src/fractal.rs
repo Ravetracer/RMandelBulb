@@ -45,6 +45,9 @@ fn const_value(e: &crate::formula::lang::Expr, consts: &[f64]) -> Option<f64> {
     })
 }
 
+/// Smallest numeric gradient step relative to the point in f64 and double-float arithmetic.
+pub const NUMERIC_STEP_F64: f64 = 1e-13;
+
 pub struct Program {
     pub slots: Vec<ProgramSlot>,
     /// Slot the chain continues with after the last one (index into `slots`).
@@ -81,6 +84,10 @@ pub struct Program {
     /// The GPU shader includes the reflection loop (set by the renderer; shaders without it
     /// compile faster).
     pub reflections: bool,
+    /// Deep zoom on the GPU (set by the renderer): the shader iterates the main fractal in
+    /// double-float arithmetic at this reference point plus the local position (all other
+    /// positions are relative to it, see `render::shifted_scene`).
+    pub deep: Option<[f64; 3]>,
     /// Inside rendering (the estimate is inverted around the surface threshold).
     pub inside: bool,
     /// Objects combined with this fractal (scene composition), in order.
@@ -278,6 +285,7 @@ impl Program {
             mix_pow: 2.0,
             blend: None,
             reflections: false,
+            deep: None,
             color2: (0, 1.0),
             color_on_it: -1,
             inside: f.inside,
@@ -356,6 +364,7 @@ impl Program {
         s.push_str(if self.rotation_4d.is_some() { "|r4" } else { "" });
         s.push_str(if self.blend.is_some() { "|blend" } else { "" });
         s.push_str(if self.reflections { "|refl" } else { "" });
+        s.push_str(if self.deep.is_some() { "|deep" } else { "" });
         s.push_str(if self.color_on_it >= 0 { "|coi" } else { "" });
         s.push_str(if self.is_mix() { "|mix" } else { "" });
         s.push_str(if self.layers { "|layers" } else { "" });
@@ -591,9 +600,9 @@ fn chain_orbit(top: &Program, prog: &Program, regs: &mut [Vec<f64>], p: V3, h: f
     } else if !it.escaped {
         0.0
     } else if prog.numeric {
-        // Gradient step: at least a little relative to the point (f32 on the GPU cancels
-        // out with the tiny surface thresholds close to the camera).
-        let h = h.max(p.length() * 2e-6);
+        // Gradient step: at least a little relative to the point, against cancellation in the
+        // differences (f64; the single precision GPU shader uses 2e-6).
+        let h = h.max(p.length() * NUMERIC_STEP_F64);
         let mut g = [0.0; 3];
         for (k, gk) in g.iter_mut().enumerate() {
             let mut q = p;

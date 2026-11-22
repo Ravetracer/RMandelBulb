@@ -468,6 +468,17 @@ fn render(ui: &mut Ui, scene: &mut Scene) {
         widgets::slider_u32(ui, "Refinement", "Binary search steps at the surface for an exact hit", &mut m.refine_steps, 0..=12, d.refine_steps);
         widgets::slider_log(ui, "Near", "Rays start at this distance from the camera: hides what is closer (Mandelbulb3D imports set it)", &mut m.near, 0.0..=10.0, d.near);
         widgets::slider_u32(ui, "Smooth normals", "Averages the surface normal along the surface (steps to each side; 0 = off) and measures the roughness for the lighting. Costs more estimates per pixel.", &mut m.smooth_normals, 0..=8, d.smooth_normals);
+        widgets::label(
+            ui,
+            "Precision",
+            "Number precision of the GPU renderer. Single: fast, holds up to a zoom of about 10,000 (deeper, the surface gets grainy and blocky). Double: two numbers per value, about 14 digits, for deep zooms to about 1e11; several times slower (formulas with sine and cosine about 25x), and switching compiles the shader again (10-20 s the first time). Auto: double precision when the zoom needs it. The CPU renderer always uses double precision.",
+        );
+        egui::ComboBox::from_id_salt("precision").selected_text(m.precision.label()).show_ui(ui, |ui| {
+            for p in rmb_core::scene::Precision::ALL {
+                ui.selectable_value(&mut m.precision, p, p.label());
+            }
+        });
+        ui.end_row();
     });
 }
 
