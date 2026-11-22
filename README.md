@@ -102,6 +102,13 @@ builds and runs without it: `python3 tools/fetch_oidn.py` downloads the official
 (SHA-256 checked) into `oidn/`. Search order: `RMB_OIDN_DIR`, next to the executable (`lib/` on
 Linux and macOS), `oidn/` of the source tree, the system library path.
 
+How many samples: for still images 16-32 samples with the denoiser look cleaner than 64 without
+it, in a quarter to half the time. In animations the denoiser works frame by frame and
+reconstructs fine fractal detail slightly differently each time, which shimmers: at 16 samples
+about twice as much as 64 samples without the denoiser, at 32 samples 1.4 times as much. Use 64
+samples (with or without the denoiser) for animations with much fine detail. Without the
+denoiser the noise pattern stays the same from frame to frame and does not flicker.
+
 ## Status and limits
 
 - Not yet translated: formulas that switch the hybrid's formulas (5), use random numbers (3)

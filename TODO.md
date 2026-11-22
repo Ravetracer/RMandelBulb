@@ -116,8 +116,13 @@ Curvichrome 1052 -> 254 ms, AboxShapes-Misty 44 -> 17 ms, temple 71 -> 35 ms, Ho
   - [x] Refinement stops at steps below threshold/128 (`refine_steps` is the maximum);
         AO, emission and scatter rays skip it. Same image (mean difference below 1/255 at 64
         samples); passes 1.15-2.6x faster (MB3D test scenes at 640 x 360)
-- [ ] Fewer samples plus OIDN (e.g. 16 instead of 64, about 4×); check frame-to-frame flicker
-      of the per-frame denoiser in animations
+- [x] Fewer samples plus OIDN, measured on two 12-frame dollies (640 x 360, error and flicker
+      against 512 samples, gray levels): stills at 16-32 samples + OIDN are cleaner than 64 raw
+      (2-4x faster). In animations the per-frame denoiser shimmers on fine detail: flicker 2x
+      (16 samples) and 1.4x (32) of 64 raw; 64 + OIDN equals 64 raw. Raw noise does not
+      flicker since the random seeds do not depend on the frame. Recommendation in README
+  - [ ] Possible: temporal denoising (OIDN has none; e.g. blend with the reprojected previous
+        frame), sample defaults per output kind (stills vs. animations)
 - [x] ~~Adaptive sampling~~ (estimated, dropped): stopping pixels whose noise (standard error
       of the luminance) is below 0.2-1 % after at least 8 of 32 samples. A GPU warp (8 x 4
       pixels) only saves time when all its pixels stop: that leaves 99-100 % of the work on
@@ -149,4 +154,6 @@ Curvichrome 1052 -> 254 ms, AboxShapes-Misty 44 -> 17 ms, temple 71 -> 35 ms, Ho
       (Cranelift) that compiles `.mbf` formulas to native code, plus SIMD ray packets
       (AVX2, 4 × f64 via `core::arch`); plausibly 5-20× on the CPU. Hand-written assembly is
       not worth it (478 formulas; LLVM matches it)
-- [ ] Low priority: split rows between CPU and GPU (parity exists); expected gain only 5-10%
+- [x] ~~Split rows between CPU and GPU~~ (measured, dropped): the CPU renderer is 700-1900x
+      slower than the GPU per pass (8 threads, MB3D test scenes), so it would add 0.1-0.3 %.
+      Only worth another look after a CPU JIT
