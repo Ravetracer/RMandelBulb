@@ -48,6 +48,8 @@ pub struct Export {
     to: usize,
     /// Frame count of the last animation seen (rebuilt when it changes).
     frames: Option<(Animation, Result<usize, String>)>,
+    /// Folder of the scene file (relative sound paths).
+    doc_dir: Option<PathBuf>,
     job: Option<Job>,
     preview_tex: Option<egui::TextureHandle>,
     pub message: Option<String>,
@@ -67,6 +69,7 @@ impl Export {
             from: 0,
             to: usize::MAX,
             frames: None,
+            doc_dir: None,
             job: None,
             preview_tex: None,
             message: None,
@@ -79,6 +82,7 @@ impl Export {
 
     pub fn open_for(&mut self, scene: &Scene, doc_path: Option<&PathBuf>) {
         self.open = true;
+        self.doc_dir = doc_path.and_then(|p| p.parent()).map(Path::to_path_buf);
         self.width = scene.width;
         self.height = scene.height;
         if self.path.is_none() {
@@ -285,6 +289,17 @@ impl Export {
                 }
             }
         });
+        if let Some(a) = anim.audio_track(self.from, self.doc_dir.as_deref()) {
+            let name = a.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let (text, color) = if !self.format.has_audio() {
+                (format!("Sound {name} left out: {} has no sound", self.format.label()), theme::TEXT_MUTED)
+            } else if !a.path.is_file() {
+                (format!("Sound file not found: {}", a.path.display()), theme::WARN)
+            } else {
+                (format!("Sound: {name} from {:.2} s", a.start_s), theme::TEXT_MUTED)
+            };
+            ui.label(RichText::new(text).size(theme::fs(11.5)).color(color)).on_hover_text("The animation's sound track (Animation panel › Movie)");
+        }
         if !has_ffmpeg {
             ui.label(RichText::new("ffmpeg not found: only PNG images (set it in Preferences › Movies)").size(theme::fs(11.5)).color(theme::WARN));
         }
@@ -343,13 +358,14 @@ impl Export {
         let preview: Preview = Arc::new(Mutex::new(None));
         let (tx, rx) = mpsc::channel();
         let (w, h, n, from, to, format) = (self.width, self.height, self.samples, self.from, self.to, self.format);
+        let audio = anim.audio_track(from, self.doc_dir.as_deref());
         let anim = anim.clone();
         let size = (scene.width, scene.height);
         let (pr, ca, pv) = (progress.clone(), cancel.clone(), preview.clone());
         std::thread::spawn(move || {
             let run = || -> Result<(PathBuf, String), String> {
                 let plan = AnimationPlan::new(&anim)?;
-                let mut sink = VideoSink::new(&path, format, w, h, plan.fps(), &ffmpeg)?;
+                let mut sink = VideoSink::new(&path, format, w, h, plan.fps(), &ffmpeg, audio.as_ref())?;
                 let frame_scene = |f: usize| {
                     let mut s = plan.scene_at(f);
                     (s.width, s.height) = size;

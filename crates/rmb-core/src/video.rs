@@ -75,6 +75,29 @@ impl VideoFormat {
             VideoFormat::Gif | VideoFormat::PngSequence => &[],
         }
     }
+
+    /// Audio codec for the movie formats that carry sound (GIF and PNG images do not).
+    fn audio_codec(self) -> Option<&'static [&'static str]> {
+        match self {
+            VideoFormat::Mp4 | VideoFormat::Hevc => Some(&["-c:a", "aac", "-b:a", "256k"]),
+            VideoFormat::ProRes => Some(&["-c:a", "pcm_s16le"]),
+            VideoFormat::WebM => Some(&["-c:a", "libopus", "-b:a", "192k"]),
+            VideoFormat::Gif | VideoFormat::PngSequence => None,
+        }
+    }
+
+    /// Whether the format can carry an audio track.
+    pub fn has_audio(self) -> bool {
+        self.audio_codec().is_some()
+    }
+}
+
+/// A sound file put under a movie: `start_s` is the position in the file where the first
+/// rendered frame starts (seconds; negative values start the sound later).
+#[derive(Clone, Debug, PartialEq)]
+pub struct AudioTrack {
+    pub path: PathBuf,
+    pub start_s: f64,
 }
 
 /// The ffmpeg program: `configured` if given, else `ffmpeg` from the search path.
@@ -103,8 +126,10 @@ pub enum VideoSink {
 }
 
 impl VideoSink {
-    /// Opens the output: a folder for PNG images, else a movie file written by `ffmpeg`.
-    pub fn new(path: &Path, format: VideoFormat, w: u32, h: u32, fps: f64, ffmpeg: &Path) -> Result<VideoSink, String> {
+    /// Opens the output: a folder for PNG images, else a movie file written by `ffmpeg`, with
+    /// `audio` as its sound track if the format carries one (the movie keeps its length; the
+    /// sound is cut at its end).
+    pub fn new(path: &Path, format: VideoFormat, w: u32, h: u32, fps: f64, ffmpeg: &Path, audio: Option<&AudioTrack>) -> Result<VideoSink, String> {
         if format == VideoFormat::PngSequence {
             std::fs::create_dir_all(path).map_err(|e| format!("{}: {e}", path.display()))?;
             return Ok(VideoSink::Png { dir: path.to_path_buf(), w, h });
@@ -114,6 +139,17 @@ impl VideoSink {
         }
         let mut cmd = Command::new(ffmpeg);
         cmd.args(["-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgba", "-s", &format!("{w}x{h}"), "-r", &format!("{fps}"), "-i", "-"]);
+        let audio = audio.filter(|_| format.has_audio());
+        if let Some(a) = audio {
+            if !a.path.is_file() {
+                return Err(format!("audio file not found: {}", a.path.display()));
+            }
+            if a.start_s > 0.0 {
+                cmd.args(["-ss", &format!("{:.6}", a.start_s)]);
+            }
+            cmd.arg("-i").arg(&a.path);
+            cmd.args(["-map", "0:v", "-map", "1:a"]);
+        }
         if format == VideoFormat::Gif {
             // One palette for the whole animation, with light dithering.
             cmd.args(["-vf", "split[a][b];[a]palettegen=stats_mode=full[p];[b][p]paletteuse=dither=sierra2_4a", "-loop", "0"]);
@@ -121,6 +157,14 @@ impl VideoSink {
             // The 4:2:0 codecs need even sizes.
             cmd.args(["-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2"]);
             cmd.args(format.codec_args());
+        }
+        if let Some(a) = audio {
+            // Silence before a late start and after the end of the sound, then cut at the
+            // last frame.
+            let delay = (-a.start_s).max(0.0) * 1000.0;
+            cmd.args(["-af", &format!("adelay={delay:.0}:all=1,apad")]);
+            cmd.args(format.audio_codec().unwrap_or_default());
+            cmd.arg("-shortest");
         }
         cmd.arg(path);
         cmd.stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped());
@@ -162,7 +206,7 @@ mod tests {
     #[test]
     fn png_sequence_writes_numbered_files() {
         let dir = std::env::temp_dir().join(format!("rmb-seq-{}", std::process::id()));
-        let mut sink = VideoSink::new(&dir, VideoFormat::PngSequence, 2, 2, 25.0, Path::new("ffmpeg")).unwrap();
+        let mut sink = VideoSink::new(&dir, VideoFormat::PngSequence, 2, 2, 25.0, Path::new("ffmpeg"), None).unwrap();
         for i in 0..3 {
             sink.write_frame(i, &[128u8; 16]).unwrap();
         }
@@ -182,7 +226,7 @@ mod tests {
             let path = std::env::temp_dir().join(format!("rmb-movie-{}.{}", std::process::id(), format.extension().unwrap()));
             // Odd size: padded for H.264.
             let (w, h) = (33u32, 17u32);
-            let mut sink = VideoSink::new(&path, format, w, h, 24.0, &ffmpeg).unwrap();
+            let mut sink = VideoSink::new(&path, format, w, h, 24.0, &ffmpeg, None).unwrap();
             for i in 0..5 {
                 let rgba: Vec<u8> = (0..w * h).flat_map(|p| [(p * 7 + i * 40) as u8, 90, 200, 255]).collect();
                 sink.write_frame(i as usize, &rgba).unwrap();
@@ -191,5 +235,45 @@ mod tests {
             assert!(std::fs::metadata(&path).unwrap().len() > 100, "{format:?}");
             std::fs::remove_file(&path).unwrap();
         }
+    }
+
+    #[test]
+    fn movie_with_audio_track() {
+        let ffmpeg = ffmpeg_program(None);
+        if !ffmpeg_available(&ffmpeg) {
+            eprintln!("no ffmpeg, skipped");
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("rmb-audio-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let wav = dir.join("tone.wav");
+        let ok = Command::new(&ffmpeg).args(["-y", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=3"]).arg(&wav).status().unwrap();
+        assert!(ok.success());
+        let probe = ffmpeg.with_file_name("ffprobe");
+        // Sound shorter than the movie (starts 2.5 s into a 3 s tone), and a sound that starts late.
+        for (format, start) in [(VideoFormat::Mp4, 2.5), (VideoFormat::WebM, -0.5)] {
+            let path = dir.join(format!("movie.{}", format.extension().unwrap()));
+            let (w, h) = (32u32, 16u32);
+            let track = AudioTrack { path: wav.clone(), start_s: start };
+            let mut sink = VideoSink::new(&path, format, w, h, 24.0, &ffmpeg, Some(&track)).unwrap();
+            for i in 0..24 {
+                let rgba: Vec<u8> = (0..w * h).flat_map(|p| [(p * 7 + i * 10) as u8, 90, 200, 255]).collect();
+                sink.write_frame(i as usize, &rgba).unwrap();
+            }
+            sink.finish().unwrap();
+            let Ok(out) = Command::new(&probe).args(["-v", "error", "-show_entries", "stream=codec_type", "-of", "csv=p=0"]).arg(&path).output() else {
+                eprintln!("no ffprobe, stream check skipped");
+                continue;
+            };
+            let streams = String::from_utf8_lossy(&out.stdout);
+            assert!(streams.contains("video") && streams.contains("audio"), "{format:?}: {streams}");
+            // The movie keeps the length of its 24 frames.
+            let out = Command::new(&probe).args(["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0"]).arg(&path).output().unwrap();
+            let secs: f64 = String::from_utf8_lossy(&out.stdout).trim().parse().unwrap();
+            assert!((secs - 1.0).abs() < 0.1, "{format:?}: {secs} s");
+        }
+        let missing = AudioTrack { path: dir.join("missing.wav"), start_s: 0.0 };
+        assert!(VideoSink::new(&dir.join("x.mp4"), VideoFormat::Mp4, 8, 8, 24.0, &ffmpeg, Some(&missing)).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

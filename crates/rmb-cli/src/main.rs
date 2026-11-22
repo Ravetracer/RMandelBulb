@@ -13,7 +13,7 @@ USAGE:
                  [--denoise [blend] | --no-denoise]
   rmb-cli animate <scene> [-o out.mp4|folder] [-W width] [-H height] [-s samples] [--cpu]
                  [--fps n] [--from frame] [--to frame] [--denoise [blend] | --no-denoise]
-                 [--ffmpeg path]
+                 [--ffmpeg path] [--audio file [--audio-offset s] | --no-audio]
   rmb-cli convert <scene> -o out.rmb       Import (e.g. a Mandelbulb3D .m3p) and save as .rmb
   rmb-cli info <scene>                     Formulas, camera and import notes
   rmb-cli formulas                         List all formulas
@@ -29,7 +29,9 @@ executable (lib/ on Linux), ./oidn (python3 tools/fetch_oidn.py) or the system.
 
 animate renders the scene's keyframe animation. The output's extension picks the format
 (.mp4 H.264, .mov ProRes, .webm VP9, .gif; anything else: a folder of numbered PNG files);
-movies need ffmpeg (on the search path, or --ffmpeg). --from/--to limit the frames (inclusive).";
+movies need ffmpeg (on the search path, or --ffmpeg). --from/--to limit the frames (inclusive).
+The scene's sound track (Animation › Sound) goes under movies (not GIF); --audio replaces it,
+--audio-offset sets where in the sound frame 0 starts (seconds), --no-audio leaves it out.";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -72,10 +74,13 @@ struct Opts {
     from: Option<usize>,
     to: Option<usize>,
     ffmpeg: Option<PathBuf>,
+    /// Sound track override: a file, or none.
+    audio: Option<Option<PathBuf>>,
+    audio_offset: Option<f64>,
 }
 
 fn parse(args: &[String]) -> Result<Opts, String> {
-    let mut o = Opts { input: None, output: None, width: None, height: None, samples: 64, cpu: false, threads: None, denoise: None, fps: None, from: None, to: None, ffmpeg: None };
+    let mut o = Opts { input: None, output: None, width: None, height: None, samples: 64, cpu: false, threads: None, denoise: None, fps: None, from: None, to: None, ffmpeg: None, audio: None, audio_offset: None };
     let mut it = args.iter().peekable();
     while let Some(a) = it.next() {
         let mut val = |name: &str| it.next().cloned().ok_or_else(|| format!("{name} needs a value"));
@@ -90,6 +95,9 @@ fn parse(args: &[String]) -> Result<Opts, String> {
             "--from" => o.from = Some(val("--from")?.parse().map_err(|_| "bad frame number")?),
             "--to" => o.to = Some(val("--to")?.parse().map_err(|_| "bad frame number")?),
             "--ffmpeg" => o.ffmpeg = Some(PathBuf::from(val("--ffmpeg")?)),
+            "--audio" => o.audio = Some(Some(PathBuf::from(val("--audio")?))),
+            "--audio-offset" => o.audio_offset = Some(val("--audio-offset")?.parse().map_err(|_| "bad audio offset")?),
+            "--no-audio" => o.audio = Some(None),
             "--denoise" => {
                 let blend = it.peek().and_then(|v| v.parse::<f64>().ok());
                 if blend.is_some() {
@@ -143,6 +151,12 @@ fn animate(args: &[String]) -> Result<(), String> {
     if let Some(fps) = o.fps {
         anim.fps = fps;
     }
+    if let Some(a) = &o.audio {
+        anim.audio = a.clone();
+    }
+    if let Some(off) = o.audio_offset {
+        anim.audio_offset_s = off;
+    }
     let plan = rmb_core::animation::AnimationPlan::new(&anim)?;
     let (w, h) = image_size(&o, &scene);
     let last = plan.frame_count() - 1;
@@ -160,7 +174,14 @@ fn animate(args: &[String]) -> Result<(), String> {
     if let Some(c) = &ctx {
         eprintln!("GPU: {}", c.adapter_name);
     }
-    let mut sink = rmb_core::video::VideoSink::new(&out, format, w, h, plan.fps(), &ffmpeg)?;
+    // A sound given on the command line is relative to the working folder, the scene's to the
+    // scene file.
+    let base = if matches!(o.audio, Some(Some(_))) { None } else { o.input.as_ref().and_then(|p| p.parent()) };
+    let audio = anim.audio_track(from, base);
+    if let Some(a) = audio.as_ref().filter(|_| !format.has_audio()) {
+        eprintln!("note: {} has no sound; {} left out", format.label(), a.path.display());
+    }
+    let mut sink = rmb_core::video::VideoSink::new(&out, format, w, h, plan.fps(), &ffmpeg, audio.as_ref())?;
     let start = std::time::Instant::now();
     let cancel = std::sync::atomic::AtomicBool::new(false);
     let mut last_pct = u32::MAX;

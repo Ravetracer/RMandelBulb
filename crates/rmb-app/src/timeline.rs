@@ -208,6 +208,11 @@ impl Timeline {
                 ui.separator();
                 ui.vertical(|ui| {
                     ui.set_width(250.0);
+                    movie_ui(ui, &mut a);
+                });
+                ui.separator();
+                ui.vertical(|ui| {
+                    ui.set_width(250.0);
                     if let Some(m) = self.flight_ui(ui, doc, &mut a) {
                         action = Some(m);
                     }
@@ -406,4 +411,38 @@ fn camera_ui(ui: &mut Ui, a: &mut Animation) {
             widgets::slider(ui, "Bank in turns", "Rolls into turns like a plane or drone", &mut c.bank, 0.0..=1.0, d.bank);
         });
     });
+}
+
+fn movie_ui(ui: &mut Ui, a: &mut Animation) {
+    ui.label(RichText::new("MOVIE").size(theme::fs(11.0)).color(theme::TEXT_MUTED));
+    ui.horizontal(|ui| {
+        let name = a.audio.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned());
+        if ui.button(format!("{}  Sound…", ph::MUSIC_NOTES)).on_hover_text("Sound file put under exported movies (MP4, MOV, WebM; not GIF). The movie keeps its length: the sound is cut at its end or filled with silence").clicked() {
+            let mut dlg = rfd::FileDialog::new().add_filter("Sound", &["wav", "mp3", "flac", "ogg", "opus", "m4a", "aac"]);
+            if let Some(d) = a.audio.as_ref().and_then(|p| p.parent()) {
+                dlg = dlg.set_directory(d);
+            }
+            if let Some(p) = dlg.pick_file() {
+                a.audio = Some(p);
+            }
+        }
+        match name {
+            Some(n) => {
+                let missing = a.audio.as_ref().is_some_and(|p| p.is_absolute() && !p.is_file());
+                ui.label(RichText::new(n).size(theme::fs(11.5)).color(if missing { theme::WARN } else { theme::TEXT_MUTED }))
+                    .on_hover_text(a.audio.as_ref().map(|p| p.display().to_string()).unwrap_or_default());
+                if widgets::icon_button(ui, crate::icons::TRASH, "Remove the sound track").clicked() {
+                    a.audio = None;
+                }
+            }
+            None => {
+                ui.label(RichText::new("No sound").size(theme::fs(11.5)).color(theme::TEXT_MUTED));
+            }
+        }
+    });
+    if a.audio.is_some() {
+        widgets::grid(ui, "movie", |ui| {
+            widgets::drag(ui, "Sound offset", "Where in the sound file frame 0 starts, in seconds (negative: the sound starts later)", &mut a.audio_offset_s, 0.01, 0.0);
+        });
+    }
 }

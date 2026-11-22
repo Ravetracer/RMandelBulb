@@ -80,6 +80,8 @@ modern egui interface and import of Mandelbulb3D parameters.
     horizon and bank into turns.
   - Playback in the view, with the camera path drawn over the image.
   - Export to MP4 (H.264/H.265), ProRes MOV, WebM, GIF (needs ffmpeg) or PNG images.
+  - Sound track (Movie › Sound): a sound file under the exported movie, with an offset; the
+    movie keeps its length (CLI: `--audio`, `--audio-offset`, `--no-audio`).
 - **CLI**: `rmb-cli render|animate|convert|info|formulas`.
 
 ## Build

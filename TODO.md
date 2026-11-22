@@ -43,7 +43,9 @@
 - [x] Smoothing of camera paths so every path looks professional, without shaking or
       unnatural movement (steady speed, smoothed recorded speed, "cameraman" pass)
   - [x] Optional: automatic, or as a correction after defining the path over the key frames
-  - [ ] Motion blur, audio track
+  - [x] Audio track: a sound file under exported movies (AAC/Opus/PCM by format), with an
+        offset; cut or padded with silence to the movie's length
+  - [ ] Motion blur
 - [x] More light sources: spot, point, area, line (up to eight lights; area and line lights
       sampled per pass for soft shadows, visible as panel and tube)
 - [x] Lens flares for light sources with extensive options (glow and haze, diffraction star and

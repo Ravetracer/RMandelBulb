@@ -44,6 +44,11 @@ pub struct Animation {
     pub recording: Vec<CamSample>,
     /// Allowed deviation from the flight when keyframes are created from it.
     pub key_tolerance: f64,
+    /// Sound file put under the movie (relative paths are relative to the scene file).
+    pub audio: Option<std::path::PathBuf>,
+    /// Position in the sound file (seconds) where frame 0 starts; negative values start the
+    /// sound later.
+    pub audio_offset_s: f64,
 }
 
 impl Default for Animation {
@@ -60,7 +65,22 @@ impl Default for Animation {
             camera: CameraSmoothing::default(),
             recording: Vec::new(),
             key_tolerance: 0.05,
+            audio: None,
+            audio_offset_s: 0.0,
         }
+    }
+}
+
+impl Animation {
+    /// The sound track for a movie that starts at frame `from` (`base`: folder of the scene
+    /// file, for relative paths).
+    pub fn audio_track(&self, from: usize, base: Option<&std::path::Path>) -> Option<crate::video::AudioTrack> {
+        let p = self.audio.as_ref().filter(|p| !p.as_os_str().is_empty())?;
+        let path = match base {
+            Some(b) if p.is_relative() => b.join(p),
+            _ => p.clone(),
+        };
+        Some(crate::video::AudioTrack { path, start_s: self.audio_offset_s + from as f64 / self.fps.max(1e-9) })
     }
 }
 
