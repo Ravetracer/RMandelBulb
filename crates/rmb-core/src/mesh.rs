@@ -115,11 +115,29 @@ pub struct MeshMaterial {
     pub texture_file: String,
     pub bump_file: String,
     pub specular_file: String,
+    /// Tangent-space normal map (glTF; index into [`Mesh::textures`]) and its strength.
+    pub normal: Option<u32>,
+    pub normal_scale: f32,
+    /// Light the material emits by itself (linear RGB, glTF emissive factor) and the texture
+    /// it is multiplied with.
+    pub emissive: [f32; 3],
+    pub emissive_texture: Option<u32>,
 }
 
 impl Default for MeshMaterial {
     fn default() -> Self {
-        Self { name: String::new(), color: [1.0; 3], texture: None, texture_file: String::new(), bump_file: String::new(), specular_file: String::new() }
+        Self {
+            name: String::new(),
+            color: [1.0; 3],
+            texture: None,
+            texture_file: String::new(),
+            bump_file: String::new(),
+            specular_file: String::new(),
+            normal: None,
+            normal_scale: 1.0,
+            emissive: [0.0; 3],
+            emissive_texture: None,
+        }
     }
 }
 
@@ -178,6 +196,11 @@ impl Texture {
     pub fn value(&self, u: f64, v: f64) -> f64 {
         let c = self.bilinear(u, v, |x, y| self.raw_texel(x, y));
         (c[0] + c[1] + c[2]) as f64 / 3.0
+    }
+
+    /// Bilinear sample of the stored values (0..1, no sRGB decoding): normal maps.
+    pub fn raw(&self, u: f64, v: f64) -> [f32; 3] {
+        self.bilinear(u, v, |x, y| self.raw_texel(x, y))
     }
 
     fn raw_texel(&self, x: i64, y: i64) -> [f32; 3] {
@@ -299,7 +322,7 @@ fn linear_to_display_u8(c: [f64; 3]) -> [u8; 4] {
 // ---------------------------------------------------------------------------------------------
 // Loaders
 
-/// Loads a model file (OBJ, STL, PLY, glTF, GLB by extension) and converts it to Z-up.
+/// Loads a model file (OBJ, STL, PLY, glTF, GLB, FBX by extension) and converts it to Z-up.
 pub fn load(path: &Path, up: UpAxis) -> Result<Mesh, String> {
     let ext = path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).unwrap_or_default();
     let (mut mesh, y_up) = match ext.as_str() {
@@ -307,7 +330,9 @@ pub fn load(path: &Path, up: UpAxis) -> Result<Mesh, String> {
         "stl" => (load_stl(path)?, false),
         "ply" => (load_ply(path)?, false),
         "gltf" | "glb" => (load_gltf(path)?, true),
-        _ => return Err(format!("{}: unsupported model format (use OBJ, STL, PLY, glTF or GLB)", path.display())),
+        // Converted to Y-up when read.
+        "fbx" => (load_fbx(path)?, true),
+        _ => return Err(format!("{}: unsupported model format (use OBJ, STL, PLY, glTF, GLB or FBX)", path.display())),
     };
     if mesh.triangles.is_empty() {
         return Err(format!("{}: the model has no triangles", path.display()));
@@ -350,6 +375,16 @@ fn load_obj(path: &Path) -> Result<Mesh, String> {
             texture_file: mat.diffuse_texture.as_deref().map(texture_name).unwrap_or_default(),
             bump_file: mat.normal_texture.as_deref().map(texture_name).unwrap_or_default(),
             specular_file: mat.specular_texture.as_deref().map(texture_name).unwrap_or_default(),
+            // Emission ("Ke", written by Blender).
+            emissive: mat
+                .unknown_param
+                .get("Ke")
+                .and_then(|v| {
+                    let c: Vec<f32> = v.split_whitespace().filter_map(|x| x.parse().ok()).collect();
+                    (c.len() == 3).then(|| display_to_linear([c[0], c[1], c[2]]))
+                })
+                .unwrap_or([0.0; 3]),
+            ..MeshMaterial::default()
         });
     }
     let mut detailed = !mesh.materials.is_empty();
@@ -657,9 +692,15 @@ impl GltfLoader<'_> {
                 None => String::new(),
             };
             let texture_file = file(pbr.base_color_texture().map(|t| t.texture()));
-            self.mesh
-                .materials
-                .push(MeshMaterial { name: m.name().map_or_else(|| format!("Material {}", i + 1), str::to_string), color: [f[0], f[1], f[2]], texture: None, texture_file, ..MeshMaterial::default() });
+            self.mesh.materials.push(MeshMaterial {
+                name: m.name().map_or_else(|| format!("Material {}", i + 1), str::to_string),
+                color: [f[0], f[1], f[2]],
+                texture: None,
+                texture_file,
+                normal_scale: m.normal_texture().map_or(1.0, |t| t.scale()),
+                emissive: m.emissive_factor(),
+                ..MeshMaterial::default()
+            });
         }
         self.detailed |= !self.mesh.materials.is_empty();
     }
@@ -707,6 +748,18 @@ impl GltfLoader<'_> {
                 let t = self.texture(doc, &info.texture());
                 self.mesh.materials[mat_index as usize].texture = t;
             }
+            // Normal and emissive maps (on the same texture coordinates).
+            if uvs.is_some() && mat_index != NO_MATERIAL {
+                let mi = mat_index as usize;
+                if let Some(nt) = material.normal_texture().filter(|_| self.mesh.materials[mi].normal.is_none()) {
+                    let t = self.texture(doc, &nt.texture());
+                    self.mesh.materials[mi].normal = t;
+                }
+                if let Some(et) = material.emissive_texture().filter(|_| self.mesh.materials[mi].emissive_texture.is_none()) {
+                    let t = self.texture(doc, &et.texture());
+                    self.mesh.materials[mi].emissive_texture = t;
+                }
+            }
             let vcolors = vcolors.filter(|c| c.len() >= pos.len());
             let uvs = uvs.filter(|u| u.len() >= pos.len());
             self.detailed |= vcolors.is_some();
@@ -734,6 +787,101 @@ impl GltfLoader<'_> {
             }
         }
     }
+}
+
+/// FBX (binary and ASCII, all versions; read by ufbx): every mesh instance in world space
+/// (right-handed, Y up), polygons triangulated, the materials with their colors, color, normal
+/// and emission textures (embedded or as files), the names of bump and specular images.
+fn load_fbx(path: &Path) -> Result<Mesh, String> {
+    let err = err_at(path);
+    let name = path.to_str().ok_or_else(|| err(&"the path is not valid UTF-8"))?;
+    let opts = ufbx::LoadOpts { target_axes: ufbx::CoordinateAxes::right_handed_y_up(), space_conversion: ufbx::SpaceConversion::ModifyGeometry, ..Default::default() };
+    let scene = ufbx::load_file(name, opts).map_err(|e| err(&e.description.to_string()))?;
+    let mut mesh = Mesh::default();
+    let mut textures: HashMap<u32, Option<u32>> = HashMap::new();
+    // The texture of a map (decoded once per FBX texture).
+    let mut texture = |mesh: &mut Mesh, map: &ufbx::MaterialMap| -> Option<u32> {
+        let t = map.texture.as_ref()?;
+        if let Some(i) = textures.get(&t.element.element_id) {
+            return *i;
+        }
+        let img = (!t.content.is_empty())
+            .then(|| image::load_from_memory(&t.content).ok())
+            .flatten()
+            .or_else(|| {
+                [&*t.absolute_filename, &*t.relative_filename, &*t.filename]
+                    .iter()
+                    .filter(|f| !f.is_empty())
+                    .find_map(|f| {
+                        let p = Path::new(f);
+                        let full = if p.is_absolute() { p.to_path_buf() } else { path.parent().unwrap_or(Path::new(".")).join(p) };
+                        let found = if full.is_file() { Some(full) } else { find_image(path, &f.replace('\\', "/")) };
+                        image::open(found?).ok()
+                    })
+            });
+        let wrap = |w: ufbx::WrapMode| if w == ufbx::WrapMode::Clamp { Wrap::Clamp } else { Wrap::Repeat };
+        // FBX texture coordinates count v from the bottom row.
+        let index = img.and_then(|img| Texture::from_rgb(img.to_rgb8(), [wrap(t.wrap_u), wrap(t.wrap_v)], true)).map(|tex| {
+            mesh.textures.push(tex);
+            mesh.textures.len() as u32 - 1
+        });
+        textures.insert(t.element.element_id, index);
+        index
+    };
+    let file_name = |map: &ufbx::MaterialMap| map.texture.as_ref().map(|t| t.relative_filename.to_string()).filter(|f| !f.is_empty()).unwrap_or_default();
+    let rgb = |m: &ufbx::MaterialMap| [m.value_vec4.x as f32, m.value_vec4.y as f32, m.value_vec4.z as f32];
+    for m in scene.materials.iter() {
+        let f = &m.fbx;
+        let diffuse = if m.pbr.base_color.has_value { &m.pbr.base_color } else { &f.diffuse_color };
+        let factor = if f.diffuse_factor.has_value { f.diffuse_factor.value_vec4.x as f32 } else { 1.0 };
+        let color = display_to_linear(rgb(diffuse).map(|c| c * factor));
+        let emission_factor = if f.emission_factor.has_value { f.emission_factor.value_vec4.x as f32 } else { 1.0 };
+        let emissive = if f.emission_color.has_value { rgb(&f.emission_color).map(|c| (c * emission_factor).max(0.0)) } else { [0.0; 3] };
+        let normal_map = if m.pbr.normal_map.texture.is_some() { &m.pbr.normal_map } else { &f.normal_map };
+        let material = MeshMaterial {
+            name: if m.element.name.is_empty() { format!("Material {}", mesh.materials.len() + 1) } else { m.element.name.to_string() },
+            color,
+            texture: texture(&mut mesh, diffuse),
+            texture_file: file_name(diffuse),
+            bump_file: file_name(&f.bump),
+            specular_file: file_name(&f.specular_color),
+            normal: texture(&mut mesh, normal_map),
+            emissive,
+            emissive_texture: if emissive.iter().any(|c| *c > 0.0) { texture(&mut mesh, &f.emission_color) } else { None },
+            ..MeshMaterial::default()
+        };
+        mesh.materials.push(material);
+    }
+    let mut corners = Vec::new();
+    for node in scene.nodes.iter() {
+        let Some(fm) = node.mesh.as_ref() else { continue };
+        let to_world = &node.geometry_to_world;
+        corners.resize(fm.max_face_triangles * 3, 0u32);
+        let world = |i: usize| {
+            let p = ufbx::transform_position(to_world, fm.vertex_position[i]);
+            [p.x, p.y, p.z]
+        };
+        for (fi, face) in fm.faces.iter().enumerate() {
+            let n = ufbx::triangulate_face(&mut corners, fm, *face) as usize;
+            let material = fm.face_material.get(fi).and_then(|&k| fm.materials.get(k as usize)).map_or(NO_MATERIAL, |m| m.element.typed_id);
+            for t in 0..n {
+                let c = [corners[3 * t] as usize, corners[3 * t + 1] as usize, corners[3 * t + 2] as usize];
+                let mut s = Shading { material, ..Shading::default() };
+                for (k, &i) in c.iter().enumerate() {
+                    if fm.vertex_uv.exists {
+                        let uv = fm.vertex_uv[i];
+                        s.uv[k] = [uv.x as f32, uv.y as f32];
+                    }
+                    if fm.vertex_color.exists {
+                        let vc = fm.vertex_color[i];
+                        s.colors[k] = [vc.x as f32, vc.y as f32, vc.z as f32];
+                    }
+                }
+                mesh.push(c.map(world), s);
+            }
+        }
+    }
+    Ok(mesh)
 }
 
 fn load_gltf(path: &Path) -> Result<Mesh, String> {
@@ -1334,7 +1482,7 @@ impl Volume {
         let tu = uv[0] as f64 * u + uv[2] as f64 * near.v + uv[4] as f64 * near.w;
         let tv = uv[1] as f64 * u + uv[3] as f64 * near.v + uv[5] as f64 * near.w;
         let tex = |i: Option<u32>| i.and_then(|i| look.textures.get(i as usize));
-        let mut out = Surface { color: None, specular: 1.0, normal: n.unwrap_or([0.0; 3]) };
+        let mut out = Surface { color: None, specular: 1.0, normal: n.unwrap_or([0.0; 3]), emission: [0.0; 3] };
         if look.colored {
             let mut c = m.map_or([1.0; 3], |m| m.color.map(|v| v as f64));
             if let Some(vc) = self.tri_colors.get(t) {
@@ -1358,7 +1506,43 @@ impl Volume {
         if let (Some(n), Some(tx)) = (n, tex(m.bump)) {
             out.normal = self.bump(near.tri, tx, m.bump_height as f64, tu, tv, n);
         }
+        if let (Some(_), Some(tx)) = (n, tex(m.normal)) {
+            out.normal = self.normal_map(near.tri, tx, m.normal_strength as f64, tu, tv, out.normal);
+        }
+        if m.emits() {
+            let e = tex(m.emissive_texture).map_or([1.0; 3], |tx| tx.sample(tu, tv));
+            out.emission = std::array::from_fn(|k| (m.emissive[k] * e[k]) as f64);
+        }
         Some(out)
+    }
+
+    /// Normal `n` bent by the tangent-space normal map `tex` at `u`, `v` on triangle `tri`
+    /// (red along u, green up the image, blue along `n`; `strength` scales red and green).
+    fn normal_map(&self, tri: u32, tex: &Texture, strength: f64, u: f64, v: f64, n: [f64; 3]) -> [f64; 3] {
+        let t = self.tri(tri);
+        let uv = &self.tri_uv[tri as usize];
+        let (du1, dv1) = (uv[2] as f64 - uv[0] as f64, uv[3] as f64 - uv[1] as f64);
+        let (du2, dv2) = (uv[4] as f64 - uv[0] as f64, uv[5] as f64 - uv[1] as f64);
+        let det = du1 * dv2 - du2 * dv1;
+        if det.abs() < 1e-20 {
+            return n;
+        }
+        // Tangents along u and up the image (v counts down the image unless `v_up`).
+        let dpdu: [f64; 3] = std::array::from_fn(|k| (t.ab[k] * dv2 - t.ac[k] * dv1) / det);
+        let dpdv: [f64; 3] = std::array::from_fn(|k| (t.ac[k] * du1 - t.ab[k] * du2) / det);
+        let ortho = |a: [f64; 3]| {
+            let d = dot(a, n);
+            let o: [f64; 3] = std::array::from_fn(|k| a[k] - n[k] * d);
+            let len = dot(o, o).sqrt();
+            (len > 1e-30).then(|| o.map(|c| c / len))
+        };
+        let (Some(tu), Some(tv)) = (ortho(dpdu), ortho(dpdv)) else { return n };
+        let up = if tex.v_up { 1.0 } else { -1.0 };
+        let c = tex.raw(u, v);
+        let (x, y, z) = ((c[0] as f64 * 2.0 - 1.0) * strength, (c[1] as f64 * 2.0 - 1.0) * strength * up, (c[2] as f64 * 2.0 - 1.0).max(0.0));
+        let b: [f64; 3] = std::array::from_fn(|k| tu[k] * x + tv[k] * y + n[k] * z);
+        let len = dot(b, b).sqrt();
+        if len > 0.0 { b.map(|c| c / len) } else { n }
     }
 
     /// Normal `n` bent by the height map `tex` (heights 0..1 times `height` model units) at
@@ -1391,7 +1575,11 @@ impl Volume {
 
     /// The look of the model as its file describes it.
     pub fn file_look(&self) -> Look {
-        let materials: Vec<LookMaterial> = self.materials.iter().map(|m| LookMaterial { color: m.color, texture: m.texture, ..LookMaterial::default() }).collect();
+        let materials: Vec<LookMaterial> = self
+            .materials
+            .iter()
+            .map(|m| LookMaterial { color: m.color, texture: m.texture, normal: m.normal, normal_strength: m.normal_scale, emissive: m.emissive, emissive_texture: m.emissive_texture, ..LookMaterial::default() })
+            .collect();
         let mut look = Look { materials, textures: self.textures.clone(), colored: false, maps: false };
         look.update_flags(!self.tri_colors.is_empty());
         look
@@ -1439,7 +1627,7 @@ impl Look {
     /// Sets `colored` and `maps` from the materials (`vertex_colors`: the model has some).
     fn update_flags(&mut self, vertex_colors: bool) {
         self.colored = vertex_colors || self.materials.iter().any(|m| m.color != [1.0; 3] || m.texture.is_some());
-        self.maps = self.materials.iter().any(|m| m.bump.is_some() || m.specular.is_some());
+        self.maps = self.materials.iter().any(|m| m.bump.is_some() || m.specular.is_some() || m.normal.is_some() || m.emits());
     }
 }
 
@@ -1452,6 +1640,8 @@ pub struct Surface {
     pub specular: f64,
     /// Normal (model space).
     pub normal: [f64; 3],
+    /// Emitted light (linear RGB).
+    pub emission: [f64; 3],
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1464,11 +1654,23 @@ pub struct LookMaterial {
     /// Bump map height of white over black, in model units.
     pub bump_height: f32,
     pub specular: Option<u32>,
+    /// Tangent-space normal map and its strength.
+    pub normal: Option<u32>,
+    pub normal_strength: f32,
+    /// Emitted light (linear RGB) and the texture it is multiplied with.
+    pub emissive: [f32; 3],
+    pub emissive_texture: Option<u32>,
 }
 
 impl Default for LookMaterial {
     fn default() -> Self {
-        Self { color: [1.0; 3], texture: None, bump: None, bump_height: 0.0, specular: None }
+        Self { color: [1.0; 3], texture: None, bump: None, bump_height: 0.0, specular: None, normal: None, normal_strength: 1.0, emissive: [0.0; 3], emissive_texture: None }
+    }
+}
+
+impl LookMaterial {
+    pub fn emits(&self) -> bool {
+        self.emissive.iter().any(|c| *c > 0.0)
     }
 }
 
@@ -1486,6 +1688,12 @@ fn round_up(v: f64) -> f32 {
 
 /// Bakes `mesh` into a volume. `progress` receives 0..1 and may be called from worker threads.
 pub fn bake(mesh: &Mesh, opts: &ModelOptions, progress: &(dyn Fn(f32) + Sync)) -> Volume {
+    bake_cached(mesh, opts, progress, None)
+}
+
+/// [`bake`] that reads the distance grid from the file `cache` when it holds the grid of this
+/// mesh and these options, and writes it there after baking.
+pub fn bake_cached(mesh: &Mesh, opts: &ModelOptions, progress: &(dyn Fn(f32) + Sync), cache: Option<&Path>) -> Volume {
     let resolution = opts.clamped_resolution();
     progress(0.0);
 
@@ -1516,7 +1724,6 @@ pub fn bake(mesh: &Mesh, opts: &ModelOptions, progress: &(dyn Fn(f32) + Sync)) -
         }
     });
     let min: [f64; 3] = std::array::from_fn(|k| 0.5 * (bounds[0][k] + bounds[1][k]) - 0.5 * (res[k] as f64 - 1.0) * voxel);
-    let (nx, ny, nz) = (res[0] as usize, res[1] as usize, res[2] as usize);
 
     // Triangles with an area (degenerate ones add nothing to the surface).
     let eps = (longest * 1e-12).powi(2);
@@ -1530,8 +1737,37 @@ pub fn bake(mesh: &Mesh, opts: &ModelOptions, progress: &(dyn Fn(f32) + Sync)) -
     let valid: Vec<[[f64; 3]; 3]> = ids.iter().map(|&i| tris[i as usize]).collect();
     let bvh = Bvh::build(&tris, ids);
 
-    // Sign: ray parity along every axis.
-    let lines: Vec<LineHits> = (0..3).map(|a| cast_lines(&valid, a, res, min, voxel)).collect();
+    let checksum = triangle_checksum(&tris);
+    let cached = cache.and_then(|c| read_grid(c, res, min, voxel, checksum));
+    let dist = match cached {
+        Some(d) => d,
+        None => {
+            let d = distance_grid(&valid, &bvh, res, min, voxel, progress);
+            if let Some(c) = cache {
+                write_grid(c, res, min, voxel, checksum, &d);
+            }
+            d
+        }
+    };
+
+    // Triangles in the hierarchy's leaf order, the hierarchy and the shading.
+    let tris_f32: Vec<[f32; 9]> = bvh.tris.iter().map(|t| [t.a[0], t.a[1], t.a[2], t.ab[0], t.ab[1], t.ab[2], t.ac[0], t.ac[1], t.ac[2]].map(|v| v as f32)).collect();
+    let nodes: Vec<TreeNode> = bvh.nodes.iter().map(|n| TreeNode { lo: n.lo.map(round_down), hi: n.hi.map(round_up), start: n.start, count: n.count }).collect();
+    let shading = |i: u32| mesh.shading.get(i as usize).copied().unwrap_or_default();
+    let ids = &bvh.ids;
+    let tri_material = ids.iter().map(|&i| shading(i).material).collect();
+    let tri_uv = ids.iter().map(|&i| shading(i).uv.as_flattened().try_into().unwrap_or([0.0; 6])).collect();
+    let vertex_colors = mesh.shading.iter().any(|s| s.colors != [[1.0; 3]; 3]);
+    let tri_colors = if vertex_colors { ids.iter().map(|&i| shading(i).colors.map(|c| u32::from_le_bytes(linear_to_display_u8(c.map(|v| v as f64))))).collect() } else { Vec::new() };
+    progress(1.0);
+    Volume { res, min, voxel, bounds, dist, tris: tris_f32, nodes, tri_material, tri_uv, tri_colors, materials: mesh.materials.clone(), textures: mesh.textures.iter().cloned().map(Arc::new).collect() }
+}
+
+/// The signed distance grid (see [`Volume::dist`]): sign by ray parity along every axis,
+/// distances to the nearest triangle, z-slices in parallel.
+fn distance_grid(valid: &[[[f64; 3]; 3]], bvh: &Bvh, res: [u32; 3], min: [f64; 3], voxel: f64, progress: &(dyn Fn(f32) + Sync)) -> Vec<i16> {
+    let (nx, ny, nz) = (res[0] as usize, res[1] as usize, res[2] as usize);
+    let lines: Vec<LineHits> = (0..3).map(|a| cast_lines(valid, a, res, min, voxel)).collect();
     let (p_sign, p_dist) = (0.05, 0.8);
     progress(p_sign as f32);
 
@@ -1579,17 +1815,111 @@ pub fn bake(mesh: &Mesh, opts: &ModelOptions, progress: &(dyn Fn(f32) + Sync)) -
         progress((p_sign + (p_dist - p_sign) * n as f64 / nz as f64) as f32);
     });
 
-    // Triangles in the hierarchy's leaf order, the hierarchy and the shading.
-    let tris_f32: Vec<[f32; 9]> = bvh.tris.iter().map(|t| [t.a[0], t.a[1], t.a[2], t.ab[0], t.ab[1], t.ab[2], t.ac[0], t.ac[1], t.ac[2]].map(|v| v as f32)).collect();
-    let nodes: Vec<TreeNode> = bvh.nodes.iter().map(|n| TreeNode { lo: n.lo.map(round_down), hi: n.hi.map(round_up), start: n.start, count: n.count }).collect();
-    let shading = |i: u32| mesh.shading.get(i as usize).copied().unwrap_or_default();
-    let ids = &bvh.ids;
-    let tri_material = ids.iter().map(|&i| shading(i).material).collect();
-    let tri_uv = ids.iter().map(|&i| shading(i).uv.as_flattened().try_into().unwrap_or([0.0; 6])).collect();
-    let vertex_colors = mesh.shading.iter().any(|s| s.colors != [[1.0; 3]; 3]);
-    let tri_colors = if vertex_colors { ids.iter().map(|&i| shading(i).colors.map(|c| u32::from_le_bytes(linear_to_display_u8(c.map(|v| v as f64))))).collect() } else { Vec::new() };
-    progress(1.0);
-    Volume { res, min, voxel, bounds, dist, tris: tris_f32, nodes, tri_material, tri_uv, tri_colors, materials: mesh.materials.clone(), textures: mesh.textures.iter().cloned().map(Arc::new).collect() }
+    dist
+}
+
+/// FNV-1a over the triangles' coordinates (identifies the mesh of a cached grid).
+fn triangle_checksum(tris: &[[[f64; 3]; 3]]) -> u64 {
+    let mut h = 0xcbf2_9ce4_8422_2325u64;
+    for v in tris.iter().flatten().flatten() {
+        for b in v.to_bits().to_le_bytes() {
+            h = (h ^ b as u64).wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+    h
+}
+
+const GRID_MAGIC: &[u8; 8] = b"RMBGRID1";
+
+/// Header of a cached grid: magic, grid size, origin, spacing, triangle checksum, length.
+fn grid_header(res: [u32; 3], min: [f64; 3], voxel: f64, checksum: u64, len: usize) -> Vec<u8> {
+    let mut h = GRID_MAGIC.to_vec();
+    res.iter().for_each(|v| h.extend(v.to_le_bytes()));
+    min.iter().for_each(|v| h.extend(v.to_le_bytes()));
+    h.extend(voxel.to_le_bytes());
+    h.extend(checksum.to_le_bytes());
+    h.extend((len as u64).to_le_bytes());
+    h
+}
+
+/// The cached grid at `path` if it was baked for exactly this grid and mesh.
+fn read_grid(path: &Path, res: [u32; 3], min: [f64; 3], voxel: f64, checksum: u64) -> Option<Vec<i16>> {
+    let len = res.iter().map(|v| *v as usize).product::<usize>();
+    let header = grid_header(res, min, voxel, checksum, len);
+    let bytes = std::fs::read(path).ok()?;
+    if bytes.len() != header.len() + 2 * len || bytes[..header.len()] != header[..] {
+        return None;
+    }
+    Some(bytes[header.len()..].as_chunks::<2>().0.iter().map(|c| i16::from_le_bytes(*c)).collect())
+}
+
+/// Writes a grid to the cache (best effort: a temporary file renamed into place), then keeps
+/// the cache below [`GRID_CACHE_BYTES`] by deleting the oldest files.
+fn write_grid(path: &Path, res: [u32; 3], min: [f64; 3], voxel: f64, checksum: u64, dist: &[i16]) {
+    let Some(dir) = path.parent() else { return };
+    if std::fs::create_dir_all(dir).is_err() {
+        return;
+    }
+    let mut bytes = grid_header(res, min, voxel, checksum, dist.len());
+    bytes.reserve(2 * dist.len());
+    dist.iter().for_each(|v| bytes.extend(v.to_le_bytes()));
+    let tmp = path.with_extension(format!("tmp{}", std::process::id()));
+    if std::fs::write(&tmp, &bytes).is_err() || std::fs::rename(&tmp, path).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let mut files: Vec<(SystemTime, u64, PathBuf)> = entries
+        .flatten()
+        .filter(|e| e.path().extension().is_some_and(|x| x == "grid"))
+        .filter_map(|e| {
+            let m = e.metadata().ok()?;
+            Some((m.modified().ok()?, m.len(), e.path()))
+        })
+        .collect();
+    files.sort();
+    let mut total: u64 = files.iter().map(|f| f.1).sum();
+    for (_, size, p) in files {
+        if total <= GRID_CACHE_BYTES {
+            break;
+        }
+        if p != path && std::fs::remove_file(&p).is_ok() {
+            total -= size;
+        }
+    }
+}
+
+/// Size limit of the grid cache on disk.
+const GRID_CACHE_BYTES: u64 = 2 << 30;
+
+/// Folder of the cached grids: `RMB_MODEL_CACHE` (empty or "off": none), else the user's cache
+/// folder.
+pub fn grid_cache_dir() -> Option<PathBuf> {
+    if let Some(d) = std::env::var_os("RMB_MODEL_CACHE") {
+        return (!d.is_empty() && d != "off").then(|| PathBuf::from(d));
+    }
+    let base = std::env::var_os("XDG_CACHE_HOME")
+        .filter(|d| !d.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("LOCALAPPDATA").map(PathBuf::from))
+        .or_else(|| {
+            std::env::var_os("HOME").map(|h| {
+                let h = PathBuf::from(h);
+                if cfg!(target_os = "macos") { h.join("Library/Caches") } else { h.join(".cache") }
+            })
+        })?;
+    Some(base.join("rmandelbulb").join("models"))
+}
+
+/// The cache file of a model's grid (file, its time, the bake options).
+fn grid_cache_file(key: &Key) -> Option<PathBuf> {
+    let mut h = 0xcbf2_9ce4_8422_2325u64;
+    let mtime = key.1.duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+    let text = format!("{}|{mtime}|{}|{:?}|{}", key.0.display(), key.2, key.3, key.4);
+    for b in text.bytes() {
+        h = (h ^ b as u64).wrapping_mul(0x0100_0000_01b3);
+    }
+    Some(grid_cache_dir()?.join(format!("{h:016x}.grid")))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1610,17 +1940,22 @@ pub struct MaterialOverride {
     pub bump_strength: f64,
     /// Specular map ("" none): scales the specular highlights.
     pub specular: String,
+    /// Tangent-space normal map ("" keeps the file's) and its strength.
+    pub normal: String,
+    pub normal_strength: f64,
+    /// Emitted light (linear RGB) instead of the file's.
+    pub emission: Option<[f32; 3]>,
 }
 
 impl Default for MaterialOverride {
     fn default() -> Self {
-        Self { name: String::new(), color: None, texture: None, bump: String::new(), bump_strength: 1.0, specular: String::new() }
+        Self { name: String::new(), color: None, texture: None, bump: String::new(), bump_strength: 1.0, specular: String::new(), normal: String::new(), normal_strength: 1.0, emission: None }
     }
 }
 
 impl MaterialOverride {
     pub fn is_empty(&self) -> bool {
-        self.color.is_none() && self.texture.is_none() && self.bump.is_empty() && self.specular.is_empty()
+        self.color.is_none() && self.texture.is_none() && self.bump.is_empty() && self.specular.is_empty() && self.normal.is_empty() && self.normal_strength == 1.0 && self.emission.is_none()
     }
 }
 
@@ -1737,6 +2072,13 @@ fn build_look(vol: &Volume, m: &crate::compose::ModelRef, wait: bool) -> (Look, 
         if !o.specular.is_empty() {
             look.materials[i].specular = texture(&o.specular, &mut look, &mut fingerprint);
         }
+        if !o.normal.is_empty() {
+            look.materials[i].normal = texture(&o.normal, &mut look, &mut fingerprint);
+        }
+        look.materials[i].normal_strength *= o.normal_strength as f32;
+        if let Some(e) = o.emission {
+            look.materials[i].emissive = e;
+        }
     }
     look.update_flags(!vol.tri_colors.is_empty());
     fingerprint.push_str(&format!("{:?}", m.materials));
@@ -1762,7 +2104,9 @@ pub enum ImageKind {
     Color,
     Bump,
     Specular,
-    /// Normal maps, masks and the like: not used.
+    /// Tangent-space normal map.
+    Normal,
+    /// Masks and the like: not used.
     Other,
 }
 
@@ -1802,7 +2146,8 @@ pub fn image_kind(path: &Path) -> (ImageKind, String) {
             "diffuse" | "diff" | "color" | "colour" | "col" | "albedo" | "basecolor" | "base_color" | "dif" | "tex" => Some(ImageKind::Color),
             "bump" | "height" | "disp" | "displacement" | "displace" => Some(ImageKind::Bump),
             "spec" | "specular" | "gloss" | "glossiness" | "rough" | "roughness" | "refl" | "reflection" | "metal" | "metallic" => Some(ImageKind::Specular),
-            "normal" | "nrm" | "norm" | "nor" | "alpha" | "opacity" | "mask" | "ao" | "occlusion" | "emission" | "emissive" => Some(ImageKind::Other),
+            "normal" | "nrm" | "norm" | "nor" => Some(ImageKind::Normal),
+            "alpha" | "opacity" | "mask" | "ao" | "occlusion" | "emission" | "emissive" => Some(ImageKind::Other),
             _ => None,
         };
         match k {
@@ -1839,7 +2184,7 @@ fn name_score(a: &str, b: &str) -> f64 {
 const MATCH_SCORE: f64 = 0.6;
 
 /// Assigns the images near the model (`images`) to the materials by name: per material the best
-/// matching color, bump and specular image. Materials whose file brings a texture keep it.
+/// matching color, bump, specular and normal map image. Materials whose file brings a texture keep it.
 /// Returns the overrides (only materials with a match).
 pub fn auto_assign(model: &str, materials: &[MeshMaterial], images: &[PathBuf]) -> Vec<MaterialOverride> {
     let kinds: Vec<(ImageKind, String)> = images.iter().map(|p| image_kind(p)).collect();
@@ -1861,6 +2206,7 @@ pub fn auto_assign(model: &str, materials: &[MeshMaterial], images: &[PathBuf]) 
             texture: if m.texture.is_some() { None } else { best(ImageKind::Color) },
             bump: best(ImageKind::Bump).unwrap_or_default(),
             specular: best(ImageKind::Specular).unwrap_or_default(),
+            normal: if m.normal.is_some() { String::new() } else { best(ImageKind::Normal).unwrap_or_default() },
             ..MaterialOverride::default()
         };
         if !o.is_empty() {
@@ -1935,7 +2281,7 @@ fn run_bake(key: &Key, opts: &ModelOptions, progress: &AtomicU32) -> Result<Arc<
         let report = |f: f32| {
             progress.fetch_max((0.05 + 0.95 * f).to_bits(), Ordering::Relaxed);
         };
-        Ok(Arc::new(bake(&mesh, opts, &report)))
+        Ok(Arc::new(bake_cached(&mesh, opts, &report, grid_cache_file(key).as_deref())))
     }));
     let result = result.unwrap_or_else(|_| Err(format!("{}: baking the model failed", key.0.display())));
     let mut map = lock(cache());
@@ -2401,7 +2747,8 @@ mod tests {
         assert_eq!(image_kind(Path::new("t/doorBackPanel_spec2.jpg")), (ImageKind::Specular, "doorbackpanel".to_string()));
         assert_eq!(image_kind(Path::new("DoorSign2010.jpg")), (ImageKind::Color, "doorsign2010".to_string()));
         assert_eq!(image_kind(Path::new("lamp_base_bump.jpg")).0, ImageKind::Bump);
-        assert_eq!(image_kind(Path::new("x_normal.png")).0, ImageKind::Other);
+        assert_eq!(image_kind(Path::new("x_normal.png")).0, ImageKind::Normal);
+        assert_eq!(image_kind(Path::new("x_mask.png")).0, ImageKind::Other);
         let images: Vec<PathBuf> = ["m/textures/DoorSign2010.jpg", "m/textures/lamp_base_bump.jpg", "m/textures/base_spec3.jpg", "m/textures/x_normal.png"].map(PathBuf::from).to_vec();
         let mats: Vec<MeshMaterial> = ["Door Sign", "Lamp Base", "Base", "Glass"].map(|n| MeshMaterial { name: n.into(), ..MeshMaterial::default() }).to_vec();
         let o = auto_assign("m/model.glb", &mats, &images);
@@ -2478,6 +2825,122 @@ mod tests {
     }
 
     #[test]
+    fn fbx_ascii_cube_with_material() {
+        let dir = temp_dir("fbx");
+        let file = dir.join("cube.fbx");
+        std::fs::write(&file, FBX_CUBE).unwrap();
+        let m = load(&file, UpAxis::Auto).unwrap();
+        // Six quads as twelve triangles, Z-up after the conversion: x and y span -1..1 (y was
+        // the file's -z), z spans 0..2 (the file's y).
+        assert_eq!(m.triangles.len(), 12);
+        let b = m.bounds().unwrap();
+        assert!((b[0][0] + 1.0).abs() < 1e-9 && (b[1][2] - 2.0).abs() < 1e-9 && b[0][2].abs() < 1e-9, "{b:?}");
+        assert_eq!(m.materials.len(), 1);
+        let mat = &m.materials[0];
+        assert_eq!(mat.name, "Red");
+        assert!((mat.color[0] - 1.0).abs() < 1e-6 && mat.color[1] == 0.0);
+        assert!((mat.emissive[1] - 0.5).abs() < 1e-6 && mat.emissive[0] == 0.0);
+        assert!(m.shading.iter().all(|s| s.material == 0));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A cube from 0 to 2 in y (Y-up FBX 7.4 ASCII) with one material.
+    const FBX_CUBE: &str = r#"; FBX 7.4.0 project file
+FBXHeaderExtension:  {
+	FBXHeaderVersion: 1003
+	FBXVersion: 7400
+}
+GlobalSettings:  {
+	Version: 1000
+	Properties70:  {
+		P: "UpAxis", "int", "Integer", "",1
+		P: "UpAxisSign", "int", "Integer", "",1
+		P: "FrontAxis", "int", "Integer", "",2
+		P: "FrontAxisSign", "int", "Integer", "",1
+		P: "CoordAxis", "int", "Integer", "",0
+		P: "CoordAxisSign", "int", "Integer", "",1
+		P: "UnitScaleFactor", "double", "Number", "",100
+	}
+}
+Objects:  {
+	Geometry: 1000, "Geometry::Cube", "Mesh" {
+		Vertices: *24 {
+			a: -1,0,-1,1,0,-1,1,2,-1,-1,2,-1,-1,0,1,1,0,1,1,2,1,-1,2,1
+		}
+		PolygonVertexIndex: *24 {
+			a: 0,3,2,-2,4,5,6,-8,0,1,5,-5,1,2,6,-6,2,3,7,-7,3,0,4,-8
+		}
+		GeometryVersion: 124
+		LayerElementMaterial: 0 {
+			Version: 101
+			Name: ""
+			MappingInformationType: "AllSame"
+			ReferenceInformationType: "IndexToDirect"
+			Materials: *1 {
+				a: 0
+			}
+		}
+		Layer: 0 {
+			Version: 100
+			LayerElement:  {
+				Type: "LayerElementMaterial"
+				TypedIndex: 0
+			}
+		}
+	}
+	Model: 2000, "Model::Cube", "Mesh" {
+		Version: 232
+	}
+	Material: 3000, "Material::Red", "" {
+		Version: 102
+		ShadingModel: "phong"
+		Properties70:  {
+			P: "DiffuseColor", "Color", "", "A",1,0,0
+			P: "EmissiveColor", "Color", "", "A",0,0.5,0
+		}
+	}
+}
+Connections:  {
+	C: "OO",1000,2000
+	C: "OO",2000,0
+	C: "OO",3000,2000
+}
+"#;
+
+    #[test]
+    fn normal_maps_and_emission() {
+        // The quad of `bump_maps_bend_the_normal` with a normal map leaning toward +u (+x) and
+        // toward the top of the image (v counts down the image: -y).
+        let mut m = Mesh::default();
+        let p = [[-1.0, -1.0, 0.0], [1.0, -1.0, 0.0], [1.0, 1.0, 0.0], [-1.0, 1.0, 0.0]];
+        let uv = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+        m.materials.push(MeshMaterial { name: "m".into(), ..MeshMaterial::default() });
+        for f in [[0, 1, 2], [0, 2, 3]] {
+            m.push(f.map(|i| p[i]), Shading { uv: f.map(|i| uv[i]), material: 0, ..Shading::default() });
+        }
+        let vol = bake(&m, &ModelOptions { keep_units: true, ..opts(24) }, &no_progress);
+        let normals = Texture { width: 2, height: 2, texels: vec![[191, 191, 255]; 4], wrap: [Wrap::Repeat; 2], v_up: false };
+        let glow = Texture { width: 2, height: 2, texels: vec![[255, 128, 0]; 4], wrap: [Wrap::Repeat; 2], v_up: false };
+        let mut look = vol.file_look();
+        look.textures.push(Arc::new(normals));
+        look.textures.push(Arc::new(glow));
+        look.materials[0].normal = Some(0);
+        look.materials[0].emissive = [2.0, 2.0, 2.0];
+        look.materials[0].emissive_texture = Some(1);
+        look.update_flags(false);
+        assert!(look.maps);
+        let s = vol.surface([0.0, 0.3, 0.01], &look, Some([0.0, 0.0, 1.0])).unwrap();
+        assert!(s.normal[0] > 0.3 && s.normal[1] < -0.3 && s.normal[2] > 0.5, "{:?}", s.normal);
+        assert!((s.normal[0] + s.normal[1]).abs() < 1e-6);
+        // Emission: the factor times the (linear) texture.
+        assert!((s.emission[0] - 2.0).abs() < 1e-6 && s.emission[1] > 0.3 && s.emission[1] < 0.5 && s.emission[2] == 0.0, "{:?}", s.emission);
+        // Half the strength bends half as far (in the tangent plane).
+        look.materials[0].normal_strength = 0.5;
+        let h = vol.surface([0.0, 0.3, 0.01], &look, Some([0.0, 0.0, 1.0])).unwrap();
+        assert!((h.normal[0] / h.normal[2] - 0.5 * s.normal[0] / s.normal[2]).abs() < 1e-6);
+    }
+
+    #[test]
     fn texture_sampling_wraps_and_flips() {
         let mut texels = vec![[0u8; 3]; 4];
         texels[0] = [255, 0, 0]; // top left
@@ -2521,6 +2984,24 @@ mod tests {
         assert!(Arc::ptr_eq(&v, &get(path, &o).unwrap()));
         assert!(matches!(request(dir.join("missing.stl").to_str().unwrap(), &o), Status::Failed(_)));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn grid_cache_round_trip() {
+        let dir = std::env::temp_dir().join(format!("rmb-grid-cache-{}", std::process::id()));
+        let file = dir.join("sphere.grid");
+        let m = sphere(48, 24);
+        let a = bake_cached(&m, &opts(40), &no_progress, Some(&file));
+        assert!(file.is_file());
+        // Read back: the same grid without baking; another mesh does not take it.
+        let b = bake_cached(&m, &opts(40), &no_progress, Some(&file));
+        assert_eq!(a.dist, b.dist);
+        assert_eq!(read_grid(&file, a.res, a.min, a.voxel, 1), None);
+        // A damaged file is baked again.
+        std::fs::write(&file, b"RMBGRID1 short").unwrap();
+        let c = bake_cached(&m, &opts(40), &no_progress, Some(&file));
+        assert_eq!(a.dist, c.dist);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// Timing of a 128³ bake of a 20k-triangle sphere:

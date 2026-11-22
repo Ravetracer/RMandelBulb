@@ -36,6 +36,10 @@ pub struct Scene {
     /// Keyframe animation (keyframe scenes have none).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub animation: Option<crate::animation::Animation>,
+    /// Motion blur: the camera at the end of the exposure. Every sample picks a random time
+    /// between `camera` and this one (set per pass by the animation renderer, never saved).
+    #[serde(skip)]
+    pub motion_end: Option<Camera>,
 }
 
 impl Default for Scene {
@@ -57,6 +61,7 @@ impl Default for Scene {
             notes: String::new(),
             objects: Vec::new(),
             animation: None,
+            motion_end: None,
         }
     }
 }
@@ -137,6 +142,21 @@ impl Camera {
     }
 
     /// Ray direction through normalized screen coordinates (`sx`, `sy` in -1..1, y up).
+    /// The camera a fraction `t` of the way to `b` (motion blur within one exposure: position
+    /// and field of view linear, the axes linear and normalized; same on the GPU).
+    pub fn lerp(&self, b: &Camera, t: f64) -> Camera {
+        let mix = |x: V3, y: V3| x + (y - x) * t;
+        let ha = (self.fov.clamp(1.0, 170.0) * 0.5).to_radians();
+        let hb = (b.fov.clamp(1.0, 170.0) * 0.5).to_radians();
+        Camera {
+            position: mix(self.position, b.position),
+            right: mix(self.right, b.right).normalize(),
+            up: mix(self.up, b.up).normalize(),
+            forward: mix(self.forward, b.forward).normalize(),
+            fov: (ha + (hb - ha) * t).to_degrees() * 2.0,
+        }
+    }
+
     pub fn ray_dir(&self, sx: f64, sy: f64, aspect: f64) -> V3 {
         let t = self.tan_half_fov();
         (self.forward + self.right * (sx * t * aspect) + self.up * (sy * t)).normalize()
@@ -254,6 +274,9 @@ pub struct Fractal {
     /// Interpolation of the first two slots (Mandelbulb3D's interpolation hybrid): every
     /// iteration runs both on the same point and blends the results with these weights.
     pub blend: Option<[f64; 2]>,
+    /// Placement of the main fractal in the scene (position, rotation, scale, stretch; object
+    /// fractals use their object's placement instead).
+    pub transform: crate::compose::Transform,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -331,6 +354,7 @@ impl Default for Fractal {
             inside: false,
             combine: None,
             blend: None,
+            transform: crate::compose::Transform::default(),
         }
     }
 }
@@ -859,11 +883,13 @@ pub struct ColorMap {
     /// Orbit mode: the iteration coordinate is value · scale + offset (0..1).
     pub iter_scale: f64,
     pub iter_offset: f64,
+    /// The bright parts of the map shine by themselves (strength; 0 = off).
+    pub emission: f64,
 }
 
 impl Default for ColorMap {
     fn default() -> Self {
-        ColorMap { image: String::new(), mode: MapMode::Orbit, scale: 1.0, rotation: [0.0; 3], offset: [0.0; 2], luminance_only: false, iter_scale: 0.05, iter_offset: 0.0 }
+        ColorMap { image: String::new(), mode: MapMode::Orbit, scale: 1.0, rotation: [0.0; 3], offset: [0.0; 2], luminance_only: false, iter_scale: 0.05, iter_offset: 0.0, emission: 0.0 }
     }
 }
 
@@ -914,6 +940,9 @@ pub struct Material {
     pub reflection: f64,
     /// Reflections of reflections.
     pub reflection_bounces: u32,
+    /// Blur of reflections and refractions (rough metal, frosted glass): roughness of the
+    /// surface's micro facets (GGX), 0 = mirror sharp.
+    pub gloss: f64,
     /// Glass: light passes through surfaces by the transparency of the gradient stops, refracted
     /// and absorbed inside (Mandelbulb3D's transmission). Shares `reflection` (light amount) and
     /// `reflection_bounces` (path length) with the reflections.
@@ -949,6 +978,14 @@ pub struct Material {
     pub steam_offset: [f64; 3],
     /// Animation: the pattern drifts by this much per second (world units; z is up).
     pub steam_drift: [f64; 3],
+    /// Shimmer: the emitted light flickers by up to this share (0 = off) over patches of
+    /// `shimmer_size` world units.
+    pub shimmer: f64,
+    pub shimmer_size: f64,
+    /// Animation: new flicker patterns per second.
+    pub shimmer_speed: f64,
+    /// Where the flicker is (patterns; animations advance it by `shimmer_speed`).
+    pub shimmer_phase: f64,
 }
 
 impl Default for Material {
@@ -978,6 +1015,7 @@ impl Default for Material {
             interior_offset: 0.0,
             reflection: 0.0,
             reflection_bounces: 2,
+            gloss: 0.0,
             transmission: false,
             refraction_index: 1.5,
             absorption: 1.0,
@@ -993,6 +1031,10 @@ impl Default for Material {
             steam_cover: 0.5,
             steam_offset: [0.0; 3],
             steam_drift: [0.0, 0.0, 0.05],
+            shimmer: 0.0,
+            shimmer_size: 0.05,
+            shimmer_speed: 3.0,
+            shimmer_phase: 0.0,
         }
     }
 }
@@ -1091,6 +1133,12 @@ pub struct Fog {
     /// Only ray steps where the fractal escaped after this many iterations glow (0 = all steps;
     /// Mandelbulb3D's "dynamic fog on iteration").
     pub glow_iteration: u32,
+    /// Light scattered by the fog toward the camera (0 = off): beams of light through gaps,
+    /// lit haze around lights. One shadow ray per sample from a point in the fog.
+    pub scatter: f64,
+    /// Henyey-Greenstein anisotropy of the scattering: above 0 the fog glows most when looking
+    /// toward a light, 0 scatters evenly.
+    pub scatter_forward: f64,
 }
 
 impl Default for Fog {
@@ -1111,6 +1159,8 @@ impl Default for Fog {
             glow_mix_steps: 0.0,
             glow_blend: false,
             glow_iteration: 0,
+            scatter: 0.0,
+            scatter_forward: 0.3,
         }
     }
 }
@@ -1132,6 +1182,46 @@ impl Fog {
                 if self.squared && f > 0.0 { f * f } else { f }
             }
         }
+    }
+
+    /// The fog distance in `0..=end` where the fog amount (clamped to 0..1) reaches `target`
+    /// (light scattering samples the fog in proportion to how much it adds; same on the GPU).
+    pub fn distance_for(&self, target: f64, near: f64, far: f64, end: f64) -> f64 {
+        match self.mode {
+            FogMode::Exponential => (-(1.0 - target).max(1e-30).ln() / self.density.max(1e-30)).clamp(0.0, end),
+            FogMode::Range => {
+                let (mut lo, mut hi) = (0.0, end);
+                for _ in 0..24 {
+                    let mid = 0.5 * (lo + hi);
+                    if self.amount(mid, near, far).clamp(0.0, 1.0) < target {
+                        lo = mid;
+                    } else {
+                        hi = mid;
+                    }
+                }
+                0.5 * (lo + hi)
+            }
+        }
+    }
+
+    /// How fast the fog amount (clamped to 0..1) grows at distance `t`: the light scattered per
+    /// unit of length that reaches the camera (same on the GPU).
+    pub fn density_at(&self, t: f64, near: f64, far: f64) -> f64 {
+        match self.mode {
+            FogMode::Exponential => self.density * (-self.density * t).exp(),
+            FogMode::Range => {
+                let h = 1e-3 * (far - near).max(1e-9);
+                let lo = (t - h).max(0.0);
+                (self.amount(t + h, near, far).clamp(0.0, 1.0) - self.amount(lo, near, far).clamp(0.0, 1.0)) / (t + h - lo)
+            }
+        }
+    }
+
+    /// Henyey-Greenstein phase of the light scattering for the cosine between the light's
+    /// direction (from the point toward the light) and the ray; 1 when it scatters evenly.
+    pub fn scatter_phase(&self, cos: f64) -> f64 {
+        let g = self.scatter_forward.clamp(-0.95, 0.95);
+        (1.0 - g * g) / (1.0 + g * g - 2.0 * g * cos).max(1e-12).powf(1.5)
     }
 
     /// Glow amount and the mix toward the second glow color after `steps` ray steps.

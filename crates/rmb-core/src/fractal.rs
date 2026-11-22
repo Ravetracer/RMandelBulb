@@ -92,6 +92,9 @@ pub struct Program {
     pub inside: bool,
     /// Objects combined with this fractal (scene composition), in order.
     pub objects: Vec<ObjectProgram>,
+    /// Placement of the main fractal (`Fractal::transform`) when it is not the identity:
+    /// inverse rotation rows, position, scale per own axis and the smallest of those.
+    pub main_transform: Option<MainTransform>,
     /// Some material has texture layers / bump layers (the GPU shader includes their code only
     /// then: it compiles faster without).
     pub layers: bool,
@@ -116,6 +119,39 @@ pub struct ObjectProgram {
     pub smooth: f64,
     /// Material: 0 the main one, k the k-th entry of `Scene::objects` (1-based).
     pub material: usize,
+    /// Repetition (`SceneObject::repeat`, `repeat_limit`).
+    pub repeat: [f64; 3],
+    pub repeat_limit: [u32; 3],
+}
+
+impl ObjectProgram {
+    /// World point `p` in the object's own coordinates, folded into one copy when repeated.
+    pub fn local(&self, p: V3) -> V3 {
+        crate::compose::repeat_fold(crate::compose::to_local(&self.inv, self.pos, self.size, p), self.repeat, self.repeat_limit)
+    }
+}
+
+/// See [`Program::main_transform`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MainTransform {
+    pub inv: [[f64; 3]; 3],
+    pub pos: V3,
+    pub size: V3,
+    pub scale: f64,
+}
+
+impl MainTransform {
+    pub fn of(t: &crate::compose::Transform) -> Option<MainTransform> {
+        (!t.is_identity()).then(|| {
+            let size = t.size();
+            MainTransform { inv: t.inverse_rotation(), pos: t.position, size, scale: size.x.min(size.y).min(size.z) }
+        })
+    }
+
+    /// World point `p` in the fractal's own coordinates.
+    pub fn local(&self, p: V3) -> V3 {
+        crate::compose::to_local(&self.inv, self.pos, self.size, p)
+    }
 }
 
 pub enum ObjectShape {
@@ -191,11 +227,17 @@ impl Program {
     }
 
     pub fn new(f: &Fractal, cut: &Cutting) -> Program {
+        Self::new_at(f, cut, 0)
+    }
+
+    /// [`Program::new`] whose constants start at `base` of the scene's constants (object
+    /// fractals follow the main fractal's).
+    fn new_at(f: &Fractal, cut: &Cutting, base: usize) -> Program {
         let split = f.combine.as_ref().map(|c| c.start.clamp(1, f.slots.len().max(1))).filter(|s| *s < f.slots.len());
         let end1 = split.unwrap_or(f.slots.len());
-        let mut p = Self::build(f, &f.slots[..end1], 0, f.repeat_from, f.max_iterations, 0);
+        let mut p = Self::build(f, &f.slots[..end1], 0, f.repeat_from, f.max_iterations, base);
         if let (Some(start), Some(c)) = (split, f.combine.as_ref()) {
-            let mut p2 = Self::build(f, &f.slots[start..], start, c.repeat_from, c.max_iterations, p.constants.len());
+            let mut p2 = Self::build(f, &f.slots[start..], start, c.repeat_from, c.max_iterations, base + p.constants.len());
             p.constants.append(&mut p2.constants);
             p.missing.append(&mut p2.missing);
             p.combine_mode = c.mode;
@@ -290,6 +332,7 @@ impl Program {
             color_on_it: -1,
             inside: f.inside,
             objects: Vec::new(),
+            main_transform: None,
             layers: false,
             bump: false,
         }
@@ -299,6 +342,7 @@ impl Program {
     pub fn for_scene(scene: &crate::Scene) -> Program {
         use crate::compose::{MAX_OBJECTS, Shape};
         let mut p = Program::new(&scene.fractal, &scene.cut);
+        p.main_transform = MainTransform::of(&scene.fractal.transform);
         let m = &scene.material;
         p.color2 = (m.second_choice.index(), m.lli_multiplier);
         p.color_on_it = m.color_on_iteration;
@@ -308,7 +352,10 @@ impl Program {
             }
             let shape = match &o.shape {
                 Shape::Fractal(f) => {
-                    let mut op = Self::build(f, &f.slots, 0, f.repeat_from, f.max_iterations, p.constants.len());
+                    // With DE combination and interpolation; no 4D rotation (the GPU has one
+                    // rotation for the main fractal only).
+                    let mut op = Self::new_at(f, &crate::scene::Cutting::default(), p.constants.len());
+                    op.rotation_4d = None;
                     op.color2 = p.color2;
                     p.constants.append(&mut op.constants);
                     p.missing.append(&mut op.missing);
@@ -329,12 +376,14 @@ impl Program {
                 op: o.op.index(),
                 smooth: o.smooth.max(0.0),
                 material: if o.material.own { i + 1 } else { 0 },
+                repeat: o.repeat.map(|c| c.max(0.0)),
+                repeat_limit: o.repeat_limit,
             });
         }
         let used = std::iter::once(&scene.material.layers).chain(p.objects.iter().filter(|o| o.material > 0).map(|o| &scene.objects[o.material - 1].material.layers));
         for l in used.flatten().filter(|l| l.enabled) {
             p.layers = true;
-            p.bump |= l.target == crate::texture::Target::Bump;
+            p.bump |= l.target.bends();
         }
         p
     }
@@ -365,6 +414,7 @@ impl Program {
         s.push_str(if self.blend.is_some() { "|blend" } else { "" });
         s.push_str(if self.reflections { "|refl" } else { "" });
         s.push_str(if self.deep.is_some() { "|deep" } else { "" });
+        s.push_str(if self.main_transform.is_some() { "|mt" } else { "" });
         s.push_str(if self.color_on_it >= 0 { "|coi" } else { "" });
         s.push_str(if self.is_mix() { "|mix" } else { "" });
         s.push_str(if self.layers { "|layers" } else { "" });
@@ -398,20 +448,24 @@ impl Program {
             .objects
             .iter()
             .map(|o| match &o.shape {
-                ObjectShape::Fractal(f) => regs(f),
-                ObjectShape::Primitive(..) | ObjectShape::Model(_) => Vec::new(),
+                ObjectShape::Fractal(f) => (regs(f), f.part2.as_deref().map(regs).unwrap_or_default()),
+                ObjectShape::Primitive(..) | ObjectShape::Model(_) => (Vec::new(), Vec::new()),
             })
             .collect();
         Evaluator { prog: self, regs: regs(self), regs2: self.part2.as_deref().map(regs).unwrap_or_default(), regs_obj, flip: false }
     }
 }
 
+/// Register files of a chain's slots.
+type Regs = Vec<Vec<f64>>;
+
 /// Per-thread evaluation state (register files of the slots).
 pub struct Evaluator<'a> {
     prog: &'a Program,
     regs: Vec<Vec<f64>>,
     regs2: Vec<Vec<f64>>,
-    regs_obj: Vec<Vec<Vec<f64>>>,
+    /// Per object: the register files of its chains (first, second).
+    regs_obj: Vec<(Regs, Regs)>,
     /// Swaps inside and outside rendering (rays travelling inside glass).
     pub flip: bool,
 }
@@ -588,6 +642,26 @@ fn iterate_from(top: &Program, prog: &Program, regs: &mut [Vec<f64>], p: V3, fix
 }
 
 /// Distance estimate of one chain (before the scene's DE scale and the cutting planes).
+/// The orbit of a fractal (main or object) with its DE combination.
+fn fractal_orbit(prog: &Program, regs: &mut [Vec<f64>], regs2: &mut [Vec<f64>], p: V3, h: f64) -> Orbit {
+    if let Some(p2) = prog.part2.as_deref().filter(|_| prog.is_mix()) {
+        // Mix: the first chain transforms the point, the dIFS measures the distance there,
+        // scaled back by the first chain's derivative (Calc.pas DEcomb types 6/7).
+        let a = iterate(prog, prog, regs, p, None);
+        let b = iterate_from(prog, p2, regs2, p, None, Some(a.state), false);
+        let d = b.difs_de.max(0.0) * p2.de_scale;
+        let de = if prog.de_kind == DeKind::Linear && !prog.difs { d / a.dr.abs().max(1e-30) } else { d * prog.mix_pow.abs().max(1e-30).powf(-1.0 - a.n as f64) };
+        let b_r2 = b.state.iter().map(|v| v * v).sum();
+        let color2 = color2_value(prog.color2.0, prog.color2.1, b.state, b.c, b_r2, b.rold, b.trap);
+        return Orbit { de, iterations: b.n, r2: a.state.iter().map(|v| v * v).sum(), r2_old: a.rold, dr: a.dr, trap: b.trap, color2, escaped: true, object: 0 };
+    }
+    let o = chain_orbit(prog, prog, regs, p, h);
+    match prog.part2.as_deref() {
+        Some(p2) => combine(prog.combine_mode, prog.combine_smooth, o, chain_orbit(prog, p2, regs2, p, h)),
+        None => o,
+    }
+}
+
 fn chain_orbit(top: &Program, prog: &Program, regs: &mut [Vec<f64>], p: V3, h: f64) -> Orbit {
     if prog.slots.is_empty() {
         return Orbit { de: 1.0e10, ..Orbit::default() };
@@ -681,6 +755,7 @@ impl Evaluator<'_> {
         if prog.color_on_it < 0 || o.object != 0 || prog.part2.is_some() || prog.slots.is_empty() {
             return None;
         }
+        let p = prog.main_transform.as_ref().map_or(p, |t| t.local(p));
         let mut it = iterate_from(prog, prog, &mut self.regs, p, Some(prog.color_on_it as u32), None, true);
         if prog.color_on_it == 0 {
             it.state = [it.c[0], it.c[1], it.c[2], 0.0];
@@ -691,33 +766,23 @@ impl Evaluator<'_> {
         Some(Orbit { iterations: it.n, r2, r2_old: it.rold, trap, color2, escaped: false, ..*o })
     }
 
-    pub fn orbit(&mut self, p: V3, h: f64) -> Orbit {
+    pub fn orbit(&mut self, p_world: V3, h_world: f64) -> Orbit {
         let prog = self.prog;
-        let mut o;
-        if let Some(p2) = prog.part2.as_deref().filter(|_| prog.is_mix()) {
-            // Mix: the first chain transforms the point, the dIFS measures the distance there,
-            // scaled back by the first chain's derivative (Calc.pas DEcomb types 6/7).
-            let a = iterate(prog, prog, &mut self.regs, p, None);
-            let b = iterate_from(prog, p2, &mut self.regs2, p, None, Some(a.state), false);
-            let d = b.difs_de.max(0.0) * p2.de_scale;
-            let de = if prog.de_kind == DeKind::Linear && !prog.difs { d / a.dr.abs().max(1e-30) } else { d * prog.mix_pow.abs().max(1e-30).powf(-1.0 - a.n as f64) };
-            let b_r2 = b.state.iter().map(|v| v * v).sum();
-            let color2 = color2_value(prog.color2.0, prog.color2.1, b.state, b.c, b_r2, b.rold, b.trap);
-            o = Orbit { de, iterations: b.n, r2: a.state.iter().map(|v| v * v).sum(), r2_old: a.rold, dr: a.dr, trap: b.trap, color2, escaped: true, object: 0 };
-        } else {
-            o = chain_orbit(prog, prog, &mut self.regs, p, h);
-            if let Some(p2) = prog.part2.as_deref() {
-                let o2 = chain_orbit(prog, p2, &mut self.regs2, p, h);
-                o = combine(prog.combine_mode, prog.combine_smooth, o, o2);
-            }
-        }
-        let mut de = (o.de * prog.scene_de_scale).max(0.0);
+        // The main fractal in its own coordinates (objects and cuts stay in the world).
+        let (p, h, t_scale) = match &prog.main_transform {
+            Some(t) => (t.local(p_world), h_world / t.scale, t.scale),
+            None => (p_world, h_world, 1.0),
+        };
+        let mut o = fractal_orbit(prog, &mut self.regs, &mut self.regs2, p, h);
+        let mut de = (o.de * prog.scene_de_scale * t_scale).max(0.0);
+        let (p, h) = (p_world, h_world);
         // Scene composition: the objects in order, each in its own coordinates.
         for (k, ob) in prog.objects.iter().enumerate() {
-            let q = crate::compose::to_local(&ob.inv, ob.pos, ob.size, p);
+            let q = ob.local(p);
             let (d, orbit) = match &ob.shape {
                 ObjectShape::Fractal(f) => {
-                    let oo = chain_orbit(f, f, &mut self.regs_obj[k], q, h / ob.scale);
+                    let (r1, r2) = &mut self.regs_obj[k];
+                    let oo = fractal_orbit(f, r1, r2, q, h / ob.scale);
                     let mut d = (oo.de * f.scene_de_scale).max(0.0) * ob.scale;
                     // A fractal has no distance inside; cutting with it needs one.
                     if d <= 0.0 && matches!(ob.op, 1 | 4) {

@@ -40,7 +40,7 @@ fn thumbnail(ui: &Ui, name: &str) -> Option<egui::TextureHandle> {
 
 /// Image file row: pick button, name field, preview, remove button. `what` names it in the
 /// hover texts.
-fn image_row(ui: &mut Ui, name: &mut String, what: &str, tip: &str) {
+pub fn image_row(ui: &mut Ui, name: &mut String, what: &str, tip: &str) {
     ui.horizontal(|ui| {
         if ui.button(format!("{}…", what)).on_hover_text(tip).clicked()
             && let Some(p) = rfd::FileDialog::new().add_filter("Image", &IMAGES).pick_file()
@@ -135,15 +135,27 @@ pub fn layers_editor(ui: &mut Ui, layers: &mut Vec<TextureLayer>, id: &str) {
 
 fn layer_editor(ui: &mut Ui, l: &mut TextureLayer, id: &str) {
     let d = TextureLayer::default();
+    let before = l.target;
     widgets::segmented(
         ui,
         &mut l.target,
         &[
             (Target::Color, "Color", "Paints the surface color"),
             (Target::Bump, "Bump", "The brightness of the image is a height: bends the surface for the lighting"),
+            (Target::Normal, "Normal", "A normal map (tangent space: red right, green up, blue out, like the normal maps of 3D models) bends the surface for the lighting"),
             (Target::Emission, "Glow", "Bright parts shine by themselves (adds to the gradient's emission; settings under Emissive colors)"),
+            (Target::Specular, "Shine", "The brightness scales the highlights: white keeps them, black removes them"),
+            (Target::Roughness, "Rough", "The brightness is the roughness: bright parts get dull highlights and softer light"),
         ],
     );
+    // Normal maps are drawn at strength 1, bumps need more.
+    if l.target != before {
+        if l.target == Target::Normal {
+            l.strength = 1.0;
+        } else if before == Target::Normal {
+            l.strength = d.strength;
+        }
+    }
     image_row(ui, &mut l.image, "Image", "The image of this layer (empty: a solid color)");
     if l.image.trim().is_empty() && l.target == Target::Color {
         ui.horizontal(|ui| {
@@ -153,6 +165,9 @@ fn layer_editor(ui: &mut Ui, l: &mut TextureLayer, id: &str) {
     }
     image_row(ui, &mut l.mask, "Mask", "An image whose brightness is the opacity of this layer (white: shown, black: hidden)");
     widgets::grid(ui, &format!("layer-{id}"), |ui| {
+        if !l.image.trim().is_empty() {
+            widgets::checkbox(ui, "Image alpha", "Transparent parts of the image (PNG alpha channel) let the layers below show through", &mut l.use_alpha);
+        }
         if !l.mask.trim().is_empty() {
             widgets::checkbox(ui, "Invert mask", "Black shows the layer, white hides it", &mut l.mask_invert);
             widgets::slider_log(ui, "Mask contrast", "Sharpens (above 1) or softens (below 1) the mask edges", &mut l.mask_contrast, 0.1..=20.0, d.mask_contrast);
@@ -181,6 +196,9 @@ fn layer_editor(ui: &mut Ui, l: &mut TextureLayer, id: &str) {
         for (k, axis) in ["X", "Y", "Z"].iter().enumerate() {
             widgets::slider(ui, &format!("Offset {axis}"), "Shifts the texture (in tiles)", &mut l.offset[k], -1.0..=1.0, 0.0);
         }
+        for (k, axis) in ["X", "Y", "Z"].iter().enumerate() {
+            widgets::slider(ui, &format!("Drift {axis}"), "Animations: the texture moves by this many tiles per second (flowing lava, moving clouds)", &mut l.drift[k], -5.0..=5.0, 0.0);
+        }
         if l.mapping != Mapping::Orbit {
             for (k, axis) in ["X", "Y", "Z"].iter().enumerate() {
                 widgets::slider(ui, &format!("Rotate {axis}"), "Turns the projection (degrees)", &mut l.rotation[k], -180.0..=180.0, 0.0);
@@ -203,10 +221,16 @@ fn layer_editor(ui: &mut Ui, l: &mut TextureLayer, id: &str) {
             Target::Emission => {
                 widgets::slider_log(ui, "Strength", "Brightness of the glow where the image is white", &mut l.strength, 0.01..=100.0, d.strength);
             }
-            Target::Color => {}
+            Target::Normal => {
+                widgets::slider_log(ui, "Strength", "How far the normals bend the surface (1: as drawn)", &mut l.strength, 0.01..=10.0, 1.0);
+            }
+            Target::Color | Target::Specular | Target::Roughness => {}
         }
     });
-    if l.target == Target::Bump && l.mapping == Mapping::Orbit {
-        ui.label(RichText::new("Bumps need a projection (not Orbit).").size(theme::fs(11.0)).color(theme::WARN));
+    if l.target.bends() && l.mapping == Mapping::Orbit {
+        ui.label(RichText::new("Bumps and normal maps need a projection (not Orbit).").size(theme::fs(11.0)).color(theme::WARN));
+    }
+    if l.target == Target::Normal && l.image.trim().is_empty() {
+        ui.label(RichText::new("A normal map needs an image.").size(theme::fs(11.0)).color(theme::WARN));
     }
 }

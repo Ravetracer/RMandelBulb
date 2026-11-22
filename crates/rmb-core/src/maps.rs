@@ -30,6 +30,8 @@ pub struct Map {
     pub height: u32,
     /// Pixels, top row first, in channel order blue, green, red (0..255).
     pub pixels: Vec<[u8; 3]>,
+    /// Opacity per pixel (0..255) of images with an alpha channel.
+    pub alpha: Option<Vec<u8>>,
 }
 
 impl Map {
@@ -147,13 +149,17 @@ fn load(n: i32) -> Option<Map> {
 }
 
 fn load_path(path: &std::path::Path, n: i32) -> Option<Map> {
-    let img = image::open(path).ok()?.to_rgb8();
+    let img = image::open(path).ok()?;
+    let has_alpha = img.color().has_alpha();
+    let img = img.to_rgba8();
     let (width, height) = img.dimensions();
     if width < 2 || height < 2 {
         return None;
     }
     let pixels = img.pixels().map(|p| [p[2], p[1], p[0]]).collect();
-    Some(Map { number: n, width, height, pixels })
+    // Only images that use their alpha channel keep it.
+    let alpha = has_alpha.then(|| img.pixels().map(|p| p[3]).collect::<Vec<u8>>()).filter(|a| a.iter().any(|v| *v < 255));
+    Some(Map { number: n, width, height, pixels, alpha })
 }
 
 /// Map `n`, loaded on first use (None if there is no such file).
@@ -213,7 +219,7 @@ impl Map {
                 });
             }
         }
-        Map { number: self.number, width: self.width, height: self.height, pixels: out }
+        Map { number: self.number, width: self.width, height: self.height, pixels: out, alpha: None }
     }
 
     /// Blends the six outer columns of each side into each other (FitLMborder), so the
@@ -299,7 +305,7 @@ impl Map {
                 }
             }
         }
-        Map { number: self.number, width: W as u32, height: H as u32, pixels: small.iter().map(|p| p.map(|v| v.clamp(0.0, 255.0) as u8)).collect() }
+        Map { number: self.number, width: W as u32, height: H as u32, pixels: small.iter().map(|p| p.map(|v| v.clamp(0.0, 255.0) as u8)).collect(), alpha: None }
     }
 
     /// Like [`Map::sample_panorama`], clamped in both directions (images in screen
@@ -431,7 +437,7 @@ mod tests {
 
     #[test]
     fn constant_map_samples_constant() {
-        let m = Map { number: 1, width: 4, height: 3, pixels: vec![[10, 20, 30]; 12] };
+        let m = Map { number: 1, width: 4, height: 3, pixels: vec![[10, 20, 30]; 12], alpha: None };
         let v = m.sample(3.7, 0.2);
         assert!((v[0] - 10.0 / 255.0).abs() < 1e-12 && (v[2] - 30.0 / 255.0).abs() < 1e-12);
     }

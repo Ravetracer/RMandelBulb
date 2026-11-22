@@ -121,6 +121,17 @@ cargo clippy -j 8 --workspace --all-targets
   6, filled by `renderer.rs::objects_gpu`) and `compose_objects`; object materials are LUT
   blocks of 512 entries from index 1152. Adding objects or changing their formulas / primitive
   type changes the shader signature (recompile); everything else is buffer data.
+- Repetition: `ObjectProgram::local` (= `compose::to_local` + `repeat_fold`) gives every
+  local object point, on the GPU `obj_local` (fields `rep`, `rep_lim`); distances, materials
+  and layers all go through it.
+- Object fractals are built with `Program::new_at` (DE combination, interpolation; no 4D
+  rotation, no cuts) and evaluated by `fractal_orbit` like the main fractal. GPU: per object
+  `fractal_de_o{j}` with a second chain `o{j}b` (`Uni::object2`; `comb`, `comb2` in `Obj`; both
+  chains share the object's eight slot entries).
+- The main fractal's placement (`Fractal::transform`, `Program::main_transform`) applies in
+  `Evaluator::orbit` / `color_orbit` and the GPU `orbit` / `color_orbit` (`MAIN_T`, uniforms
+  `mt0..2`, `mt_pos`); objects and cut planes stay in world coordinates. Deep zoom: the
+  reference point is the camera in the fractal's coordinates, `mt_pos` is zero.
 - `cargo run --release -p rmb-core --example compose_demo -- out.rmb` writes a demo scene.
 
 ## Deep zoom (double precision)
@@ -140,6 +151,30 @@ cargo clippy -j 8 --workspace --all-targets
   df64) or interpolation hybrids. Parameter low parts live in `prm` from entry 1024 on.
 - `examples/deep_scene.rs` writes a zoomed scene (ten times closer per step: a hit is only
   accurate to its threshold); `examples/dump_shader.rs <scene> deep` prints the deep shader.
+
+## Motion blur
+
+- `Animation::shutter`; `render_frames` (renderer.rs) renders pass k of a frame with
+  `pass_scene`: the settings at the middle of the pass's slice of the exposure
+  (`AnimationPlan::scene_at_time`, fractional frames), `Scene::motion_end` = the camera at the
+  slice's end. Every sample draws one extra random number for its time (`Camera::lerp`, same in
+  `sample_pixel`) only when `motion_end` is set. `GpuRenderer::set_scene_keep` /
+  `CpuRenderer::set_scene_keep` change the scene between passes without restarting.
+
+## Glossy reflections
+
+- `Material::gloss`: `bounce()` (cpu.rs, march.wgsl) draws two random numbers for a GGX micro
+  facet (`ggx_normal`) only when gloss > 0, reflects and refracts on it; reflections below
+  the surface are mirrored back above it. The weight stays the reflectance.
+
+## Light scattering in fog
+
+- `Fog::scatter` / `scatter_forward`: at the end of `trace` (not inside glass) four random
+  numbers (distance, light, area/line point), one light, one point along the segment:
+  equiangular around positional lights (`Fog::density_at` / pdf), else by the fog amount
+  (`Fog::distance_for`), a `soft_shadow` toward the light, Henyey-Greenstein phase
+  (`Fog::scatter_phase`). GPU in `trace` with `fog_density_at`, `fog_distance_for`,
+  `scatter_phase` (uniform `fog4`).
 
 ## Path tracing
 
@@ -165,6 +200,12 @@ cargo clippy -j 8 --workspace --all-targets
   falloff from the surface, steam also × noise density); `trace` casts one ray from the picked
   point toward the falling distance and adds the emission of the surface it hits (so glow and
   steam take the color of the glowing surface, not of the empty space).
+- Shimmer (`Material::shimmer*`, `render::shimmer`, GPU `shimmer`, uniform `shim`): the
+  emission factor from value noise at the world position, cross-faded between the patterns
+  of `floor(phase)` and the next; `shimmer_phase` advances by `shimmer_speed` in animations
+  (phase "shimmer"). Applied in `trace` and `emission_at`. Color maps can emit
+  (`ColorMap::emission` × the map's brightness, `map_color` returns it; GPU `map_lum`), only
+  in `trace` (they do not light their surroundings).
 - Mandelbulb3D's second color choice (`ColorMode::SecondChoice`, `Material::second_choice`,
   `lli_multiplier`): every chain computes `Orbit::color2` at its end (`fractal::color2_value`,
   GPU `color2_value` at the end of `iterate_K`), the 15-bit value / 32767; the m3p import maps
@@ -180,7 +221,8 @@ cargo clippy -j 8 --workspace --all-targets
 
 ## 3D models and texture layers
 
-- `mesh.rs` loads OBJ/STL/PLY/glTF (materials by name, colors, color textures; images that
+- `mesh.rs` loads OBJ/STL/PLY/glTF/FBX (FBX through the `ufbx` crate, converted to Y-up;
+  materials by name, colors, color textures, glTF/FBX normal maps and emission, OBJ `Ke`; images that
   are not where the file says are looked up near the model, `nearby_images`) and bakes a signed
   distance grid (exact triangle distances through a BVH; sign by ray parity along three axes,
   majority vote) plus the triangles with a BVH. `Volume::distance` uses the grid away from the
@@ -189,19 +231,30 @@ cargo clippy -j 8 --workspace --all-targets
   stay visible at any distance. Colors come from the nearest triangle (material color × vertex
   color × texture), resolved through a `Look` (cached per volume and settings, `Model::new`):
   the file's materials with the scene's `ModelRef::materials` overrides (color, color texture,
-  bump and specular maps; image paths relative to the model). Override images load in the
+  bump, specular and normal maps, emission; image paths relative to the model). Normal maps
+  (`Volume::normal_map`) use the triangle's texture derivatives; green points up the image
+  (`-dpdv` unless the texture counts v from the bottom). Emission is added to the shaded color
+  (`model_emis` in `trace`). Override images load in the
   background (`texture_file`, bumps `generation()`). `auto_assign` matches images near the
   model to materials by name (kind from words like diffuse/bump/spec); the app runs it once per
   imported model and from the Materials section.
   `mesh::request` bakes in the background (cache keyed by file, modification time and options;
-  `generation()` changes when a bake finishes), `compose::load_models` waits for all models of a
-  scene (CLI, exports). GPU: `vols` buffer (binding 7, `volumes_gpu`, 32-word header per object),
+  `generation()` changes when a bake finishes); the distance grid is also cached on disk
+  (`bake_cached`, `grid_cache_dir`: one `.grid` file per file/time/options, checked against the
+  grid size and a triangle checksum, oldest files removed above 2 GB), `compose::load_models` waits for all models of a
+  scene (CLI, exports). GPU: `vols` buffer (binding 7, `volumes_gpu`, 32-word header per object, 16 words per look material),
   read by `model_de` / `model_nearest` / `model_rgb` in march.wgsl exactly like
   `Volume::distance` / `nearest` / `color`. `cargo run --release -p rmb-core --example model_info
   -- model.glb` prints materials and bake statistics.
-- `texture.rs` holds the layers (mapping, blend modes, bump, emission). GPU: layer parameters
-  in `lut` from `LUT_LAYERS` (4 layers × 7 entries per material), layer images in the `maps`
-  buffer under 0xffffffef − index (`renderer.rs::layer_images`).
+- `texture.rs` holds the layers (mapping, blend modes; targets color, bump, normal map,
+  emission, specular, roughness). `texture::apply` returns `Applied` (color, emission, highlight
+  factor, roughness as keep/add), `texture::bump` bends the normal for bump and normal map
+  layers (normal maps: tangent frame from one-texel differences of the layer's u/v, per
+  triplanar projection). `Map::alpha` keeps an image's alpha channel; `TextureLayer::drift`
+  scrolls the offset in animations (phase `m.l{i}.{k}`). GPU: layer parameters in `lut` from
+  `LUT_LAYERS` (4 layers × 7 entries per material, [6].w: use alpha), layer images in the
+  `maps` buffer under 0xffffffef − index (`renderer.rs::layer_images`); texels are packed with
+  alpha in the top byte (255 without).
 - Compile-time switches keep shaders small: `LAYERS`, `BUMP` and `MODELS` (codegen.rs, from
   `Program::layers` / `bump` and the model objects) include that code only when the scene uses
   it. Lookups sit in loops with one call site each (the compiler inlines every call; unrolled
@@ -213,8 +266,11 @@ cargo clippy -j 8 --workspace --all-targets
   for preview and export): `HdrImage::finish_scene` adds them after denoising, the preview gets
   the layer through `GpuRenderer::set_flare` (display.wgsl binding 3, computed on a worker
   thread in `viewport.rs`).
+- Ghosts come from `LensFlare::generated_ghosts` (seeded) unless `ghost_list` holds a
+  hand-made layout (`GhostDef`); `ghost_image` (bokeh) replaces the aperture shape by an
+  image's brightness.
 - `cargo run --release -p rmb-core --example flare_presets -- out.png` renders all presets on
-  black, to judge changes to the look.
+  black, to judge changes to the look (the sheet's display curve lifts dark values strongly).
 
 ## Testing the app visually
 

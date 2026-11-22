@@ -45,6 +45,12 @@ impl FormulasPanel {
                     self.params(ui, &mut scene.fractal);
                     ui.separator();
                     iteration(ui, &mut scene.fractal, true);
+                    let cam = scene.camera.clone();
+                    let t = &mut scene.fractal.transform;
+                    if widgets::section(ui, "Placement", !t.is_identity()) {
+                        *t = Transform::default();
+                    }
+                    placement(ui, t, &cam, "main-place", false);
                 }
                 Some(k) => {
                     let glass = scene.material.transmission;
@@ -83,7 +89,7 @@ impl FormulasPanel {
                             }
                         }
                         ui.separator();
-                        if ui.button("3D model…").on_hover_text("A 3D model file (OBJ, STL, PLY, glTF/GLB; from Blender: File › Export › glTF 2.0 or Wavefront OBJ)").clicked()
+                        if ui.button("3D model…").on_hover_text("A 3D model file (OBJ, STL, PLY, glTF/GLB, FBX; from Blender: File › Export › glTF 2.0 or Wavefront OBJ)").clicked()
                             && let Some(p) = rfd::FileDialog::new().add_filter("3D model", &MODEL_FILES).pick_file()
                         {
                             add = Some(model_object(&p, ahead));
@@ -199,36 +205,28 @@ impl FormulasPanel {
             }
         });
         widgets::section(ui, "Placement", false);
-        let t = &mut o.transform;
-        widgets::grid(ui, "obj-place", |ui| {
-            let speed = (t.position.length() * 0.002).max(1e-4);
-            widgets::drag(ui, "X", "Position along the world x axis (red); or drag the arrows in the view", &mut t.position.x, speed, 0.0);
-            widgets::drag(ui, "Y", "Position along the world y axis (green)", &mut t.position.y, speed, 0.0);
-            widgets::drag(ui, "Z", "Position along the world z axis (blue, up)", &mut t.position.z, speed, 0.0);
-            widgets::label(ui, "", "");
-            if ui.small_button("In front of the camera").on_hover_text("Moves the object to the middle of the view").clicked() {
-                t.position = cam.position + cam.forward * 2.0;
-            }
-            ui.end_row();
-            for (k, axis) in ["Turn X", "Turn Y", "Turn Z"].iter().enumerate() {
-                let tip = "Rotation in degrees (about x, then y, then z); or drag the rings in the view (Rotate in the toolbar). Double click: 0";
-                widgets::label(ui, axis, tip);
-                let r = ui.add(egui::DragValue::new(&mut t.rotation[k]).speed(0.5).max_decimals(2).suffix("°")).on_hover_text(tip);
-                if r.double_clicked() {
-                    t.rotation[k] = 0.0;
-                }
+        placement(ui, &mut o.transform, cam, "obj-place", true);
+        widgets::section(ui, "Repetition", false);
+        widgets::grid(ui, "obj-repeat", |ui| {
+            for (k, axis) in ["X", "Y", "Z"].iter().enumerate() {
+                let tip = format!(
+                    "Copies of the object along its own {axis} axis, this far apart (in its own units, before the scale; 0: no copies). Keep it larger than the object, or the copies cut into each other. Double click: 0"
+                );
+                widgets::label(ui, &format!("Spacing {axis}"), &tip);
+                ui.horizontal(|ui| {
+                    let r = ui.add(egui::DragValue::new(&mut o.repeat[k]).speed(0.01).range(0.0..=1.0e6).max_decimals(4)).on_hover_text(&tip);
+                    if r.double_clicked() {
+                        o.repeat[k] = 0.0;
+                    }
+                    if o.repeat[k] > 0.0 {
+                        let tip = "Copies on each side of the original (0: endless). Double click: 0";
+                        let r = ui.add(egui::DragValue::new(&mut o.repeat_limit[k]).speed(0.1).range(0..=10000).prefix("× ")).on_hover_text(tip);
+                        if r.double_clicked() {
+                            o.repeat_limit[k] = 0;
+                        }
+                    }
+                });
                 ui.end_row();
-            }
-            widgets::slider_log(ui, "Scale", "Size of the object; or drag its center in the view (Scale in the toolbar)", &mut t.scale, 0.0001..=100.0, 1.0);
-            for (k, axis) in ["Stretch X", "Stretch Y", "Stretch Z"].iter().enumerate() {
-                let tip = "Extra size along the object's own axis (1: none); or drag the axis handles in the view (Scale in the toolbar). Double click: 1";
-                widgets::label(ui, axis, tip);
-                let r = ui.add(egui::DragValue::new(&mut t.stretch[k]).speed(0.005).max_decimals(3)).on_hover_text(tip);
-                if r.double_clicked() {
-                    t.stretch[k] = 1.0;
-                }
-                ui.end_row();
-                t.stretch[k] = t.stretch[k].clamp(0.001, 1000.0);
             }
         });
         match &mut o.shape {
@@ -462,6 +460,43 @@ fn formula_picker(ui: &mut Ui, name: &mut String, search: &mut String, idx: usiz
     chosen
 }
 
+/// Position, rotation, scale and stretch of an object (`gizmos`: it has handles in the view)
+/// or the main fractal.
+fn placement(ui: &mut Ui, t: &mut Transform, cam: &rmb_core::scene::Camera, id: &str, gizmos: bool) {
+    let hint = |text: &str, handles: &str| if gizmos { format!("{text}; or {handles}") } else { text.to_string() };
+    widgets::grid(ui, id, |ui| {
+        let speed = (t.position.length() * 0.002).max(1e-4);
+        widgets::drag(ui, "X", &hint("Position along the world x axis (red)", "drag the arrows in the view"), &mut t.position.x, speed, 0.0);
+        widgets::drag(ui, "Y", "Position along the world y axis (green)", &mut t.position.y, speed, 0.0);
+        widgets::drag(ui, "Z", "Position along the world z axis (blue, up)", &mut t.position.z, speed, 0.0);
+        widgets::label(ui, "", "");
+        if ui.small_button("In front of the camera").on_hover_text("Moves it to the middle of the view").clicked() {
+            t.position = cam.position + cam.forward * 2.0;
+        }
+        ui.end_row();
+        for (k, axis) in ["Turn X", "Turn Y", "Turn Z"].iter().enumerate() {
+            let tip = hint("Rotation in degrees (about x, then y, then z)", "drag the rings in the view (Rotate in the toolbar)") + ". Double click: 0";
+            widgets::label(ui, axis, &tip);
+            let r = ui.add(egui::DragValue::new(&mut t.rotation[k]).speed(0.5).max_decimals(2).suffix("°")).on_hover_text(&tip);
+            if r.double_clicked() {
+                t.rotation[k] = 0.0;
+            }
+            ui.end_row();
+        }
+        widgets::slider_log(ui, "Scale", &hint("Size as a whole", "drag its center in the view (Scale in the toolbar)"), &mut t.scale, 0.0001..=100.0, 1.0);
+        for (k, axis) in ["Stretch X", "Stretch Y", "Stretch Z"].iter().enumerate() {
+            let tip = hint("Extra size along its own axis (1: none)", "drag the axis handles in the view (Scale in the toolbar)") + ". Double click: 1";
+            widgets::label(ui, axis, &tip);
+            let r = ui.add(egui::DragValue::new(&mut t.stretch[k]).speed(0.005).max_decimals(3)).on_hover_text(&tip);
+            if r.double_clicked() {
+                t.stretch[k] = 1.0;
+            }
+            ui.end_row();
+            t.stretch[k] = t.stretch[k].clamp(0.001, 1000.0);
+        }
+    });
+}
+
 /// A new primitive object at `at` (planes and water at the ground below it).
 fn primitive_object(p: Primitive, at: rmb_core::V3) -> SceneObject {
     let mut material = ObjectMaterial { color_scale: 1.0, repeat: false, ..Default::default() };
@@ -507,6 +542,23 @@ fn primitive_params(ui: &mut Ui, p: &mut Primitive) {
         Primitive::Torus { major, minor } => {
             widgets::slider_log(ui, "Ring radius", "Radius of the ring", major, 0.001..=100.0, 0.6);
             widgets::slider_log(ui, "Thickness", "Radius of the tube", minor, 0.001..=100.0, 0.15);
+        }
+        Primitive::Capsule { radius, height } => {
+            widgets::slider_log(ui, "Radius", "Radius of the capsule", radius, 0.001..=100.0, 0.25);
+            widgets::slider_log(ui, "Height", "Length from end to end, the round ends included (along its z axis)", height, 0.001..=100.0, 1.0);
+        }
+        Primitive::Cone { bottom, top, height } => {
+            widgets::slider_log(ui, "Bottom radius", "Radius at the bottom", bottom, 0.0..=100.0, 0.4);
+            widgets::slider_log(ui, "Top radius", "Radius at the top (0: pointed)", top, 0.0..=100.0, 0.0);
+            widgets::slider_log(ui, "Height", "Height of the cone (along its z axis)", height, 0.001..=100.0, 1.0);
+        }
+        Primitive::HexPrism { radius, height } => {
+            widgets::slider_log(ui, "Radius", "Distance from the axis to the middle of a side", radius, 0.001..=100.0, 0.4);
+            widgets::slider_log(ui, "Height", "Height of the prism (along its z axis)", height, 0.001..=100.0, 1.0);
+        }
+        Primitive::TriPrism { side, height } => {
+            widgets::slider_log(ui, "Side", "Side length of the triangle", side, 0.001..=100.0, 0.8);
+            widgets::slider_log(ui, "Height", "Height of the prism (along its z axis)", height, 0.001..=100.0, 1.0);
         }
         Primitive::Water { amplitude, wavelength, phase, angle } => {
             widgets::slider_log(ui, "Wave height", "Height of the largest waves", amplitude, 0.0..=10.0, 0.02);
@@ -559,7 +611,7 @@ fn object_material(ui: &mut Ui, m: &mut ObjectMaterial, patterns: &[Pattern], gl
 }
 
 /// File types of 3D models.
-const MODEL_FILES: [&str; 5] = ["obj", "stl", "ply", "gltf", "glb"];
+const MODEL_FILES: [&str; 6] = ["obj", "stl", "ply", "gltf", "glb", "fbx"];
 
 /// A new object for the model file `p`, placed at `pos`.
 fn model_object(p: &std::path::Path, pos: rmb_core::V3) -> SceneObject {
@@ -715,12 +767,14 @@ fn materials_editor(ui: &mut Ui, m: &mut ModelRef, mats: &[rmb_core::mesh::MeshM
                 o.texture = None;
                 o.bump.clear();
                 o.specular.clear();
+                o.normal.clear();
             }
             for a in auto {
                 let o = material_override(&mut m.materials, &a.name);
                 o.texture = a.texture;
                 o.bump = a.bump;
                 o.specular = a.specular;
+                o.normal = a.normal;
             }
         }
         if ui.button("Rescan").on_hover_text(format!("Look for images near the model again ({} found)", images.len())).clicked() {
@@ -754,7 +808,7 @@ fn materials_editor(ui: &mut Ui, m: &mut ModelRef, mats: &[rmb_core::mesh::MeshM
                 if r.secondary_clicked() {
                     o.color = None;
                 }
-                let maps = !o.bump.is_empty() || !o.specular.is_empty();
+                let maps = !o.bump.is_empty() || !o.specular.is_empty() || !o.normal.is_empty() || mm.normal.is_some() || o.emission.is_some() || mm.emissive.iter().any(|c| *c > 0.0);
                 let changed = o.color.is_some() || o.texture.is_some() || maps;
                 let arrow = if expanded { egui_phosphor::regular::CARET_DOWN } else { egui_phosphor::regular::CARET_RIGHT };
                 let text = format!("{arrow} {}{}", mm.name, if maps { format!(" {}", egui_phosphor::regular::STACK) } else { String::new() });
@@ -766,7 +820,7 @@ fn materials_editor(ui: &mut Ui, m: &mut ModelRef, mats: &[rmb_core::mesh::MeshM
                         ui.add(egui::Button::new(label).frame(false).truncate())
                     })
                     .inner
-                    .on_hover_text(format!("{}: click for bump and specular maps (bold: changed here; layers icon: has maps)", mm.name));
+                    .on_hover_text(format!("{}: click for bump, specular and normal maps and emission (bold: changed here; layers icon: has maps or emission)", mm.name));
                 if resp.clicked() {
                     open = if expanded { None } else { Some(mm.name.clone()) };
                 }
@@ -788,6 +842,37 @@ fn materials_editor(ui: &mut Ui, m: &mut ModelRef, mats: &[rmb_core::mesh::MeshM
                         image_combo(ui, &format!("mat-spec-{}", mm.name), &m.path, "", &images, &mut v, "Specular map");
                         o.specular = v.unwrap_or_default();
                         ui.end_row();
+                        widgets::label(ui, "Normal map", "Tangent-space normal map (bluish image: red right, green up): bends the surface normal for fine relief");
+                        let mut v = Some(o.normal.clone());
+                        let from_file = if mm.normal.is_some() { "(from the model file)" } else { "" };
+                        image_combo(ui, &format!("mat-normal-{}", mm.name), &m.path, from_file, &images, &mut v, "Normal map");
+                        o.normal = v.unwrap_or_default();
+                        ui.end_row();
+                        if !o.normal.is_empty() || mm.normal.is_some() {
+                            widgets::slider_log(ui, "Normal strength", "How far the normal map bends the surface (1: as drawn)", &mut o.normal_strength, 0.01..=10.0, 1.0);
+                        }
+                        let file_emission = mm.emissive;
+                        let emits = |e: &[f32; 3]| e.iter().any(|c| *c > 0.0);
+                        let mut on = o.emission.map_or(emits(&file_emission), |e| emits(&e));
+                        let was = on;
+                        widgets::checkbox(ui, "Emission", "The material shines by itself in this color (glTF emissive; brighter than white glows with bloom)", &mut on);
+                        if on {
+                            let e = o.emission.filter(emits).unwrap_or(if emits(&file_emission) { file_emission } else { [1.0; 3] });
+                            // Color (brightest channel 1) and strength.
+                            let mut k = e.iter().copied().fold(0.0f32, f32::max).max(1e-6);
+                            let mut col = e.map(|c| c / k);
+                            widgets::color(ui, "Emission color", "Color of the emitted light", &mut col);
+                            let mut kk = k as f64;
+                            widgets::slider_log(ui, "Emission strength", "Brightness of the emitted light", &mut kk, 0.01..=50.0, 1.0);
+                            k = kk as f32;
+                            let e2 = col.map(|c| c * k);
+                            if !was || e2 != e {
+                                o.emission = Some(e2);
+                            }
+                        } else if was {
+                            // Off: none, also where the file has emission.
+                            o.emission = emits(&file_emission).then_some([0.0; 3]);
+                        }
                     });
                 });
             }
@@ -805,8 +890,8 @@ fn iteration(ui: &mut Ui, f: &mut Fractal, main: bool) {
     let d = Fractal::default();
     if widgets::section(ui, "Iteration", true) {
         let slots = std::mem::take(&mut f.slots);
-        let repeat = f.repeat_from;
-        *f = Fractal { slots, repeat_from: repeat, ..d.clone() };
+        let (repeat, transform) = (f.repeat_from, f.transform.clone());
+        *f = Fractal { slots, repeat_from: repeat, transform, ..d.clone() };
     }
     widgets::grid(ui, "iteration", |ui| {
         widgets::slider_u32(ui, "Max iterations", "Iterations per point, all slots together. More iterations give finer detail (and slower rendering).", &mut f.max_iterations, 1..=100, d.max_iterations);
@@ -840,9 +925,7 @@ fn iteration(ui: &mut Ui, f: &mut Fractal, main: bool) {
             }
         }
     });
-    if main {
-        combine(ui, f);
-    }
+    combine(ui, f);
 }
 
 fn combine(ui: &mut Ui, f: &mut Fractal) {

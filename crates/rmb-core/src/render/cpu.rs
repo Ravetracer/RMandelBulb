@@ -267,8 +267,9 @@ impl<'a> Shader<'a> {
         let cv = self.color_value(&h, V3::ZERO);
         let (base, _, _, e) = self.gradient(mat, cv, t);
         let base = self.model_color(&h, mat, base);
-        let (base, e, _) = self.apply_layers(mat, &h, V3::ZERO, cv, base, e);
-        base.map(|c| c * e)
+        let (l, _) = self.apply_layers(mat, &h, V3::ZERO, cv, base, e);
+        let e = if l.emis > 0.0 { l.emis * super::shimmer(&self.scene.material, p) } else { l.emis };
+        l.base.map(|c| c * e)
     }
 
     /// The color of a 3D model at a hit on it (material pattern "Model colors"; else `base`).
@@ -278,7 +279,7 @@ impl<'a> Shader<'a> {
         }
         let Some(ob) = (h.orbit.object > 0).then(|| self.prog.objects.get(h.orbit.object as usize - 1)).flatten() else { return base };
         let crate::fractal::ObjectShape::Model(Some(m)) = &ob.shape else { return base };
-        let q = crate::compose::to_local(&ob.inv, ob.pos, ob.size, h.pos);
+        let q = ob.local(h.pos);
         match m.vol.color(q.to_array(), &m.look) {
             Some(c) if self.scene.post.display_space => c.map(super::srgb_encode),
             Some(c) => c,
@@ -289,29 +290,33 @@ impl<'a> Shader<'a> {
     /// Color, specular factor and normal of a 3D model at hit `h` with normal `n` (material
     /// pattern "Model colors": the model's materials with their bump and specular maps; else
     /// `base`, 1 and `n`).
-    fn model_surface(&self, h: &Hit, mat: usize, base: [f64; 3], n: V3) -> ([f64; 3], f64, V3) {
+    /// The model's own emission comes last (added to the shaded color).
+    fn model_surface(&self, h: &Hit, mat: usize, base: [f64; 3], n: V3) -> ([f64; 3], f64, V3, [f64; 3]) {
+        let plain = (base, 1.0, n, [0.0; 3]);
         if mat == 0 || self.materials[mat].pattern != crate::compose::Pattern::Model.index() {
-            return (base, 1.0, n);
+            return plain;
         }
-        let Some(ob) = (h.orbit.object > 0).then(|| self.prog.objects.get(h.orbit.object as usize - 1)).flatten() else { return (base, 1.0, n) };
-        let crate::fractal::ObjectShape::Model(Some(m)) = &ob.shape else { return (base, 1.0, n) };
-        let q = crate::compose::to_local(&ob.inv, ob.pos, ob.size, h.pos);
+        let Some(ob) = (h.orbit.object > 0).then(|| self.prog.objects.get(h.orbit.object as usize - 1)).flatten() else { return plain };
+        let crate::fractal::ObjectShape::Model(Some(m)) = &ob.shape else { return plain };
+        let q = ob.local(h.pos);
         let nl = crate::compose::normal_to_local(&ob.inv, ob.size, n);
-        let Some(s) = m.vol.surface(q.to_array(), &m.look, Some(nl.to_array())) else { return (base, 1.0, n) };
+        let Some(s) = m.vol.surface(q.to_array(), &m.look, Some(nl.to_array())) else { return plain };
+        let display = self.scene.post.display_space;
         let color = match s.color {
-            Some(c) if self.scene.post.display_space => c.map(super::srgb_encode),
+            Some(c) if display => c.map(super::srgb_encode),
             Some(c) => c,
             None => base,
         };
         let b = s.normal;
-        (color, s.specular, crate::compose::normal_to_world(&ob.inv, ob.size, v3(b[0], b[1], b[2])))
+        let emission = if display { s.emission.map(super::srgb_encode) } else { s.emission };
+        (color, s.specular, crate::compose::normal_to_world(&ob.inv, ob.size, v3(b[0], b[1], b[2])), emission)
     }
 
     /// Where the texture layers of a hit are evaluated (`n`: world normal, zero if unknown).
     fn layer_coord(&self, h: &Hit, n: V3, cv: f64) -> crate::texture::Coord {
         let mut c = crate::texture::Coord { obj: h.pos, world: h.pos, n_obj: n, n_world: n, value: cv, trap: h.orbit.trap };
         if let Some(ob) = (h.orbit.object > 0).then(|| self.prog.objects.get(h.orbit.object as usize - 1)).flatten() {
-            c.obj = crate::compose::to_local(&ob.inv, ob.pos, ob.size, h.pos);
+            c.obj = ob.local(h.pos);
             c.n_obj = crate::compose::rotate(&ob.inv, n);
         }
         c
@@ -320,15 +325,15 @@ impl<'a> Shader<'a> {
     /// Applies the texture layers of material `mat`: surface color, emission and the bumped
     /// normal (unchanged when `n` is zero).
     #[allow(clippy::too_many_arguments)]
-    fn apply_layers(&self, mat: usize, h: &Hit, n: V3, cv: f64, base: [f64; 3], emis: f64) -> ([f64; 3], f64, V3) {
+    fn apply_layers(&self, mat: usize, h: &Hit, n: V3, cv: f64, base: [f64; 3], emis: f64) -> (crate::texture::Applied, V3) {
         let layers = &self.materials[mat].layers;
         if layers.is_empty() {
-            return (base, emis, n);
+            return (crate::texture::Applied { base, emis, spec: 1.0, rough_keep: 1.0, rough_add: 0.0 }, n);
         }
         let c = self.layer_coord(h, n, cv);
-        let (col, e) = crate::texture::apply(layers, &c, !self.scene.post.display_space, base, emis);
-        if n == V3::ZERO || !layers.iter().any(|l| l.layer.target == crate::texture::Target::Bump) {
-            return (col, e, n);
+        let applied = crate::texture::apply(layers, &c, !self.scene.post.display_space, base, emis);
+        if n == V3::ZERO || !layers.iter().any(|l| l.layer.target.bends()) {
+            return (applied, n);
         }
         let inv = (h.orbit.object > 0).then(|| self.prog.objects.get(h.orbit.object as usize - 1)).flatten().map(|ob| ob.inv);
         let to_world = |v: V3| match &inv {
@@ -336,7 +341,7 @@ impl<'a> Shader<'a> {
             Some(m) => v3(m[0][0] * v.x + m[1][0] * v.y + m[2][0] * v.z, m[0][1] * v.x + m[1][1] * v.y + m[2][1] * v.z, m[0][2] * v.x + m[1][2] * v.y + m[2][2] * v.z),
             None => v,
         };
-        (col, e, crate::texture::bump(layers, &c, &to_world))
+        (applied, crate::texture::bump(layers, &c, &to_world))
     }
 
     /// Material index of the surface an orbit belongs to.
@@ -555,7 +560,7 @@ impl<'a> Shader<'a> {
         if let Some(ob) = (o.object > 0).then(|| self.prog.objects.get(o.object as usize - 1)).flatten() {
             match &ob.shape {
                 crate::fractal::ObjectShape::Primitive(..) | crate::fractal::ObjectShape::Model(_) => {
-                    let q = crate::compose::to_local(&ob.inv, ob.pos, ob.size, hit.pos);
+                    let q = ob.local(hit.pos);
                     return crate::compose::pattern_value(mat.pattern, mat.pattern_size, q);
                 }
                 crate::fractal::ObjectShape::Fractal(f) => bailout2 = f.bailout2,
@@ -594,8 +599,9 @@ impl<'a> Shader<'a> {
     /// Surface color from the color map (Mandelbulb3D's diffuse maps, PaintThread): `base` is
     /// the gradient color, `v` the color value, `rough` the roughness (blends toward the map's
     /// average color in the 3D modes).
-    fn map_color(&self, h: &Hit, n: V3, v: f64, base: [f64; 3], rough: f64) -> [f64; 3] {
-        let Some((m, rot, avg)) = &self.color_map else { return base };
+    /// Also returns the brightness of the map there (its emission).
+    fn map_color(&self, h: &Hit, n: V3, v: f64, base: [f64; 3], rough: f64) -> ([f64; 3], f64) {
+        let Some((m, rot, avg)) = &self.color_map else { return (base, 0.0) };
         let cm = &self.scene.material.color_map;
         let frac = |x: f64| x - x.floor();
         let mut c = match cm.mode {
@@ -635,12 +641,13 @@ impl<'a> Shader<'a> {
         if !self.scene.post.display_space {
             c = c.map(super::srgb_decode);
         }
+        let y = |v: &[f64; 3]| 0.3 * v[0] + 0.59 * v[1] + 0.11 * v[2];
+        let lum = y(&c);
         if cm.luminance_only {
-            let y = |v: &[f64; 3]| 0.3 * v[0] + 0.59 * v[1] + 0.11 * v[2];
-            let f = y(&c) / (0.01 + y(&base));
-            return base.map(|b| b * f);
+            let f = lum / (0.01 + y(&base));
+            return (base.map(|b| b * f), lum);
         }
-        c
+        (c, lum)
     }
 
     /// Interior colors for a hit whose orbit did not escape (None: not interior or no interior
@@ -694,9 +701,17 @@ impl<'a> Shader<'a> {
     pub fn sample_aux(&self, ev: &mut Evaluator, px: u32, py: u32, sample: u32) -> Sample {
         let sc = self.scene;
         let fr = &self.frame;
-        let cam = &sc.camera;
         let mut rng = Rng::new(px, py, sample);
         let (jx, jy) = if sample == 0 { (0.5, 0.5) } else { (rng.next_f64(), rng.next_f64()) };
+        // Motion blur: a random time within the exposure.
+        let moved;
+        let cam = match &sc.motion_end {
+            Some(end) => {
+                moved = sc.camera.lerp(end, rng.next_f64());
+                &moved
+            }
+            None => &sc.camera,
+        };
         let sx = ((px as f64 + jx) / fr.width as f64) * 2.0 - 1.0;
         let sy = 1.0 - ((py as f64 + jy) / fr.height as f64) * 2.0;
         let mut o = cam.position;
@@ -774,8 +789,9 @@ impl<'a> Shader<'a> {
                     inside = !inside;
                     ev.flip = inside;
                 }
-                let syr = (2.0 * dir.dot(cam.up).clamp(-1.0, 1.0).asin() / cam.fov.to_radians()).clamp(-1.0, 1.0);
-                let sxr = (dir.dot(cam.right).atan2(dir.dot(cam.forward)) / (fr.tan_half * fr.aspect).atan()).clamp(-1.0, 1.0);
+                let c0 = &sc.camera;
+                let syr = (2.0 * dir.dot(c0.up).clamp(-1.0, 1.0).asin() / c0.fov.to_radians()).clamp(-1.0, 1.0);
+                let sxr = (dir.dot(c0.right).atan2(dir.dot(c0.forward)) / (fr.tan_half * fr.aspect).atan()).clamp(-1.0, 1.0);
                 let seg = Seg { o: start - dir * s.t, d: dir, t0: s.t, max_t: s.t + sc.march.max_distance, t_base: s.t, sx: sxr, sy: syr, inside, glass: if b + 1 < max_b { glass } else { 0.0 }, env: path };
                 let tr = self.trace(ev, seg, &mut rng);
                 if inside {
@@ -815,7 +831,22 @@ impl<'a> Shader<'a> {
     /// Fresnel reflectance and total internal reflection.
     fn bounce(&self, s: &Surface, inside: bool, rng: &mut Rng) -> (V3, [f64; 3], bool) {
         let m = &self.scene.material;
-        let reflect = s.dir - s.n * (2.0 * s.dir.dot(s.n));
+        // Rough surfaces: reflect and refract on a random micro facet (GGX); facets facing away
+        // from the ray fall back to the surface normal.
+        let gloss = m.gloss.clamp(0.0, 1.0);
+        let n = if gloss > 0.0 {
+            let (u1, u2) = (rng.next_f64(), rng.next_f64());
+            let f = ggx_normal(s.n, gloss * gloss, u1, u2);
+            if f.dot(s.dir) < 0.0 { f } else { s.n }
+        } else {
+            s.n
+        };
+        let mut reflect = s.dir - n * (2.0 * s.dir.dot(n));
+        // Below the surface: mirrored back above it.
+        if reflect.dot(s.n) < 0.0 {
+            reflect = reflect - s.n * (2.0 * reflect.dot(s.n));
+        }
+        let s = &Surface { n, ..*s };
         let a = s.trans;
         if !m.transmission || a <= 0.0 {
             return (reflect, s.spec, false);
@@ -929,22 +960,32 @@ impl<'a> Shader<'a> {
                 // Roughness dulls the highlights toward 1/p (Phong p ~ shininess / 4) and
                 // softens the diffuse curves (PaintThread.CalcPixelColor2).
                 let rr = rough * sc.lighting.roughness;
-                let spec_rough = 1.0 + (2.0 * rr).min(1.0) * (4.0 / sc.lighting.shininess.max(1.0) - 1.0);
                 let cv = self.color_value(h, n);
                 let main = h.orbit.object == 0;
                 let mat = self.material_of(&h.orbit);
                 // 3D models: their colors, specular and bump maps.
-                let (base, spec_col, trans, emis, n_model) = match self.interior_colors(h, n, h.t).filter(|_| main) {
-                    Some((b, s)) => (b, s, 0.0, 0.0, n),
+                let (base, spec_col, trans, emis, n_model, model_emis) = match self.interior_colors(h, n, h.t).filter(|_| main) {
+                    Some((b, s)) => (b, s, 0.0, 0.0, n, [0.0; 3]),
                     None => {
                         let (b, s, tr, e) = self.gradient(mat, cv, h.t);
-                        let (b, sf, nm) = self.model_surface(h, mat, b, n);
-                        (b, s.map(|c| c * sf), tr, e, nm)
+                        let (b, sf, nm, me) = self.model_surface(h, mat, b, n);
+                        (b, s.map(|c| c * sf), tr, e, nm, me)
                     }
                 };
-                let (base, emis, n_bump) = self.apply_layers(mat, h, n_model, cv, base, emis);
-                // Color maps belong to the main fractal.
-                let base = if main { self.map_color(h, n, cv, base, rr) } else { base };
+                let (lay, n_bump) = self.apply_layers(mat, h, n_model, cv, base, emis);
+                let (base, emis, spec_col) = (lay.base, lay.emis, spec_col.map(|c| c * lay.spec));
+                // Roughness layers.
+                let rr = rr * lay.rough_keep + lay.rough_add;
+                let spec_rough = 1.0 + (2.0 * rr).min(1.0) * (4.0 / sc.lighting.shininess.max(1.0) - 1.0);
+                // Color maps belong to the main fractal; their bright parts can shine.
+                let (base, emis) = if main {
+                    let (b, lum) = self.map_color(h, n, cv, base, rr);
+                    (b, emis + lum * sc.material.color_map.emission)
+                } else {
+                    (base, emis)
+                };
+                // Shimmer: the emitted light flickers over the surface (and in time).
+                let emis = if emis > 0.0 { emis * super::shimmer(&sc.material, h.pos) } else { emis };
                 // Shading point just off the surface; inside rendering puts the surface one
                 // threshold into the solid, so it needs a larger offset.
                 let p = h.pos + n * (h.eps * if ev.inside() { 4.0 } else { 1.5 });
@@ -998,7 +1039,7 @@ impl<'a> Shader<'a> {
                 }
                 let keep = (1.0 - trans * glass).max(0.0);
                 // Emissive colors shine by themselves.
-                let lit = [0, 1, 2].map(|k| base[k] * (diffuse[k] * keep + emis) + spec[k] * spec_col[k]);
+                let lit = [0, 1, 2].map(|k| base[k] * (diffuse[k] * keep + emis) + spec[k] * spec_col[k] + model_emis[k]);
                 let f = if inside { 0.0 } else { sc.fog.amount(h.t - t_base, near, far) };
                 albedo = [0, 1, 2].map(|k| (base[k] * (1.0 - f) + fog_col[k] * f.max(0.0)).clamp(0.0, 1.0));
                 normal = n;
@@ -1009,6 +1050,46 @@ impl<'a> Shader<'a> {
         // Glow and steam of the emissive colors the ray passed (strengths included).
         for k in 0..3 {
             c[k] += halo[k];
+        }
+        // Light scattered by the fog: one random light, one point along the ray (positional
+        // lights: equiangular sampling around the light, which keeps the haze near it smooth;
+        // directional lights: in proportion to the fog added there), lit through a shadow ray.
+        if !inside && sc.fog.scatter > 0.0 && !fr.lights.is_empty() {
+            let (ut, ul, r1, r2) = (rng.next_f64(), rng.next_f64(), rng.next_f64(), rng.next_f64());
+            let end = hit.as_ref().map_or(far, |h| h.t - t_base);
+            let a = sc.fog.amount(0.0, near, far).clamp(0.0, 1.0);
+            let b = sc.fog.amount(end, near, far).clamp(0.0, 1.0);
+            let count = fr.lights.len();
+            let li = &fr.lights[((ul * count as f64) as usize).min(count - 1)];
+            let start = o + d * t_base;
+            let sample = match li.point {
+                _ if b - a <= 1e-6 => None,
+                Some(p0) => {
+                    let center = match li.shape {
+                        super::LightShape::Line { end } => p0 + (end - p0) * 0.5,
+                        _ => p0,
+                    };
+                    let delta = (center - start).dot(d);
+                    let dist = (center - start - d * delta).length().max(1e-6 * end);
+                    let (ta, tb) = ((-delta / dist).atan(), ((end - delta) / dist).atan());
+                    let s = delta + dist * (ta + ut * (tb - ta)).tan();
+                    let pdf = dist / ((tb - ta).max(1e-12) * (dist * dist + (s - delta) * (s - delta)));
+                    Some((s.clamp(0.0, end), sc.fog.density_at(s, near, far) / pdf))
+                }
+                None => Some((sc.fog.distance_for(a + ut * (b - a), near, far, end), b - a)),
+            };
+            if let Some((s, amount)) = sample {
+                let x = start + d * s;
+                let (r1, r2) = if li.sampled() { (r1, r2) } else { (0.5, 0.5) };
+                let (ldir, atten, max_l) = li.sample(x, r1, r2, sc.march.max_distance);
+                if atten > 0.0 {
+                    let sh = if li.shadows { self.soft_shadow(ev, x, ldir, self.eps_at(t_base + s), li.softness, max_l) } else { 1.0 };
+                    let w = sh * atten * sc.fog.scatter_phase(ldir.dot(d)) * sc.fog.scatter * amount * count as f64;
+                    for (ck, lk) in c.iter_mut().zip(li.color) {
+                        *ck += lk * w;
+                    }
+                }
+            }
         }
         if inside {
             // Inside glass: no glow and no visible lights.
@@ -1124,6 +1205,18 @@ pub fn cosine_dir(n: V3, u1: f64, u2: f64) -> V3 {
     (t * (r * phi.cos()) + b * (r * phi.sin()) + n * (1.0 - u1).max(0.0).sqrt()).normalize()
 }
 
+/// A random micro facet normal around `n` for the GGX roughness `alpha` (same frame as
+/// [`cosine_dir`]).
+pub fn ggx_normal(n: V3, alpha: f64, u1: f64, u2: f64) -> V3 {
+    let a = if n.z.abs() < 0.999 { v3(0.0, 0.0, 1.0) } else { v3(1.0, 0.0, 0.0) };
+    let t = a.cross(n).normalize();
+    let b = n.cross(t);
+    let c2 = ((1.0 - u1) / (1.0 + (alpha * alpha - 1.0) * u1)).clamp(0.0, 1.0);
+    let (ct, st) = (c2.sqrt(), (1.0 - c2).sqrt());
+    let phi = u2 * std::f64::consts::TAU;
+    (t * (st * phi.cos()) + b * (st * phi.sin()) + n * ct).normalize()
+}
+
 /// Progressive CPU renderer: each `render_pass` adds one sample per pixel.
 pub struct CpuRenderer {
     pub scene: Scene,
@@ -1145,6 +1238,13 @@ impl CpuRenderer {
 
     pub fn samples(&self) -> u32 {
         self.samples
+    }
+
+    /// Renders the next passes with `scene` but keeps the samples so far (motion blur: the scene
+    /// moves within one frame; the size stays).
+    pub fn set_scene_keep(&mut self, scene: Scene) {
+        self.prog = Program::for_scene(&scene);
+        self.scene = scene;
     }
 
     pub fn program(&self) -> &Program {

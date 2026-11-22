@@ -45,14 +45,19 @@
   - [x] Optional: automatic, or as a correction after defining the path over the key frames
   - [x] Audio track: a sound file under exported movies (AAC/Opus/PCM by format), with an
         offset; cut or padded with silence to the movie's length
-  - [ ] Motion blur
+  - [x] Motion blur: shutter as a fraction of the frame time; each pass renders a slice of the
+        exposure (settings at its middle), every sample a random camera time within the slice
+        (no ghost copies in fast moves)
 - [x] More light sources: spot, point, area, line (up to eight lights; area and line lights
       sampled per pass for soft shadows, visible as panel and tube)
 - [x] Lens flares for light sources with extensive options (glow and haze, diffraction star and
       spikes, anamorphic streak with sparkles, aperture ghosts with coating tints and color
       fringes, rainbow ring, lens dirt; presets; fade when hidden, in fog or off screen)
-  - [ ] Compare with the reference images in `../_dev` once more after use; possible
-        additions: light rays through fog (god rays), bokeh-textured ghosts, custom ghost layouts
+  - [x] Compared with the reference images in `../_dev` (presets via `flare_presets`): the haze
+        now fades out within about its size (it covered the whole image), about a third of the
+        generated ghosts are large, faint and soft. Hand-placed ghost layouts (Ghosts › Place
+        ghosts by hand) and bokeh images that shape the ghosts; god rays come from light
+        scattering in fog
 - [x] Glowing palette colors that produce a shimmering/glow effect (glow collected along the
       rays near emissive parts)
 - [x] Palette colors that act as light sources in that color (emission per gradient color,
@@ -64,24 +69,31 @@
   - [x] Streaks (directional bloom: 1-4 directions, length, angle, tint) and steam (glowing
         haze shaped by 3D noise, lit by the emissive surfaces through one scattered ray per
         sample, drifting in animations)
-  - [ ] Possible: animated shimmer (flicker over time), emission from color maps
+  - [x] Shimmer (emitted light flickers in noise patches; new patterns per second in
+        animations), emission from color maps (lights only itself)
 - [x] Scene composition like Mandelbulber's boolean mode (as used by Julius Horsthuis): up to
       eight objects after the main fractal (fractals or plane, box, sphere, cylinder, torus,
       water), each with position, rotation, scale, operation (add, cut away, intersect, smooth
       variants) and its own material (gradient with transparency/emission, patterns for shapes)
-  - [ ] Possible: transform of the main fractal, repetition (infinite grids of an object),
-        more primitives (capsule, cone, prism), object fractals with DE combination
+  - [x] Placement of the main fractal (position, rotation, scale, stretch; deep zoom folds it
+        into the reference point), repetition of objects (spacing per own axis, endless or a
+        number of copies on each side), capsule, cone, hexagonal and triangular prism, object
+        fractals with DE combination (incl. dIFS mix) and interpolation hybrids
+  - [ ] Possible: 4D rotation for object fractals, gizmos for the main fractal's placement
 - [x] Loading 3D objects into the scene: OBJ (+MTL), STL, PLY, glTF/GLB as composition objects,
       baked into a signed distance grid (16-bit, up to 256 points per side) with exact triangle
       distances near the surface; per-material colors, color textures, bump and specular maps
       (images near the model are assigned by name); move, rotate, scale and stretch in the view
-  - [ ] Possible: FBX import, a disk cache of baked models, normal maps of glTF models,
-        emissive materials (glTF emissive factor), faster near-surface search (models make
-        renders about 2x slower than the grid alone)
+  - [x] FBX import (ufbx: binary and ASCII), a disk cache of the baked distance grids, normal
+        maps (glTF, FBX, or assigned per material), emissive materials (glTF/FBX emission,
+        OBJ `Ke`, or set per material)
+  - [ ] Possible: faster near-surface search (models make renders about 2x slower than the grid
+        alone)
 - [x] Texture layers instead of colors, or as masks over the colors with layer blend modes
       (color, bump and glow layers; triplanar, planar, spherical, cylindrical, orbit mapping)
-  - [ ] Possible: alpha channel masks, normal maps, roughness/specular layers, texture
-        animation (offset over time)
+  - [x] Image alpha as opacity, normal map layers (tangent frame from the mapping's u/v
+        directions), specular and roughness layers, drift (texture offset per second in
+        animations)
 - [x] AI denoiser (Intel Open Image Denoise, from RWildFire) with albedo and normal helper images
 - [x] Monte Carlo rendering (path tracing) as an option of the renderer, in the app (progressive
       preview) and in the export (images and movies), for more realistic light: global
@@ -98,8 +110,16 @@
   - Done: Lighting › Global illumination › Path tracing (optional; classic stays the default):
     diffuse and reflection/glass bounces, next-event estimation through the existing light
     loop, ambient colors as sky light, Russian roulette, firefly clamp.
-  - [ ] Possible: glossy (rough) reflections, multiple importance sampling for emissive
-        surfaces, volumetric scattering in fog, adaptive sampling
+  - [x] Light scattering in fog (Fog › Light scattering, classic and path tracing): one point
+        per ray segment and one random light with a shadow ray; equiangular sampling around
+        positional lights, fog-weighted for directional ones; Henyey-Greenstein phase. Light
+        beams through gaps (god rays) and lit haze. Costs one shadow march per sample
+  - [x] Glossy reflections and frosted glass (Material › Gloss: GGX micro facets in the
+        bounce, classic and path tracing)
+  - [x] ~~Multiple importance sampling for emissive surfaces~~ (not applicable): the emitters
+        are fractal surfaces without a list of their geometry, so they cannot be sampled
+        directly; only BSDF sampling finds them (next-event estimation covers the lights)
+  - [x] ~~Adaptive sampling~~: measured and dropped, see Performance
 
 ## Performance
 

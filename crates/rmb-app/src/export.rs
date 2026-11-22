@@ -366,12 +366,12 @@ impl Export {
             let run = || -> Result<(PathBuf, String), String> {
                 let plan = AnimationPlan::new(&anim)?;
                 let mut sink = VideoSink::new(&path, format, w, h, plan.fps(), &ffmpeg, audio.as_ref())?;
-                let frame_scene = |f: usize| {
-                    let mut s = plan.scene_at(f);
+                let frame_scene = |t: f64| {
+                    let mut s = plan.scene_at_time(t);
                     (s.width, s.height) = size;
                     s
                 };
-                rmb_gpu::render_animation(Some(ctx), from..to + 1, w, h, n, frame_scene, &ca, |p| pr.store(p.to_bits(), Ordering::Relaxed), |f, rgba| {
+                rmb_gpu::render_animation(Some(ctx), from..to + 1, w, h, n, anim.shutter, frame_scene, &ca, |p| pr.store(p.to_bits(), Ordering::Relaxed), |f, rgba| {
                     sink.write_frame(f - from, &rgba)?;
                     *pv.lock().unwrap_or_else(|e| e.into_inner()) = Some((w, h, rgba));
                     Ok(())

@@ -32,6 +32,7 @@ pub fn march_shader_baked(prog: &Program, baked: &[Option<f64>]) -> String {
     s.push_str(DF64);
     let _ = writeln!(s, "const ROTATE_4D: bool = {};", prog.rotation_4d.is_some());
     let _ = writeln!(s, "const REFLECT: bool = {};", prog.reflections);
+    let _ = writeln!(s, "const MAIN_T: bool = {};", prog.main_transform.is_some());
     let _ = writeln!(s, "const LAYERS: bool = {};", prog.layers);
     let _ = writeln!(s, "const BUMP: bool = {};", prog.bump);
     let _ = writeln!(s, "const COLOR_ON_IT: bool = {};", prog.color_on_it >= 0 && prog.part2.is_none() && !prog.slots.is_empty());
@@ -51,7 +52,7 @@ pub fn march_shader_baked(prog: &Program, baked: &[Option<f64>]) -> String {
                 );
             } else {
                 s.push_str(
-                    "\nfn fractal_de(p: vec3<f32>, h: f32) -> Orbit {\n    let a = chain_de_1(p, h);\n    let b = chain_de_2(p, h);\n    return combine_de(a, b);\n}\n",
+                    "\nfn fractal_de(p: vec3<f32>, h: f32) -> Orbit {\n    let a = chain_de_1(p, h);\n    let b = chain_de_2(p, h);\n    return combine_de(a, b, u32(u.comb.x), u.comb.w);\n}\n",
                 );
             }
         }
@@ -110,6 +111,24 @@ fn objects(prog: &Program) -> String {
     for (j, o) in prog.objects.iter().enumerate() {
         if let ObjectShape::Fractal(f) = &o.shape {
             s.push_str(&chain(f, &format!("o{j}"), &Uni::object(j)));
+            // The DE combination of the object (mirrors fractal.rs fractal_orbit).
+            match f.part2.as_deref() {
+                Some(p2) => {
+                    s.push_str(&chain(p2, &format!("o{j}b"), &Uni::object2(j, f.slots.len())));
+                    if f.is_mix() {
+                        let linear = f.de_kind == DeKind::Linear && !f.difs;
+                        let _ = writeln!(
+                            s,
+                            "\nfn fractal_de_o{j}(p: vec3<f32>, h: f32) -> Orbit {{\n    let ob = objs[{j}];\n    let a = iterate_o{j}(p, 0u, false, vec4<f32>(0.0), false);\n    let b = iterate_o{j}b(p, 0u, false, a.s, true);\n    let d = max(b.de, 0.0) * ob.comb2.x;\n    var o: Orbit;\n    if ({linear}) {{\n        o.de = d / max(abs(a.dr), 1.0e-30);\n    }} else {{\n        o.de = d * pow(max(abs(ob.comb2.y), 1.0e-30), -1.0 - f32(a.n));\n    }}\n    o.n = b.n;\n    o.r2 = dot(a.s, a.s);\n    o.r2_old = a.rold;\n    o.trap = b.trap;\n    o.c2 = b.c2;\n    o.escaped = true;\n    return o;\n}}"
+                        );
+                    } else {
+                        let _ = writeln!(s, "\nfn fractal_de_o{j}(p: vec3<f32>, h: f32) -> Orbit {{\n    return combine_de(chain_de_o{j}(p, h), chain_de_o{j}b(p, h), u32(objs[{j}].comb.x), objs[{j}].comb.w);\n}}");
+                    }
+                }
+                None => {
+                    let _ = writeln!(s, "\nfn fractal_de_o{j}(p: vec3<f32>, h: f32) -> Orbit {{\n    return chain_de_o{j}(p, h);\n}}");
+                }
+            }
         }
     }
     s.push_str("\nfn compose_objects(p: vec3<f32>, h: f32, o_in: Orbit) -> Orbit {\n    var o = o_in;\n");
@@ -119,7 +138,7 @@ fn objects(prog: &Program) -> String {
             ObjectShape::Fractal(_) => {
                 let _ = writeln!(
                     s,
-                    "        b = chain_de_o{j}(q, h / sc);\n        b.de = max(b.de * ob.misc.z, 0.0) * sc;\n        // A fractal has no distance inside; cutting with it needs one.\n        if (b.de <= 0.0 && (op == 1u || op == 4u)) {{\n            b.de = -2.0 * h;\n        }}"
+                    "        b = fractal_de_o{j}(q, h / sc);\n        b.de = max(b.de * ob.misc.z, 0.0) * sc;\n        // A fractal has no distance inside; cutting with it needs one.\n        if (b.de <= 0.0 && (op == 1u || op == 4u)) {{\n            b.de = -2.0 * h;\n        }}"
                 );
             }
             ObjectShape::Primitive(kind, _) => {
@@ -147,6 +166,8 @@ struct Uni {
     slot_iter: String,
     scale: String,
     rot4: &'static str,
+    /// Interpolation hybrid weights (first chain only).
+    blend: Option<(String, String)>,
 }
 
 impl Uni {
@@ -162,6 +183,7 @@ impl Uni {
             slot_iter: format!("u.slots[slot + {slot_base}u].x"),
             scale: scale.into(),
             rot4: "ROTATE_4D",
+            blend: (slot_base == 0).then(|| ("u.blend.x".into(), "u.blend.y".into())),
         }
     }
 
@@ -177,6 +199,20 @@ impl Uni {
             slot_iter: format!("objs[{j}].slots[slot / 4u][slot % 4u]"),
             scale: format!("objs[{j}].misc.y"),
             rot4: "false",
+            blend: Some((format!("objs[{j}].comb2.z"), format!("objs[{j}].comb2.w"))),
+        }
+    }
+
+    /// The second chain of object `j`'s DE combination (its slots after the first chain's
+    /// `slot_base`).
+    fn object2(j: usize, slot_base: usize) -> Uni {
+        Uni {
+            limit: format!("objs[{j}].comb.y"),
+            repeat: format!("objs[{j}].comb.z"),
+            slot_iter: format!("objs[{j}].slots[(slot + {slot_base}u) / 4u][(slot + {slot_base}u) % 4u]"),
+            scale: format!("objs[{j}].comb2.x"),
+            blend: None,
+            ..Uni::object(j)
         }
     }
 }
@@ -221,9 +257,10 @@ fn chain(prog: &Program, k: &str, cfg: &Uni) -> String {
     let _ = writeln!(s, "    let limit = select(u32({limit}), fixed_n, use_fixed);\n    let repeat_from = u32({repeat});");
     s.push_str("    var n = 0u;\n");
     // Interpolation hybrid (mirrors fractal.rs): both formulas from the same point, blended.
-    let blend = k == "1" && prog.blend.is_some() && prog.slots.len() >= 2;
-    if blend {
+    let blend = cfg.blend.as_ref().filter(|_| prog.blend.is_some() && prog.slots.len() >= 2);
+    if let Some((bw1, bw2)) = blend {
         let (x, y, z, w, dr, rout, rold, it) = (&names[0], &names[1], &names[2], &names[3], &names[8], &names[STATE_ROUT], &names[STATE_ROLD], &names[9]);
+        let bail2 = &cfg.bail2;
         let _ = writeln!(s, "    loop {{\n        if (n >= limit) {{\n            break;\n        }}\n        {rold} = {rout};\n        {it} = fl(n);");
         let _ = writeln!(s, "        let in_s = vec4<fl>({x}, {y}, {z}, {w});\n        let in_dr = {dr};\n        {{ // {}", prog.slots[0].formula.def.name);
         s.push_str(&emit_iter(&prog.slots[0].formula.def, prog.slots[0].offset, 3));
@@ -231,12 +268,12 @@ fn chain(prog: &Program, k: &str, cfg: &Uni) -> String {
         s.push_str(&emit_iter(&prog.slots[1].formula.def, prog.slots[1].offset, 3));
         let _ = writeln!(
             s,
-            "        }}\n        let w1 = fl(u.blend.x);\n        let w2 = fl(u.blend.y);\n        let len_b = sqrt({x} * {x} + {y} * {y} + {z} * {z});\n        let l = length(a_s.xyz) * w1 + len_b * w2;\n        {x} = a_s.x * w1 + {x} * w2;\n        {y} = a_s.y * w1 + {y} * w2;\n        {z} = a_s.z * w1 + {z} * w2;\n        {w} = a_s.w * w1 + {w} * w2;\n        {dr} = abs(a_dr) * w1 + abs({dr}) * w2;\n        let f = l / sqrt({x} * {x} + {y} * {y} + {z} * {z} + 1.0e-40);\n        {x} = {x} * f;\n        {y} = {y} * f;\n        {z} = {z} * f;\n        n += 1u;\n        let r2 = f32(l * l);\n        {rout} = fl(r2);\n        out.trap = min(out.trap, r2);\n        if ((!use_fixed || color_bail) && !(r2 <= select(u.march.z, u.march.z * u.march.z * 64.0, color_bail))) {{\n            out.escaped = true;\n            break;\n        }}\n    }}\n    // The normal hybrid loop is not used.\n    if (false) {{"
+            "        }}\n        let w1 = fl({bw1});\n        let w2 = fl({bw2});\n        let len_b = sqrt({x} * {x} + {y} * {y} + {z} * {z});\n        let l = length(a_s.xyz) * w1 + len_b * w2;\n        {x} = a_s.x * w1 + {x} * w2;\n        {y} = a_s.y * w1 + {y} * w2;\n        {z} = a_s.z * w1 + {z} * w2;\n        {w} = a_s.w * w1 + {w} * w2;\n        {dr} = abs(a_dr) * w1 + abs({dr}) * w2;\n        let f = l / sqrt({x} * {x} + {y} * {y} + {z} * {z} + 1.0e-40);\n        {x} = {x} * f;\n        {y} = {y} * f;\n        {z} = {z} * f;\n        n += 1u;\n        let r2 = f32(l * l);\n        {rout} = fl(r2);\n        out.trap = min(out.trap, r2);\n        if ((!use_fixed || color_bail) && !(r2 <= select({bail2}, {bail2} * {bail2} * 64.0, color_bail))) {{\n            out.escaped = true;\n            break;\n        }}\n    }}\n    // The normal hybrid loop is not used.\n    if (false) {{"
         );
     }
     s.push_str("    var slot = 0u;\n    var count = 0u;\n    let cap = limit * 8u + 64u;\n    var steps = 0u;\n");
     s.push_str(&f32_loop(prog, k, cfg, &names));
-    if blend {
+    if blend.is_some() {
         s.push_str("    }\n");
     }
     let _ = writeln!(s, "    out.s = vec4<f32>(f32({}), f32({}), f32({}), f32({}));\n    out.rold = f32({});\n    out.dr = f32({});\n    out.n = n;", names[0], names[1], names[2], names[3], names[STATE_ROLD], names[8]);

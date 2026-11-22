@@ -415,6 +415,16 @@ fn camera_ui(ui: &mut Ui, a: &mut Animation) {
 
 fn movie_ui(ui: &mut Ui, a: &mut Animation) {
     ui.label(RichText::new("MOVIE").size(theme::fs(11.0)).color(theme::TEXT_MUTED));
+    widgets::grid(ui, "motion", |ui| {
+        widgets::slider(
+            ui,
+            "Motion blur",
+            "How long each frame is exposed, as a fraction of the frame time (0: sharp, 0.5: a film camera's 180° shutter, 1: fully smeared). Blurs camera moves and animated settings in exported animations; needs enough samples for smooth streaks",
+            &mut a.shutter,
+            0.0..=1.0,
+            0.0,
+        );
+    });
     ui.horizontal(|ui| {
         let name = a.audio.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned());
         if ui.button(format!("{}  Sound…", ph::MUSIC_NOTES)).on_hover_text("Sound file put under exported movies (MP4, MOV, WebM; not GIF). The movie keeps its length: the sound is cut at its end or filled with silence").clicked() {

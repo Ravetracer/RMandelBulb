@@ -24,7 +24,8 @@ modern egui interface and import of Mandelbulb3D parameters.
 - **Rendering**: progressive anti-aliasing, up to eight lights (directional, point, spot, area
   and line lights; area and line lights give real soft shadows), ray-traced or
   fast ambient occlusion, sky/ground ambient, gradient coloring (iterations, orbit trap, radius,
-  normal), depth fog, glow, depth of field, cutting planes, filmic tone mapping, vignette.
+  normal), glossy reflections and frosted glass, depth fog with light scattering (light beams
+  through gaps, lit haze), glow, depth of field, cutting planes, filmic tone mapping, vignette.
 - **Navigation**:
   - Orbit around the point under the cursor; the wheel zooms toward the cursor.
   - Fly mode with WASD, at a speed that adapts to the distance from the surface; Space
@@ -32,7 +33,8 @@ modern egui interface and import of Mandelbulb3D parameters.
   - Double-click looks at a point and sets the focus there.
   - Low-resolution preview while moving.
   - Lens flares per light (star, anamorphic streak, ghosts, rings, lens dirt; presets),
-    hidden when the fractal covers the light.
+    hidden when the fractal covers the light. Ghosts can be placed by hand and shaped by a
+    bokeh image.
   - Ground grid (z = 0) with the colored x/y/z axes and an axis cross; click an axis to look
     along it.
   - Lights are drawn in the view with gizmos: move lights freely or along the x/y/z arrows
@@ -42,20 +44,26 @@ modern egui interface and import of Mandelbulb3D parameters.
   - Native `.rmb` (JSON).
   - Mandelbulb3D `.m3p` files, and MB3D text parameters pasted with Ctrl+V.
   - PNG export that embeds the scene, so opening the PNG restores it.
-- **Scene composition** (Mandelbulber's boolean mode): add fractals and shapes (plane, box,
-  sphere, cylinder, torus, water) to the scene, move, rotate, scale and stretch them with gizmos
-  in the view (Move / Rotate / Scale in the toolbar), combine them by adding,
-  cutting away or intersecting (also smoothly), each in its own colors. Ctrl+click selects the
-  object under the cursor.
-- **3D models**: OBJ, STL, PLY and glTF/GLB files (Blender exports all of them) as scene
+- **Scene composition** (Mandelbulber's boolean mode): add fractals (with DE combinations and
+  interpolation like the main fractal) and shapes (plane, box, sphere, cylinder, capsule, cone,
+  torus, hexagonal and triangular prism, water) to the scene, move, rotate, scale and stretch
+  them with gizmos in the view (Move / Rotate / Scale in the toolbar), combine them by adding,
+  cutting away or intersecting (also smoothly), each in its own colors. Repetition turns an
+  object into a grid of copies (endless or a set number). The main fractal has a placement too.
+  Ctrl+click selects the object under the cursor.
+- **3D models**: OBJ, STL, PLY, glTF/GLB and FBX files (Blender exports all of them) as scene
   objects. A distance grid (64 to 256 points along the longest side) covers the space around
   them; near the surface the triangles themselves are used, so thin parts stay sharp at any
-  distance. Each material gets a color, a color texture, a bump and a specular map; images near
-  the model file (for example in a `textures` folder) are assigned to the materials by name.
+  distance. Baked grids are kept on disk (`~/.cache/rmandelbulb/models`, up to 2 GB;
+  `RMB_MODEL_CACHE` sets another folder, `off` turns it off), so a model loads fast the next
+  time. Each material gets a color, a color texture, a bump, specular and normal map and an
+  emission color (glTF and FBX bring normal maps and emission along); images near the model file
+  (for example in a `textures` folder) are assigned to the materials by name.
 - **Texture layers** (up to four per material): images, or a solid color through a mask image,
-  over the gradient colors with blend modes (multiply, screen, overlay, soft light, …), as bumps
-  or as glow. Triplanar, planar, spherical, cylindrical or orbit mapping, in object or world
-  space.
+  over the gradient colors with blend modes (multiply, screen, overlay, soft light, …), as bumps,
+  normal maps, glow, shine (specular) or roughness. The image's alpha channel cuts the layer
+  out. Triplanar, planar, spherical, cylindrical or orbit mapping, in object or world space;
+  in animations a layer can drift (flowing lava, moving clouds).
 - **Path tracing** (optional, Lighting › Global illumination): Monte Carlo global illumination
   with diffuse and reflection bounces; glowing colors light their surroundings, the ambient
   colors become sky light. Classic Mandelbulb3D-style shading stays the default.
@@ -65,7 +73,8 @@ modern egui interface and import of Mandelbulb3D parameters.
   their color and glow (MagicaVoxel-style emission). **Glow bands** lay thin glowing stripes
   over a gradient, independent of its colors; palette rotation and each band's own speed make
   them sweep through the fractal in animations. **Steam**: glowing haze around emissive parts,
-  shaped by 3D noise and drifting in animations. **Bloom** and **streaks** add soft halos and
+  shaped by 3D noise and drifting in animations. **Shimmer** lets the emitted light flicker in
+  patches like embers. A color map can shine too. **Bloom** and **streaks** add soft halos and
   lines of light around bright parts.
 - **Animation** (Animation button, timeline under the view):
   - Keyframes are whole scenes. The camera follows a smooth path through them that never
@@ -80,6 +89,9 @@ modern egui interface and import of Mandelbulb3D parameters.
     horizon and bank into turns.
   - Playback in the view, with the camera path drawn over the image.
   - Export to MP4 (H.264/H.265), ProRes MOV, WebM, GIF (needs ffmpeg) or PNG images.
+  - Motion blur (Movie › Motion blur): the exposure as a fraction of the frame time (0.5 is a
+    film camera's 180° shutter); camera moves and animated settings blur, every sample at its
+    own time within the exposure (CLI: `--shutter`).
   - Sound track (Movie › Sound): a sound file under the exported movie, with an offset; the
     movie keeps its length (CLI: `--audio`, `--audio-offset`, `--no-audio`).
 - **CLI**: `rmb-cli render|animate|convert|info|formulas`.

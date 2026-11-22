@@ -372,6 +372,8 @@ fn lens_flare(ui: &mut Ui, f: &mut rmb_core::flare::LensFlare) {
             widgets::slider(ui, "Coating colors", "0: in the light's color; 1: in the varied tints of lens coatings", &mut f.ghost_colors, 0.0..=1.0, d.ghost_colors);
             widgets::slider(ui, "Color fringes", "Chromatic aberration at the edges of ghosts and ring", &mut f.chromatic, 0.0..=3.0, d.chromatic);
         });
+        crate::layers::image_row(ui, &mut f.ghost_image, "Bokeh", "An image that shapes every ghost (its brightness; for example a bokeh texture with dust or an odd aperture); none: the aperture blades");
+        ghost_list(ui, f);
     });
     group(ui, "Ring", "A halo ring around the light", &mut |ui| {
         widgets::grid(ui, "fl-ring", |ui| {
@@ -739,6 +741,7 @@ fn mapping(ui: &mut Ui, m: &mut rmb_core::scene::Material, d: &rmb_core::scene::
         widgets::slider(ui, "Reflection", "Mirror reflections and glass: the light amount of each reflected or refracted ray; reflections are weighted by the highlight color of the gradient (0 = off; costs another ray per bounce)", &mut m.reflection, 0.0..=2.0, d.reflection);
         if m.reflection > 0.0 {
             widgets::slider_u32(ui, "Bounces", "Reflections of reflections; with glass, how many surfaces a ray passes through or reflects from", &mut m.reflection_bounces, 1..=8, d.reflection_bounces);
+            widgets::slider(ui, "Gloss", "Blurs reflections and refractions like brushed metal or frosted glass (0 = mirror sharp); needs more samples to get smooth", &mut m.gloss, 0.0..=1.0, d.gloss);
             widgets::checkbox(ui, "Glass", "Light passes through the surfaces by the transparency of each gradient color (set next to the colors), refracted and absorbed inside", &mut m.transmission);
             if m.transmission {
                 widgets::slider(ui, "Refraction index", "How much rays bend entering the glass (1 = not at all, water 1.33, glass 1.5, diamond 2.4)", &mut m.refraction_index, 1.0..=3.0, d.refraction_index);
@@ -768,10 +771,15 @@ fn emissive(ui: &mut Ui, m: &mut rmb_core::scene::Material) {
         m.steam_cover = d.steam_cover;
         m.steam_offset = d.steam_offset;
         m.steam_drift = d.steam_drift;
+        m.shimmer = d.shimmer;
+        m.shimmer_size = d.shimmer_size;
+        m.shimmer_speed = d.shimmer_speed;
+        m.shimmer_phase = d.shimmer_phase;
     }
     let glow_layer = m.layers.iter().any(|l| l.enabled && l.target == rmb_core::texture::Target::Emission);
-    if !glow_layer && !m.gradient.iter().any(|s| s.emission > 0.0) && !m.bands.iter().any(|b| b.enabled && b.emission > 0.0) {
-        ui.label(RichText::new("Give a gradient color or a glow band an emission (the sparkle field next to it) or add a Glow texture layer to let it shine, light its surroundings and glow.").size(theme::fs(11.5)).color(theme::TEXT_MUTED));
+    let glow_map = m.color_map.emission > 0.0 && !m.color_map.image.trim().is_empty();
+    if !glow_layer && !glow_map && !m.gradient.iter().any(|s| s.emission > 0.0) && !m.bands.iter().any(|b| b.enabled && b.emission > 0.0) {
+        ui.label(RichText::new("Give a gradient color or a glow band an emission (the sparkle field next to it), add a Glow texture layer or give the color map an emission to let it shine, light its surroundings and glow.").size(theme::fs(11.5)).color(theme::TEXT_MUTED));
         return;
     }
     widgets::grid(ui, "emissive", |ui| {
@@ -795,6 +803,12 @@ fn emissive(ui: &mut Ui, m: &mut rmb_core::scene::Material) {
             for (k, axis) in ["Steam offset X", "Steam offset Y", "Steam offset Z"].iter().enumerate() {
                 widgets::drag(ui, axis, "Moves the cloud pattern (world units) to pick another look; animations add the drift", &mut m.steam_offset[k], 0.001, d.steam_offset[k]);
             }
+        }
+        widgets::slider(ui, "Shimmer", "The emitted light flickers in patches like embers or flames (0 = steady); in animations it changes over time", &mut m.shimmer, 0.0..=1.0, d.shimmer);
+        if m.shimmer > 0.0 {
+            widgets::slider_log(ui, "Shimmer size", "Size of the flickering patches in world units", &mut m.shimmer_size, 0.0001..=10.0, d.shimmer_size);
+            widgets::slider_log(ui, "Shimmer speed", "Animation: new flicker patterns per second", &mut m.shimmer_speed, 0.01..=60.0, d.shimmer_speed);
+            widgets::slider(ui, "Shimmer pattern", "Picks another flicker pattern (animations move it on by the speed)", &mut m.shimmer_phase, 0.0..=100.0, d.shimmer_phase);
         }
     });
 }
@@ -843,6 +857,7 @@ fn color_map(ui: &mut Ui, m: &mut rmb_core::scene::Material) {
             widgets::slider(ui, "Rotate", "Rotation of the map in degrees", &mut cm.rotation[2], -180.0..=180.0, 0.0);
         }
         widgets::checkbox(ui, "Brightness only", "Takes only the brightness of the map; the hue comes from the gradient", &mut cm.luminance_only);
+        widgets::slider_log(ui, "Emission", "The bright parts of the map shine by themselves (0 = not). They light only themselves, not their surroundings; Shimmer (Emissive colors) makes them flicker", &mut cm.emission, 0.0..=20.0, 0.0);
     });
 }
 
@@ -932,6 +947,17 @@ fn effects(ui: &mut Ui, scene: &mut Scene) {
         if !f.from_background {
             widgets::color(ui, "Fog color", "", &mut f.color);
         }
+        widgets::slider_log(
+            ui,
+            "Light scattering",
+            "Light the fog scatters toward the camera: beams through gaps in the fractal and lit haze around lights (0 = off). Needs fog; one more shadow ray per sample, so it takes more samples to get smooth",
+            &mut f.scatter,
+            0.0..=50.0,
+            df.scatter,
+        );
+        if f.scatter > 0.0 {
+            widgets::slider(ui, "Forward scattering", "Above 0 the fog shines most when looking toward a light, like real haze; 0 scatters evenly; below 0 shines back toward the light", &mut f.scatter_forward, -0.9..=0.9, df.scatter_forward);
+        }
         widgets::slider(ui, "Glow", "Light along rays that pass close to the surface (Mandelbulb3D's dynamic fog); negative darkens", &mut f.glow, -4.0..=4.0, df.glow);
         widgets::color(ui, "Glow color", "", &mut f.glow_color);
         widgets::slider_log(ui, "Glow offset", "Ray steps that give no glow yet", &mut f.glow_offset, 0.0..=500.0, df.glow_offset);
@@ -1013,4 +1039,44 @@ fn effects(ui: &mut Ui, scene: &mut Scene) {
 fn notes(ui: &mut Ui, scene: &mut Scene) {
     ui.label(RichText::new("Free text saved with the scene; imports list what could not be converted.").size(theme::fs(11.0)).color(theme::TEXT_MUTED));
     ui.add(egui::TextEdit::multiline(&mut scene.notes).desired_width(f32::INFINITY).desired_rows(16));
+}
+
+/// The hand-placed ghosts of a lens flare.
+fn ghost_list(ui: &mut Ui, f: &mut rmb_core::flare::LensFlare) {
+    ui.horizontal(|ui| {
+        if f.ghost_list.is_empty() {
+            if ui.button("Place ghosts by hand").on_hover_text("Copies the ghosts made from the seed into a list you can edit one by one (position, size, brightness, tint)").clicked() {
+                f.ghost_list = f.generated_ghosts();
+                if f.ghost_list.is_empty() {
+                    f.ghost_list.push(rmb_core::flare::GhostDef::default());
+                }
+            }
+        } else {
+            ui.label(RichText::new(format!("{} ghosts placed by hand", f.ghost_list.len())).color(theme::TEXT_MUTED));
+            if ui.button(format!("{}  Add", crate::icons::PLUS)).on_hover_text("Adds a ghost").clicked() {
+                f.ghost_list.push(rmb_core::flare::GhostDef::default());
+            }
+            if ui.button("Use generated").on_hover_text("Removes the hand-placed ghosts: the ghosts come from the seed and the sliders above again").clicked() {
+                f.ghost_list.clear();
+            }
+        }
+    });
+    let mut remove = None;
+    for (i, g) in f.ghost_list.iter_mut().enumerate() {
+        ui.horizontal(|ui| {
+            let mut c = g.tint;
+            widgets::color_button(ui, &mut c).on_hover_text("Lens coating tint (mixed with the light's color by Coating colors)");
+            g.tint = c;
+            ui.add(egui::DragValue::new(&mut g.pos).speed(0.01).range(-3.0..=4.0).max_decimals(2).prefix("at ")).on_hover_text("Position on the line from the light (0) through the image center (1) and beyond");
+            ui.add(egui::DragValue::new(&mut g.size).speed(0.002).range(0.001..=1.0).max_decimals(3).prefix("size ")).on_hover_text("Radius (share of the image height)");
+            ui.add(egui::DragValue::new(&mut g.brightness).speed(0.01).range(0.0..=5.0).max_decimals(2).prefix("× ")).on_hover_text("Brightness (times the ghost brightness above)");
+            ui.checkbox(&mut g.ring, "").on_hover_text("Hollow ring instead of a disc");
+            if widgets::icon_button(ui, crate::icons::TRASH, "Remove this ghost").clicked() {
+                remove = Some(i);
+            }
+        });
+    }
+    if let Some(i) = remove {
+        f.ghost_list.remove(i);
+    }
 }

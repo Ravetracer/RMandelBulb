@@ -49,6 +49,9 @@ pub struct Animation {
     /// Position in the sound file (seconds) where frame 0 starts; negative values start the
     /// sound later.
     pub audio_offset_s: f64,
+    /// Motion blur: how long each frame is exposed, as a fraction of the frame time (0: off,
+    /// 0.5: a film camera's 180° shutter).
+    pub shutter: f64,
 }
 
 impl Default for Animation {
@@ -67,6 +70,7 @@ impl Default for Animation {
             key_tolerance: 0.05,
             audio: None,
             audio_offset_s: 0.0,
+            shutter: 0.0,
         }
     }
 }
@@ -447,23 +451,31 @@ pub struct AnimationPlan {
     phases: Vec<BTreeMap<String, f64>>,
 }
 
-/// The palette rotations, glow band speeds and the steam drift of a scene by name ("m": the
-/// main material, "m.b2": its third band, "o1", "o1.b0": the first object's, "steam0..2").
+/// The palette rotations, glow band speeds, texture drifts, the steam drift and the shimmer
+/// speed of a scene by name ("m": the main material, "m.b2": its third band, "m.l1.0": the x
+/// drift of its second layer, "o1", "o1.b0": the first object's, "steam0..2", "shimmer").
 fn color_speeds(s: &Scene) -> BTreeMap<String, f64> {
     let mut out = BTreeMap::new();
-    let mut add = |name: String, rotation: f64, bands: &[crate::gradient::GlowBand]| {
+    let mut add = |name: String, rotation: f64, bands: &[crate::gradient::GlowBand], layers: &[crate::texture::TextureLayer]| {
         out.insert(name.clone(), rotation);
         for (i, b) in bands.iter().enumerate() {
             out.insert(format!("{name}.b{i}"), b.speed);
         }
+        // Texture layers scroll by their drift.
+        for (i, l) in layers.iter().enumerate() {
+            for (k, d) in l.drift.iter().enumerate() {
+                out.insert(format!("{name}.l{i}.{k}"), *d);
+            }
+        }
     };
-    add("m".into(), s.material.rotation, &s.material.bands);
+    add("m".into(), s.material.rotation, &s.material.bands, &s.material.layers);
     for (k, o) in s.objects.iter().enumerate() {
-        add(format!("o{k}"), o.material.rotation, &o.material.bands);
+        add(format!("o{k}"), o.material.rotation, &o.material.bands, &o.material.layers);
     }
     for (k, v) in s.material.steam_drift.iter().enumerate() {
         out.insert(format!("steam{k}"), *v);
     }
+    out.insert("shimmer".into(), s.material.shimmer_speed);
     out
 }
 
@@ -488,19 +500,27 @@ fn color_phases(keys: &[Scene], us: &[f64], fps: f64) -> Vec<BTreeMap<String, f6
 
 /// Turns the palettes and moves the glow bands of `s` by `phase`.
 fn apply_phases(s: &mut Scene, phase: &BTreeMap<String, f64>) {
-    let turn = |name: String, offset: &mut f64, bands: &mut [crate::gradient::GlowBand]| {
+    let turn = |name: String, offset: &mut f64, bands: &mut [crate::gradient::GlowBand], layers: &mut [crate::texture::TextureLayer]| {
         *offset += phase.get(&name).copied().unwrap_or(0.0);
         for (i, b) in bands.iter_mut().enumerate() {
             b.pos += phase.get(&format!("{name}.b{i}")).copied().unwrap_or(0.0);
         }
+        for (i, l) in layers.iter_mut().enumerate() {
+            for (k, o) in l.offset.iter_mut().enumerate() {
+                *o += phase.get(&format!("{name}.l{i}.{k}")).copied().unwrap_or(0.0);
+            }
+        }
     };
-    turn("m".into(), &mut s.material.color_offset, &mut s.material.bands);
+    let m = &mut s.material;
+    turn("m".into(), &mut m.color_offset, &mut m.bands, &mut m.layers);
     // The steam pattern moves with its drift.
     for k in 0..3 {
         s.material.steam_offset[k] -= phase.get(&format!("steam{k}")).copied().unwrap_or(0.0);
     }
+    s.material.shimmer_phase += phase.get("shimmer").copied().unwrap_or(0.0);
     for (k, o) in s.objects.iter_mut().enumerate() {
-        turn(format!("o{k}"), &mut o.material.color_offset, &mut o.material.bands);
+        let m = &mut o.material;
+        turn(format!("o{k}"), &mut m.color_offset, &mut m.bands, &mut m.layers);
     }
 }
 
@@ -559,13 +579,37 @@ impl AnimationPlan {
 
     /// The scene of frame `frame`.
     pub fn scene_at(&self, frame: usize) -> Scene {
-        let fc = self.camera(frame);
+        let f = frame.min(self.frames.len() - 1);
+        self.scene_of(self.frames[f], self.phases.get(f))
+    }
+
+    /// The scene at time `t` in frames, between whole frames (motion blur): camera and
+    /// settings follow the path between the neighbouring frames, continued straight beyond the
+    /// first and the last frame.
+    pub fn scene_at_time(&self, t: f64) -> Scene {
+        let n = self.frames.len();
+        if n < 2 || (t.fract() == 0.0 && t >= 0.0) {
+            return self.scene_at(t.max(0.0) as usize);
+        }
+        let f = (t.floor().max(0.0) as usize).min(n - 2);
+        let a = t - f as f64;
+        let (c0, c1) = (self.frames[f], self.frames[f + 1]);
+        let fc = FrameCam { u: c0.u + (c1.u - c0.u) * a, pos: c0.pos + (c1.pos - c0.pos) * a, rot: c0.rot.slerp(c1.rot, a), fov: c0.fov + (c1.fov - c0.fov) * a };
+        let phase = match (self.phases.get(f), self.phases.get(f + 1)) {
+            (Some(p0), Some(p1)) => Some(p0.iter().map(|(k, v0)| (k.clone(), v0 + (p1.get(k).copied().unwrap_or(*v0) - v0) * a)).collect()),
+            (p0, _) => p0.cloned(),
+        };
+        self.scene_of(fc, phase.as_ref())
+    }
+
+    /// The scene for a camera on the path and the color phases at that time.
+    fn scene_of(&self, fc: FrameCam, phase: Option<&BTreeMap<String, f64>>) -> Scene {
         let n = self.keys.len();
         let mut scene = if n == 1 {
             self.keys[0].clone()
         } else {
-            let i = (fc.u.floor() as usize).min(n - 2);
-            let t = fc.u - i as f64;
+            let i = (fc.u.floor().max(0.0) as usize).min(n - 2);
+            let t = (fc.u - i as f64).clamp(0.0, 1.0);
             if t <= 1e-12 {
                 self.keys[i].clone()
             } else if t >= 1.0 - 1e-12 {
@@ -581,7 +625,7 @@ impl AnimationPlan {
         scene.camera.set_orientation(fc.rot);
         scene.camera.fov = fc.fov;
         scene.animation = None;
-        if let Some(p) = self.phases.get(frame.min(self.frames.len() - 1)) {
+        if let Some(p) = phase {
             apply_phases(&mut scene, p);
         }
         scene
@@ -917,6 +961,50 @@ mod tests {
         // Average speed 0.75 turns per second over the whole time.
         assert!((s.material.color_offset - 0.75 * secs).abs() < 0.02, "{}", s.material.color_offset);
         assert!((s.material.bands[0].pos - (0.2 - 0.25 * secs)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn texture_layers_drift_and_sub_frame_times_blend() {
+        let mut keys = orbit_keys(2);
+        for k in &mut keys {
+            k.scene.material.layers = vec![crate::texture::TextureLayer { offset: [0.5, 0.0, 0.0], drift: [0.0, 2.0, 0.0], ..Default::default() }];
+        }
+        let anim = Animation { keyframes: keys, ..Default::default() };
+        let plan = AnimationPlan::new(&anim).unwrap();
+        let fps = plan.fps();
+        let last = plan.frame_count() - 1;
+        let s = plan.scene_at(last);
+        let secs = last as f64 / fps;
+        assert_eq!(s.material.layers[0].offset[0], 0.5);
+        assert!((s.material.layers[0].offset[1] - 2.0 * secs).abs() < 1e-9);
+        // Between two frames: halfway in the drift and on the camera path.
+        let (a, b, m) = (plan.scene_at(3), plan.scene_at(4), plan.scene_at_time(3.5));
+        assert!((m.material.layers[0].offset[1] - 0.5 * (a.material.layers[0].offset[1] + b.material.layers[0].offset[1])).abs() < 1e-9);
+        let mid = (a.camera.position + b.camera.position) * 0.5;
+        assert!((m.camera.position - mid).length() < 1e-9);
+        assert_eq!(plan.scene_at_time(3.0), a);
+    }
+
+    #[test]
+    fn shimmer_moves_on_in_time() {
+        let mut keys = orbit_keys(2);
+        for k in &mut keys {
+            k.scene.material.shimmer = 0.5;
+            k.scene.material.shimmer_speed = 4.0;
+        }
+        let anim = Animation { keyframes: keys, ..Default::default() };
+        let plan = AnimationPlan::new(&anim).unwrap();
+        let last = plan.frame_count() - 1;
+        let secs = last as f64 / plan.fps();
+        assert_eq!(plan.scene_at(0).material.shimmer_phase, 0.0);
+        assert!((plan.scene_at(last).material.shimmer_phase - 4.0 * secs).abs() < 1e-9);
+        // The factor changes smoothly with the phase and stays around 1.
+        let mut m = plan.scene_at(0).material;
+        let p = crate::v3(0.3, 0.1, 0.2);
+        let a = crate::render::shimmer(&m, p);
+        m.shimmer_phase = 0.01;
+        let b = crate::render::shimmer(&m, p);
+        assert!((a - b).abs() < 0.05 && a > 0.0 && a < 2.0);
     }
 
     #[test]

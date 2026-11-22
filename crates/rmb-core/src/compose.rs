@@ -49,11 +49,26 @@ pub struct SceneObject {
     /// Blend distance of the smooth operations (world units).
     pub smooth: f64,
     pub material: ObjectMaterial,
+    /// Repetition: spacing of the copies along the object's own x, y and z axes, in its own
+    /// units (before the scale; 0: no copies along that axis).
+    pub repeat: [f64; 3],
+    /// Copies on each side along each axis (0: endless).
+    pub repeat_limit: [u32; 3],
 }
 
 impl Default for SceneObject {
     fn default() -> Self {
-        SceneObject { name: "Sphere".into(), enabled: true, shape: Shape::Primitive(Primitive::Sphere { radius: 0.5 }), transform: Transform::default(), op: BoolOp::Union, smooth: 0.1, material: ObjectMaterial::default() }
+        SceneObject {
+            name: "Sphere".into(),
+            enabled: true,
+            shape: Shape::Primitive(Primitive::Sphere { radius: 0.5 }),
+            transform: Transform::default(),
+            op: BoolOp::Union,
+            smooth: 0.1,
+            material: ObjectMaterial::default(),
+            repeat: [0.0; 3],
+            repeat_limit: [0; 3],
+        }
     }
 }
 
@@ -91,19 +106,32 @@ pub enum Primitive {
     Torus { major: f64, minor: f64 },
     /// A water surface at z = 0 with waves (three octaves at turning directions).
     Water { amplitude: f64, wavelength: f64, phase: f64, angle: f64 },
+    /// Upright pill: a cylinder with half-sphere ends, `height` from end to end.
+    Capsule { radius: f64, height: f64 },
+    /// Upright cone from the bottom radius to the top radius (0: pointed), centered on the origin.
+    Cone { bottom: f64, top: f64, height: f64 },
+    /// Upright six-sided prism; `radius` from the axis to the middle of a side.
+    HexPrism { radius: f64, height: f64 },
+    /// Upright prism with an equilateral triangle as its section; `side` is its side length.
+    TriPrism { side: f64, height: f64 },
 }
 
 impl Primitive {
-    pub const NAMES: [&'static str; 6] = ["Plane", "Box", "Sphere", "Cylinder", "Torus", "Water"];
+    /// Names by [`Primitive::index`].
+    pub const NAMES: [&'static str; 10] = ["Plane", "Box", "Sphere", "Cylinder", "Torus", "Water", "Capsule", "Cone", "Hexagonal prism", "Triangular prism"];
 
-    /// The primitives with sensible start values.
-    pub fn defaults() -> [Primitive; 6] {
+    /// The primitives with sensible start values (in menu order).
+    pub fn defaults() -> [Primitive; 10] {
         [
             Primitive::Plane,
             Primitive::Box { size: [1.0, 1.0, 1.0], rounding: 0.0 },
             Primitive::Sphere { radius: 0.5 },
             Primitive::Cylinder { radius: 0.3, height: 1.0, rounding: 0.0 },
+            Primitive::Capsule { radius: 0.25, height: 1.0 },
+            Primitive::Cone { bottom: 0.4, top: 0.0, height: 1.0 },
             Primitive::Torus { major: 0.6, minor: 0.15 },
+            Primitive::HexPrism { radius: 0.4, height: 1.0 },
+            Primitive::TriPrism { side: 0.8, height: 1.0 },
             Primitive::Water { amplitude: 0.02, wavelength: 0.3, phase: 0.0, angle: 0.0 },
         ]
     }
@@ -116,6 +144,10 @@ impl Primitive {
             Primitive::Cylinder { .. } => 3,
             Primitive::Torus { .. } => 4,
             Primitive::Water { .. } => 5,
+            Primitive::Capsule { .. } => 6,
+            Primitive::Cone { .. } => 7,
+            Primitive::HexPrism { .. } => 8,
+            Primitive::TriPrism { .. } => 9,
         }
     }
 
@@ -132,6 +164,10 @@ impl Primitive {
             Primitive::Cylinder { radius, height, rounding } => [radius, height, rounding, 0.0],
             Primitive::Torus { major, minor } => [major, minor, 0.0, 0.0],
             Primitive::Water { amplitude, wavelength, phase, angle } => [amplitude, wavelength, phase, angle],
+            Primitive::Capsule { radius, height } => [radius, height, 0.0, 0.0],
+            Primitive::Cone { bottom, top, height } => [bottom, top, height, 0.0],
+            Primitive::HexPrism { radius, height } => [radius, height, 0.0, 0.0],
+            Primitive::TriPrism { side, height } => [side, height, 0.0, 0.0],
         }
     }
 
@@ -162,6 +198,49 @@ pub fn primitive_distance(kind: u32, a: [f64; 4], q: V3) -> f64 {
         4 => {
             let xy = (q.x * q.x + q.y * q.y).sqrt() - a[0];
             (xy * xy + q.z * q.z).sqrt() - a[1]
+        }
+        6 => {
+            let r = a[0].max(0.0);
+            let hh = (a[1] * 0.5 - r).max(0.0);
+            v3(q.x, q.y, q.z - q.z.clamp(-hh, hh)).length() - r
+        }
+        7 => {
+            // Capped cone (exact; after Inigo Quilez).
+            let (r1, r2, h) = (a[0].max(0.0), a[1].max(0.0), (a[2] * 0.5).max(1e-9));
+            let (qx, qy) = ((q.x * q.x + q.y * q.y).sqrt(), q.z);
+            let (k1x, k1y, k2x, k2y) = (r2, h, r2 - r1, 2.0 * h);
+            let cax = qx - qx.min(if qy < 0.0 { r1 } else { r2 });
+            let cay = qy.abs() - h;
+            let f = (((k1x - qx) * k2x + (k1y - qy) * k2y) / (k2x * k2x + k2y * k2y)).clamp(0.0, 1.0);
+            let (cbx, cby) = (qx - k1x + k2x * f, qy - k1y + k2y * f);
+            let sign = if cbx < 0.0 && cay < 0.0 { -1.0 } else { 1.0 };
+            sign * (cax * cax + cay * cay).min(cbx * cbx + cby * cby).sqrt()
+        }
+        8 => {
+            // Hexagonal prism (exact; after Inigo Quilez).
+            let (kx, ky, kz) = (-0.866_025_403_784_438_6, 0.5, 0.577_350_269_189_625_8);
+            let (r, h) = (a[0].max(0.0), a[1] * 0.5);
+            let (mut px, mut py) = (q.x.abs(), q.y.abs());
+            let m = 2.0 * (kx * px + ky * py).min(0.0);
+            px -= m * kx;
+            py -= m * ky;
+            let ex = px - px.clamp(-kz * r, kz * r);
+            let dx = (ex * ex + (py - r) * (py - r)).sqrt() * (py - r).signum();
+            let dz = q.z.abs() - h;
+            dx.max(dz).min(0.0) + (dx.max(0.0) * dx.max(0.0) + dz.max(0.0) * dz.max(0.0)).sqrt()
+        }
+        9 => {
+            // Equilateral triangle (exact; after Inigo Quilez), extruded along z.
+            let k = 3f64.sqrt();
+            let r = a[0].max(0.0) * 0.5;
+            let (mut px, mut py) = (q.x.abs() - r, q.y + r / k);
+            if px + k * py > 0.0 {
+                (px, py) = ((px - k * py) * 0.5, (-k * px - py) * 0.5);
+            }
+            px -= px.clamp(-2.0 * r, 0.0);
+            let dx = -(px * px + py * py).sqrt() * py.signum();
+            let dz = q.z.abs() - a[1] * 0.5;
+            dx.max(dz).min(0.0) + (dx.max(0.0) * dx.max(0.0) + dz.max(0.0) * dz.max(0.0)).sqrt()
         }
         _ => {
             let (h, slope) = water_height(a, q.x, q.y);
@@ -205,6 +284,11 @@ impl Default for Transform {
 }
 
 impl Transform {
+    /// No move, turn, scale or stretch.
+    pub fn is_identity(&self) -> bool {
+        *self == Transform::default()
+    }
+
     /// Rows of the inverse rotation (world → local).
     pub fn inverse_rotation(&self) -> [[f64; 3]; 3] {
         let [x, y, z] = self.rotation.map(f64::to_radians);
@@ -256,6 +340,20 @@ impl Transform {
 pub fn to_local(inv: &[[f64; 3]; 3], pos: V3, size: V3, p: V3) -> V3 {
     let r = rotate(inv, p - pos);
     v3(r.x / size.x, r.y / size.y, r.z / size.z)
+}
+
+/// A local point folded into the copy around the origin (repetition: `cell` spacing per axis,
+/// 0 = none; `limit` copies on each side, 0 = endless). Same on the GPU (`obj_local`).
+pub fn repeat_fold(q: V3, cell: [f64; 3], limit: [u32; 3]) -> V3 {
+    let fold = |x: f64, c: f64, n: u32| {
+        if c <= 0.0 {
+            return x;
+        }
+        let k = (x / c + 0.5).floor();
+        let k = if n > 0 { k.clamp(-(n as f64), n as f64) } else { k };
+        x - c * k
+    };
+    v3(fold(q.x, cell[0], limit[0]), fold(q.y, cell[1], limit[1]), fold(q.z, cell[2], limit[2]))
 }
 
 /// `v` times the matrix with rows `m`.
@@ -448,6 +546,36 @@ mod tests {
         let torus = Primitive::Torus { major: 1.0, minor: 0.25 };
         assert!((torus.distance(v3(1.0, 0.0, 1.0)) - 0.75).abs() < 1e-12);
         assert!((Primitive::Plane.distance(v3(5.0, 3.0, 2.0)) - 2.0).abs() < 1e-12);
+        let cap = Primitive::Capsule { radius: 0.5, height: 3.0 };
+        assert!((cap.distance(v3(0.0, 0.0, 3.0)) - 1.5).abs() < 1e-12);
+        assert!((cap.distance(v3(2.0, 0.0, 0.3)) - 1.5).abs() < 1e-12);
+        let cone = Primitive::Cone { bottom: 1.0, top: 0.0, height: 2.0 };
+        assert!((cone.distance(v3(0.0, 0.0, -3.0)) - 2.0).abs() < 1e-12);
+        assert!((cone.distance(v3(0.0, 0.0, 2.0)) - 1.0).abs() < 1e-12);
+        assert!(cone.distance(v3(0.0, 0.0, 0.0)) < 0.0);
+        let hex = Primitive::HexPrism { radius: 1.0, height: 2.0 };
+        assert!((hex.distance(v3(0.0, 3.0, 0.0)) - 2.0).abs() < 1e-12);
+        assert!((hex.distance(v3(0.0, 0.0, 4.0)) - 3.0).abs() < 1e-12);
+        let tri = Primitive::TriPrism { side: 2.0, height: 2.0 };
+        // The side opposite the top corner lies 1/sqrt(3) below the center.
+        assert!((tri.distance(v3(0.0, -1.0 / 3f64.sqrt() - 1.0, 0.0)) - 1.0).abs() < 1e-12);
+        assert!((tri.distance(v3(0.0, 0.0, 3.0)) - 2.0).abs() < 1e-12);
+        // Never more than the true distance: sample points against a dense surface sampling.
+        for p in [cap, cone, hex, tri, Primitive::Cone { bottom: 0.3, top: 0.8, height: 1.5 }] {
+            let surface: Vec<V3> = (0..40_000)
+                .map(|i| {
+                    let (u, v, w) = ((i % 40) as f64 / 39.0, ((i / 40) % 40) as f64 / 39.0, (i / 1600) as f64 / 24.0);
+                    v3(u * 4.0 - 2.0, v * 4.0 - 2.0, w * 4.0 - 2.0)
+                })
+                .filter(|q| p.distance(*q).abs() < 0.03)
+                .collect();
+            for i in 0..50 {
+                let q = v3((i as f64 * 0.37).sin() * 3.0, (i as f64 * 0.73).cos() * 3.0, (i as f64 * 0.51).sin() * 3.0);
+                let d = p.distance(q);
+                let nearest = surface.iter().map(|s| (*s - q).length()).fold(f64::MAX, f64::min);
+                assert!(d.abs() <= nearest + 0.05, "{p:?} at {q:?}: {d} vs {nearest}");
+            }
+        }
         // Water: never more than the vertical distance to the surface.
         let w = Primitive::Water { amplitude: 0.05, wavelength: 0.3, phase: 0.4, angle: 20.0 };
         for i in 0..200 {

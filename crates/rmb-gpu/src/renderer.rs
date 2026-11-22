@@ -126,6 +126,17 @@ struct Uniforms {
     deep_lo: [f32; 4],
     julia_lo: [f32; 4],
     blend_lo: [f32; 4],
+    mot_pos: [f32; 4],
+    mot_fwd: [f32; 4],
+    mot_right: [f32; 4],
+    mot_up: [f32; 4],
+    fog4: [f32; 4],
+    gloss: [f32; 4],
+    shim: [f32; 4],
+    mt0: [f32; 4],
+    mt1: [f32; 4],
+    mt2: [f32; 4],
+    mt_pos: [f32; 4],
 }
 
 /// Splits an f64 into the high and low f32 of a double-float.
@@ -148,6 +159,10 @@ struct ObjGpu {
     mat2: [f32; 4],
     slots: [[u32; 4]; 2],
     size: [f32; 4],
+    rep: [f32; 4],
+    rep_lim: [f32; 4],
+    comb: [f32; 4],
+    comb2: [f32; 4],
 }
 
 /// Words per model header in the `vols` buffer (march.wgsl `MODEL_HEADER`).
@@ -196,10 +211,14 @@ fn volumes_gpu(prog: &Program) -> Vec<u32> {
         }
         out[h + 19] = out.len() as u32;
         out[h + 20] = look.materials.len() as u32;
+        // 16 words per material: color, texture, bump map, bump height, specular map, normal
+        // map, normal strength, emission (3), emission texture, 3 unused.
         for lm in &look.materials {
             out.extend(lm.color.map(|c| c.to_bits()));
             let none = u32::MAX;
-            out.extend([lm.texture.unwrap_or(none), lm.bump.unwrap_or(none), lm.bump_height.to_bits(), lm.specular.unwrap_or(none), 0]);
+            out.extend([lm.texture.unwrap_or(none), lm.bump.unwrap_or(none), lm.bump_height.to_bits(), lm.specular.unwrap_or(none), lm.normal.unwrap_or(none), lm.normal_strength.to_bits()]);
+            out.extend(lm.emissive.map(|c| c.to_bits()));
+            out.extend([lm.emissive_texture.unwrap_or(none), 0, 0, 0]);
         }
         out[h + 21] = out.len() as u32;
         out[h + 22] = look.textures.len() as u32;
@@ -266,7 +285,7 @@ fn layers_gpu(scene: &Scene, lut: &mut Vec<[f32; 4]>) {
             lut[base + 3] = [l.color[0], l.color[1], l.color[2], index(&p.mask, &l.mask)];
             lut[base + 4] = [f(r[0][0]), f(r[0][1]), f(r[0][2]), if l.mask_invert { 1.0 } else { 0.0 }];
             lut[base + 5] = [f(r[1][0]), f(r[1][1]), f(r[1][2]), texels];
-            lut[base + 6] = [f(r[2][0]), f(r[2][1]), f(r[2][2]), 0.0];
+            lut[base + 6] = [f(r[2][0]), f(r[2][1]), f(r[2][2]), if l.use_alpha { 1.0 } else { 0.0 }];
         }
     }
 }
@@ -307,6 +326,8 @@ fn objects_gpu(scene: &Scene, prog: &Program, lut: &mut Vec<[f32; 4]>) -> Vec<Ob
         }
         g.inv[0][3] = o.scale as f32;
         g.size = [o.size.x as f32, o.size.y as f32, o.size.z as f32, 0.0];
+        g.rep = [o.repeat[0] as f32, o.repeat[1] as f32, o.repeat[2] as f32, 0.0];
+        g.rep_lim = [o.repeat_limit[0] as f32, o.repeat_limit[1] as f32, o.repeat_limit[2] as f32, 0.0];
         g.inv[1][3] = o.op as f32;
         g.inv[2][3] = o.smooth as f32;
         g.pos = v4(o.pos, 0.0);
@@ -316,9 +337,14 @@ fn objects_gpu(scene: &Scene, prog: &Program, lut: &mut Vec<[f32; 4]>) -> Vec<Ob
                 g.frac = [f.w_slice as f32, if f.julia { 1.0 } else { 0.0 }, f.max_iterations as f32, f.repeat_from as f32];
                 g.julia = f.julia_c.map(|v| v as f32);
                 g.misc = [f.bailout2 as f32, f.de_scale as f32, f.scene_de_scale as f32, 0.0];
-                for (i, s) in f.slots.iter().take(8).enumerate() {
+                // Both chains of a DE combination share the eight slot entries.
+                let p2 = f.part2.as_deref();
+                for (i, s) in f.slots.iter().chain(p2.map(|p| p.slots.iter()).into_iter().flatten()).take(8).enumerate() {
                     g.slots[i / 4][i % 4] = s.iterations.max(1);
                 }
+                let [w1, w2] = f.blend.unwrap_or([0.0; 2]);
+                g.comb = [f.combine_mode.index() as f32, p2.map_or(0.0, |p| p.max_iterations as f32), p2.map_or(0.0, |p| p.repeat_from as f32), f.combine_smooth as f32];
+                g.comb2 = [p2.map_or(1.0, |p| p.de_scale as f32), f.mix_pow as f32, w1 as f32, w2 as f32];
             }
             ObjectShape::Primitive(_, a) => {
                 g.prim = a.map(|v| v as f32);
@@ -591,6 +617,19 @@ fn uniforms(scene: &Scene, prog: &Program, w: u32, h: u32, fast: bool) -> Unifor
             if l.ambient_from_background { 1.0 } else { 0.0 },
             if bg.image_fog_add { 1.0 } else { 0.0 },
         ],
+        mot_pos: scene.motion_end.as_ref().map_or([0.0; 4], |c| v4(c.position, 1.0)),
+        mot_fwd: scene.motion_end.as_ref().map_or([0.0; 4], |c| v4(c.forward, c.tan_half_fov())),
+        mot_right: scene.motion_end.as_ref().map_or([0.0; 4], |c| v4(c.right, 0.0)),
+        mot_up: scene.motion_end.as_ref().map_or([0.0; 4], |c| v4(c.up, 0.0)),
+        fog4: [scene.fog.scatter.max(0.0) as f32, scene.fog.scatter_forward as f32, 0.0, 0.0],
+        gloss: [scene.material.gloss.clamp(0.0, 1.0) as f32, 0.0, 0.0, 0.0],
+        shim: [m.shimmer.max(0.0) as f32, m.shimmer_size as f32, m.shimmer_phase as f32, m.color_map.emission.max(0.0) as f32],
+        // Placement of the main fractal: inverse rotation rows divided by the scale per axis
+        // (w of the first: the smallest scale), position (deep zoom: in the reference point).
+        mt0: prog.main_transform.map_or([0.0; 4], |t| v4(rmb_core::v3(t.inv[0][0], t.inv[0][1], t.inv[0][2]) * (1.0 / t.size.x), t.scale)),
+        mt1: prog.main_transform.map_or([0.0; 4], |t| v4(rmb_core::v3(t.inv[1][0], t.inv[1][1], t.inv[1][2]) * (1.0 / t.size.y), 0.0)),
+        mt2: prog.main_transform.map_or([0.0; 4], |t| v4(rmb_core::v3(t.inv[2][0], t.inv[2][1], t.inv[2][2]) * (1.0 / t.size.z), 0.0)),
+        mt_pos: prog.main_transform.filter(|_| prog.deep.is_none()).map_or([0.0; 4], |t| v4(t.pos, 0.0)),
     }
 }
 
@@ -912,7 +951,9 @@ impl GpuRenderer {
             let r = scene.camera.position;
             shifted = rmb_core::render::shifted_scene(scene, r);
             prog = Program::for_scene(&shifted);
-            prog.deep = Some(r.to_array());
+            // A placed main fractal iterates from the camera in its own coordinates; the
+            // shader then only turns and scales the local position (uniforms: no offset).
+            prog.deep = Some(prog.main_transform.map_or(r, |t| t.local(rmb_core::V3::ZERO)).to_array());
             &shifted
         } else {
             scene
@@ -960,6 +1001,18 @@ impl GpuRenderer {
         self.key = Some(key);
         self.samples = 0;
         self.row = 0;
+    }
+
+    /// Like [`set_scene`](Self::set_scene) for the next passes, but keeps the samples so far
+    /// (motion blur: the scene moves within one frame). The formulas must stay the same.
+    pub fn set_scene_keep(&mut self, scene: &Scene, width: u32, height: u32) {
+        let (samples, row) = (self.samples, self.row);
+        self.set_scene(scene, width, height, false);
+        // Same shader (nothing compiling): keep accumulating.
+        if self.pending.is_none() {
+            self.samples = samples;
+            self.row = row;
+        }
     }
 
     /// Uploads the baked models (only when they change).
@@ -1017,8 +1070,12 @@ impl GpuRenderer {
             data.extend_from_slice(&[*n, m.width, m.height, offset]);
             offset += m.width * m.height;
         }
+        // Blue | green << 8 | red << 16 | alpha << 24 (255 without an alpha channel).
         for (_, m) in &maps {
-            data.extend(m.pixels.iter().map(|p| p[0] as u32 | (p[1] as u32) << 8 | (p[2] as u32) << 16));
+            match &m.alpha {
+                Some(a) => data.extend(m.pixels.iter().zip(a).map(|(p, a)| p[0] as u32 | (p[1] as u32) << 8 | (p[2] as u32) << 16 | (*a as u32) << 24)),
+                None => data.extend(m.pixels.iter().map(|p| p[0] as u32 | (p[1] as u32) << 8 | (p[2] as u32) << 16 | 255 << 24)),
+            }
         }
         let bytes = (data.len() * 4) as u64;
         if self.maps.size() < bytes {
@@ -1478,8 +1535,11 @@ pub fn render_blocking_hdr(ctx: GpuContext, scene: &Scene, width: u32, height: u
 
 /// Renders the frames `frames` of an animation at `width` × `height` with `samples` passes each
 /// and hands every finished frame (RGBA, post-processed and denoised as its scene says) to
-/// `on_frame`. `frame_scene` gives the scene of a frame. Uses the GPU when `ctx` is given (one
-/// renderer for all frames: shaders compile only when the formulas change), else the CPU.
+/// `on_frame`. `frame_scene` gives the scene at a time in frames (fractional within a frame's
+/// exposure). `shutter` is the exposure as a fraction of the frame time (motion blur; 0: none):
+/// each pass then renders a slice of the exposure, and every sample a random time within it.
+/// Uses the GPU when `ctx` is given (one renderer for all frames: shaders compile only when the
+/// formulas change), else the CPU.
 /// `progress` gets the finished fraction; `cancel` stops after the current pass.
 #[allow(clippy::too_many_arguments)]
 pub fn render_animation(
@@ -1488,7 +1548,8 @@ pub fn render_animation(
     width: u32,
     height: u32,
     samples: u32,
-    frame_scene: impl Fn(usize) -> Scene,
+    shutter: f64,
+    frame_scene: impl Fn(f64) -> Scene,
     cancel: &std::sync::atomic::AtomicBool,
     mut progress: impl FnMut(f32),
     mut on_frame: impl FnMut(usize, Vec<u8>) -> Result<(), String> + Send,
@@ -1502,7 +1563,7 @@ pub fn render_animation(
             }
             Ok(())
         });
-        let rendered = render_frames(ctx, frames, width, height, samples, frame_scene, cancel, &mut progress, &tx);
+        let rendered = render_frames(ctx, frames, width, height, samples, shutter, frame_scene, cancel, &mut progress, &tx);
         drop(tx);
         let written = writer.join().unwrap_or_else(|_| Err("writing a frame failed".into()));
         // A writer error ends the rendering too (the channel closes): report it first.
@@ -1510,13 +1571,13 @@ pub fn render_animation(
     })
 }
 
-/// Per formula constant whether it is the same in all `frames` (all false where the formulas
+/// Per formula constant whether it is the same at all `times` (all false where the formulas
 /// themselves change): those can be baked into one shader for the whole animation.
-fn invariant_constants(frames: std::ops::Range<usize>, frame_scene: &impl Fn(usize) -> Scene) -> Vec<bool> {
+fn invariant_constants(times: impl Iterator<Item = f64>, frame_scene: &impl Fn(f64) -> Scene) -> Vec<bool> {
     let mut first: Option<(String, Vec<f64>)> = None;
     let mut mask = Vec::new();
-    for f in frames {
-        let p = Program::for_scene(&frame_scene(f));
+    for t in times {
+        let p = Program::for_scene(&frame_scene(t));
         match &first {
             None => {
                 mask = vec![true; p.constants.len()];
@@ -1535,6 +1596,26 @@ fn invariant_constants(frames: std::ops::Range<usize>, frame_scene: &impl Fn(usi
     mask
 }
 
+/// The time (in frames) of pass `k` of `samples` of frame `f`: the start of its slice of the
+/// exposure, and the slice's length.
+fn pass_time(f: usize, k: u32, samples: u32, shutter: f64) -> (f64, f64) {
+    let slice = shutter / samples as f64;
+    (f as f64 - 0.5 * shutter + k as f64 * slice, slice)
+}
+
+/// The scene of pass `k` of frame `f`: settings at the middle of the pass's slice of the
+/// exposure, the camera moving over the slice.
+fn pass_scene(frame_scene: &impl Fn(f64) -> Scene, f: usize, k: u32, samples: u32, shutter: f64) -> Scene {
+    if shutter <= 0.0 {
+        return frame_scene(f as f64);
+    }
+    let (t0, slice) = pass_time(f, k, samples, shutter);
+    let mut s = frame_scene(t0 + 0.5 * slice);
+    s.camera = frame_scene(t0).camera;
+    s.motion_end = Some(frame_scene(t0 + slice).camera);
+    s
+}
+
 /// The rendering part of [`render_animation`]: hands each frame to `tx`.
 #[allow(clippy::too_many_arguments)]
 fn render_frames(
@@ -1543,46 +1624,65 @@ fn render_frames(
     width: u32,
     height: u32,
     samples: u32,
-    frame_scene: impl Fn(usize) -> Scene,
+    shutter: f64,
+    frame_scene: impl Fn(f64) -> Scene,
     cancel: &std::sync::atomic::AtomicBool,
     progress: &mut impl FnMut(f32),
     tx: &mpsc::SyncSender<(usize, Vec<u8>)>,
 ) -> Result<(), String> {
     use std::sync::atomic::Ordering;
     let samples = samples.max(1);
+    let shutter = shutter.clamp(0.0, 1.0);
     let total = frames.len().max(1) as f32;
     let mut gpu = ctx.map(GpuRenderer::new);
     if let Some(r) = gpu.as_mut() {
         r.set_band_target(OFFLINE_BAND_TARGET);
-        r.set_baking(Some(invariant_constants(frames.clone(), &frame_scene)));
+        // With motion blur the parameters also change within a frame's exposure.
+        let times = frames.clone().flat_map(|f| {
+            let f = f as f64;
+            if shutter > 0.0 { vec![f - 0.5 * shutter, f, f + 0.5 * shutter] } else { vec![f] }
+        });
+        r.set_baking(Some(invariant_constants(times, &frame_scene)));
     }
     for (done, f) in frames.enumerate() {
         if cancel.load(Ordering::Relaxed) {
             return Err("cancelled".into());
         }
-        let scene = frame_scene(f);
+        // The frame's own scene: models, post processing and flares.
+        let scene = frame_scene(f as f64);
         rmb_core::compose::load_models(&scene);
         let image = match gpu.as_mut() {
             Some(r) => {
-                r.set_scene(&scene, width, height, false);
+                r.set_scene(&pass_scene(&frame_scene, f, 0, samples, shutter), width, height, false);
                 r.wait_for_pipeline()?;
                 while r.samples() < samples {
-                    r.work(Duration::from_millis(100), samples);
-                    if let Some(e) = r.last_error() {
-                        return Err(e);
+                    if shutter > 0.0 && r.samples() > 0 {
+                        r.set_scene_keep(&pass_scene(&frame_scene, f, r.samples(), samples, shutter), width, height);
+                        r.wait_for_pipeline()?;
                     }
-                    if cancel.load(Ordering::Relaxed) {
-                        return Err("cancelled".into());
+                    // With motion blur one pass at a time (each pass is a slice of the exposure).
+                    let target = if shutter > 0.0 { r.samples() + 1 } else { samples };
+                    while r.samples() < target {
+                        r.work(Duration::from_millis(100), target);
+                        if let Some(e) = r.last_error() {
+                            return Err(e);
+                        }
+                        if cancel.load(Ordering::Relaxed) {
+                            return Err("cancelled".into());
+                        }
+                        progress((done as f32 + (r.samples() as f32 + r.pass_progress()) / samples as f32) / total);
                     }
-                    progress((done as f32 + (r.samples() as f32 + r.pass_progress()) / samples as f32) / total);
                 }
                 r.read_hdr().ok_or("reading the image back failed")?
             }
             None => {
-                let mut r = rmb_core::render::cpu::CpuRenderer::new(scene.clone(), width, height);
+                let mut r = rmb_core::render::cpu::CpuRenderer::new(pass_scene(&frame_scene, f, 0, samples, shutter), width, height);
                 for i in 0..samples {
                     if cancel.load(Ordering::Relaxed) {
                         return Err("cancelled".into());
+                    }
+                    if shutter > 0.0 && i > 0 {
+                        r.set_scene_keep(pass_scene(&frame_scene, f, i, samples, shutter));
                     }
                     r.render_pass();
                     progress((done as f32 + (i + 1) as f32 / samples as f32) / total);

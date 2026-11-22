@@ -14,6 +14,7 @@ USAGE:
   rmb-cli animate <scene> [-o out.mp4|folder] [-W width] [-H height] [-s samples] [--cpu]
                  [--fps n] [--from frame] [--to frame] [--denoise [blend] | --no-denoise]
                  [--ffmpeg path] [--audio file [--audio-offset s] | --no-audio]
+                 [--shutter fraction]
   rmb-cli convert <scene> -o out.rmb       Import (e.g. a Mandelbulb3D .m3p) and save as .rmb
   rmb-cli info <scene>                     Formulas, camera and import notes
   rmb-cli formulas                         List all formulas
@@ -31,7 +32,9 @@ animate renders the scene's keyframe animation. The output's extension picks the
 (.mp4 H.264, .mov ProRes, .webm VP9, .gif; anything else: a folder of numbered PNG files);
 movies need ffmpeg (on the search path, or --ffmpeg). --from/--to limit the frames (inclusive).
 The scene's sound track (Animation › Sound) goes under movies (not GIF); --audio replaces it,
---audio-offset sets where in the sound frame 0 starts (seconds), --no-audio leaves it out.";
+--audio-offset sets where in the sound frame 0 starts (seconds), --no-audio leaves it out.
+--shutter sets the motion blur (exposure as a fraction of the frame time, 0 = off, 0.5 = 180°
+shutter) instead of the scene's.";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -77,10 +80,11 @@ struct Opts {
     /// Sound track override: a file, or none.
     audio: Option<Option<PathBuf>>,
     audio_offset: Option<f64>,
+    shutter: Option<f64>,
 }
 
 fn parse(args: &[String]) -> Result<Opts, String> {
-    let mut o = Opts { input: None, output: None, width: None, height: None, samples: 64, cpu: false, threads: None, denoise: None, fps: None, from: None, to: None, ffmpeg: None, audio: None, audio_offset: None };
+    let mut o = Opts { input: None, output: None, width: None, height: None, samples: 64, cpu: false, threads: None, denoise: None, fps: None, from: None, to: None, ffmpeg: None, audio: None, audio_offset: None, shutter: None };
     let mut it = args.iter().peekable();
     while let Some(a) = it.next() {
         let mut val = |name: &str| it.next().cloned().ok_or_else(|| format!("{name} needs a value"));
@@ -98,6 +102,7 @@ fn parse(args: &[String]) -> Result<Opts, String> {
             "--audio" => o.audio = Some(Some(PathBuf::from(val("--audio")?))),
             "--audio-offset" => o.audio_offset = Some(val("--audio-offset")?.parse().map_err(|_| "bad audio offset")?),
             "--no-audio" => o.audio = Some(None),
+            "--shutter" => o.shutter = Some(val("--shutter")?.parse().map_err(|_| "bad shutter")?),
             "--denoise" => {
                 let blend = it.peek().and_then(|v| v.parse::<f64>().ok());
                 if blend.is_some() {
@@ -157,6 +162,9 @@ fn animate(args: &[String]) -> Result<(), String> {
     if let Some(off) = o.audio_offset {
         anim.audio_offset_s = off;
     }
+    if let Some(sh) = o.shutter {
+        anim.shutter = sh;
+    }
     let plan = rmb_core::animation::AnimationPlan::new(&anim)?;
     let (w, h) = image_size(&o, &scene);
     let last = plan.frame_count() - 1;
@@ -185,8 +193,8 @@ fn animate(args: &[String]) -> Result<(), String> {
     let start = std::time::Instant::now();
     let cancel = std::sync::atomic::AtomicBool::new(false);
     let mut last_pct = u32::MAX;
-    let frame_scene = |f: usize| {
-        let mut s = plan.scene_at(f);
+    let frame_scene = |t: f64| {
+        let mut s = plan.scene_at_time(t);
         override_denoise(&o, &mut s.post);
         s
     };
@@ -196,6 +204,7 @@ fn animate(args: &[String]) -> Result<(), String> {
         w,
         h,
         o.samples,
+        anim.shutter,
         frame_scene,
         &cancel,
         |p| {

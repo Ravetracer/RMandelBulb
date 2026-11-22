@@ -383,6 +383,42 @@ fn gpu_matches_cpu_with_a_difs_mix() {
 }
 
 #[test]
+fn gpu_matches_cpu_with_object_fractals_with_de_combination() {
+    use rmb_core::compose::{SceneObject, Shape, Transform};
+    use rmb_core::scene::{CombineMode, DeCombine, Fractal, Slot};
+    let mut scene = Scene::default();
+    scene.lighting.ao_mode = rmb_core::scene::AoMode::Fast;
+    let p = |x: f64, y: f64, z: f64| rmb_core::v3(x, y, z);
+    // Mandelbulb and Amazing Box as one object, smoothly united; a Mandelbulb/Amazing Box
+    // interpolation as another.
+    let combined = Fractal {
+        slots: vec![Slot::new("Mandelbulb"), Slot::new("Amazing Box")],
+        bailout: 16.0,
+        combine: Some(DeCombine { mode: CombineMode::Smooth, start: 1, smooth: 0.2, ..Default::default() }),
+        ..Default::default()
+    };
+    let blended = Fractal { slots: vec![Slot::new("Mandelbulb"), Slot::new("Amazing Box")], bailout: 16.0, blend: Some([0.7, 0.3]), ..Default::default() };
+    scene.objects = vec![
+        SceneObject { name: "Combined".into(), shape: Shape::Fractal(Box::new(combined)), transform: Transform { position: p(1.2, -0.5, 0.3), scale: 0.3, ..Default::default() }, ..Default::default() },
+        SceneObject { name: "Blended".into(), shape: Shape::Fractal(Box::new(blended)), transform: Transform { position: p(-1.0, -0.8, 0.5), scale: 0.3, ..Default::default() }, ..Default::default() },
+    ];
+    // A dIFS mix (Mandelbulb3D's "genQuat helix mix") as a third object.
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../mb3d/M3Parameter/genQuat helix mix.m3p");
+    if let Ok(bytes) = std::fs::read(&path) {
+        let mix = rmb_core::io::m3p::import_binary(&bytes).expect("import").scene.fractal;
+        assert!(mix.combine.as_ref().is_some_and(|c| c.mode == CombineMode::Mix));
+        scene.objects.push(SceneObject { name: "Mix".into(), shape: Shape::Fractal(Box::new(mix)), transform: Transform { position: p(0.3, -1.0, -0.6), scale: 0.4, ..Default::default() }, ..Default::default() });
+    }
+    let prog = Program::for_scene(&scene);
+    for o in &prog.objects {
+        let rmb_core::fractal::ObjectShape::Fractal(f) = &o.shape else { panic!("fractal objects") };
+        assert!(f.part2.is_some() || f.blend.is_some());
+    }
+    validate(&rmb_gpu::codegen::march_shader(&prog), "object fractals with DE combination");
+    parity(scene);
+}
+
+#[test]
 fn gpu_matches_cpu_with_glass() {
     // Refraction, Fresnel reflection, absorption and scattering inside the bulb.
     let mut scene = Scene::default();
@@ -490,7 +526,7 @@ fn animation_frames_render_and_differ() {
     assert_eq!(plan.frame_count(), 3);
     let cancel = std::sync::atomic::AtomicBool::new(false);
     let mut frames = Vec::new();
-    rmb_gpu::render_animation(Some(ctx), 0..3, 48, 32, 1, |f| plan.scene_at(f), &cancel, |_| {}, |f, rgba| {
+    rmb_gpu::render_animation(Some(ctx), 0..3, 48, 32, 1, 0.0, |t| plan.scene_at_time(t), &cancel, |_| {}, |f, rgba| {
         frames.push((f, rgba));
         Ok(())
     })
@@ -498,6 +534,122 @@ fn animation_frames_render_and_differ() {
     assert_eq!(frames.iter().map(|f| f.0).collect::<Vec<_>>(), vec![0, 1, 2]);
     let diff = |x: &[u8], y: &[u8]| x.iter().zip(y).filter(|(p, q)| p != q).count();
     assert!(diff(&frames[0].1, &frames[1].1) > 100 && diff(&frames[1].1, &frames[2].1) > 100);
+}
+
+#[test]
+fn gpu_matches_cpu_with_motion_blur() {
+    let mut scene = Scene::default();
+    scene.lighting.ao_mode = rmb_core::scene::AoMode::Fast;
+    // The camera moves sideways, turns a little and zooms during the exposure.
+    let mut end = scene.camera.clone();
+    end.position += end.right * 0.4;
+    end.rotate_local(0.08, 0.02, 0.0);
+    end.fov *= 0.9;
+    scene.motion_end = Some(end);
+    if let Some((mean, big, n)) = gpu_cpu_difference(scene) {
+        assert!(mean < 4.0 && big * 100 < n, "mean {mean}, {big} of {n} channels far off");
+    }
+}
+
+#[test]
+fn gpu_matches_cpu_with_light_scattering_in_fog() {
+    use rmb_core::scene::{FogMode, Light, LightKind};
+    for mode in [FogMode::Exponential, FogMode::Range] {
+        let mut scene = Scene::default();
+        scene.lighting.ao_mode = rmb_core::scene::AoMode::Fast;
+        scene.fog.mode = mode;
+        scene.fog.density = 0.25;
+        scene.fog.strength = 0.8;
+        scene.fog.curve = 4.0;
+        scene.fog.scatter = 3.0;
+        // A spot light behind the fractal shines through its gaps.
+        let behind = scene.camera.position * -1.0;
+        scene.lighting.lights.push(Light { kind: LightKind::Spot, position: behind, target: rmb_core::V3::ZERO, cone_angle: 25.0, intensity: 4.0, ..Default::default() });
+        if let Some((mean, big, n)) = gpu_cpu_difference(scene) {
+            assert!(mean < 4.0 && big * 100 < n, "{mode:?}: mean {mean}, {big} of {n} channels far off");
+        }
+    }
+}
+
+#[test]
+fn gpu_matches_cpu_with_glossy_reflections_and_frosted_glass() {
+    for glass in [false, true] {
+        let mut scene = Scene::default();
+        scene.lighting.ao_mode = rmb_core::scene::AoMode::Fast;
+        scene.material.reflection = 0.8;
+        scene.material.gloss = 0.4;
+        scene.material.transmission = glass;
+        if glass {
+            for s in &mut scene.material.gradient {
+                s.transparency = 0.7;
+            }
+        }
+        if let Some((mean, big, n)) = gpu_cpu_difference(scene) {
+            assert!(mean < 4.0 && big * 100 < n, "glass {glass}: mean {mean}, {big} of {n} channels far off");
+        }
+    }
+}
+
+#[test]
+fn gpu_matches_cpu_with_shimmer_and_color_map_emission() {
+    let bmp = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("rmb_layer_test.bmp");
+    write_test_bmp(&bmp, 64, 64);
+    let mut scene = Scene::default();
+    scene.lighting.ao_mode = rmb_core::scene::AoMode::Fast;
+    scene.material.gradient[0].emission = 1.5;
+    scene.material.shimmer = 0.8;
+    scene.material.shimmer_size = 0.08;
+    scene.material.shimmer_phase = 2.4;
+    scene.material.color_map.image = bmp.to_string_lossy().into_owned();
+    scene.material.color_map.mode = rmb_core::scene::MapMode::Triplanar;
+    scene.material.color_map.scale = 3.0;
+    scene.material.color_map.emission = 1.2;
+    let cpu = |s: &Scene| {
+        let mut r = rmb_core::render::cpu::CpuRenderer::new(s.clone(), 48, 32);
+        r.render_pass();
+        r.rgba8()
+    };
+    let mut steady = scene.clone();
+    steady.material.shimmer = 0.0;
+    let changed = cpu(&scene).iter().zip(cpu(&steady)).filter(|(a, b)| (**a as i32 - *b as i32).abs() > 8).count();
+    assert!(changed > 200, "the shimmer changes only {changed} channels");
+    parity(scene);
+}
+
+#[test]
+fn motion_blur_smears_a_camera_pan() {
+    use rmb_core::animation::{Animation, AnimationPlan, Keyframe};
+    let Ok(ctx) = rmb_gpu::GpuContext::new_headless() else {
+        eprintln!("no GPU, skipped");
+        return;
+    };
+    let a = Scene::default();
+    let mut b = a.clone();
+    b.camera.position += b.camera.right * 0.6;
+    let anim = Animation { keyframes: vec![Keyframe { scene: a, frames: 1, ..Default::default() }, Keyframe { scene: b, ..Default::default() }], ..Default::default() };
+    let plan = AnimationPlan::new(&anim).expect("plan");
+    let (w, h) = (96u32, 64u32);
+    // Sum of horizontal differences: lower where the image is smeared sideways.
+    let sharpness = |shutter: f64| {
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let mut out = Vec::new();
+        rmb_gpu::render_animation(Some(ctx.clone()), 0..1, w, h, 16, shutter, |t| plan.scene_at_time(t), &cancel, |_| {}, |_, rgba| {
+            out = rgba;
+            Ok(())
+        })
+        .expect("render");
+        let mut sum = 0i64;
+        for y in 0..h as usize {
+            for x in 1..w as usize {
+                let i = (y * w as usize + x) * 4;
+                sum += (out[i + 1] as i64 - out[i - 3] as i64).abs();
+            }
+        }
+        sum
+    };
+    let (sharp, blurred) = (sharpness(0.0), sharpness(1.0));
+    eprintln!("horizontal detail: sharp {sharp}, blurred {blurred}");
+    assert!((blurred as f64) < 0.8 * sharp as f64);
 }
 
 #[test]
@@ -622,6 +774,40 @@ fn gpu_matches_cpu_with_composed_objects() {
 }
 
 #[test]
+fn gpu_matches_cpu_with_placed_fractal_repeated_objects_and_new_primitives() {
+    use rmb_core::compose::{Primitive, SceneObject, Shape, Transform};
+    let mut scene = Scene::default();
+    scene.lighting.ao_mode = rmb_core::scene::AoMode::Fast;
+    let p = |x: f64, y: f64, z: f64| rmb_core::v3(x, y, z);
+    // The bulb moved, turned and stretched.
+    scene.fractal.transform = Transform { position: p(0.2, -0.1, 0.15), rotation: [20.0, -15.0, 35.0], scale: 0.8, stretch: [1.0, 1.3, 1.0] };
+    // A floor of capsules (endless along x, three on each side along y) and the other new
+    // shapes in a row.
+    scene.objects = vec![
+        SceneObject {
+            name: "Capsules".into(),
+            shape: Shape::Primitive(Primitive::Capsule { radius: 0.1, height: 0.5 }),
+            transform: Transform { position: p(0.0, 0.0, -1.2), rotation: [90.0, 0.0, 0.0], ..Default::default() },
+            repeat: [0.35, 0.0, 0.35],
+            repeat_limit: [0, 0, 3],
+            ..Default::default()
+        },
+        SceneObject { name: "Cone".into(), shape: Shape::Primitive(Primitive::Cone { bottom: 0.25, top: 0.05, height: 0.5 }), transform: Transform { position: p(1.2, -0.6, 0.0), ..Default::default() }, ..Default::default() },
+        SceneObject { name: "Hex".into(), shape: Shape::Primitive(Primitive::HexPrism { radius: 0.2, height: 0.4 }), transform: Transform { position: p(1.2, 0.2, 0.4), rotation: [0.0, 30.0, 0.0], ..Default::default() }, ..Default::default() },
+        SceneObject { name: "Tri".into(), shape: Shape::Primitive(Primitive::TriPrism { side: 0.4, height: 0.3 }), transform: Transform { position: p(-1.1, -0.8, 0.5), ..Default::default() }, ..Default::default() },
+    ];
+    let prog = Program::for_scene(&scene);
+    assert!(prog.main_transform.is_some());
+    validate(&rmb_gpu::codegen::march_shader(&prog), "placed fractal and repeated objects");
+    parity(scene.clone());
+    // Deep zoom on the placed fractal.
+    scene.objects.clear();
+    let mut deep = deep_zoom(scene, 1e6);
+    deep.march.precision = rmb_core::scene::Precision::Double;
+    parity(deep);
+}
+
+#[test]
 fn gpu_matches_cpu_with_texture_layers() {
     use rmb_core::compose::{ObjectMaterial, Primitive, SceneObject, Shape, Transform};
     use rmb_core::texture::{BlendMode, Mapping, Target, TextureLayer};
@@ -661,6 +847,70 @@ fn gpu_matches_cpu_with_texture_layers() {
     plain.objects[0].material.layers.clear();
     let changed = cpu(&scene).iter().zip(cpu(&plain)).filter(|(a, b)| (**a as i32 - *b as i32).abs() > 8).count();
     assert!(changed > 500, "the layers change only {changed} channels");
+    parity(scene);
+}
+
+#[test]
+fn gpu_matches_cpu_with_alpha_normal_specular_and_roughness_layers() {
+    use rmb_core::compose::{ObjectMaterial, Primitive, SceneObject, Shape, Transform};
+    use rmb_core::texture::{Mapping, Target, TextureLayer};
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"));
+    // Red dots on a transparent background, and a wavy normal map.
+    let (w, h) = (64u32, 64u32);
+    let dots: Vec<u8> = (0..w * h)
+        .flat_map(|i| {
+            let (x, y) = ((i % w) as f64 / 8.0, (i / w) as f64 / 8.0);
+            let inside = (x - x.floor() - 0.5).powi(2) + (y - y.floor() - 0.5).powi(2) < 0.1;
+            [230, 40, 30, if inside { 255 } else { 0 }]
+        })
+        .collect();
+    let normals: Vec<u8> = (0..w * h)
+        .flat_map(|i| {
+            let (x, y) = ((i % w) as f64 / w as f64, (i / w) as f64 / h as f64);
+            let (nx, ny) = (0.6 * (x * 12.0).sin(), 0.6 * (y * 9.0).cos());
+            let nz = (1.0 - nx * nx - ny * ny).max(0.0).sqrt();
+            [((nx * 0.5 + 0.5) * 255.0) as u8, ((ny * 0.5 + 0.5) * 255.0) as u8, ((nz * 0.5 + 0.5) * 255.0) as u8, 255]
+        })
+        .collect();
+    let (dots_path, normal_path) = (dir.join("rmb_alpha_dots.png"), dir.join("rmb_normals.png"));
+    rmb_core::io::image::write_png(&dots_path, w, h, &dots, None).expect("write");
+    rmb_core::io::image::write_png(&normal_path, w, h, &normals, None).expect("write");
+    let (dots_img, normal_img) = (dots_path.to_string_lossy().into_owned(), normal_path.to_string_lossy().into_owned());
+    let bmp = dir.join("rmb_layer_test.bmp");
+    write_test_bmp(&bmp, 64, 64);
+    let gray = bmp.to_string_lossy().into_owned();
+    let mut scene = Scene::default();
+    scene.lighting.ao_mode = rmb_core::scene::AoMode::Fast;
+    scene.lighting.roughness = 1.0;
+    scene.material.layers = vec![
+        TextureLayer { image: dots_img.clone(), scale: 2.0, ..Default::default() },
+        TextureLayer { image: normal_img.clone(), target: Target::Normal, strength: 1.5, scale: 1.5, ..Default::default() },
+        TextureLayer { image: gray.clone(), target: Target::Specular, scale: 0.8, ..Default::default() },
+        TextureLayer { image: gray.clone(), target: Target::Roughness, opacity: 0.7, scale: 1.2, rotation: [0.0, 0.0, 30.0], ..Default::default() },
+    ];
+    // A ground with the normal map in planar and the dots in world space.
+    scene.objects = vec![SceneObject {
+        name: "Ground".into(),
+        shape: Shape::Primitive(Primitive::Plane),
+        transform: Transform { position: rmb_core::v3(0.0, 0.0, -1.1), rotation: [0.0, 0.0, 25.0], ..Default::default() },
+        material: ObjectMaterial {
+            layers: vec![
+                TextureLayer { image: normal_img, target: Target::Normal, mapping: Mapping::PlanarXY, scale: 0.5, ..Default::default() },
+                TextureLayer { image: dots_img, mapping: Mapping::PlanarXY, space: rmb_core::texture::Space::World, ..Default::default() },
+            ],
+            ..Default::default()
+        },
+        ..Default::default()
+    }];
+    let cpu = |s: &Scene| {
+        let mut r = rmb_core::render::cpu::CpuRenderer::new(s.clone(), 48, 32);
+        r.render_pass();
+        r.rgba8()
+    };
+    let mut no_alpha = scene.clone();
+    no_alpha.material.layers[0].use_alpha = false;
+    let changed = cpu(&scene).iter().zip(cpu(&no_alpha)).filter(|(a, b)| (**a as i32 - *b as i32).abs() > 8).count();
+    assert!(changed > 300, "the alpha channel changes only {changed} channels");
     parity(scene);
 }
 
@@ -736,5 +986,16 @@ fn gpu_matches_cpu_with_a_3d_model() {
     plain.objects.clear();
     let changed = cpu(&scene).iter().zip(cpu(&plain)).filter(|(a, b)| (**a as i32 - *b as i32).abs() > 8).count();
     assert!(changed > 500, "the model changes only {changed} channels");
+    parity(scene.clone());
+    let before = cpu(&scene);
+    // A normal map on the cool half (the stripes as normals), the warm half glowing.
+    if let Shape::Model(m) = &mut scene.objects[0].shape {
+        m.materials[0].normal = "stripes.png".into();
+        m.materials[0].normal_strength = 2.0;
+        m.materials[1].emission = Some([1.5, 0.6, 0.1]);
+    }
+    assert!(rmb_core::compose::load_models(&scene).is_empty());
+    let changed = cpu(&scene).iter().zip(&before).filter(|(a, b)| (**a as i32 - **b as i32).abs() > 8).count();
+    assert!(changed > 200, "normal map and emission change only {changed} channels");
     parity(scene);
 }

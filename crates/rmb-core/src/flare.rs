@@ -86,6 +86,58 @@ pub struct LensFlare {
     pub dirt_reach: f64,
     /// Random seed of spikes, ghosts, sparkles and dirt.
     pub seed: u32,
+    /// Ghosts placed by hand; when not empty they replace the `ghosts` made from the seed.
+    pub ghost_list: Vec<GhostDef>,
+    /// Image that shapes every ghost (bokeh; its brightness, centered on the ghost); empty:
+    /// the aperture blades.
+    pub ghost_image: String,
+}
+
+/// One ghost of a hand-made layout.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GhostDef {
+    /// Position on the line from the light (0) through the image center (1) and beyond.
+    pub pos: f64,
+    /// Radius (share of the image height).
+    pub size: f64,
+    /// Brightness (times the flare's ghost brightness).
+    pub brightness: f64,
+    /// Lens coating tint (mixed with the light's color by `ghost_colors`).
+    pub tint: [f32; 3],
+    /// Hollow ring instead of a disc.
+    pub ring: bool,
+    /// Edge softness (times the flare's ghost softness).
+    pub softness: f64,
+}
+
+impl Default for GhostDef {
+    fn default() -> Self {
+        GhostDef { pos: 1.5, size: 0.05, brightness: 0.5, tint: [0.3, 1.0, 0.5], ring: false, softness: 1.0 }
+    }
+}
+
+impl LensFlare {
+    /// The ghosts made from the seed (`ghosts`, `ghost_size`, `ghost_spread`, `ghost_rings`):
+    /// the start of a hand-made layout.
+    pub fn generated_ghosts(&self) -> Vec<GhostDef> {
+        let seed = self.seed;
+        // Coating tints cycle (5 is coprime to their count), starting at a random one.
+        let first = (rnd(seed, 1999) * COATINGS.len() as f64) as usize;
+        (0..self.ghosts.min(32))
+            .map(|i| {
+                let k = 2000 + i * 7;
+                let t = 0.25 + (0.4 + 1.6 * rnd(seed, k)) * self.ghost_spread;
+                let size = self.ghost_size * (0.35 + 1.3 * rnd(seed, k + 1) * rnd(seed, k + 1).sqrt() + 0.3 * (t - 1.0).abs());
+                let tint = COATINGS[(first + i as usize * 5) % COATINGS.len()];
+                let brightness = 0.3 + 0.7 * rnd(seed, k + 3);
+                // About a third are large, faint and soft (like real lenses).
+                let big = rnd(seed, k + 6) < 0.3;
+                let (size, brightness, softness) = if big { (size * 2.4, brightness * 0.7, 2.5) } else { (size, brightness, 1.0) };
+                GhostDef { pos: t, size, brightness, tint: tint.map(|c| c as f32), ring: !big && rnd(seed, k + 5) < self.ghost_rings, softness }
+            })
+            .collect()
+    }
 }
 
 impl Default for LensFlare {
@@ -97,7 +149,7 @@ impl Default for LensFlare {
             glow: 1.0,
             glow_size: 0.03,
             haze: 0.05,
-            haze_size: 0.45,
+            haze_size: 0.3,
             rays: 6,
             ray_intensity: 0.5,
             ray_length: 0.3,
@@ -130,6 +182,8 @@ impl Default for LensFlare {
             dirt: 0.0,
             dirt_reach: 0.6,
             seed: 1,
+            ghost_list: Vec::new(),
+            ghost_image: String::new(),
         }
     }
 }
@@ -168,6 +222,8 @@ struct Prepared {
     dirt: Vec<Dot>,
     /// Bounding radius of everything centered on the light.
     reach: f64,
+    /// Bokeh image shaping the ghosts.
+    ghost_image: Option<std::sync::Arc<crate::maps::Map>>,
 }
 
 struct Ray {
@@ -185,6 +241,8 @@ struct Ghost {
     color: [f64; 3],
     rot: f64,
     ring: bool,
+    /// Edge softness (0.02..1).
+    soft: f64,
 }
 
 struct Dot {
@@ -233,19 +291,18 @@ impl Prepared {
         }
         // Ghosts on the line from the light through the image center.
         let (cx, cy) = (w * 0.5, h * 0.5);
-        let mut ghosts = Vec::new();
-        // Coating tints cycle (5 is coprime to their count), starting at a random one.
-        let first = (rnd(seed, 1999) * COATINGS.len() as f64) as usize;
-        for i in 0..f.ghosts.min(32) {
-            let k = 2000 + i * 7;
-            let t = 0.25 + (0.4 + 1.6 * rnd(seed, k)) * f.ghost_spread;
-            let size = f.ghost_size * s * (0.35 + 1.3 * rnd(seed, k + 1) * rnd(seed, k + 1).sqrt() + 0.3 * (t - 1.0).abs());
-            let tint = COATINGS[(first + i as usize * 5) % COATINGS.len()];
-            let mix = f.ghost_colors.clamp(0.0, 1.0);
-            let bright = f.ghost_intensity * (0.3 + 0.7 * rnd(seed, k + 3)) / (1.0 + 2.0 * size / s);
-            let color = [0, 1, 2].map(|c| (color[c] * (1.0 - mix) + tint[c] * mix) * bright);
-            ghosts.push(Ghost { x: lx + (cx - lx) * t, y: ly + (cy - ly) * t, r: size, color, rot: rnd(seed, k + 4) * 0.3, ring: rnd(seed, k + 5) < f.ghost_rings });
-        }
+        let defs = if f.ghost_list.is_empty() { f.generated_ghosts() } else { f.ghost_list.clone() };
+        let mix = f.ghost_colors.clamp(0.0, 1.0);
+        let ghosts = defs
+            .iter()
+            .enumerate()
+            .map(|(i, g)| {
+                let size = g.size * s;
+                let bright = f.ghost_intensity * g.brightness / (1.0 + 2.0 * g.size);
+                let color = [0, 1, 2].map(|c| (color[c] * (1.0 - mix) + g.tint[c] as f64 * mix) * bright);
+                Ghost { x: lx + (cx - lx) * g.pos, y: ly + (cy - ly) * g.pos, r: size, color, rot: rnd(seed, 2000 + i as u32 * 7 + 4) * 0.3, ring: g.ring, soft: (f.ghost_softness * g.softness).clamp(0.02, 1.0) }
+            })
+            .collect();
         let (sa, ca) = f.streak_angle.to_radians().sin_cos();
         let mut sparkles = Vec::new();
         for i in 0..f.sparkles.min(200) {
@@ -268,7 +325,8 @@ impl Prepared {
             }
         }
         let reach = [f.glow_size * 8.0, f.ray_length, f.spike_length, f.ring_size + 4.0 * f.ring_width].iter().cloned().fold(0.0, f64::max) * s;
-        Prepared { lx, ly, s, color, f: f.clone(), rays, ghosts, sparkles, dirt, reach }
+        let ghost_image = (!f.ghost_image.trim().is_empty()).then(|| crate::maps::get_any(&f.ghost_image)).flatten();
+        Prepared { lx, ly, s, color, f: f.clone(), rays, ghosts, sparkles, dirt, reach, ghost_image }
     }
 
     /// The flare's light at pixel center (`x`, `y`).
@@ -288,8 +346,8 @@ impl Prepared {
         if f.haze > 0.0 {
             let hz = (f.haze_size * s).max(1e-9);
             let q = r2 / (hz * hz);
-            if q < 16.0 {
-                let k = f.haze * (0.6 * (-q).exp() + 0.4 * (-8.0 * q).exp()) * (1.0 - smoothstep(9.0, 16.0, q));
+            if q < 6.0 {
+                let k = f.haze * (0.6 * (-q).exp() + 0.4 * (-8.0 * q).exp()) * (1.0 - smoothstep(2.0, 6.0, q));
                 add(&mut out, self.color, k);
             }
         }
@@ -361,11 +419,17 @@ impl Prepared {
             } else {
                 1.0
             };
-            let soft = f.ghost_softness.clamp(0.02, 1.0);
+            let soft = gh.soft;
             let mut c = [0.0; 3];
+            // Bokeh image: the ghost's square, turned like the aperture.
+            let (rs, rc) = gh.rot.sin_cos();
+            let (bx, by) = (gx * rc + gy * rs, gy * rc - gx * rs);
             for (i, scale) in [1.0 + 0.04 * f.chromatic, 1.0, 1.0 - 0.04 * f.chromatic].iter().enumerate() {
                 let rho = gr / (gh.r * shape * scale);
-                let m = if gh.ring {
+                let m = if let Some(img) = &self.ghost_image {
+                    let (u, v) = (0.5 + bx / (2.0 * gh.r * scale), 0.5 + by / (2.0 * gh.r * scale));
+                    if (0.0..=1.0).contains(&u) && (0.0..=1.0).contains(&v) { crate::texture::luminance(crate::texture::bilinear(img, u, v)) } else { 0.0 }
+                } else if gh.ring {
                     let d = (rho - 0.85) / (0.06 + 0.2 * soft);
                     (-d * d).exp()
                 } else {
@@ -510,6 +574,32 @@ mod tests {
         let mut s = scene_with_flare(LensFlare { enabled: true, ..Default::default() });
         s.lighting.lights.last_mut().unwrap().position = v3(0.0, 0.0, 0.0);
         assert!(layer(&s, 64, 36).is_none());
+    }
+
+    #[test]
+    fn hand_placed_ghosts_and_bokeh_image() {
+        let f = LensFlare { enabled: true, glow: 0.0, haze: 0.0, rays: 0, ..Default::default() };
+        let (w, h) = (160u32, 90u32);
+        let generated = layer(&scene_with_flare(f.clone()), w, h).unwrap();
+        // The generated ghosts as a list: the same image.
+        let listed = LensFlare { ghost_list: f.generated_ghosts(), ..f.clone() };
+        assert_eq!(listed.ghost_list.len(), f.ghosts as usize);
+        assert_eq!(layer(&scene_with_flare(listed.clone()), w, h).unwrap(), generated);
+        // One big ghost at the image center.
+        let one = LensFlare { ghost_list: vec![GhostDef { pos: 1.0, size: 0.2, brightness: 2.0, ..Default::default() }], ..f.clone() };
+        let img = layer(&scene_with_flare(one.clone()), w, h).unwrap();
+        let center = img[(h as usize / 2) * w as usize + w as usize / 2];
+        assert!(center[1] > 0.1, "{center:?}");
+        // A bokeh image that is black on its left half darkens the ghost's left side.
+        let file = std::env::temp_dir().join(format!("rmb-bokeh-{}.png", std::process::id()));
+        let px: Vec<u8> = (0..32 * 32).flat_map(|i| if i % 32 < 16 { [0, 0, 0, 255] } else { [255, 255, 255, 255] }).collect();
+        crate::io::image::write_png(&file, 32, 32, &px, None).unwrap();
+        let bokeh = LensFlare { ghost_image: file.to_string_lossy().into_owned(), ..one };
+        let img = layer(&scene_with_flare(bokeh), w, h).unwrap();
+        let (cx, cy) = (w as usize / 2, h as usize / 2);
+        let (gx, gy) = (img[cy * w as usize + cx - 8][1], img[cy * w as usize + cx + 8][1]);
+        assert!(gx < 0.2 * gy, "left {gx}, right {gy}");
+        let _ = std::fs::remove_file(&file);
     }
 
     #[test]

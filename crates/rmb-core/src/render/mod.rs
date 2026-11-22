@@ -378,6 +378,23 @@ pub fn value_noise(p: [f64; 3]) -> f64 {
     lerp(lerp(x00, x10, u[1]), lerp(x01, x11, u[1]), u[2])
 }
 
+/// Factor of the emitted light at world point `p` (Material::shimmer): two octaves of value
+/// noise over patches of `shimmer_size`, a new pattern per phase step, cross-faded smoothly.
+pub fn shimmer(m: &crate::scene::Material, p: V3) -> f64 {
+    if m.shimmer <= 0.0 {
+        return 1.0;
+    }
+    let g = m.shimmer_size.max(1e-9);
+    let (step, f) = (m.shimmer_phase.floor(), m.shimmer_phase - m.shimmer_phase.floor());
+    let pattern = |k: f64| {
+        let q = [p.x / g + k * 7.31, p.y / g - k * 3.17, p.z / g + k * 5.53];
+        (value_noise(q) * 2.0 + value_noise(q.map(|v| v * 2.07)) ) / 3.0
+    };
+    let t = f * f * (3.0 - 2.0 * f);
+    let n = pattern(step) + (pattern(step + 1.0) - pattern(step)) * t;
+    (1.0 + m.shimmer.min(1.0) * (2.0 * n - 1.0) * 1.5).max(0.0)
+}
+
 /// Density (0..1) of the steam at world point `p`: four octaves of value noise over
 /// `grain`-sized blobs, shifted by `offset`, cut so that about `cover` of space is filled.
 pub fn steam_density(p: V3, grain: f64, offset: [f64; 3], cover: f64) -> f64 {
@@ -471,10 +488,14 @@ pub fn shifted_scene(scene: &Scene, r: V3) -> Scene {
     };
     let mut s = scene.clone();
     s.camera.position = s.camera.position - r;
+    if let Some(c) = &mut s.motion_end {
+        c.position = c.position - r;
+    }
     for l in &mut s.lighting.lights {
         l.position = l.position - r;
         l.target = l.target - r;
     }
+    s.fractal.transform.position = s.fractal.transform.position - r;
     for o in &mut s.objects {
         o.transform.position = o.transform.position - r;
         shift_layers(&mut o.material.layers, true);
