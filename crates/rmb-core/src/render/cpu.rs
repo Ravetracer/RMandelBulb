@@ -31,6 +31,11 @@ pub struct Shader<'a> {
 /// The binary refinement of a hit stops at steps below this part of the threshold.
 pub const REFINE_TOLERANCE: f64 = 1.0 / 128.0;
 
+/// Upper limit of the refinement steps while the hit point is still where the estimate is zero
+/// (march.wgsl `REFINE_INSIDE_MAX`): a point that did not escape (too few iterations for the
+/// zoom) has no gradient, so its normal, shadow and occlusion would come out black.
+pub const REFINE_INSIDE_MAX: u32 = 32;
+
 /// Tetrahedron directions of the distance gradient at a steam point (march.wgsl `STEAM_TETRA`).
 const STEAM_TETRA: [[f64; 3]; 4] = [[1.0, -1.0, -1.0], [-1.0, -1.0, 1.0], [-1.0, 1.0, -1.0], [1.0, 1.0, 1.0]];
 
@@ -225,7 +230,9 @@ impl<'a> Shader<'a> {
                 let (mut t_hit, mut orbit_hit) = (t, orbit);
                 let mut dt = last_step * 0.5;
                 if step > 0 && refine {
-                    for _ in 0..m.refine_steps {
+                    let mut k = 0;
+                    while k < m.refine_steps || (orbit_hit.de <= 0.0 && k < REFINE_INSIDE_MAX) {
+                        k += 1;
                         if dt < eps * REFINE_TOLERANCE {
                             break;
                         }

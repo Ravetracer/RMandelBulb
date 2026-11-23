@@ -68,6 +68,15 @@ More refinement steps give a cleaner surface position, which matters for sharp s
 highlights. The search stops early as soon as it is precise enough, so the maximum rarely costs
 the full amount. 0 switches it off.
 
+When the hit point is still inside the fractal (a point that did not escape within the
+iteration limit), the search continues past this value until it reaches the surface. Without
+that, such points get no usable normal and show up as black flakes or bands close to the
+surface.
+
+!!! tip
+    Black flakes that remain when you fly very close usually mean the iteration limit is too
+    low for that distance: the fractal's detail ends there. Raise **Max iterations**.
+
 ### Near
 
 Rays start at this distance in front of the camera, so everything between the camera and that

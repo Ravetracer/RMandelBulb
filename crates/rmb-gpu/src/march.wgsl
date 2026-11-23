@@ -1429,7 +1429,9 @@ fn march_ray(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, max_steps: u32, pr
             var ob_hit = ob;
             var dt = last_step * 0.5;
             if (step > 0u && primary) {
-                for (var k = 0u; k < u.band.w; k++) {
+                // Past the refine steps while the point is still where the estimate is zero
+                // (mirrors cpu::REFINE_INSIDE_MAX).
+                for (var k = 0u; k < u.band.w || (ob_hit.de <= 0.0 && k < 32u); k++) {
                     // Mirrors cpu::REFINE_TOLERANCE.
                     if (dt < eps * (1.0 / 128.0)) {
                         break;
