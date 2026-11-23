@@ -5,6 +5,7 @@
 
 pub mod animation;
 pub mod compose;
+pub mod explore;
 pub mod flare;
 pub mod formula;
 pub mod fractal;

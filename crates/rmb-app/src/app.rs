@@ -44,6 +44,7 @@ pub struct App {
     export: Export,
     render: crate::render_view::RenderView,
     timeline: crate::timeline::Timeline,
+    explorer: crate::explorer::Explorer,
     help: Help,
     prefs: Prefs,
     prefs_open: bool,
@@ -67,6 +68,7 @@ impl App {
             doc: Document::new(Scene::default()),
             view: Viewport::new(cc.wgpu_render_state.as_ref()),
             formulas: FormulasPanel::default(),
+            explorer: Default::default(),
             inspector: Inspector::default(),
             export: Export::new(prefs.export_samples),
             render: crate::render_view::RenderView::new(prefs.export_samples),
@@ -384,6 +386,13 @@ impl App {
             {
                 self.timeline.open = !self.timeline.open;
             }
+            if ui
+                .selectable_label(self.explorer.open, format!("{}  Explore", egui_phosphor::regular::COMPASS))
+                .on_hover_text("Explore lane: presets to start from, random fractals and variants of the current scene")
+                .clicked()
+            {
+                self.explorer.open = !self.explorer.open;
+            }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let label = if self.export.busy() { format!("{}  Exporting…", icons::EXPORT) } else { format!("{}  Export", icons::EXPORT) };
@@ -651,6 +660,18 @@ impl eframe::App for App {
         egui::Panel::right("inspector").resizable(true).default_size(340.0).size_range(300.0..=520.0).frame(egui::Frame::new().fill(theme::PANEL).inner_margin(egui::Margin::symmetric(12, 10))).show(ui, |ui| {
             self.inspector.show(ui, &mut self.doc.scene, &mut self.view);
         });
+        if self.explorer.open {
+            let mut picked = None;
+            let gpu = self.view.gpu_context();
+            egui::Panel::bottom("explore").resizable(false).exact_size(150.0).frame(egui::Frame::new().fill(theme::PANEL).inner_margin(egui::Margin::symmetric(12, 8))).show(ui, |ui| {
+                picked = self.explorer.show(ui, &self.doc.scene, gpu);
+            });
+            if let Some(scene) = picked {
+                self.doc.replace(scene);
+                self.formulas.selected = 0;
+                self.notify("Took the scene from the explore lane (Ctrl+Z goes back)");
+            }
+        }
         if self.timeline.open {
             let mut act = None;
             egui::Panel::bottom("timeline").resizable(true).default_size(230.0).size_range(150.0..=420.0).frame(egui::Frame::new().fill(theme::PANEL).inner_margin(egui::Margin::symmetric(12, 8))).show(ui, |ui| {

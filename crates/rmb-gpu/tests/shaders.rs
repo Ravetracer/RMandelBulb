@@ -1167,3 +1167,35 @@ fn gpu_matches_cpu_with_mandelbulber_slot_settings() {
     }
     parity(scene);
 }
+
+/// A renderer that switched scenes renders the second one like a fresh renderer (no colors,
+/// parameters or buffers left over from the first).
+#[test]
+fn switching_scenes_leaves_nothing_behind() {
+    let Ok(ctx) = rmb_gpu::GpuContext::new_headless() else {
+        eprintln!("no GPU, skipped");
+        return;
+    };
+    let render = |r: &mut rmb_gpu::GpuRenderer, s: &Scene| {
+        r.set_scene(s, 96, 54, false);
+        r.wait_for_pipeline().expect("pipeline");
+        while r.samples() < 2 {
+            r.work(std::time::Duration::from_secs(5), 2);
+        }
+        r.read_rgba8().expect("read back")
+    };
+    for seed in 0..4u64 {
+        let a = rmb_core::explore::random_framed(rmb_core::explore::RandomKind::Any, seed * 2, 4);
+        let b = rmb_core::explore::random_framed(rmb_core::explore::RandomKind::Any, seed * 2 + 1, 4);
+        let mut shared = rmb_gpu::GpuRenderer::new(ctx.clone());
+        render(&mut shared, &a);
+        let after = render(&mut shared, &b);
+        let fresh = render(&mut rmb_gpu::GpuRenderer::new(ctx.clone()), &b);
+        let baked = rmb_gpu::render_blocking(ctx.clone(), &b, 96, 54, 2, |_| true).expect("baked");
+        let mb = baked.iter().zip(&fresh).map(|(x, y)| (*x as i32 - *y as i32).abs()).sum::<i32>() as f64 / baked.len() as f64;
+        eprintln!("seed {seed}: baked vs preview {mb:.3}");
+        let mean = after.iter().zip(&fresh).map(|(x, y)| (*x as i32 - *y as i32).abs()).sum::<i32>() as f64 / after.len() as f64;
+        eprintln!("seed {seed}: mean difference {mean:.3}");
+        assert!(mean < 0.5, "seed {seed}: {mean}");
+    }
+}

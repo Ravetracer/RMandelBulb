@@ -7,6 +7,7 @@
 
 mod app;
 mod doc;
+mod explorer;
 mod export;
 mod formula_editor;
 mod formulas_panel;

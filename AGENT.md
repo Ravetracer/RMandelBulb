@@ -301,6 +301,16 @@ cargo clippy -j 8 --workspace --all-targets
 - `cargo run --release -p rmb-core --example flare_presets -- out.png` renders all presets on
   black, to judge changes to the look (the sheet's display curve lifts dark values strongly).
 
+## Explore lane
+
+- `rmb-core/src/explore.rs`: random scenes (`random_framed`: formulas with good parameter
+  ranges, palette from `palette.rs`, camera framed with `frame`/`coverage` via CPU picks) and
+  mutations (`mutate`). `rmb-app/src/explorer.rs`: the bottom lane (Presets, Random,
+  Mutations); thumbnails render one after another on a worker thread with one unbaked
+  `GpuRenderer` (shaders reused), with `march.detail` scaled to the scene's image height so
+  the colors match the full image. Presets are `crates/rmb-app/presets/*.rmb`, written by
+  `cargo run --release -p rmb-core --example make_presets -- crates/rmb-app/presets`.
+
 ## Testing the app visually
 
 - Xvfb on `:99` (1600×1000), separate `XDG_CONFIG_HOME`; `xdotool` + `import -window root`.

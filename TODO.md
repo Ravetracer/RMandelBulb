@@ -148,7 +148,9 @@
   - [ ] Possible later: nested boolean groups (Mandelbulber's object tree), `_Cond*`
         formulas, per-slot settings and 4D rotation for object fractals, language helpers
         (functions, vectors, enum parameters)
-- [ ] Explore lane: own presets (thumbnails), random batches, mutations (like RWildFire)
+- [x] Explore lane: own presets (thumbnails), random batches, mutations (like RWildFire)
+  - [ ] Possible: more presets, quality filter against noisy random scenes, snapshot of the
+        current scene into the strip
 - [ ] Help: Markdown in docs/help with screenshots and how-tos, shown in the app, offline PDF
 - [ ] Preferences like RWildFire (UI scale/font size, ...); the top bar overlaps at narrow
       widths
