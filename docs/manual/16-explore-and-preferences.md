@@ -76,6 +76,13 @@ inspector, the window is divided into sections that open and close with a click 
 
 ![The Preferences window](images/preferences.png)
 
+### Appearance
+
+| Setting | What it does | Range / default |
+|---------|--------------|-----------------|
+| **UI scale** | Size of the whole interface in percent: texts, controls and spacing together. Lower it on small or high-resolution screens where everything looks too big. Applies when you let go of the slider. | 50–200, default 100 |
+| **Font size** | Size of the texts only. Other values than 100 % can make texts overlap their controls; UI scale keeps the proportions. | 50–200, default 100 |
+
 ### Preview
 
 | Setting | What it does | Range / default |
@@ -83,6 +90,7 @@ inspector, the window is divided into sections that open and close with a click 
 | **Resolution** | Preview resolution in percent of the view size. Lower is faster. | 25–100, default 100 |
 | **While moving** | Resolution while you navigate, in percent of the preview resolution. | 10–100, default 50 |
 | **Samples** | The preview stops refining after this many samples per pixel. | 1–4096, default 256 |
+| **Time limit** | The preview stops refining after this many seconds (0: no limit). | 0–600 s, default 0 |
 | **Image aspect** | Shows the preview in the aspect ratio of the image size; off: fills the view. | on |
 | **Optimize at rest** | When the view and the settings rest for a moment, compiles a shader with all settings built in, in the background, and continues with it (below). | on |
 
@@ -99,12 +107,29 @@ that are off drop out of the shader. The cost is a compile of about a second aft
 | **Mouse speed** | Sensitivity of orbiting and looking with the mouse. | 0.1–4, default 1 |
 | **Invert Y** | Inverts the vertical mouse direction. | off |
 
-### Interface
+### Rendering
 
 | Setting | What it does | Range / default |
 |---------|--------------|-----------------|
-| **Font size** | Size of the interface text, in percent. | 50–200, default 100 |
 | **Export samples** | Default samples per pixel of exported images and the render window. | 1–1024, default 128 |
+| **Always denoise** | Scenes that come in without the denoiser (new, opened, pasted, from the explore lane) get it, with **Denoise amount**. Scenes that use it already keep their setting. | off |
+| **Free CPU cores** | CPU cores the CPU work (CPU renderer, 3D model baking, framing random scenes) leaves free for other programs. Takes effect at the next start. | default 0 |
+
+### New scenes
+
+**Width** and **Height**: the image size of scenes made with **File › New** (default 1280 × 720).
+
+### Folders
+
+Start folders of the file dialogs per kind of file: scenes, saved images, movies, 3D models,
+textures and backgrounds, sound tracks. Without a folder, a dialog starts where you were last.
+**Quick save** sets where **File › Quick save** (<kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>S</kbd>)
+puts scenes: it saves without asking, named `qsave_<date>_<time>.rmb` (else in the Scenes
+folder, else in the configuration folder).
+
+### Explore
+
+**Batch size**: scenes per new batch of random fractals or mutations in the explore lane.
 
 ### Formulas
 

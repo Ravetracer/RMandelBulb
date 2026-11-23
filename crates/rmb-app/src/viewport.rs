@@ -383,7 +383,7 @@ impl Viewport {
             }
         }
         self.hud(ui, rect, doc);
-        if !self.paused && (self.navigating() || self.compiling() || self.samples() < prefs.preview_samples) {
+        if !self.paused && (self.navigating() || self.compiling() || (self.samples() < prefs.preview_samples && !self.timed_out(prefs))) {
             ui.ctx().request_repaint();
         }
     }
@@ -423,6 +423,11 @@ impl Viewport {
         }
     }
 
+    /// The preview's time limit (Preferences) has run out for the current scene.
+    fn timed_out(&self, prefs: &Prefs) -> bool {
+        prefs.preview_seconds > 0.0 && self.pass_start.elapsed().as_secs_f64() > prefs.preview_seconds
+    }
+
     fn update_gpu(&mut self, frame: &eframe::Frame, scene: &Scene, size: (u32, u32), fast: bool, prefs: &Prefs) -> Option<egui::TextureId> {
         let gpu = self.gpu.as_mut()?;
         if self.timed.as_ref().is_none_or(|(s, z)| s != scene || *z != size) {
@@ -432,7 +437,8 @@ impl Viewport {
         }
         gpu.set_rest_baking(prefs.optimize_resting.then_some(REST_DELAY));
         gpu.set_scene(scene, size.0, size.1, fast);
-        let max = if self.paused { 0 } else if fast { 1 } else { prefs.preview_samples.max(1) };
+        let timed_out = prefs.preview_seconds > 0.0 && self.pass_start.elapsed().as_secs_f64() > prefs.preview_seconds;
+        let max = if self.paused { 0 } else if fast { 1 } else if timed_out { gpu.samples().max(1) } else { prefs.preview_samples.max(1) };
         let budget = if fast { Duration::from_millis(40) } else { Duration::from_millis(28) };
         gpu.work(budget, max);
         if gpu.samples() >= max && self.converged_after.is_none() && !fast {

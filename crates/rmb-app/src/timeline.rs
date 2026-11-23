@@ -428,7 +428,7 @@ fn movie_ui(ui: &mut Ui, a: &mut Animation) {
     ui.horizontal(|ui| {
         let name = a.audio.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned());
         if ui.button(format!("{}  Sound…", ph::MUSIC_NOTES)).on_hover_text("Sound file put under exported movies (MP4, MOV, WebM; not GIF). The movie keeps its length: the sound is cut at its end or filled with silence").clicked() {
-            let mut dlg = rfd::FileDialog::new().add_filter("Sound", &["wav", "mp3", "flac", "ogg", "opus", "m4a", "aac"]);
+            let mut dlg = crate::prefs::dialog(crate::prefs::Folder::Sounds).add_filter("Sound", &["wav", "mp3", "flac", "ogg", "opus", "m4a", "aac"]);
             if let Some(d) = a.audio.as_ref().and_then(|p| p.parent()) {
                 dlg = dlg.set_directory(d);
             }

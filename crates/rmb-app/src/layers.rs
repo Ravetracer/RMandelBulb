@@ -43,7 +43,7 @@ fn thumbnail(ui: &Ui, name: &str) -> Option<egui::TextureHandle> {
 pub fn image_row(ui: &mut Ui, name: &mut String, what: &str, tip: &str) {
     ui.horizontal(|ui| {
         if ui.button(format!("{}…", what)).on_hover_text(tip).clicked()
-            && let Some(p) = rfd::FileDialog::new().add_filter("Image", &IMAGES).pick_file()
+            && let Some(p) = crate::prefs::dialog(crate::prefs::Folder::Textures).add_filter("Image", &IMAGES).pick_file()
         {
             *name = p.display().to_string();
         }

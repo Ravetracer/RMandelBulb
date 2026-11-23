@@ -110,7 +110,7 @@ impl FormulasPanel {
                         }
                         ui.separator();
                         if ui.button("3D model…").on_hover_text("A 3D model file (OBJ, STL, PLY, glTF/GLB, FBX; from Blender: File › Export › glTF 2.0 or Wavefront OBJ)").clicked()
-                            && let Some(p) = rfd::FileDialog::new().add_filter("3D model", &MODEL_FILES).pick_file()
+                            && let Some(p) = crate::prefs::dialog(crate::prefs::Folder::Models).add_filter("3D model", &MODEL_FILES).pick_file()
                         {
                             add = Some(model_object(&p, ahead));
                         }
@@ -701,7 +701,7 @@ fn model_editor(ui: &mut Ui, m: &mut ModelRef) {
     if widgets::section(ui, "3D model", false).open {
         ui.horizontal(|ui| {
             if ui.button("Change…").on_hover_text("Pick another model file").clicked()
-                && let Some(p) = rfd::FileDialog::new().add_filter("3D model", &MODEL_FILES).pick_file()
+                && let Some(p) = crate::prefs::dialog(crate::prefs::Folder::Models).add_filter("3D model", &MODEL_FILES).pick_file()
             {
                 m.path = p.display().to_string();
                 m.materials.clear();
@@ -807,7 +807,7 @@ fn image_combo(ui: &mut Ui, id: &str, model: &str, file: &str, images: &[std::pa
                 }
             }
             if ui.button("Browse…").on_hover_text("Pick any image file").clicked()
-                && let Some(p) = rfd::FileDialog::new().add_filter("Image", &rmb_core::mesh::IMAGE_EXTENSIONS).pick_file()
+                && let Some(p) = crate::prefs::dialog(crate::prefs::Folder::Textures).add_filter("Image", &rmb_core::mesh::IMAGE_EXTENSIONS).pick_file()
             {
                 *value = Some(rmb_core::mesh::image_name(model, &p));
             }

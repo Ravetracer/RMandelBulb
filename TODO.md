@@ -153,7 +153,8 @@
         current scene into the strip
 - [x] User manual: docs/manual (18 chapters, screenshots, how-tos with example scenes), shown
       in the app (Help › Manual), offline PDF (tools/build_manual.py)
-- [ ] Preferences like RWildFire (UI scale/font size, ...)
+- [x] Preferences like RWildFire: UI scale, font size, preview time limit, always denoise,
+      free CPU cores, new scene size, folders per file kind, quick save, explore batch size
   - [x] The top bar no longer overlaps: icons only when the labels do not fit, the document
         name only where there is room
 

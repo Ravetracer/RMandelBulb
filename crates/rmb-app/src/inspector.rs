@@ -804,7 +804,7 @@ fn color_map(ui: &mut Ui, m: &mut rmb_core::scene::Material) {
         let cm = &mut m.color_map;
         ui.horizontal(|ui| {
             if ui.button("Image…").on_hover_text("An image that gives the surface color instead of the gradient (or a Mandelbulb3D map number)").clicked()
-                && let Some(p) = rfd::FileDialog::new().add_filter("Image", &["jpg", "jpeg", "png", "bmp"]).pick_file()
+                && let Some(p) = crate::prefs::dialog(crate::prefs::Folder::Textures).add_filter("Image", &["jpg", "jpeg", "png", "bmp"]).pick_file()
             {
                 cm.image = p.display().to_string();
             }
@@ -877,7 +877,7 @@ fn effects(ui: &mut Ui, scene: &mut Scene) {
         ui.horizontal(|ui| {
             let label = if b.image.is_empty() { "No image".to_string() } else { b.image.clone() };
             if ui.button("Image…").on_hover_text("Panorama image (latitude/longitude) behind the object; the fog keeps the colors above").clicked()
-                && let Some(p) = rfd::FileDialog::new().add_filter("Image", &["jpg", "jpeg", "png", "bmp"]).pick_file()
+                && let Some(p) = crate::prefs::dialog(crate::prefs::Folder::Textures).add_filter("Image", &["jpg", "jpeg", "png", "bmp"]).pick_file()
             {
                 b.image = p.display().to_string();
             }

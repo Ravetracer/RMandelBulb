@@ -20,6 +20,7 @@ use crate::{icons, theme, widgets};
 #[derive(Clone, Debug, PartialEq)]
 enum Action {
     New,
+    QuickSave,
     Open,
     OpenPath(PathBuf),
     Save,
@@ -48,6 +49,8 @@ pub struct App {
     /// Top bar: width of the left part with labels, and of the right part (compact mode).
     topbar_full: f32,
     topbar_right: f32,
+    /// UI scale to apply once the slider is let go.
+    pending_scale: Option<u32>,
     help: Help,
     prefs: Prefs,
     prefs_open: bool,
@@ -59,9 +62,14 @@ pub struct App {
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, initial: Option<PathBuf>) -> Self {
         let prefs = Prefs::load();
+        // CPU work leaves the chosen number of cores free (the pool is built once, at start).
+        let cores = std::thread::available_parallelism().map_or(4, |n| n.get());
+        let _ = rayon::ThreadPoolBuilder::new().num_threads(cores.saturating_sub(prefs.free_cores).max(1)).build_global();
         crate::widgets::set_closed_sections(&prefs.closed_sections);
+        crate::prefs::set_dialog_dirs(&prefs);
         crate::icons::install(&cc.egui_ctx);
         theme::apply(&cc.egui_ctx, prefs.font_percent);
+        cc.egui_ctx.set_zoom_factor(prefs.ui_scale_percent as f32 / 100.0);
         rmb_core::formula::load_user_formulas(&crate::prefs::user_formula_dir());
         if let Some(d) = &prefs.formula_dir {
             rmb_core::formula::load_user_formulas(d);
@@ -71,9 +79,14 @@ impl App {
             doc: Document::new(Scene::default()),
             view: Viewport::new(cc.wgpu_render_state.as_ref()),
             formulas: FormulasPanel::default(),
-            explorer: Default::default(),
+            explorer: {
+                let mut e = crate::explorer::Explorer::default();
+                e.batch_size = prefs.explore_batch;
+                e
+            },
             topbar_full: 0.0,
             topbar_right: 0.0,
+            pending_scale: None,
             inspector: Inspector::default(),
             export: Export::new(prefs.export_samples),
             render: crate::render_view::RenderView::new(prefs.export_samples),
@@ -104,13 +117,23 @@ impl App {
     }
 
     fn save_prefs(&mut self) {
+        crate::prefs::set_dialog_dirs(&self.prefs);
         if let Err(e) = self.prefs.save() {
             self.notify_err(format!("Preferences not saved: {e}"));
         }
     }
 
+    /// A scene that comes into the editor: gets the denoiser when the preferences ask for it.
+    fn incoming(&self, mut scene: Scene) -> Scene {
+        if self.prefs.always_denoise && !scene.post.denoise {
+            scene.post.denoise = true;
+            scene.post.denoise_blend = self.prefs.denoise_blend;
+        }
+        scene
+    }
+
     fn open_path(&mut self, p: &Path) {
-        match rmb_core::io::load(p) {
+        match rmb_core::io::load(p).map(|s| self.incoming(s)) {
             Ok(scene) => {
                 let warn = scene.notes.contains("Import notes:");
                 let native = p.extension().is_some_and(|e| e == rmb_core::io::EXTENSION);
@@ -146,17 +169,15 @@ impl App {
     }
 
     fn dialog(&self) -> rfd::FileDialog {
-        let mut d = rfd::FileDialog::new();
-        if let Some(dir) = &self.prefs.last_dir {
-            d = d.set_directory(dir);
-        }
-        d
+        crate::prefs::dialog(crate::prefs::Folder::Scenes)
     }
 
     fn run(&mut self, a: Action, ctx: &egui::Context) {
         match a {
             Action::New => {
-                self.doc.load(Scene::default(), None);
+                let scene = Scene { width: self.prefs.new_width.max(16), height: self.prefs.new_height.max(16), ..Scene::default() };
+                let scene = self.incoming(scene);
+                self.doc.load(scene, None);
                 self.view.reset_navigation();
                 self.notify("New scene");
             }
@@ -182,6 +203,7 @@ impl App {
                     self.save_to(p);
                 }
             }
+            Action::QuickSave => self.quick_save(),
             Action::Export => self.export.open_for(&self.doc.scene, self.doc.path.as_ref()),
             Action::Render => self.render.open_and_render(&self.doc.scene, self.view.gpu_context()),
             Action::ExportAnimation => self.export.open_animation(&self.doc.scene, self.doc.path.as_ref()),
@@ -202,7 +224,7 @@ impl App {
     }
 
     fn paste_text(&mut self, text: &str) {
-        match rmb_core::io::parse_text(text) {
+        match rmb_core::io::parse_text(text).map(|s| self.incoming(s)) {
             Ok(scene) => {
                 let warn = scene.notes.contains("Import notes:");
                 self.doc.replace(scene);
@@ -219,11 +241,27 @@ impl App {
         }
     }
 
+    /// Saves the scene without a dialog: `qsave_<date>_<time>.rmb` in the quick save folder
+    /// (else the scenes folder, else the config folder). The document keeps its own file.
+    fn quick_save(&mut self) {
+        let dir = self.prefs.quick_save_dir.clone().or_else(|| self.prefs.folders.scenes.clone()).unwrap_or_else(|| crate::prefs::config_dir().join("quicksave"));
+        let name = format!("qsave_{}.rmb", timestamp());
+        let path = dir.join(name);
+        let result = std::fs::create_dir_all(&dir).map_err(|e| e.to_string()).and_then(|_| rmb_core::io::save(&self.doc.scene, &path));
+        match result {
+            Ok(()) => self.notify(format!("Quick saved {}", path.display())),
+            Err(e) => self.notify_err(format!("Quick save failed: {e}")),
+        }
+    }
+
     fn shortcuts(&mut self, ctx: &egui::Context) -> Option<Action> {
         use egui::{Key, KeyboardShortcut, Modifiers};
         let c = Modifiers::COMMAND;
         let cs = Modifiers::COMMAND | Modifiers::SHIFT;
         ctx.input_mut(|i| {
+            if i.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::ALT, Key::S)) {
+                return Some(Action::QuickSave);
+            }
             if i.consume_shortcut(&KeyboardShortcut::new(cs, Key::Z)) || i.consume_shortcut(&KeyboardShortcut::new(c, Key::Y)) {
                 return Some(Action::Redo);
             }
@@ -286,6 +324,9 @@ impl App {
                 }
                 if item(ui, "Save as…", "Ctrl+Shift+S").clicked() {
                     action = Some(Action::SaveAs);
+                }
+                if item(ui, "Quick save", "Ctrl+Alt+S").on_hover_text("Saves the scene without asking, with the date and time as its name (folder in the Preferences)").clicked() {
+                    action = Some(Action::QuickSave);
                 }
                 ui.separator();
                 if item(ui, "Export image…", "Ctrl+E").clicked() {
@@ -476,14 +517,33 @@ impl App {
         let mut open = true;
         let before = self.prefs.clone();
         let mut m3f_result = None;
-        egui::Window::new("Preferences").open(&mut open).resizable(false).collapsible(false).default_width(380.0).show(ctx, |ui| {
+        egui::Window::new("Preferences").open(&mut open).resizable(false).collapsible(false).default_width(400.0).show(ctx, |ui| {
             let d = Prefs::default();
             let p = &mut self.prefs;
+            let h = ctx.content_rect().height() - 140.0;
+            egui::ScrollArea::vertical().max_height(h).min_scrolled_height(h.min(700.0)).show(ui, |ui| {
+            if widgets::section(ui, "Appearance", false).open {
+                widgets::grid(ui, "prefs-look", |ui| {
+                    widgets::slider_u32(
+                        ui,
+                        "UI scale",
+                        "Size of the whole interface in percent: texts, controls and spacing together. Lower it on small or high-resolution screens where everything looks too big",
+                        &mut p.ui_scale_percent,
+                        50..=200,
+                        d.ui_scale_percent,
+                    );
+                    widgets::slider_u32(ui, "Font size", "Size of the texts only, in percent of the built-in size (UI scale changes everything together)", &mut p.font_percent, 50..=200, d.font_percent);
+                });
+                if p.font_percent != 100 {
+                    ui.label(RichText::new("Font sizes other than 100 % can make texts overlap or not fit their controls; UI scale keeps the proportions.").size(theme::fs(11.0)).color(theme::WARN));
+                }
+            }
             if widgets::section(ui, "Preview", false).open {
                 widgets::grid(ui, "prefs-preview", |ui| {
                     widgets::slider_u32(ui, "Resolution", "Preview resolution in percent of the view size. Lower is faster.", &mut p.preview_percent, 25..=100, d.preview_percent);
                     widgets::slider_u32(ui, "While moving", "Resolution while navigating, in percent of the preview resolution", &mut p.navigate_percent, 10..=100, d.navigate_percent);
                     widgets::slider_u32(ui, "Samples", "The preview stops refining after this many samples per pixel", &mut p.preview_samples, 1..=4096, d.preview_samples);
+                    widgets::slider(ui, "Time limit", "The preview stops refining after this many seconds (0: no limit; the sample limit above still applies)", &mut p.preview_seconds, 0.0..=600.0, d.preview_seconds);
                     widgets::checkbox(ui, "Image aspect", "Show the preview in the aspect ratio of the image size (else fill the view)", &mut p.keep_aspect);
                     widgets::checkbox(
                         ui,
@@ -495,14 +555,59 @@ impl App {
             }
             if widgets::section(ui, "Navigation", false).open {
                 widgets::grid(ui, "prefs-nav", |ui| {
-                    widgets::slider(ui, "Mouse speed", "", &mut p.mouse_speed, 0.1..=4.0, d.mouse_speed);
+                    widgets::slider(ui, "Mouse speed", "How fast dragging turns the view and the camera", &mut p.mouse_speed, 0.1..=4.0, d.mouse_speed);
                     widgets::checkbox(ui, "Invert Y", "Invert the vertical mouse direction", &mut p.invert_y);
                 });
             }
-            if widgets::section(ui, "Interface", false).open {
-                widgets::grid(ui, "prefs-ui", |ui| {
-                    widgets::slider_u32(ui, "Font size", "In percent", &mut p.font_percent, 50..=200, d.font_percent);
-                    widgets::slider_u32(ui, "Export samples", "Default samples per pixel of exported images", &mut p.export_samples, 1..=1024, d.export_samples);
+            if widgets::section(ui, "Rendering", false).open {
+                widgets::grid(ui, "prefs-render", |ui| {
+                    widgets::slider_u32(ui, "Export samples", "Default samples per pixel of exported images and the render window", &mut p.export_samples, 1..=1024, d.export_samples);
+                    widgets::checkbox(
+                        ui,
+                        "Always denoise",
+                        "Scenes that come in without the denoiser (new, opened, pasted, from the explore lane) get it, so saved images are denoised. Scenes that already use it keep their setting",
+                        &mut p.always_denoise,
+                    );
+                    if p.always_denoise {
+                        widgets::slider(ui, "Denoise amount", "1: only the denoised image; less mixes the original back in", &mut p.denoise_blend, 0.0..=1.0, d.denoise_blend);
+                    }
+                    let cores = std::thread::available_parallelism().map_or(4, |n| n.get());
+                    let mut free = p.free_cores as u32;
+                    widgets::slider_u32(
+                        ui,
+                        "Free CPU cores",
+                        &format!("CPU cores the CPU work (CPU renderer, 3D model baking, framing random scenes) leaves free for other programs ({} of {cores} used). Takes effect at the next start", cores.saturating_sub(p.free_cores).max(1)),
+                        &mut free,
+                        0..=(cores as u32 - 1),
+                        d.free_cores as u32,
+                    );
+                    p.free_cores = free as usize;
+                });
+            }
+            if widgets::section(ui, "New scenes", false).open {
+                widgets::grid(ui, "prefs-new", |ui| {
+                    let mut w = p.new_width;
+                    let mut hh = p.new_height;
+                    widgets::slider_u32(ui, "Width", "Image width of new scenes (File › New), in pixels", &mut w, 16..=7680, d.new_width);
+                    widgets::slider_u32(ui, "Height", "Image height of new scenes (File › New), in pixels", &mut hh, 16..=4320, d.new_height);
+                    p.new_width = w;
+                    p.new_height = hh;
+                });
+            }
+            if widgets::section(ui, "Folders", false).open {
+                ui.label(RichText::new("Where the file dialogs start for each kind of file (else in the folder used last).").size(theme::fs(11.5)).color(theme::TEXT_MUTED));
+                widgets::grid(ui, "prefs-folders", |ui| {
+                    for kind in crate::prefs::Folder::ALL {
+                        folder_row(ui, kind.label(), "Start folder of the file dialogs for this kind of file", p.folders.get_mut(kind));
+                    }
+                    folder_row(ui, "Quick save", "Where File › Quick save (Ctrl+Alt+S) puts scenes (else the Scenes folder, else the config folder)", &mut p.quick_save_dir);
+                });
+            }
+            if widgets::section(ui, "Explore", false).open {
+                widgets::grid(ui, "prefs-explore", |ui| {
+                    let mut n = p.explore_batch as u32;
+                    widgets::slider_u32(ui, "Batch size", "Scenes per new batch of random fractals or mutations in the explore lane", &mut n, 1..=48, d.explore_batch as u32);
+                    p.explore_batch = n as usize;
                 });
             }
             if widgets::section(ui, "Formulas", false).open {
@@ -567,6 +672,9 @@ impl App {
                     }
                 });
             }
+            ui.add_space(6.0);
+            ui.label(RichText::new("Changes are saved right away.").size(theme::fs(11.0)).color(theme::TEXT_MUTED));
+            });
         });
         if let Some(msg) = m3f_result {
             self.notify(msg);
@@ -575,8 +683,19 @@ impl App {
             if self.prefs.font_percent != before.font_percent {
                 theme::apply(ctx, self.prefs.font_percent);
             }
+            // The scale applies when the slider is let go (the window would jump under the mouse).
+            if self.prefs.ui_scale_percent != before.ui_scale_percent {
+                self.pending_scale = Some(self.prefs.ui_scale_percent);
+            }
+            self.explorer.batch_size = self.prefs.explore_batch;
             self.export.samples = self.prefs.export_samples;
             self.save_prefs();
+        }
+        if let Some(scale) = self.pending_scale
+            && !ctx.input(|i| i.pointer.any_down())
+        {
+            ctx.set_zoom_factor(scale as f32 / 100.0);
+            self.pending_scale = None;
         }
         self.prefs_open = open;
     }
@@ -688,6 +807,7 @@ impl eframe::App for App {
                 picked = self.explorer.show(ui, &self.doc.scene, gpu);
             });
             if let Some(scene) = picked {
+                let scene = self.incoming(scene);
                 self.doc.replace(scene);
                 self.formulas.selected = 0;
                 self.notify("Took the scene from the explore lane (Ctrl+Z goes back)");
@@ -715,14 +835,14 @@ impl eframe::App for App {
 
         self.help.show(&ctx);
         self.prefs_window(&ctx);
-        if let Some(msg) = self.render.show(&ctx, &self.doc.scene, self.view.gpu_context(), self.prefs.last_dir.as_ref()) {
+        if let Some(msg) = self.render.show(&ctx, &self.doc.scene, self.view.gpu_context()) {
             if msg.starts_with("Saving failed") {
                 self.notify_err(msg);
             } else {
                 self.notify(msg);
             }
         }
-        if let Some(msg) = self.export.show(&ctx, &self.doc.scene, self.view.gpu_context(), self.prefs.last_dir.as_ref(), self.prefs.ffmpeg.as_deref()) {
+        if let Some(msg) = self.export.show(&ctx, &self.doc.scene, self.view.gpu_context(), self.prefs.ffmpeg.as_deref()) {
             if msg.starts_with("Export failed") {
                 self.notify_err(msg);
             } else {
@@ -737,5 +857,51 @@ impl eframe::App for App {
         }
         let title = format!("{} — RMandelbulb3D", self.doc.title());
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
+    }
+}
+
+/// A preferences row: a folder with buttons to choose and clear it.
+fn folder_row(ui: &mut Ui, label: &str, tip: &str, dir: &mut Option<PathBuf>) {
+    widgets::label(ui, label, tip);
+    ui.horizontal(|ui| {
+        let shown = dir.as_ref().map_or("—".to_string(), |d| d.display().to_string());
+        if ui.button("Choose…").on_hover_text(tip).clicked()
+            && let Some(d) = rfd::FileDialog::new().pick_folder()
+        {
+            *dir = Some(d);
+        }
+        if dir.is_some() && ui.small_button(icons::X).on_hover_text("Clear: back to the folder used last").clicked() {
+            *dir = None;
+        }
+        ui.label(RichText::new(shown).size(theme::fs(11.0)).color(theme::TEXT_MUTED));
+    });
+    ui.end_row();
+}
+
+/// Date and time (UTC) as `YYYYMMDD_HHMMSS`.
+fn timestamp() -> String {
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()) as i64;
+    let (days, rest) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
+    // Civil date from days since 1970-01-01 (Howard Hinnant's algorithm).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!("{y:04}{m:02}{d:02}_{:02}{:02}{:02}", rest / 3600, rest % 3600 / 60, rest % 60)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn timestamps_have_date_and_time() {
+        let t = super::timestamp();
+        assert_eq!(t.len(), 15, "{t}");
+        assert!(t.starts_with("20"), "{t}");
+        assert_eq!(&t[8..9], "_");
     }
 }

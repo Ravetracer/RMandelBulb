@@ -5,7 +5,6 @@
 //! while it renders; afterwards the post processing settings change it at once (the raw image
 //! is kept and developed again in the background). It can be saved as a PNG with the scene.
 
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, mpsc};
 use std::time::Instant;
@@ -225,7 +224,7 @@ impl RenderView {
     }
 
     /// Shows the window; returns a status message when an image was saved.
-    pub fn show(&mut self, ctx: &egui::Context, scene: &Scene, gpu: Option<GpuContext>, last_dir: Option<&PathBuf>) -> Option<String> {
+    pub fn show(&mut self, ctx: &egui::Context, scene: &Scene, gpu: Option<GpuContext>) -> Option<String> {
         self.poll_job();
         if !self.open {
             if let Some(j) = &self.job {
@@ -266,10 +265,7 @@ impl RenderView {
                 if ui.add_enabled(can_save, egui::Button::new("Save PNG…")).on_hover_text("Save this image as shown, with the scene inside (open the PNG to get the scene back)").clicked()
                     && let Some(d) = &self.shown
                 {
-                    let mut dlg = rfd::FileDialog::new().add_filter("PNG image", &["png"]).set_file_name("render.png");
-                    if let Some(dir) = last_dir {
-                        dlg = dlg.set_directory(dir);
-                    }
+                    let dlg = crate::prefs::dialog(crate::prefs::Folder::Images).add_filter("PNG image", &["png"]).set_file_name("render.png");
                     if let Some(p) = dlg.save_file() {
                         let mut sc = self.raw.as_ref().map(|(_, s, _)| s.clone()).unwrap_or_else(|| scene.clone());
                         sc.post = d.post.clone();

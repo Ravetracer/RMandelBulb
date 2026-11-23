@@ -2292,6 +2292,7 @@ dependencies = [
  "egui-wgpu",
  "image",
  "png",
+ "rayon",
  "rfd",
  "rmb-core",
  "rmb-gpu",

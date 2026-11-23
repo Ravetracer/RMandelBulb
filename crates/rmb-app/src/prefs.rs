@@ -10,6 +10,26 @@ use serde::{Deserialize, Serialize};
 #[serde(default)]
 pub struct Prefs {
     pub font_percent: u32,
+    /// Size of the whole interface (texts, controls, spacing) in percent.
+    pub ui_scale_percent: u32,
+    /// The preview stops refining after this many seconds (0: no limit).
+    pub preview_seconds: f64,
+    /// Scenes that come in without the denoiser (new, opened, pasted, from the explore lane)
+    /// get it, with `denoise_blend`.
+    pub always_denoise: bool,
+    pub denoise_blend: f64,
+    /// CPU cores the CPU work (CPU renderer, model baking, thumbnails) leaves free; takes effect
+    /// at the next start.
+    pub free_cores: usize,
+    /// Image size of new scenes.
+    pub new_width: u32,
+    pub new_height: u32,
+    /// Start folders of the file dialogs per kind (see `Folder`).
+    pub folders: Folders,
+    /// Where File › Quick save puts scenes (None: the scenes folder, else the config folder).
+    pub quick_save_dir: Option<PathBuf>,
+    /// Scenes per batch in the explore lane.
+    pub explore_batch: usize,
     /// Preview resolution in percent of the canvas size.
     pub preview_percent: u32,
     /// Resolution while navigating, in percent of the preview resolution.
@@ -40,6 +60,16 @@ impl Default for Prefs {
     fn default() -> Self {
         Prefs {
             font_percent: 100,
+            ui_scale_percent: 100,
+            preview_seconds: 0.0,
+            always_denoise: false,
+            denoise_blend: 1.0,
+            free_cores: 0,
+            new_width: 1280,
+            new_height: 720,
+            folders: Folders::default(),
+            quick_save_dir: None,
+            explore_batch: 12,
             preview_percent: 100,
             navigate_percent: 50,
             preview_samples: 256,
@@ -55,6 +85,91 @@ impl Default for Prefs {
             ffmpeg: None,
             closed_sections: Vec::new(),
         }
+    }
+}
+
+/// Kinds of files with their own start folder in the file dialogs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Folder {
+    Scenes,
+    Images,
+    Movies,
+    Models,
+    Textures,
+    Sounds,
+}
+
+impl Folder {
+    pub const ALL: [Folder; 6] = [Folder::Scenes, Folder::Images, Folder::Movies, Folder::Models, Folder::Textures, Folder::Sounds];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Folder::Scenes => "Scenes",
+            Folder::Images => "Saved images",
+            Folder::Movies => "Movies",
+            Folder::Models => "3D models",
+            Folder::Textures => "Textures and backgrounds",
+            Folder::Sounds => "Sound tracks",
+        }
+    }
+}
+
+/// Start folder per `Folder` kind (None: the last folder used).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Folders {
+    pub scenes: Option<PathBuf>,
+    pub images: Option<PathBuf>,
+    pub movies: Option<PathBuf>,
+    pub models: Option<PathBuf>,
+    pub textures: Option<PathBuf>,
+    pub sounds: Option<PathBuf>,
+}
+
+impl Folders {
+    pub fn get_mut(&mut self, f: Folder) -> &mut Option<PathBuf> {
+        match f {
+            Folder::Scenes => &mut self.scenes,
+            Folder::Images => &mut self.images,
+            Folder::Movies => &mut self.movies,
+            Folder::Models => &mut self.models,
+            Folder::Textures => &mut self.textures,
+            Folder::Sounds => &mut self.sounds,
+        }
+    }
+
+    pub fn get(&self, f: Folder) -> Option<&PathBuf> {
+        match f {
+            Folder::Scenes => self.scenes.as_ref(),
+            Folder::Images => self.images.as_ref(),
+            Folder::Movies => self.movies.as_ref(),
+            Folder::Models => self.models.as_ref(),
+            Folder::Textures => self.textures.as_ref(),
+            Folder::Sounds => self.sounds.as_ref(),
+        }
+    }
+}
+
+/// The folders of the preferences and the last folder used, for dialogs anywhere in the app.
+static DIALOG_DIRS: std::sync::Mutex<(Folders, Option<PathBuf>)> = std::sync::Mutex::new((
+    Folders { scenes: None, images: None, movies: None, models: None, textures: None, sounds: None },
+    None,
+));
+
+/// Hands the folders of `prefs` to `dialog` (at start and after changes).
+pub fn set_dialog_dirs(prefs: &Prefs) {
+    if let Ok(mut d) = DIALOG_DIRS.lock() {
+        *d = (prefs.folders.clone(), prefs.last_dir.clone());
+    }
+}
+
+/// A file dialog that starts in the folder for `kind` (else the last folder used).
+pub fn dialog(kind: Folder) -> rfd::FileDialog {
+    let dir = DIALOG_DIRS.lock().ok().and_then(|d| d.0.get(kind).cloned().or_else(|| d.1.clone()));
+    let d = rfd::FileDialog::new();
+    match dir {
+        Some(dir) if dir.is_dir() => d.set_directory(dir),
+        _ => d,
     }
 }
 

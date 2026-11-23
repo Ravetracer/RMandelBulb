@@ -10,6 +10,7 @@ On macOS, <kbd>Ctrl</kbd> is <kbd>Cmd</kbd>.
 | <kbd>Ctrl</kbd>+<kbd>O</kbd> | Open a scene, Mandelbulb3D parameters or a PNG with a scene |
 | <kbd>Ctrl</kbd>+<kbd>S</kbd> | Save |
 | <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>S</kbd> | Save as |
+| <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>S</kbd> | Quick save (no dialog; folder in the Preferences) |
 | <kbd>Ctrl</kbd>+<kbd>E</kbd> | Export image |
 | <kbd>Ctrl</kbd>+<kbd>Z</kbd> | Undo |
 | <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> or <kbd>Ctrl</kbd>+<kbd>Y</kbd> | Redo |

@@ -76,7 +76,7 @@ pub struct Explorer {
     pub open: bool,
     mode: Mode,
     kind: RandomKind,
-    batch_size: usize,
+    pub batch_size: usize,
     mutation: Mutation,
     strength: f64,
     strips: [Vec<Thumb>; 3],

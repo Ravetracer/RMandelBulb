@@ -108,7 +108,7 @@ impl Export {
     }
 
     /// Shows the window; returns a status message when an export finished.
-    pub fn show(&mut self, ctx: &egui::Context, scene: &Scene, gpu: Option<GpuContext>, last_dir: Option<&PathBuf>, ffmpeg: Option<&Path>) -> Option<String> {
+    pub fn show(&mut self, ctx: &egui::Context, scene: &Scene, gpu: Option<GpuContext>, ffmpeg: Option<&Path>) -> Option<String> {
         let mut finished = None;
         if let Some(job) = &self.job {
             match job.rx.try_recv() {
@@ -173,8 +173,8 @@ impl Export {
             });
             ui.add_space(6.0);
             match (self.mode, &anim) {
-                (Mode::Animation, Some(a)) => self.animation_settings(ui, a, &program, last_dir),
-                _ => self.image_settings(ui, last_dir),
+                (Mode::Animation, Some(a)) => self.animation_settings(ui, a, &program),
+                _ => self.image_settings(ui),
             }
             ui.add_space(8.0);
             if let Some(job) = &self.job {
@@ -229,12 +229,12 @@ impl Export {
         finished
     }
 
-    fn image_settings(&mut self, ui: &mut egui::Ui, last_dir: Option<&PathBuf>) {
+    fn image_settings(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             let label = self.path.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "No file chosen".into());
             if ui.button("File…").on_hover_text("Where to save the PNG").clicked() {
-                let mut dlg = rfd::FileDialog::new().add_filter("PNG image", &["png"]).set_file_name("render.png");
-                if let Some(d) = self.path.as_ref().and_then(|p| p.parent()).or(last_dir.map(|p| p.as_path())) {
+                let mut dlg = crate::prefs::dialog(crate::prefs::Folder::Images).add_filter("PNG image", &["png"]).set_file_name("render.png");
+                if let Some(d) = self.path.as_ref().and_then(|p| p.parent()) {
                     dlg = dlg.set_directory(d);
                 }
                 if let Some(p) = dlg.save_file() {
@@ -245,7 +245,7 @@ impl Export {
         });
     }
 
-    fn animation_settings(&mut self, ui: &mut egui::Ui, anim: &Animation, program: &Path, last_dir: Option<&PathBuf>) {
+    fn animation_settings(&mut self, ui: &mut egui::Ui, anim: &Animation, program: &Path) {
         let count = self.frame_count(anim);
         let has_ffmpeg = rmb_core::video::ffmpeg_available(program);
         widgets::grid(ui, "export-anim", |ui| {
@@ -308,8 +308,8 @@ impl Export {
             let label = self.movie_path.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "Nothing chosen".into());
             let (text, tip) = if self.format.needs_ffmpeg() { ("File…", "Where to save the movie") } else { ("Folder…", "Folder for the numbered PNG images (frame_00000.png …)") };
             if ui.button(text).on_hover_text(tip).clicked() {
-                let mut dlg = rfd::FileDialog::new();
-                if let Some(d) = self.movie_path.as_ref().and_then(|p| p.parent()).or(last_dir.map(|p| p.as_path())) {
+                let mut dlg = crate::prefs::dialog(crate::prefs::Folder::Movies);
+                if let Some(d) = self.movie_path.as_ref().and_then(|p| p.parent()) {
                     dlg = dlg.set_directory(d);
                 }
                 let picked = match self.format.extension() {
