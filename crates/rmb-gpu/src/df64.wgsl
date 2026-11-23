@@ -193,6 +193,8 @@ fn dd_inverse_sqrt(a: dd) -> dd {
     return dd_div(dd_f(1.0), dd_sqrt(a));
 }
 
+const DD_SIXTH: dd = dd(0.1666666716337204, -4.967053740534411e-9);
+const DD_24TH: dd = dd(0.0416666679084301, -1.2417634351336027e-9);
 const DD_LN2: dd = dd(0.6931471824645996, -1.904654323148236e-9);
 const DD_PI: dd = dd(3.1415927410125732, -8.742278012618954e-8);
 const DD_PI2: dd = dd(1.5707963705062866, -4.371139006309477e-8);
@@ -208,15 +210,17 @@ fn dd_exp(a: dd) -> dd {
     if (a.x < -87.0) {
         return dd_f(0.0);
     }
-    // a = k ln 2 + r, r / 16 by a Taylor series, then squared four times.
+    // a = k ln 2 + r, r / 16 by a Taylor series, then squared four times. |r / 16| <= 0.022:
+    // from r^5 / 120 on (below 2e-9 of the sum, whose relative error the squaring multiplies
+    // by 16) the terms fit in f32.
     let k = round(a.x / DD_LN2.x);
     let r = dd_mulf(dd_sub(a, dd_mulf(DD_LN2, k)), 0.0625);
-    var term = r;
-    var sum = r;
-    for (var i = 2; i <= 9; i++) {
-        term = dd_divf(dd_mul(term, r), f32(i));
-        sum = dd_add(sum, term);
-    }
+    let r2 = dd_sqr(r);
+    let r3 = dd_mul(r2, r);
+    let x = r.x;
+    let tail = x * x * x * x * x / 120.0 * (1.0 + x / 6.0 * (1.0 + x / 7.0 * (1.0 + x / 8.0)));
+    let low = dd_add(dd_mul(r3, DD_SIXTH), dd_add(dd_mul(dd_mul(r3, r), DD_24TH), dd_f(tail)));
+    var sum = dd_add(dd_add(r, dd_mulf(r2, 0.5)), low);
     // e^r - 1 squared up: (1 + s)^2 - 1 = s (2 + s), keeps the small part exact.
     for (var i = 0; i < 4; i++) {
         sum = dd_mul(sum, dd_add(sum, dd_f(2.0)));
@@ -273,16 +277,20 @@ const DD_SINCOS_TABLE: array<vec4<f32>, 33> = array<vec4<f32>, 33>(
 const DD_PI128: dd = dd(0.02454369328916073, -6.829904419802801e-10);
 
 // sin and cos of a (x, y): quadrant, then a table entry k pi / 128, then short series for the
-// rest (|s| <= pi / 256: terms up to s^7 and s^6 reach the double-float precision).
+// rest s (|s| <= pi / 256). Only the leading terms need double-float: sin s = s - s^3/6 (1 - q)
+// and cos s = 1 - s^2/2 (1 - q') with q = s^2/20 (1 - s^2/42), q' = s^2/12 (1 - s^2/30) at most
+// about 1e-5, so q and q' (and their products with the f32 high part) are exact enough in f32.
 fn dd_sincos(a: dd) -> array<dd, 2> {
     let k = round(a.x / DD_PI2.x);
     let r = dd_sub(a, dd_mulf(DD_PI2, k));
     let j = round(r.x / DD_PI128.x);
     let s = dd_sub(r, dd_mulf(DD_PI128, j));
     let s2 = dd_sqr(s);
-    // sin s = s (1 - s^2/6 (1 - s^2/20 (1 - s^2/42))), cos s = 1 - s^2/2 (1 - s^2/12 (1 - s^2/30)).
-    let sn = dd_mul(s, dd_sub(dd_f(1.0), dd_mul(dd_divf(s2, 6.0), dd_sub(dd_f(1.0), dd_mul(dd_divf(s2, 20.0), dd_sub(dd_f(1.0), dd_divf(s2, 42.0)))))));
-    let cs = dd_sub(dd_f(1.0), dd_mul(dd_divf(s2, 2.0), dd_sub(dd_f(1.0), dd_mul(dd_divf(s2, 12.0), dd_sub(dd_f(1.0), dd_divf(s2, 30.0))))));
+    let t = s2.x;
+    let s3 = dd_mul(dd_mul(s, s2), DD_SIXTH);
+    let sn = dd_sub(s, dd_add(s3, dd_f(-s3.x * (t / 20.0 * (1.0 - t / 42.0)))));
+    let h = dd_mulf(s2, 0.5);
+    let cs = dd_sub(dd_f(1.0), dd_add(h, dd_f(-h.x * (t / 12.0 * (1.0 - t / 30.0)))));
     let table = DD_SINCOS_TABLE;
     let e = table[u32(abs(j))];
     let sj = dd(e.x, e.y) * sign(j + 0.5);
@@ -320,7 +328,7 @@ fn dd_atan2(y: dd, x: dd) -> dd {
         return dd_f(atan2(y.x, x.x));
     }
     // f32 start, then a Newton step on the angle (converges cubically).
-    var z = dd_f(atan2(y.x, x.x));
+    let z = dd_f(atan2(y.x, x.x));
     let sc = dd_sincos(z);
     let num = dd_sub(dd_mul(y, sc[1]), dd_mul(x, sc[0]));
     let den = dd_add(dd_mul(x, sc[1]), dd_mul(y, sc[0]));

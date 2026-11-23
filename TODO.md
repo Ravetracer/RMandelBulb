@@ -181,10 +181,19 @@ Curvichrome 1052 -> 254 ms, AboxShapes-Misty 44 -> 17 ms, temple 71 -> 35 ms, Ho
       The GPU renders relative to the camera, only the main fractal iterates in df64 (until the
       derivative makes f32 rounding negligible, then f32). Same image as the CPU (f64) at 1e7.
       Costs (640 x 360): Mandelbulb 17.5 -> 430 ms per pass (trig in df64), ABox 37 -> 90 ms;
-      the shader compiles 10-18 s instead of ~1 s (once per mode, the driver caches it)
-  - [ ] Possible: faster df64 trig (atan2 without the Newton step, shared sin/cos of the same
-        angle), fewer inlined copies of the fractal (compile time), composed fractal objects in
-        df64, zooms beyond ~1e11 (needs perturbation or more precision)
+      the shader compiles 10-18 s instead of ~1 s (once per mode, the driver caches it).
+      Both improved since, see below
+  - [x] Faster df64 functions (`examples/df64_bench` times each one): sin/cos, exp and the
+        series behind atan2/acos/pow keep only the leading terms in double-float, the small
+        rest in f32 (same accuracy, `tests/df64.rs`). sincos 2.2x, atan2 1.8x, exp/log 2.5x,
+        non-integer pow 2.8x faster; deep zoom passes (zoom ~1e6, 640 x 360) Mandelbulb
+        136 -> 62 ms, power 7.5 430 -> 180 ms; compiles about 2x faster. Measured and
+        dropped: the sin/cos table in a uniform buffer (the table read costs nothing), one
+        shared `dd_sincos` for sin and cos of the same angle (the driver already merges them),
+        an f32 quotient in atan2's Newton step (3x less accurate), switching to f32 earlier
+        (noisier surface, slower)
+  - [ ] Possible: fewer inlined copies of the fractal (compile time), composed fractal objects
+        in df64, zooms beyond ~1e11 (needs perturbation or more precision)
 - [ ] CPU renderer: replace the `Box<dyn Fn>` closure tree in `formula/cpu.rs` with a JIT
       (Cranelift) that compiles `.mbf` formulas to native code, plus SIMD ray packets
       (AVX2, 4 × f64 via `core::arch`); plausibly 5-20× on the CPU. Hand-written assembly is
