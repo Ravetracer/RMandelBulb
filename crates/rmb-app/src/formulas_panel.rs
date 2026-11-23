@@ -250,36 +250,36 @@ impl FormulasPanel {
                     ui.end_row();
                 }
             });
-            match &mut o.shape {
-                Shape::Primitive(p) => {
-                    if widgets::section(ui, p.name(), false).open {
-                        primitive_params(ui, p);
-                    }
-                }
-                Shape::Fractal(f) => {
-                    ui.separator();
-                    self.chain(ui, f);
-                    ui.add_space(4.0);
-                    ui.separator();
-                    self.params(ui, f);
-                    ui.separator();
-                    iteration(ui, f, false);
-                }
-                Shape::Model(m) => model_editor(ui, m),
-            }
-            let patterns: &[Pattern] = match o.shape {
-                Shape::Fractal(_) => &[],
-                Shape::Primitive(_) => &Pattern::ALL,
-                Shape::Model(_) => &Pattern::FOR_MODELS,
-            };
-            object_material(ui, &mut o.material, patterns, glass);
         }
+        match &mut o.shape {
+            Shape::Primitive(p) => {
+                if widgets::section(ui, p.name(), false).open {
+                    primitive_params(ui, p);
+                }
+            }
+            Shape::Fractal(f) => {
+                ui.separator();
+                self.chain(ui, f);
+                ui.add_space(4.0);
+                ui.separator();
+                self.params(ui, f);
+                ui.separator();
+                iteration(ui, f, false);
+            }
+            Shape::Model(m) => model_editor(ui, m),
+        }
+        let patterns: &[Pattern] = match o.shape {
+            Shape::Fractal(_) => &[],
+            Shape::Primitive(_) => &Pattern::ALL,
+            Shape::Model(_) => &Pattern::FOR_MODELS,
+        };
+        object_material(ui, &mut o.material, patterns, glass);
     }
 
     fn chain(&mut self, ui: &mut Ui, f: &mut Fractal) {
         ui.horizontal(|ui| {
             ui.label(RichText::new("HYBRID").size(theme::fs(10.5)).color(theme::TEXT_MUTED).strong())
-                .on_hover_text("Up to six formulas. Each slot runs its formula the given number of times in a row, then the next slot follows. After the last slot the chain repeats from the 'Repeat from' slot.");
+                .on_hover_text("Up to nine formulas. Each slot runs its formula the given number of times in a row, then the next slot follows. After the last slot the chain repeats from the 'Repeat from' slot.");
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.add_enabled_ui(f.slots.len() < MAX_SLOTS, |ui| {
                     if widgets::icon_button(ui, icons::PLUS, "Add a formula slot").clicked() {

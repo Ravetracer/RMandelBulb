@@ -1,6 +1,10 @@
 target/
 *.png
 !crates/rmb-app/assets/*.png
+!docs/manual/images/*.png
+
+# The PDF manual, built by tools/build_manual.py
+/docs/manual/build/
 
 # Intel Open Image Denoise, fetched by tools/fetch_oidn.py
 /oidn/

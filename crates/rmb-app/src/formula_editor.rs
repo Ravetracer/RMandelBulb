@@ -57,7 +57,7 @@ impl FormulaEditor {
     /// are copied under a new name, so the original stays available.
     pub fn open_formula(&mut self, name: &str) {
         let Some(f) = rmb_core::formula::find(name) else { return self.open_new() };
-        self.text = if f.builtin { rename_first(&f.text, &format!("{} custom", f.def.name)) } else { f.text.clone() };
+        self.text = if f.builtin { without_aliases(&rename_first(&f.text, &format!("{} custom", f.def.name))) } else { f.text.clone() };
         self.from = Some(f.def.name.clone());
         self.status = Some((
             if f.builtin { format!("A copy of the built-in \"{}\". Apply to use it in the slot.", f.def.name) } else { format!("\"{}\" from {}", f.def.name, f.source) },
@@ -171,6 +171,12 @@ fn error_line(msg: &str) -> Option<usize> {
     rest.split(|c: char| !c.is_ascii_digit()).next()?.parse().ok()
 }
 
+/// `text` without its `alias` lines: a copy must not take over the import names of the original
+/// (Mandelbulb3D parameters would load the copy instead).
+fn without_aliases(text: &str) -> String {
+    text.lines().filter(|l| !l.trim_start().starts_with("alias ")).map(|l| format!("{l}\n")).collect()
+}
+
 /// `text` with the name of its first formula replaced.
 fn rename_first(text: &str, name: &str) -> String {
     let Some(i) = text.find("formula \"") else { return text.to_string() };
@@ -257,6 +263,7 @@ mod tests {
         assert_eq!(error_line("Error in line 12: unknown variable 'q'"), Some(12));
         assert_eq!(error_line("no line here"), None);
         assert_eq!(rename_first("// c\nformula \"Mandelbulb\" {\n}", "Mandelbulb custom"), "// c\nformula \"Mandelbulb custom\" {\n}");
+        assert_eq!(without_aliases("formula \"A\" {\n    alias \"B\" (x)\n    de log\n}\n"), "formula \"A\" {\n    de log\n}\n");
         // The template compiles.
         assert_eq!(rmb_core::formula::lang::parse_library(TEMPLATE).map(|d| d.len()).ok(), Some(1));
     }

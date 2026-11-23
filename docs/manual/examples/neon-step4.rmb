@@ -1,0 +1,600 @@
+{
+  "version": 1,
+  "width": 1280,
+  "height": 720,
+  "camera": {
+    "position": {
+      "x": 3.6983271056332683,
+      "y": -4.402770363849129,
+      "z": 1.0924986654928432
+    },
+    "right": {
+      "x": 0.765704864789611,
+      "y": 0.6431920864232733,
+      "z": -0.0
+    },
+    "up": {
+      "x": -0.08781896440593073,
+      "y": 0.10454638619753658,
+      "z": 0.9906350905473245
+    },
+    "forward": {
+      "x": -0.6371686507732417,
+      "y": 0.758534108063383,
+      "z": -0.1365361394514089
+    },
+    "fov": 40.0
+  },
+  "fractal": {
+    "slots": [
+      {
+        "formula": "Amazing Box",
+        "iterations": 1,
+        "params": {
+          "min_r": 0.5,
+          "scale": -1.5
+        },
+        "start": 0,
+        "stop": null,
+        "weight": 1.0,
+        "add_c": true,
+        "check_bailout": true
+      }
+    ],
+    "repeat_from": 0,
+    "max_iterations": 24,
+    "bailout": 16.0,
+    "julia": false,
+    "julia_c": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "w_slice": 0.0,
+    "de_mode": "Auto",
+    "de_scale": 1.0,
+    "rotation_4d": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "min_iterations": 0,
+    "c_factor": [
+      1.0,
+      1.0,
+      1.0
+    ],
+    "inside": false,
+    "combine": null,
+    "blend": null,
+    "transform": {
+      "position": {
+        "x": 0.0,
+        "y": 0.0,
+        "z": 0.0
+      },
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": 1.0,
+      "stretch": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    }
+  },
+  "march": {
+    "detail": 1.0,
+    "step": 0.8,
+    "max_steps": 400,
+    "max_distance": 40.0,
+    "refine_steps": 4,
+    "near": 0.0,
+    "smooth_normals": 0,
+    "precision": "Auto"
+  },
+  "lighting": {
+    "lights": [
+      {
+        "enabled": true,
+        "kind": "Directional",
+        "position": {
+          "x": 2.0,
+          "y": -2.0,
+          "z": 2.0
+        },
+        "target": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "cone_angle": 25.0,
+        "cone_softness": 0.3,
+        "width": 0.5,
+        "height": 0.5,
+        "azimuth": -35.0,
+        "elevation": 40.0,
+        "camera_relative": true,
+        "color": [
+          1.0,
+          0.96,
+          0.9
+        ],
+        "intensity": 0.25,
+        "specular": 0.5,
+        "shadows": true,
+        "softness": 0.08,
+        "diffuse": "Lambert",
+        "occlusion": 0.0,
+        "visible": false,
+        "glow_shape": "Soft",
+        "glow_size": 0.1,
+        "glow_intensity": 1.0,
+        "flare": {
+          "enabled": false,
+          "intensity": 1.0,
+          "tint": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "glow": 1.0,
+          "glow_size": 0.03,
+          "haze": 0.05,
+          "haze_size": 0.3,
+          "rays": 6,
+          "ray_intensity": 0.5,
+          "ray_length": 0.3,
+          "ray_width": 1.0,
+          "ray_rotation": 15.0,
+          "ray_random": 0.3,
+          "spikes": 0,
+          "spike_intensity": 0.2,
+          "spike_length": 0.25,
+          "streak": 0.0,
+          "streak_length": 1.2,
+          "streak_width": 1.0,
+          "streak_color": [
+            0.35,
+            0.55,
+            1.0
+          ],
+          "streak_angle": 0.0,
+          "ghosts": 7,
+          "ghost_intensity": 0.35,
+          "ghost_size": 0.08,
+          "ghost_spread": 1.0,
+          "ghost_blades": 6,
+          "ghost_softness": 0.4,
+          "ghost_rings": 0.3,
+          "ghost_colors": 0.6,
+          "chromatic": 0.5,
+          "ring": 0.0,
+          "ring_size": 0.25,
+          "ring_width": 0.015,
+          "rainbow": 0.7,
+          "sparkles": 0,
+          "sparkle_intensity": 0.3,
+          "dirt": 0.0,
+          "dirt_reach": 0.6,
+          "seed": 1,
+          "ghost_list": [],
+          "ghost_image": ""
+        }
+      },
+      {
+        "enabled": true,
+        "kind": "Directional",
+        "position": {
+          "x": 2.0,
+          "y": -2.0,
+          "z": 2.0
+        },
+        "target": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "cone_angle": 25.0,
+        "cone_softness": 0.3,
+        "width": 0.5,
+        "height": 0.5,
+        "azimuth": 120.0,
+        "elevation": 10.0,
+        "camera_relative": true,
+        "color": [
+          0.55,
+          0.65,
+          0.9
+        ],
+        "intensity": 0.0875,
+        "specular": 0.1,
+        "shadows": false,
+        "softness": 0.08,
+        "diffuse": "Lambert",
+        "occlusion": 0.0,
+        "visible": false,
+        "glow_shape": "Soft",
+        "glow_size": 0.1,
+        "glow_intensity": 1.0,
+        "flare": {
+          "enabled": false,
+          "intensity": 1.0,
+          "tint": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "glow": 1.0,
+          "glow_size": 0.03,
+          "haze": 0.05,
+          "haze_size": 0.3,
+          "rays": 6,
+          "ray_intensity": 0.5,
+          "ray_length": 0.3,
+          "ray_width": 1.0,
+          "ray_rotation": 15.0,
+          "ray_random": 0.3,
+          "spikes": 0,
+          "spike_intensity": 0.2,
+          "spike_length": 0.25,
+          "streak": 0.0,
+          "streak_length": 1.2,
+          "streak_width": 1.0,
+          "streak_color": [
+            0.35,
+            0.55,
+            1.0
+          ],
+          "streak_angle": 0.0,
+          "ghosts": 7,
+          "ghost_intensity": 0.35,
+          "ghost_size": 0.08,
+          "ghost_spread": 1.0,
+          "ghost_blades": 6,
+          "ghost_softness": 0.4,
+          "ghost_rings": 0.3,
+          "ghost_colors": 0.6,
+          "chromatic": 0.5,
+          "ring": 0.0,
+          "ring_size": 0.25,
+          "ring_width": 0.015,
+          "rainbow": 0.7,
+          "sparkles": 0,
+          "sparkle_intensity": 0.3,
+          "dirt": 0.0,
+          "dirt_reach": 0.6,
+          "seed": 1,
+          "ghost_list": [],
+          "ghost_image": ""
+        }
+      }
+    ],
+    "ambient": 0.25,
+    "sky_color": [
+      0.2,
+      0.35,
+      0.8
+    ],
+    "ground_color": [
+      0.35,
+      0.3,
+      0.28
+    ],
+    "ao_mode": "Raytraced",
+    "ao_strength": 0.9,
+    "ao_radius": 0.08,
+    "shininess": 40.0,
+    "roughness": 0.0,
+    "ambient_camera_relative": false,
+    "ambient_from_background": false,
+    "render_mode": "Classic",
+    "path_bounces": 4,
+    "path_clamp": 10.0
+  },
+  "material": {
+    "gradient": [
+      {
+        "pos": 0.0,
+        "color": [
+          0.00303527,
+          0.003676507,
+          0.00699541
+        ],
+        "specular": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "transparency": 0.0,
+        "emission": 0.0
+      },
+      {
+        "pos": 0.5,
+        "color": [
+          0.011612245,
+          0.015996292,
+          0.034339808
+        ],
+        "specular": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "transparency": 0.0,
+        "emission": 0.0
+      },
+      {
+        "pos": 1.0,
+        "color": [
+          0.00303527,
+          0.003676507,
+          0.00699541
+        ],
+        "specular": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "transparency": 0.0,
+        "emission": 0.0
+      }
+    ],
+    "color_center": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "color_direction": [
+      0.0,
+      0.0,
+      1.0
+    ],
+    "second_choice": "OrbitTrap",
+    "lli_multiplier": 1.0,
+    "color_on_iteration": -1,
+    "bands": [
+      {
+        "enabled": true,
+        "pos": 0.2,
+        "width": 0.012,
+        "softness": 0.4,
+        "color": [
+          0.1,
+          0.9,
+          1.0
+        ],
+        "emission": 4.0,
+        "speed": 0.0
+      },
+      {
+        "enabled": true,
+        "pos": 0.52,
+        "width": 0.012,
+        "softness": 0.4,
+        "color": [
+          1.0,
+          0.25,
+          0.8
+        ],
+        "emission": 4.0,
+        "speed": 0.0
+      },
+      {
+        "enabled": true,
+        "pos": 0.8,
+        "width": 0.012,
+        "softness": 0.4,
+        "color": [
+          1.0,
+          0.6,
+          0.15
+        ],
+        "emission": 4.0,
+        "speed": 0.0
+      }
+    ],
+    "rotation": 0.0,
+    "color_mode": "OrbitTrap",
+    "color_scale": 0.45,
+    "color_offset": 0.0,
+    "repeat": true,
+    "specular": 0.6,
+    "saturation": 1.0,
+    "detail_shift": 0.0,
+    "depth_shift": 0.0,
+    "depth_reference": 0.0,
+    "color_map": {
+      "image": "",
+      "mode": "Orbit",
+      "scale": 1.0,
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "offset": [
+        0.0,
+        0.0
+      ],
+      "luminance_only": false,
+      "iter_scale": 0.05,
+      "iter_offset": 0.0,
+      "emission": 0.0
+    },
+    "layers": [],
+    "interior": [],
+    "interior_scale": 1.0,
+    "interior_offset": 0.0,
+    "reflection": 0.0,
+    "reflection_bounces": 2,
+    "gloss": 0.0,
+    "transmission": false,
+    "refraction_index": 1.5,
+    "absorption": 1.0,
+    "scattering": 0.0,
+    "emission_light": 1.0,
+    "emission_reach": 0.5,
+    "emission_glow": 1.0,
+    "emission_glow_size": 0.02,
+    "emission_rays": 1,
+    "steam": 0.0,
+    "steam_size": 0.08,
+    "steam_grain": 0.1,
+    "steam_cover": 0.5,
+    "steam_offset": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "steam_drift": [
+      0.0,
+      0.0,
+      0.05
+    ],
+    "shimmer": 0.0,
+    "shimmer_size": 0.05,
+    "shimmer_speed": 3.0,
+    "shimmer_phase": 0.0
+  },
+  "background": {
+    "mode": "Gradient",
+    "top": [
+      0.0,
+      0.01,
+      0.03
+    ],
+    "horizon": [
+      0.02,
+      0.05,
+      0.12
+    ],
+    "bottom": [
+      0.0,
+      0.0,
+      0.02
+    ],
+    "curve": 1.0,
+    "image": "",
+    "image_rotation": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "image_intensity": 1.0,
+    "image_spherical": false,
+    "image_fit_border": false,
+    "image_screen": false,
+    "image_fog_add": false
+  },
+  "fog": {
+    "mode": "Exponential",
+    "density": 0.1,
+    "strength": 0.0,
+    "start": 0.0,
+    "curve": 0.0,
+    "squared": false,
+    "color": [
+      0.01,
+      0.03,
+      0.09
+    ],
+    "from_background": false,
+    "glow": 0.0,
+    "glow_color": [
+      0.5,
+      0.7,
+      1.0
+    ],
+    "glow_offset": 0.0,
+    "glow_color2": [
+      0.5,
+      0.7,
+      1.0
+    ],
+    "glow_mix_steps": 0.0,
+    "glow_blend": false,
+    "glow_iteration": 0,
+    "scatter": 0.0,
+    "scatter_forward": 0.3,
+    "haze": 0.8,
+    "haze_shape": "Distance",
+    "haze_size": 0.02,
+    "haze_start": 0.2,
+    "haze_end": 1.0,
+    "haze_glow": 0.8,
+    "haze_color": [
+      0.05,
+      0.25,
+      1.0
+    ],
+    "haze_gradient": false
+  },
+  "dof": {
+    "enabled": false,
+    "aperture": 0.02,
+    "focus_distance": 2.5
+  },
+  "post": {
+    "exposure": 0.0,
+    "gamma": 2.2,
+    "contrast": 1.0,
+    "saturation": 1.0,
+    "tone_map": true,
+    "vignette": 0.15,
+    "display_space": false,
+    "denoise": false,
+    "denoise_blend": 1.0,
+    "bloom": 0.6,
+    "bloom_threshold": 0.8,
+    "bloom_size": 0.6,
+    "streak": 0.0,
+    "streak_threshold": 2.0,
+    "streak_length": 0.3,
+    "streak_angle": 0.0,
+    "streak_count": 1,
+    "streak_tint": [
+      0.6,
+      0.8,
+      1.0
+    ],
+    "chromatic": 0.5,
+    "temperature": 0.0,
+    "tint": 0.0,
+    "shadow_color": [
+      0.1,
+      0.45,
+      0.55
+    ],
+    "shadow_amount": 0.0,
+    "highlight_color": [
+      1.0,
+      0.6,
+      0.3
+    ],
+    "highlight_amount": 0.0
+  },
+  "cut": {
+    "x": {
+      "enabled": false,
+      "position": 0.0,
+      "keep_above": false
+    },
+    "y": {
+      "enabled": false,
+      "position": 0.0,
+      "keep_above": false
+    },
+    "z": {
+      "enabled": false,
+      "position": 0.0,
+      "keep_above": false
+    }
+  },
+  "notes": "Preset: dark box structures with thin neon lines in a blue haze (in the style of Julius Horsthuis' films): a dark gradient with emissive glow bands, fractal haze, bloom.",
+  "objects": []
+}

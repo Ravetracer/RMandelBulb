@@ -143,15 +143,16 @@
   - [x] Scenes carry the code of their non-built-in formulas
   - [x] Mandelbulber per-slot settings: iteration range, weight, add C, escape test; minimum
         iterations and constant factor; up to 9 slots
-  - [ ] .m3f import from the app (Preferences), inside + outside rendering, more DE kinds
-        (Kleinian, max axis, custom DE block)
+  - [x] .m3f import from the app (Preferences › Formulas › Import .m3f…)
+  - [ ] Inside + outside rendering, more DE kinds (Kleinian, max axis, custom DE block)
   - [ ] Possible later: nested boolean groups (Mandelbulber's object tree), `_Cond*`
         formulas, per-slot settings and 4D rotation for object fractals, language helpers
         (functions, vectors, enum parameters)
 - [x] Explore lane: own presets (thumbnails), random batches, mutations (like RWildFire)
   - [ ] Possible: more presets, quality filter against noisy random scenes, snapshot of the
         current scene into the strip
-- [ ] Help: Markdown in docs/help with screenshots and how-tos, shown in the app, offline PDF
+- [x] User manual: docs/manual (18 chapters, screenshots, how-tos with example scenes), shown
+      in the app (Help › Manual), offline PDF (tools/build_manual.py)
 - [ ] Preferences like RWildFire (UI scale/font size, ...)
   - [x] The top bar no longer overlaps: icons only when the labels do not fit, the document
         name only where there is room

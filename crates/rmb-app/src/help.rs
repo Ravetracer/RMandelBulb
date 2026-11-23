@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
-//! Help window: getting started, shortcuts, formulas and the formula language, about.
+//! Help window: the user manual (docs/manual), getting started, shortcuts, formulas and the
+//! formula language, about.
 
 use egui::RichText;
 
@@ -9,6 +10,7 @@ use crate::theme;
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub enum Tab {
     #[default]
+    Manual,
     Start,
     Shortcuts,
     Formulas,
@@ -20,12 +22,13 @@ pub enum Tab {
 pub struct Help {
     pub open: bool,
     pub tab: Tab,
+    manual: crate::manual::Manual,
 }
 
 const START: &str = "\
 RMandelbulb3D renders 3D fractals by ray marching distance estimates, like Mandelbulb3D.
 
-1. Pick formulas on the left. Up to six formulas form a hybrid: each slot runs its formula the \
+1. Pick formulas on the left. Up to nine formulas form a hybrid: each slot runs its formula the \
 given number of times, then the next slot follows.
 2. Navigate in the view: drag to orbit around the point under the cursor, wheel to move toward \
 the cursor, right drag to pan, double-click to look at a point (and focus there). Switch to Fly \
@@ -91,14 +94,19 @@ impl Help {
             return;
         }
         let mut open = self.open;
-        egui::Window::new("Help").open(&mut open).default_size([640.0, 560.0]).resizable(true).collapsible(false).show(ctx, |ui| {
+        egui::Window::new("Help").open(&mut open).default_size([980.0, 700.0]).resizable(true).collapsible(false).show(ctx, |ui| {
             ui.horizontal(|ui| {
-                for (t, l) in [(Tab::Start, "Getting started"), (Tab::Shortcuts, "Shortcuts"), (Tab::Formulas, "Formulas"), (Tab::Language, "Formula language"), (Tab::About, "About")] {
+                for (t, l) in [(Tab::Manual, "Manual"), (Tab::Start, "Quick start"), (Tab::Shortcuts, "Shortcuts"), (Tab::Formulas, "Formulas"), (Tab::Language, "Formula language"), (Tab::About, "About")] {
                     ui.selectable_value(&mut self.tab, t, l);
                 }
             });
             ui.separator();
+            if self.tab == Tab::Manual {
+                self.manual.show(ui);
+                return;
+            }
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| match self.tab {
+                Tab::Manual => {}
                 Tab::Start => {
                     ui.label(START);
                 }

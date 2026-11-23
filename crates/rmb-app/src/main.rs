@@ -16,6 +16,7 @@ mod help;
 mod icons;
 mod inspector;
 mod layers;
+mod manual;
 mod palette_editor;
 mod prefs;
 mod render_view;

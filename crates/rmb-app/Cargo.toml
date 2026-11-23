@@ -9,6 +9,7 @@ eframe = { version = "0.36.2", default-features = false, features = ["wgpu", "de
 egui = "0.36.2"
 egui-phosphor = "0.14.0"
 egui-wgpu = "0.36.2"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 png = "0.18.1"
 rfd = "0.17.2"
 rmb-core = { version = "0.1.0", path = "../rmb-core" }

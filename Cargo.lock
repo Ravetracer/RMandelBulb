@@ -2290,6 +2290,7 @@ dependencies = [
  "egui",
  "egui-phosphor",
  "egui-wgpu",
+ "image",
  "png",
  "rfd",
  "rmb-core",

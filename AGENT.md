@@ -12,6 +12,10 @@ Notes for coding agents (and humans). RMandelbulb3D re-implements Mandelbulb3D (
 - After finished work: commit and push to `origin main` (github.com/Ravetracer/RMandelbulb).
   Commit messages, code, comments and docs use plain, neutral English.
 - Every control gets a hover text. Actions report what they did, or why they were skipped.
+- **Keep the user manual current**: every new feature or changed control updates
+  `docs/manual` in the same change (the chapter that covers it; new screenshots where the UI
+  changed visibly; a how-to in `17-how-tos.md` where a feature needs several steps). See
+  "User manual" below.
 
 Open work and wished features: `TODO.md`.
 
@@ -310,6 +314,23 @@ cargo clippy -j 8 --workspace --all-targets
   `GpuRenderer` (shaders reused), with `march.detail` scaled to the scene's image height so
   the colors match the full image. Presets are `crates/rmb-app/presets/*.rmb`, written by
   `cargo run --release -p rmb-core --example make_presets -- crates/rmb-app/presets`.
+
+## User manual
+
+- `docs/manual/NN-*.md` (one chapter per file, sorted by name; `# ` chapter, `##`/`###`
+  sections; `![Caption](images/x.png)` alone in a paragraph is a figure, `{: .half}` makes it
+  half wide; `!!! tip` / `!!! note` / `!!! warning` boxes; `{{version}}`). Conventions as in
+  the RWildFire manual.
+- The app embeds every chapter and image (`rmb-app/build.rs` → `manual.rs`, Help › Manual);
+  its renderer covers the subset above plus pipe tables and fenced code. A test checks that
+  every referenced image exists.
+- PDF: `python3 tools/build_manual.py` (Python `markdown`, Chrome, pdftotext) →
+  `docs/manual/build/RMandelbulb3D-Manual-<version>.pdf` (gitignored); Help › Manual › PDF
+  manual opens it.
+- Screenshots: Xvfb (see below), the right panel's left edge moves with its content (find it
+  per shot); keep private paths out of them. Rendered pictures: JPEG, 960 × 540 or smaller.
+- How-to example scenes and their pictures: `python3 tools/make_manual_examples.py`
+  (`docs/manual/examples/*.rmb`, `images/howto-*.jpg`); presets: `make_presets` example.
 
 ## Testing the app visually
 

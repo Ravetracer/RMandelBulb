@@ -6,7 +6,7 @@ modern egui interface and import of Mandelbulb3D parameters.
 
 ## Features
 
-- **Hybrid formulas**: up to six formula slots with iteration counts and "repeat from", Julia
+- **Hybrid formulas**: up to nine formula slots with iteration counts and "repeat from", Julia
   mode, 4D slice and rotation, analytic or numeric distance estimation, and Mandelbulb3D's DE
   combination (two chains joined by union, intersection, subtraction or a smooth blend).
 - **Formula language**: formulas are small text files (`*.mbf`). Each one compiles to WGSL
@@ -95,6 +95,13 @@ modern egui interface and import of Mandelbulb3D parameters.
   - Sound track (Movie › Sound): a sound file under the exported movie, with an offset; the
     movie keeps its length (CLI: `--audio`, `--audio-offset`, `--no-audio`).
 - **CLI**: `rmb-cli render|animate|convert|info|formulas`.
+
+## Manual
+
+The user manual is in `docs/manual` (Markdown with screenshots and how-tos). The app shows it
+in its help window (F1); `python3 tools/build_manual.py` builds the PDF version
+(`docs/manual/build/RMandelbulb3D-Manual-<version>.pdf`; needs Python 3 with `markdown`,
+Google Chrome or Chromium and poppler-utils).
 
 ## Build
 

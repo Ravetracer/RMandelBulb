@@ -215,7 +215,7 @@ impl Inspector {
                 widgets::color(ui, "Ground", "Ambient color from below", &mut l.ground_color);
                 widgets::checkbox(ui, "Follow camera", "Sky and ground follow the camera's up axis instead of the world z axis (Mandelbulb3D)", &mut l.ambient_camera_relative);
                 widgets::slider_log(ui, "Shininess", "Size of the highlights: higher is smaller and sharper", &mut l.shininess, 2.0..=1024.0, d.shininess);
-                widgets::slider(ui, "Roughness", "How much rough surface parts lose their highlights and get softer light (needs Smooth normals in the Render tab)", &mut l.roughness, 0.0..=1.0, d.roughness);
+                widgets::slider(ui, "Roughness", "How much rough surface parts lose their highlights and get softer light (needs Smooth normals in the Ray marching tab)", &mut l.roughness, 0.0..=1.0, d.roughness);
             });
         }
         let sec = widgets::section(ui, "Global illumination", true);
