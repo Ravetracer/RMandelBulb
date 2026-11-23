@@ -297,7 +297,7 @@ impl Timeline {
                     ui.label(RichText::new(format!("#{} · frame {}", s + 1, key_frames.get(s).copied().unwrap_or(0))).color(theme::TEXT_MUTED));
                     ui.end_row();
                     widgets::label(ui, "Frames to next", "Timing \"Per keyframe\": frames from this keyframe to the next");
-                    ui.add(egui::DragValue::new(&mut k.frames).range(1..=100000));
+                    widgets::reset_on_double_click(ui.add(egui::DragValue::new(&mut k.frames).range(1..=100000)).on_hover_text("Frames to the next keyframe. Double click: 60"), &mut k.frames, 60);
                     ui.end_row();
                     widgets::label(ui, "Easing", "Timing \"Per keyframe\": how the frames to the next keyframe are spread");
                     egui::ComboBox::from_id_salt("kf-easing").selected_text(k.easing.label()).show_ui(ui, |ui| {

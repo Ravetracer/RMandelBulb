@@ -403,12 +403,13 @@ fn stops(ui: &mut Ui, gradient: &mut Vec<ColorStop>, st: &mut State, glass: bool
                 }
                 widgets::color_button(ui, &mut s.specular).on_hover_text("Highlight color: multiplies the specular light here");
                 if glass {
-                    ui.add(egui::DragValue::new(&mut s.transparency).range(0.0..=1.0).speed(0.01).max_decimals(2)).on_hover_text("Transparency of the glass at this color (0 = opaque, 1 = clear)");
+                    widgets::reset_on_double_click(ui.add(egui::DragValue::new(&mut s.transparency).range(0.0..=1.0).speed(0.01).max_decimals(2)).on_hover_text("Transparency of the glass at this color (0 = opaque, 1 = clear)"), &mut s.transparency, 0.0);
                     ui.spacing_mut().slider_width = (ui.spacing().slider_width - 50.0).max(60.0);
                 }
                 let e = ui
                     .add(egui::DragValue::new(&mut s.emission).range(0.0..=100.0).speed(0.02).max_decimals(2).prefix(format!("{} ", ph::SPARKLE)))
                     .on_hover_text("Emission: this color shines by itself, lights its surroundings and glows (0 = off; settings under Mapping › Emissive colors)");
+                let e = widgets::reset_on_double_click(e, &mut s.emission, 0.0);
                 if s.emission > 0.0 {
                     e.highlight();
                 }

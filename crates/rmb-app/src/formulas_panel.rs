@@ -47,10 +47,13 @@ impl FormulasPanel {
                     iteration(ui, &mut scene.fractal, true);
                     let cam = scene.camera.clone();
                     let t = &mut scene.fractal.transform;
-                    if widgets::section(ui, "Placement", !t.is_identity()) {
+                    let sec = widgets::section(ui, "Placement", !t.is_identity());
+                    if sec.reset {
                         *t = Transform::default();
                     }
-                    placement(ui, t, &cam, "main-place", false);
+                    if sec.open {
+                        placement(ui, t, &cam, "main-place", false);
+                    }
                 }
                 Some(k) => {
                     let glass = scene.material.transmission;
@@ -204,53 +207,55 @@ impl FormulasPanel {
                 widgets::slider_log(ui, "Blend", "Distance over which the object melts into the others (world units)", &mut o.smooth, 0.0001..=2.0, 0.1);
             }
         });
-        widgets::section(ui, "Placement", false);
-        placement(ui, &mut o.transform, cam, "obj-place", true);
-        widgets::section(ui, "Repetition", false);
-        widgets::grid(ui, "obj-repeat", |ui| {
-            for (k, axis) in ["X", "Y", "Z"].iter().enumerate() {
-                let tip = format!(
-                    "Copies of the object along its own {axis} axis, this far apart (in its own units, before the scale; 0: no copies). Keep it larger than the object, or the copies cut into each other. Double click: 0"
-                );
-                widgets::label(ui, &format!("Spacing {axis}"), &tip);
-                ui.horizontal(|ui| {
-                    let r = ui.add(egui::DragValue::new(&mut o.repeat[k]).speed(0.01).range(0.0..=1.0e6).max_decimals(4)).on_hover_text(&tip);
-                    if r.double_clicked() {
-                        o.repeat[k] = 0.0;
-                    }
-                    if o.repeat[k] > 0.0 {
-                        let tip = "Copies on each side of the original (0: endless). Double click: 0";
-                        let r = ui.add(egui::DragValue::new(&mut o.repeat_limit[k]).speed(0.1).range(0..=10000).prefix("× ")).on_hover_text(tip);
-                        if r.double_clicked() {
-                            o.repeat_limit[k] = 0;
-                        }
-                    }
-                });
-                ui.end_row();
-            }
-        });
-        match &mut o.shape {
-            Shape::Primitive(p) => {
-                widgets::section(ui, p.name(), false);
-                primitive_params(ui, p);
-            }
-            Shape::Fractal(f) => {
-                ui.separator();
-                self.chain(ui, f);
-                ui.add_space(4.0);
-                ui.separator();
-                self.params(ui, f);
-                ui.separator();
-                iteration(ui, f, false);
-            }
-            Shape::Model(m) => model_editor(ui, m),
+        if widgets::section(ui, "Placement", false).open {
+            placement(ui, &mut o.transform, cam, "obj-place", true);
         }
-        let patterns: &[Pattern] = match o.shape {
-            Shape::Fractal(_) => &[],
-            Shape::Primitive(_) => &Pattern::ALL,
-            Shape::Model(_) => &Pattern::FOR_MODELS,
-        };
-        object_material(ui, &mut o.material, patterns, glass);
+        if widgets::section(ui, "Repetition", false).open {
+            widgets::grid(ui, "obj-repeat", |ui| {
+                for (k, axis) in ["X", "Y", "Z"].iter().enumerate() {
+                    let tip = format!(
+                        "Copies of the object along its own {axis} axis, this far apart (in its own units, before the scale; 0: no copies). Keep it larger than the object, or the copies cut into each other. Double click: 0"
+                    );
+                    widgets::label(ui, &format!("Spacing {axis}"), &tip);
+                    ui.horizontal(|ui| {
+                        let r = ui.add(egui::DragValue::new(&mut o.repeat[k]).speed(0.01).range(0.0..=1.0e6).max_decimals(4)).on_hover_text(&tip);
+                        if r.double_clicked() {
+                            o.repeat[k] = 0.0;
+                        }
+                        if o.repeat[k] > 0.0 {
+                            let tip = "Copies on each side of the original (0: endless). Double click: 0";
+                            let r = ui.add(egui::DragValue::new(&mut o.repeat_limit[k]).speed(0.1).range(0..=10000).prefix("× ")).on_hover_text(tip);
+                            if r.double_clicked() {
+                                o.repeat_limit[k] = 0;
+                            }
+                        }
+                    });
+                    ui.end_row();
+                }
+            });
+            match &mut o.shape {
+                Shape::Primitive(p) => {
+                    widgets::section(ui, p.name(), false);
+                    primitive_params(ui, p);
+                }
+                Shape::Fractal(f) => {
+                    ui.separator();
+                    self.chain(ui, f);
+                    ui.add_space(4.0);
+                    ui.separator();
+                    self.params(ui, f);
+                    ui.separator();
+                    iteration(ui, f, false);
+                }
+                Shape::Model(m) => model_editor(ui, m),
+            }
+            let patterns: &[Pattern] = match o.shape {
+                Shape::Fractal(_) => &[],
+                Shape::Primitive(_) => &Pattern::ALL,
+                Shape::Model(_) => &Pattern::FOR_MODELS,
+            };
+            object_material(ui, &mut o.material, patterns, glass);
+        }
     }
 
     fn chain(&mut self, ui: &mut Ui, f: &mut Fractal) {
@@ -363,55 +368,59 @@ impl FormulasPanel {
     fn params(&mut self, ui: &mut Ui, f: &mut Fractal) {
         let Some(slot) = f.slots.get_mut(self.selected) else { return };
         let Some(fm) = find(&slot.formula) else {
-            widgets::section(ui, &slot.formula, false);
-            ui.label(RichText::new("This formula is not in the library. Mandelbulb3D formulas are added over time; you can also write your own (Help › Formulas).").color(theme::TEXT_MUTED));
+            if widgets::section(ui, &slot.formula, false).open {
+                ui.label(RichText::new("This formula is not in the library. Mandelbulb3D formulas are added over time; you can also write your own (Help › Formulas).").color(theme::TEXT_MUTED));
+            }
             return;
         };
         let def = &fm.def;
-        if widgets::section(ui, &format!("{} · slot {}", def.name, self.selected + 1), true) {
+        let sec = widgets::section(ui, &format!("{} · slot {}", def.name, self.selected + 1), true);
+        if sec.reset {
             slot.params.clear();
         }
-        if !def.description.is_empty() {
-            ui.label(RichText::new(&def.description).size(theme::fs(11.5)).color(theme::TEXT_MUTED));
-            ui.add_space(4.0);
-        }
-        if def.params.is_empty() {
-            ui.label(RichText::new("No parameters.").color(theme::TEXT_MUTED));
-            return;
-        }
-        widgets::grid(ui, "formula-params", |ui| {
-            for p in &def.params {
-                let mut v = slot.value(p);
-                let before = v;
-                let tip = format!("{} (default {})", p.ident, p.default);
-                match p.kind {
-                    ParamKind::Bool => {
-                        let mut b = v > 0.5;
-                        widgets::checkbox(ui, &p.label, &tip, &mut b);
-                        v = if b { 1.0 } else { 0.0 };
-                    }
-                    ParamKind::Int => {
-                        widgets::label(ui, &p.label, &tip);
-                        let r = ui.add(egui::DragValue::new(&mut v).speed(0.05).range(p.min..=p.max).fixed_decimals(0));
-                        widgets::reset_on_double_click(r, &mut v, p.default);
-                        v = v.round();
-                        ui.end_row();
-                    }
-                    ParamKind::Angle => {
-                        widgets::label(ui, &p.label, &tip);
-                        let r = ui.add(egui::Slider::new(&mut v, p.min..=p.max).suffix("°").clamping(egui::SliderClamping::Never).max_decimals(3));
-                        widgets::reset_on_double_click(r, &mut v, p.default);
-                        ui.end_row();
-                    }
-                    ParamKind::Float => {
-                        widgets::slider(ui, &p.label, &tip, &mut v, p.min..=p.max, p.default);
-                    }
-                }
-                if v != before {
-                    slot.params.insert(p.ident.clone(), v);
-                }
+        if sec.open {
+            if !def.description.is_empty() {
+                ui.label(RichText::new(&def.description).size(theme::fs(11.5)).color(theme::TEXT_MUTED));
+                ui.add_space(4.0);
             }
-        });
+            if def.params.is_empty() {
+                ui.label(RichText::new("No parameters.").color(theme::TEXT_MUTED));
+                return;
+            }
+            widgets::grid(ui, "formula-params", |ui| {
+                for p in &def.params {
+                    let mut v = slot.value(p);
+                    let before = v;
+                    let tip = format!("{} (default {})", p.ident, p.default);
+                    match p.kind {
+                        ParamKind::Bool => {
+                            let mut b = v > 0.5;
+                            widgets::checkbox(ui, &p.label, &tip, &mut b);
+                            v = if b { 1.0 } else { 0.0 };
+                        }
+                        ParamKind::Int => {
+                            widgets::label(ui, &p.label, &tip);
+                            let r = ui.add(egui::DragValue::new(&mut v).speed(0.05).range(p.min..=p.max).fixed_decimals(0));
+                            widgets::reset_on_double_click(r, &mut v, p.default);
+                            v = v.round();
+                            ui.end_row();
+                        }
+                        ParamKind::Angle => {
+                            widgets::label(ui, &p.label, &tip);
+                            let r = ui.add(egui::Slider::new(&mut v, p.min..=p.max).suffix("°").clamping(egui::SliderClamping::Never).max_decimals(3));
+                            widgets::reset_on_double_click(r, &mut v, p.default);
+                            ui.end_row();
+                        }
+                        ParamKind::Float => {
+                            widgets::slider(ui, &p.label, &tip, &mut v, p.min..=p.max, p.default);
+                        }
+                    }
+                    if v != before {
+                        slot.params.insert(p.ident.clone(), v);
+                    }
+                }
+            });
+        }
     }
 }
 
@@ -574,40 +583,41 @@ fn primitive_params(ui: &mut Ui, p: &mut Primitive) {
 /// a fractal, colored by its orbit).
 fn object_material(ui: &mut Ui, m: &mut ObjectMaterial, patterns: &[Pattern], glass: bool) {
     let primitive = !patterns.is_empty();
-    widgets::section(ui, "Material", false);
-    ui.checkbox(&mut m.own, "Own colors").on_hover_text("Off: the object uses the main fractal's colors (Color tab)");
-    if !m.own {
-        return;
-    }
-    crate::inspector::gradient_editor(ui, &mut m.gradient, glass);
-    crate::inspector::bands_editor(ui, &m.gradient, &mut m.bands, m.repeat, "object");
-    widgets::grid(ui, "obj-mat", |ui| {
-        if primitive {
-            widgets::label(ui, "Pattern", "How the shape picks its colors from the gradient");
-            egui::ComboBox::from_id_salt("obj-pattern").selected_text(m.pattern.label()).show_ui(ui, |ui| {
-                for &p in patterns {
-                    ui.selectable_value(&mut m.pattern, p, p.label());
-                }
-            });
-            ui.end_row();
-            if !matches!(m.pattern, Pattern::Solid | Pattern::Model) {
-                widgets::slider_log(ui, "Pattern size", "Size of the checker cells, or the height / distance per gradient length", &mut m.pattern_size, 0.001..=100.0, 1.0);
-            }
-        } else {
-            widgets::label(ui, "Color by", "Which value of the orbit picks the gradient color (the position modes and MB3D's 2nd choice use the settings of the main material, Color tab)");
-            egui::ComboBox::from_id_salt("obj-color-mode").selected_text(m.color_mode.label()).show_ui(ui, |ui| {
-                for c in ColorMode::ALL {
-                    ui.selectable_value(&mut m.color_mode, c, c.label());
-                }
-            });
-            ui.end_row();
+    if widgets::section(ui, "Material", false).open {
+        ui.checkbox(&mut m.own, "Own colors").on_hover_text("Off: the object uses the main fractal's colors (Color tab)");
+        if !m.own {
+            return;
         }
-        widgets::slider_log(ui, "Scale", "How fast the colors change with the value", &mut m.color_scale, -10.0..=10.0, if primitive { 1.0 } else { 0.15 });
-        widgets::slider(ui, "Offset", "Shifts the gradient (with a solid pattern: picks the color)", &mut m.color_offset, -5.0..=5.0, 0.0);
-        widgets::drag(ui, "Rotation", "Animation: the gradient (with its glow bands) turns by this many gradient lengths per second (palette rotation; 0 = off)", &mut m.rotation, 0.005, 0.0);
-        widgets::checkbox(ui, "Repeat", "Repeat the gradient (else clamp at its ends)", &mut m.repeat);
-    });
-    crate::layers::layers_editor(ui, &mut m.layers, "object");
+        crate::inspector::gradient_editor(ui, &mut m.gradient, glass);
+        crate::inspector::bands_editor(ui, &m.gradient, &mut m.bands, m.repeat, "object");
+        widgets::grid(ui, "obj-mat", |ui| {
+            if primitive {
+                widgets::label(ui, "Pattern", "How the shape picks its colors from the gradient");
+                egui::ComboBox::from_id_salt("obj-pattern").selected_text(m.pattern.label()).show_ui(ui, |ui| {
+                    for &p in patterns {
+                        ui.selectable_value(&mut m.pattern, p, p.label());
+                    }
+                });
+                ui.end_row();
+                if !matches!(m.pattern, Pattern::Solid | Pattern::Model) {
+                    widgets::slider_log(ui, "Pattern size", "Size of the checker cells, or the height / distance per gradient length", &mut m.pattern_size, 0.001..=100.0, 1.0);
+                }
+            } else {
+                widgets::label(ui, "Color by", "Which value of the orbit picks the gradient color (the position modes and MB3D's 2nd choice use the settings of the main material, Color tab)");
+                egui::ComboBox::from_id_salt("obj-color-mode").selected_text(m.color_mode.label()).show_ui(ui, |ui| {
+                    for c in ColorMode::ALL {
+                        ui.selectable_value(&mut m.color_mode, c, c.label());
+                    }
+                });
+                ui.end_row();
+            }
+            widgets::slider_log(ui, "Scale", "How fast the colors change with the value", &mut m.color_scale, -10.0..=10.0, if primitive { 1.0 } else { 0.15 });
+            widgets::slider(ui, "Offset", "Shifts the gradient (with a solid pattern: picks the color)", &mut m.color_offset, -5.0..=5.0, 0.0);
+            widgets::drag(ui, "Rotation", "Animation: the gradient (with its glow bands) turns by this many gradient lengths per second (palette rotation; 0 = off)", &mut m.rotation, 0.005, 0.0);
+            widgets::checkbox(ui, "Repeat", "Repeat the gradient (else clamp at its ends)", &mut m.repeat);
+        });
+        crate::layers::layers_editor(ui, &mut m.layers, "object");
+    }
 }
 
 /// File types of 3D models.
@@ -628,53 +638,54 @@ fn model_object(p: &std::path::Path, pos: rmb_core::V3) -> SceneObject {
 /// File and bake settings of a 3D model, with the bake state.
 fn model_editor(ui: &mut Ui, m: &mut ModelRef) {
     use rmb_core::mesh::{Status, UpAxis};
-    widgets::section(ui, "3D model", false);
-    ui.horizontal(|ui| {
-        if ui.button("Change…").on_hover_text("Pick another model file").clicked()
-            && let Some(p) = rfd::FileDialog::new().add_filter("3D model", &MODEL_FILES).pick_file()
-        {
-            m.path = p.display().to_string();
-            m.materials.clear();
-            m.auto_assigned = false;
-        }
-        let name = std::path::Path::new(&m.path).file_name().map_or_else(|| m.path.clone(), |f| f.to_string_lossy().into_owned());
-        ui.label(name).on_hover_text(m.path.clone());
-    });
-    match rmb_core::mesh::request(&m.path, &m.options) {
-        Status::Ready(v) => {
-            ui.label(RichText::new(format!("{} triangles, {} materials, {} × {} × {} grid", v.tris.len(), v.materials.len(), v.res[0], v.res[1], v.res[2])).size(theme::fs(11.0)).color(theme::TEXT_MUTED))
-                .on_hover_text("The grid gives the distance away from the model; near its surface the triangles themselves are used, so detail stays sharp at any distance");
-        }
-        Status::Baking(p) => {
-            ui.add(egui::ProgressBar::new(p).show_percentage().text("Baking…")).on_hover_text("Turning the model into a distance grid (it appears when done)");
-        }
-        Status::Failed(e) => {
-            ui.label(RichText::new(e).size(theme::fs(11.0)).color(theme::WARN));
-        }
-    }
-    let o = &mut m.options;
-    widgets::grid(ui, "model", |ui| {
-        widgets::label(ui, "Resolution", "Grid points along the longest side of the distance grid used away from the surface. Higher makes rendering faster near complex models but bakes longer and needs more memory (256: about 32 MB)");
-        egui::ComboBox::from_id_salt("model-res").selected_text(o.resolution.to_string()).show_ui(ui, |ui| {
-            for r in [64, 96, 128, 192, 256] {
-                ui.selectable_value(&mut o.resolution, r, r.to_string());
+    if widgets::section(ui, "3D model", false).open {
+        ui.horizontal(|ui| {
+            if ui.button("Change…").on_hover_text("Pick another model file").clicked()
+                && let Some(p) = rfd::FileDialog::new().add_filter("3D model", &MODEL_FILES).pick_file()
+            {
+                m.path = p.display().to_string();
+                m.materials.clear();
+                m.auto_assigned = false;
             }
+            let name = std::path::Path::new(&m.path).file_name().map_or_else(|| m.path.clone(), |f| f.to_string_lossy().into_owned());
+            ui.label(name).on_hover_text(m.path.clone());
         });
-        ui.end_row();
-        widgets::label(ui, "Up axis", "Which axis of the file points up. Auto: Y for glTF and OBJ (Blender's export default), Z for STL and PLY");
-        egui::ComboBox::from_id_salt("model-up").selected_text(format!("{:?}", o.up_axis)).show_ui(ui, |ui| {
-            for a in [UpAxis::Auto, UpAxis::Y, UpAxis::Z] {
-                ui.selectable_value(&mut o.up_axis, a, format!("{a:?}"));
+        match rmb_core::mesh::request(&m.path, &m.options) {
+            Status::Ready(v) => {
+                ui.label(RichText::new(format!("{} triangles, {} materials, {} × {} × {} grid", v.tris.len(), v.materials.len(), v.res[0], v.res[1], v.res[2])).size(theme::fs(11.0)).color(theme::TEXT_MUTED))
+                    .on_hover_text("The grid gives the distance away from the model; near its surface the triangles themselves are used, so detail stays sharp at any distance");
             }
+            Status::Baking(p) => {
+                ui.add(egui::ProgressBar::new(p).show_percentage().text("Baking…")).on_hover_text("Turning the model into a distance grid (it appears when done)");
+            }
+            Status::Failed(e) => {
+                ui.label(RichText::new(e).size(theme::fs(11.0)).color(theme::WARN));
+            }
+        }
+        let o = &mut m.options;
+        widgets::grid(ui, "model", |ui| {
+            widgets::label(ui, "Resolution", "Grid points along the longest side of the distance grid used away from the surface. Higher makes rendering faster near complex models but bakes longer and needs more memory (256: about 32 MB)");
+            egui::ComboBox::from_id_salt("model-res").selected_text(o.resolution.to_string()).show_ui(ui, |ui| {
+                for r in [64, 96, 128, 192, 256] {
+                    ui.selectable_value(&mut o.resolution, r, r.to_string());
+                }
+            });
+            ui.end_row();
+            widgets::label(ui, "Up axis", "Which axis of the file points up. Auto: Y for glTF and OBJ (Blender's export default), Z for STL and PLY");
+            egui::ComboBox::from_id_salt("model-up").selected_text(format!("{:?}", o.up_axis)).show_ui(ui, |ui| {
+                for a in [UpAxis::Auto, UpAxis::Y, UpAxis::Z] {
+                    ui.selectable_value(&mut o.up_axis, a, format!("{a:?}"));
+                }
+            });
+            ui.end_row();
+            widgets::checkbox(ui, "Keep file units", "Off: the model is centered and sized to 2 units (then scaled by the placement). On: the file's own coordinates", &mut o.keep_units);
         });
-        ui.end_row();
-        widgets::checkbox(ui, "Keep file units", "Off: the model is centered and sized to 2 units (then scaled by the placement). On: the file's own coordinates", &mut o.keep_units);
-    });
-    if o.resolution > 192 {
-        ui.label(RichText::new("High resolutions take a few seconds to bake.").size(theme::fs(11.0)).color(theme::TEXT_MUTED));
-    }
-    if let Status::Ready(v) = rmb_core::mesh::request(&m.path, &m.options) {
-        materials_editor(ui, m, &v.materials);
+        if o.resolution > 192 {
+            ui.label(RichText::new("High resolutions take a few seconds to bake.").size(theme::fs(11.0)).color(theme::TEXT_MUTED));
+        }
+        if let Status::Ready(v) = rmb_core::mesh::request(&m.path, &m.options) {
+            materials_editor(ui, m, &v.materials);
+        }
     }
 }
 
@@ -750,254 +761,259 @@ fn materials_editor(ui: &mut Ui, m: &mut ModelRef, mats: &[rmb_core::mesh::MeshM
     if mats.is_empty() {
         return;
     }
-    widgets::section(ui, "Materials", false);
-    let id = ui.id().with(("model-materials", &m.path));
-    let mut filter: String = ui.data_mut(|d| d.get_temp(id.with("filter")).unwrap_or_default());
-    let mut bulk: [f32; 3] = ui.data_mut(|d| d.get_temp(id.with("bulk")).unwrap_or([0.05, 0.12, 0.45]));
-    let images: std::sync::Arc<Vec<std::path::PathBuf>> = ui.data_mut(|d| d.get_temp(id.with("images"))).unwrap_or_else(|| {
-        let list = std::sync::Arc::new(rmb_core::mesh::nearby_images(std::path::Path::new(&m.path)));
-        ui.data_mut(|d| d.insert_temp(id.with("images"), list.clone()));
-        list
-    });
-    ui.horizontal(|ui| {
-        ui.add(egui::TextEdit::singleline(&mut filter).hint_text("Filter").desired_width(110.0)).on_hover_text("Show only the materials whose name contains this text");
-        if ui.button("Auto-assign").on_hover_text("Assign the images near the model file to the materials by name (replaces the image choices, keeps the colors)").clicked() {
-            let auto = rmb_core::mesh::auto_assign(&m.path, mats, &images);
-            for o in &mut m.materials {
-                o.texture = None;
-                o.bump.clear();
-                o.specular.clear();
-                o.normal.clear();
+    if widgets::section(ui, "Materials", false).open {
+        let id = ui.id().with(("model-materials", &m.path));
+        let mut filter: String = ui.data_mut(|d| d.get_temp(id.with("filter")).unwrap_or_default());
+        let mut bulk: [f32; 3] = ui.data_mut(|d| d.get_temp(id.with("bulk")).unwrap_or([0.05, 0.12, 0.45]));
+        let images: std::sync::Arc<Vec<std::path::PathBuf>> = ui.data_mut(|d| d.get_temp(id.with("images"))).unwrap_or_else(|| {
+            let list = std::sync::Arc::new(rmb_core::mesh::nearby_images(std::path::Path::new(&m.path)));
+            ui.data_mut(|d| d.insert_temp(id.with("images"), list.clone()));
+            list
+        });
+        ui.horizontal(|ui| {
+            ui.add(egui::TextEdit::singleline(&mut filter).hint_text("Filter").desired_width(110.0)).on_hover_text("Show only the materials whose name contains this text");
+            if ui.button("Auto-assign").on_hover_text("Assign the images near the model file to the materials by name (replaces the image choices, keeps the colors)").clicked() {
+                let auto = rmb_core::mesh::auto_assign(&m.path, mats, &images);
+                for o in &mut m.materials {
+                    o.texture = None;
+                    o.bump.clear();
+                    o.specular.clear();
+                    o.normal.clear();
+                }
+                for a in auto {
+                    let o = material_override(&mut m.materials, &a.name);
+                    o.texture = a.texture;
+                    o.bump = a.bump;
+                    o.specular = a.specular;
+                    o.normal = a.normal;
+                }
             }
-            for a in auto {
-                let o = material_override(&mut m.materials, &a.name);
-                o.texture = a.texture;
-                o.bump = a.bump;
-                o.specular = a.specular;
-                o.normal = a.normal;
+            if ui.button("Rescan").on_hover_text(format!("Look for images near the model again ({} found)", images.len())).clicked() {
+                ui.data_mut(|d| d.remove::<std::sync::Arc<Vec<std::path::PathBuf>>>(id.with("images")));
             }
-        }
-        if ui.button("Rescan").on_hover_text(format!("Look for images near the model again ({} found)", images.len())).clicked() {
-            ui.data_mut(|d| d.remove::<std::sync::Arc<Vec<std::path::PathBuf>>>(id.with("images")));
-        }
-        if ui.button("Reset").on_hover_text("Use the materials exactly as the model file has them").clicked() {
-            m.materials.clear();
-        }
-    });
-    let needle = filter.to_lowercase();
-    let shown: Vec<&rmb_core::mesh::MeshMaterial> = mats.iter().filter(|mm| needle.is_empty() || mm.name.to_lowercase().contains(&needle)).collect();
-    ui.horizontal(|ui| {
-        widgets::color_button(ui, &mut bulk).on_hover_text("Color for 'Color all shown'");
-        if ui.button(format!("Color all shown ({})", shown.len())).on_hover_text("Gives every material in the list below this color (use the filter to pick them)").clicked() {
+            if ui.button("Reset").on_hover_text("Use the materials exactly as the model file has them").clicked() {
+                m.materials.clear();
+            }
+        });
+        let needle = filter.to_lowercase();
+        let shown: Vec<&rmb_core::mesh::MeshMaterial> = mats.iter().filter(|mm| needle.is_empty() || mm.name.to_lowercase().contains(&needle)).collect();
+        ui.horizontal(|ui| {
+            widgets::color_button(ui, &mut bulk).on_hover_text("Color for 'Color all shown'");
+            if ui.button(format!("Color all shown ({})", shown.len())).on_hover_text("Gives every material in the list below this color (use the filter to pick them)").clicked() {
+                for mm in &shown {
+                    material_override(&mut m.materials, &mm.name).color = Some(bulk);
+                }
+            }
+        });
+        let mut open: Option<String> = ui.data_mut(|d| d.get_temp(id.with("open")).unwrap_or_default());
+        egui::ScrollArea::vertical().id_salt(id.with("scroll")).min_scrolled_height(320.0).max_height(360.0).show(ui, |ui| {
             for mm in &shown {
-                material_override(&mut m.materials, &mm.name).color = Some(bulk);
-            }
-        }
-    });
-    let mut open: Option<String> = ui.data_mut(|d| d.get_temp(id.with("open")).unwrap_or_default());
-    egui::ScrollArea::vertical().id_salt(id.with("scroll")).min_scrolled_height(320.0).max_height(360.0).show(ui, |ui| {
-        for mm in &shown {
-            let o = material_override(&mut m.materials, &mm.name);
-            let expanded = open.as_deref() == Some(mm.name.as_str());
-            ui.horizontal(|ui| {
-                let mut c = o.color.unwrap_or(mm.color);
-                let r = widgets::color_button(ui, &mut c).on_hover_text("Base color (the texture multiplies it). Right click: the model file's color");
-                if c != o.color.unwrap_or(mm.color) {
-                    o.color = Some(c);
-                }
-                if r.secondary_clicked() {
-                    o.color = None;
-                }
-                let maps = !o.bump.is_empty() || !o.specular.is_empty() || !o.normal.is_empty() || mm.normal.is_some() || o.emission.is_some() || mm.emissive.iter().any(|c| *c > 0.0);
-                let changed = o.color.is_some() || o.texture.is_some() || maps;
-                let arrow = if expanded { egui_phosphor::regular::CARET_DOWN } else { egui_phosphor::regular::CARET_RIGHT };
-                let text = format!("{arrow} {}{}", mm.name, if maps { format!(" {}", egui_phosphor::regular::STACK) } else { String::new() });
-                let label = if changed { RichText::new(text).strong() } else { RichText::new(text) };
-                let size = egui::vec2(150.0, ui.spacing().interact_size.y);
-                let resp = ui
-                    .allocate_ui_with_layout(size, egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                        ui.set_min_size(size);
-                        ui.add(egui::Button::new(label).frame(false).truncate())
-                    })
-                    .inner
-                    .on_hover_text(format!("{}: click for bump, specular and normal maps and emission (bold: changed here; layers icon: has maps or emission)", mm.name));
-                if resp.clicked() {
-                    open = if expanded { None } else { Some(mm.name.clone()) };
-                }
-                image_combo(ui, &format!("mat-tex-{}", mm.name), &m.path, &mm.texture_file, &images, &mut o.texture, "Color texture (multiplies the base color)");
-            });
-            if expanded {
-                ui.indent(id.with(("maps", &mm.name)), |ui| {
-                    widgets::grid(ui, &format!("mat-maps-{}", mm.name), |ui| {
-                        widgets::label(ui, "Bump", "Height map: bright is high. Bends the surface normal for fine relief without changing the shape");
-                        let mut v = Some(o.bump.clone());
-                        image_combo(ui, &format!("mat-bump-{}", mm.name), &m.path, "", &images, &mut v, "Bump (height) map");
-                        o.bump = v.unwrap_or_default();
-                        ui.end_row();
-                        if !o.bump.is_empty() {
-                            widgets::slider_log(ui, "Strength", "Height of the bumps (1: white is 0.3 % of the model's size above black)", &mut o.bump_strength, 0.01..=20.0, 1.0);
-                        }
-                        widgets::label(ui, "Specular", "Specular map: bright parts shine, dark parts stay matte");
-                        let mut v = Some(o.specular.clone());
-                        image_combo(ui, &format!("mat-spec-{}", mm.name), &m.path, "", &images, &mut v, "Specular map");
-                        o.specular = v.unwrap_or_default();
-                        ui.end_row();
-                        widgets::label(ui, "Normal map", "Tangent-space normal map (bluish image: red right, green up): bends the surface normal for fine relief");
-                        let mut v = Some(o.normal.clone());
-                        let from_file = if mm.normal.is_some() { "(from the model file)" } else { "" };
-                        image_combo(ui, &format!("mat-normal-{}", mm.name), &m.path, from_file, &images, &mut v, "Normal map");
-                        o.normal = v.unwrap_or_default();
-                        ui.end_row();
-                        if !o.normal.is_empty() || mm.normal.is_some() {
-                            widgets::slider_log(ui, "Normal strength", "How far the normal map bends the surface (1: as drawn)", &mut o.normal_strength, 0.01..=10.0, 1.0);
-                        }
-                        let file_emission = mm.emissive;
-                        let emits = |e: &[f32; 3]| e.iter().any(|c| *c > 0.0);
-                        let mut on = o.emission.map_or(emits(&file_emission), |e| emits(&e));
-                        let was = on;
-                        widgets::checkbox(ui, "Emission", "The material shines by itself in this color (glTF emissive; brighter than white glows with bloom)", &mut on);
-                        if on {
-                            let e = o.emission.filter(emits).unwrap_or(if emits(&file_emission) { file_emission } else { [1.0; 3] });
-                            // Color (brightest channel 1) and strength.
-                            let mut k = e.iter().copied().fold(0.0f32, f32::max).max(1e-6);
-                            let mut col = e.map(|c| c / k);
-                            widgets::color(ui, "Emission color", "Color of the emitted light", &mut col);
-                            let mut kk = k as f64;
-                            widgets::slider_log(ui, "Emission strength", "Brightness of the emitted light", &mut kk, 0.01..=50.0, 1.0);
-                            k = kk as f32;
-                            let e2 = col.map(|c| c * k);
-                            if !was || e2 != e {
-                                o.emission = Some(e2);
-                            }
-                        } else if was {
-                            // Off: none, also where the file has emission.
-                            o.emission = emits(&file_emission).then_some([0.0; 3]);
-                        }
-                    });
+                let o = material_override(&mut m.materials, &mm.name);
+                let expanded = open.as_deref() == Some(mm.name.as_str());
+                ui.horizontal(|ui| {
+                    let mut c = o.color.unwrap_or(mm.color);
+                    let r = widgets::color_button(ui, &mut c).on_hover_text("Base color (the texture multiplies it). Right click: the model file's color");
+                    if c != o.color.unwrap_or(mm.color) {
+                        o.color = Some(c);
+                    }
+                    if r.secondary_clicked() {
+                        o.color = None;
+                    }
+                    let maps = !o.bump.is_empty() || !o.specular.is_empty() || !o.normal.is_empty() || mm.normal.is_some() || o.emission.is_some() || mm.emissive.iter().any(|c| *c > 0.0);
+                    let changed = o.color.is_some() || o.texture.is_some() || maps;
+                    let arrow = if expanded { egui_phosphor::regular::CARET_DOWN } else { egui_phosphor::regular::CARET_RIGHT };
+                    let text = format!("{arrow} {}{}", mm.name, if maps { format!(" {}", egui_phosphor::regular::STACK) } else { String::new() });
+                    let label = if changed { RichText::new(text).strong() } else { RichText::new(text) };
+                    let size = egui::vec2(150.0, ui.spacing().interact_size.y);
+                    let resp = ui
+                        .allocate_ui_with_layout(size, egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                            ui.set_min_size(size);
+                            ui.add(egui::Button::new(label).frame(false).truncate())
+                        })
+                        .inner
+                        .on_hover_text(format!("{}: click for bump, specular and normal maps and emission (bold: changed here; layers icon: has maps or emission)", mm.name));
+                    if resp.clicked() {
+                        open = if expanded { None } else { Some(mm.name.clone()) };
+                    }
+                    image_combo(ui, &format!("mat-tex-{}", mm.name), &m.path, &mm.texture_file, &images, &mut o.texture, "Color texture (multiplies the base color)");
                 });
+                if expanded {
+                    ui.indent(id.with(("maps", &mm.name)), |ui| {
+                        widgets::grid(ui, &format!("mat-maps-{}", mm.name), |ui| {
+                            widgets::label(ui, "Bump", "Height map: bright is high. Bends the surface normal for fine relief without changing the shape");
+                            let mut v = Some(o.bump.clone());
+                            image_combo(ui, &format!("mat-bump-{}", mm.name), &m.path, "", &images, &mut v, "Bump (height) map");
+                            o.bump = v.unwrap_or_default();
+                            ui.end_row();
+                            if !o.bump.is_empty() {
+                                widgets::slider_log(ui, "Strength", "Height of the bumps (1: white is 0.3 % of the model's size above black)", &mut o.bump_strength, 0.01..=20.0, 1.0);
+                            }
+                            widgets::label(ui, "Specular", "Specular map: bright parts shine, dark parts stay matte");
+                            let mut v = Some(o.specular.clone());
+                            image_combo(ui, &format!("mat-spec-{}", mm.name), &m.path, "", &images, &mut v, "Specular map");
+                            o.specular = v.unwrap_or_default();
+                            ui.end_row();
+                            widgets::label(ui, "Normal map", "Tangent-space normal map (bluish image: red right, green up): bends the surface normal for fine relief");
+                            let mut v = Some(o.normal.clone());
+                            let from_file = if mm.normal.is_some() { "(from the model file)" } else { "" };
+                            image_combo(ui, &format!("mat-normal-{}", mm.name), &m.path, from_file, &images, &mut v, "Normal map");
+                            o.normal = v.unwrap_or_default();
+                            ui.end_row();
+                            if !o.normal.is_empty() || mm.normal.is_some() {
+                                widgets::slider_log(ui, "Normal strength", "How far the normal map bends the surface (1: as drawn)", &mut o.normal_strength, 0.01..=10.0, 1.0);
+                            }
+                            let file_emission = mm.emissive;
+                            let emits = |e: &[f32; 3]| e.iter().any(|c| *c > 0.0);
+                            let mut on = o.emission.map_or(emits(&file_emission), |e| emits(&e));
+                            let was = on;
+                            widgets::checkbox(ui, "Emission", "The material shines by itself in this color (glTF emissive; brighter than white glows with bloom)", &mut on);
+                            if on {
+                                let e = o.emission.filter(emits).unwrap_or(if emits(&file_emission) { file_emission } else { [1.0; 3] });
+                                // Color (brightest channel 1) and strength.
+                                let mut k = e.iter().copied().fold(0.0f32, f32::max).max(1e-6);
+                                let mut col = e.map(|c| c / k);
+                                widgets::color(ui, "Emission color", "Color of the emitted light", &mut col);
+                                let mut kk = k as f64;
+                                widgets::slider_log(ui, "Emission strength", "Brightness of the emitted light", &mut kk, 0.01..=50.0, 1.0);
+                                k = kk as f32;
+                                let e2 = col.map(|c| c * k);
+                                if !was || e2 != e {
+                                    o.emission = Some(e2);
+                                }
+                            } else if was {
+                                // Off: none, also where the file has emission.
+                                o.emission = emits(&file_emission).then_some([0.0; 3]);
+                            }
+                        });
+                    });
+                }
             }
-        }
-    });
-    m.materials.retain(|o| !o.is_empty());
-    ui.data_mut(|d| {
-        d.insert_temp(id.with("filter"), filter);
-        d.insert_temp(id.with("bulk"), bulk);
-        d.insert_temp(id.with("open"), open);
-    });
+        });
+        m.materials.retain(|o| !o.is_empty());
+        ui.data_mut(|d| {
+            d.insert_temp(id.with("filter"), filter);
+            d.insert_temp(id.with("bulk"), bulk);
+            d.insert_temp(id.with("open"), open);
+        });
+    }
 }
 
 fn iteration(ui: &mut Ui, f: &mut Fractal, main: bool) {
     let d = Fractal::default();
-    if widgets::section(ui, "Iteration", true) {
+    let sec = widgets::section(ui, "Iteration", true);
+    if sec.reset {
         let slots = std::mem::take(&mut f.slots);
         let (repeat, transform) = (f.repeat_from, f.transform.clone());
         *f = Fractal { slots, repeat_from: repeat, transform, ..d.clone() };
     }
-    widgets::grid(ui, "iteration", |ui| {
-        widgets::slider_u32(ui, "Max iterations", "Iterations per point, all slots together. More iterations give finer detail (and slower rendering).", &mut f.max_iterations, 1..=100, d.max_iterations);
-        widgets::slider_log(ui, "Bailout", "Escape radius: a point escapes when its distance from the origin exceeds this.", &mut f.bailout, 1.0..=1024.0, d.bailout);
-        widgets::label(ui, "Distance", "How the distance to the surface is estimated. Auto picks the formula's analytic estimate; numeric is slower but works for every hybrid.");
-        egui::ComboBox::from_id_salt("de-mode").selected_text(f.de_mode.label()).show_ui(ui, |ui| {
-            for m in DeMode::ALL {
-                ui.selectable_value(&mut f.de_mode, m, m.label());
+    if sec.open {
+        widgets::grid(ui, "iteration", |ui| {
+            widgets::slider_u32(ui, "Max iterations", "Iterations per point, all slots together. More iterations give finer detail (and slower rendering).", &mut f.max_iterations, 1..=100, d.max_iterations);
+            widgets::slider_log(ui, "Bailout", "Escape radius: a point escapes when its distance from the origin exceeds this.", &mut f.bailout, 1.0..=1024.0, d.bailout);
+            widgets::label(ui, "Distance", "How the distance to the surface is estimated. Auto picks the formula's analytic estimate; numeric is slower but works for every hybrid.");
+            egui::ComboBox::from_id_salt("de-mode").selected_text(f.de_mode.label()).show_ui(ui, |ui| {
+                for m in DeMode::ALL {
+                    ui.selectable_value(&mut f.de_mode, m, m.label());
+                }
+            });
+            ui.end_row();
+            widgets::slider(ui, "DE scale", "Multiplies the distance estimate. Lower it if the surface shows holes or noise (overstepping).", &mut f.de_scale, 0.05..=2.0, d.de_scale);
+            widgets::slider(ui, "W slice", "Start value of the 4th dimension (4D formulas).", &mut f.w_slice, -2.0..=2.0, d.w_slice);
+            widgets::checkbox(ui, "Julia", "Use a fixed constant c for every point instead of the point's position.", &mut f.julia);
+            if main {
+                widgets::checkbox(
+                    ui,
+                    "Inside",
+                    "Render the inside of the set: escaping points are solid, the set is empty space. For views from within the fractal (slower: rays step in small steps).",
+                    &mut f.inside,
+                );
+            }
+            if f.julia {
+                for (k, n) in ["Julia X", "Julia Y", "Julia Z", "Julia W"].iter().enumerate() {
+                    widgets::drag(ui, n, "Julia constant", &mut f.julia_c[k], 0.002, 0.0);
+                }
+            }
+            if main {
+                for (k, n) in ["Rotate XW", "Rotate YW", "Rotate ZW"].iter().enumerate() {
+                    widgets::slider(ui, n, "Rotates the start point into the 4th dimension (formulas that use w)", &mut f.rotation_4d[k], -180.0..=180.0, 0.0);
+                }
             }
         });
-        ui.end_row();
-        widgets::slider(ui, "DE scale", "Multiplies the distance estimate. Lower it if the surface shows holes or noise (overstepping).", &mut f.de_scale, 0.05..=2.0, d.de_scale);
-        widgets::slider(ui, "W slice", "Start value of the 4th dimension (4D formulas).", &mut f.w_slice, -2.0..=2.0, d.w_slice);
-        widgets::checkbox(ui, "Julia", "Use a fixed constant c for every point instead of the point's position.", &mut f.julia);
-        if main {
-            widgets::checkbox(
-                ui,
-                "Inside",
-                "Render the inside of the set: escaping points are solid, the set is empty space. For views from within the fractal (slower: rays step in small steps).",
-                &mut f.inside,
-            );
-        }
-        if f.julia {
-            for (k, n) in ["Julia X", "Julia Y", "Julia Z", "Julia W"].iter().enumerate() {
-                widgets::drag(ui, n, "Julia constant", &mut f.julia_c[k], 0.002, 0.0);
-            }
-        }
-        if main {
-            for (k, n) in ["Rotate XW", "Rotate YW", "Rotate ZW"].iter().enumerate() {
-                widgets::slider(ui, n, "Rotates the start point into the 4th dimension (formulas that use w)", &mut f.rotation_4d[k], -180.0..=180.0, 0.0);
-            }
-        }
-    });
-    combine(ui, f);
+        combine(ui, f);
+    }
 }
 
 fn combine(ui: &mut Ui, f: &mut Fractal) {
-    widgets::section(ui, "Two chains", false);
-    let mut blend = f.blend.is_some();
-    if ui
-        .checkbox(&mut blend, "Interpolate slots 1 and 2")
-        .on_hover_text("Every iteration runs the first two formulas on the same point and blends their results by these weights (Mandelbulb3D's interpolation hybrid); the other slots are not used")
-        .changed()
-    {
-        f.blend = blend.then_some([0.5, 0.5]);
-        if blend {
-            f.combine = None;
+    if widgets::section(ui, "Two chains", false).open {
+        let mut blend = f.blend.is_some();
+        if ui
+            .checkbox(&mut blend, "Interpolate slots 1 and 2")
+            .on_hover_text("Every iteration runs the first two formulas on the same point and blends their results by these weights (Mandelbulb3D's interpolation hybrid); the other slots are not used")
+            .changed()
+        {
+            f.blend = blend.then_some([0.5, 0.5]);
+            if blend {
+                f.combine = None;
+            }
         }
-    }
-    if let Some(w) = f.blend.as_mut() {
-        widgets::grid(ui, "blend", |ui| {
-            widgets::slider(ui, "Weight 1", "Share of slot 1", &mut w[0], -1.0..=2.0, 0.5);
-            widgets::slider(ui, "Weight 2", "Share of slot 2", &mut w[1], -1.0..=2.0, 0.5);
-        });
-        if f.slots.len() < 2 {
+        if let Some(w) = f.blend.as_mut() {
+            widgets::grid(ui, "blend", |ui| {
+                widgets::slider(ui, "Weight 1", "Share of slot 1", &mut w[0], -1.0..=2.0, 0.5);
+                widgets::slider(ui, "Weight 2", "Share of slot 2", &mut w[1], -1.0..=2.0, 0.5);
+            });
+            if f.slots.len() < 2 {
+                ui.label(RichText::new("Needs at least two slots.").color(theme::WARN));
+            }
+            return;
+        }
+        let mut on = f.combine.is_some();
+        if ui
+            .checkbox(&mut on, "DE combination")
+            .on_hover_text("Splits the slots into two chains with their own iteration limit and combines their distance estimates (union, intersection, subtraction or a smooth blend)")
+            .changed()
+        {
+            f.combine = if on {
+                let start = (f.slots.len() / 2).max(1);
+                Some(rmb_core::scene::DeCombine { start, repeat_from: start, max_iterations: f.max_iterations, ..Default::default() })
+            } else {
+                None
+            };
+        }
+        let n = f.slots.len();
+        let Some(c) = f.combine.as_mut() else { return };
+        if n < 2 {
             ui.label(RichText::new("Needs at least two slots.").color(theme::WARN));
+            return;
         }
-        return;
-    }
-    let mut on = f.combine.is_some();
-    if ui
-        .checkbox(&mut on, "DE combination")
-        .on_hover_text("Splits the slots into two chains with their own iteration limit and combines their distance estimates (union, intersection, subtraction or a smooth blend)")
-        .changed()
-    {
-        f.combine = if on {
-            let start = (f.slots.len() / 2).max(1);
-            Some(rmb_core::scene::DeCombine { start, repeat_from: start, max_iterations: f.max_iterations, ..Default::default() })
-        } else {
-            None
-        };
-    }
-    let n = f.slots.len();
-    let Some(c) = f.combine.as_mut() else { return };
-    if n < 2 {
-        ui.label(RichText::new("Needs at least two slots.").color(theme::WARN));
-        return;
-    }
-    let d = rmb_core::scene::DeCombine::default();
-    widgets::grid(ui, "combine", |ui| {
-        widgets::label(ui, "Combine", "How the two estimates are combined");
-        egui::ComboBox::from_id_salt("combine-mode").selected_text(c.mode.label()).show_ui(ui, |ui| {
-            for m in rmb_core::scene::CombineMode::ALL {
-                ui.selectable_value(&mut c.mode, m, m.label());
+        let d = rmb_core::scene::DeCombine::default();
+        widgets::grid(ui, "combine", |ui| {
+            widgets::label(ui, "Combine", "How the two estimates are combined");
+            egui::ComboBox::from_id_salt("combine-mode").selected_text(c.mode.label()).show_ui(ui, |ui| {
+                for m in rmb_core::scene::CombineMode::ALL {
+                    ui.selectable_value(&mut c.mode, m, m.label());
+                }
+            });
+            ui.end_row();
+            widgets::label(ui, "Chain 2 from", "First slot of the second chain");
+            egui::ComboBox::from_id_salt("combine-start").width(80.0).selected_text(format!("Slot {}", c.start + 1)).show_ui(ui, |ui| {
+                for i in 1..n {
+                    ui.selectable_value(&mut c.start, i, format!("Slot {}", i + 1));
+                }
+            });
+            ui.end_row();
+            c.start = c.start.clamp(1, n - 1);
+            widgets::label(ui, "Repeat from", "The second chain continues with this slot after its last one");
+            egui::ComboBox::from_id_salt("combine-repeat").width(80.0).selected_text(format!("Slot {}", c.repeat_from.max(c.start) + 1)).show_ui(ui, |ui| {
+                for i in c.start..n {
+                    ui.selectable_value(&mut c.repeat_from, i, format!("Slot {}", i + 1));
+                }
+            });
+            ui.end_row();
+            c.repeat_from = c.repeat_from.clamp(c.start, n - 1);
+            widgets::slider_u32(ui, "Iterations 2", "Maximum iterations of the second chain", &mut c.max_iterations, 1..=100, d.max_iterations);
+            if matches!(c.mode, rmb_core::scene::CombineMode::SmoothLinear | rmb_core::scene::CombineMode::Smooth | rmb_core::scene::CombineMode::Subtract) {
+                widgets::slider_log(ui, "Blend", "Distance over which the two shapes blend (world units)", &mut c.smooth, 0.0001..=2.0, d.smooth);
             }
         });
-        ui.end_row();
-        widgets::label(ui, "Chain 2 from", "First slot of the second chain");
-        egui::ComboBox::from_id_salt("combine-start").width(80.0).selected_text(format!("Slot {}", c.start + 1)).show_ui(ui, |ui| {
-            for i in 1..n {
-                ui.selectable_value(&mut c.start, i, format!("Slot {}", i + 1));
-            }
-        });
-        ui.end_row();
-        c.start = c.start.clamp(1, n - 1);
-        widgets::label(ui, "Repeat from", "The second chain continues with this slot after its last one");
-        egui::ComboBox::from_id_salt("combine-repeat").width(80.0).selected_text(format!("Slot {}", c.repeat_from.max(c.start) + 1)).show_ui(ui, |ui| {
-            for i in c.start..n {
-                ui.selectable_value(&mut c.repeat_from, i, format!("Slot {}", i + 1));
-            }
-        });
-        ui.end_row();
-        c.repeat_from = c.repeat_from.clamp(c.start, n - 1);
-        widgets::slider_u32(ui, "Iterations 2", "Maximum iterations of the second chain", &mut c.max_iterations, 1..=100, d.max_iterations);
-        if matches!(c.mode, rmb_core::scene::CombineMode::SmoothLinear | rmb_core::scene::CombineMode::Smooth | rmb_core::scene::CombineMode::Subtract) {
-            widgets::slider_log(ui, "Blend", "Distance over which the two shapes blend (world units)", &mut c.smooth, 0.0001..=2.0, d.smooth);
-        }
-    });
+    }
 }

@@ -81,56 +81,57 @@ fn title(l: &TextureLayer) -> String {
 
 /// The layer list of a material. `id` keeps the widgets of different materials apart.
 pub fn layers_editor(ui: &mut Ui, layers: &mut Vec<TextureLayer>, id: &str) {
-    widgets::section(ui, "Texture layers", false);
-    if layers.is_empty() {
-        ui.label(RichText::new("Images (or a color through a mask) on top of the gradient colors, as bumps, or as glow.").size(theme::fs(11.5)).color(theme::TEXT_MUTED));
-    }
-    let n = layers.len();
-    let mut action: Option<(usize, i32)> = None;
-    // Listed top layer first, like in image editors.
-    for i in (0..n).rev() {
-        let l = &mut layers[i];
-        ui.horizontal(|ui| {
-            let eye = if l.enabled { egui_phosphor::regular::EYE } else { egui_phosphor::regular::EYE_SLASH };
-            if widgets::icon_button(ui, eye, if l.enabled { "Hide this layer" } else { "Show this layer" }).clicked() {
-                l.enabled = !l.enabled;
+    if widgets::section(ui, "Texture layers", false).open {
+        if layers.is_empty() {
+            ui.label(RichText::new("Images (or a color through a mask) on top of the gradient colors, as bumps, or as glow.").size(theme::fs(11.5)).color(theme::TEXT_MUTED));
+        }
+        let n = layers.len();
+        let mut action: Option<(usize, i32)> = None;
+        // Listed top layer first, like in image editors.
+        for i in (0..n).rev() {
+            let l = &mut layers[i];
+            ui.horizontal(|ui| {
+                let eye = if l.enabled { egui_phosphor::regular::EYE } else { egui_phosphor::regular::EYE_SLASH };
+                if widgets::icon_button(ui, eye, if l.enabled { "Hide this layer" } else { "Show this layer" }).clicked() {
+                    l.enabled = !l.enabled;
+                }
+                let text = RichText::new(title(l)).color(if l.enabled { theme::TEXT } else { theme::TEXT_MUTED });
+                egui::CollapsingHeader::new(text).id_salt((id, "layer", i)).default_open(i + 1 == n).show(ui, |ui| layer_editor(ui, l, &format!("{id}-{i}")));
+            });
+            ui.horizontal(|ui| {
+                ui.add_space(30.0);
+                if i + 1 < n && widgets::icon_button(ui, egui_phosphor::regular::ARROW_UP, "Move this layer up (over the next one)").clicked() {
+                    action = Some((i, 1));
+                }
+                if i > 0 && widgets::icon_button(ui, egui_phosphor::regular::ARROW_DOWN, "Move this layer down").clicked() {
+                    action = Some((i, -1));
+                }
+                if widgets::icon_button(ui, egui_phosphor::regular::COPY, "Duplicate this layer").clicked() {
+                    action = Some((i, 2));
+                }
+                if widgets::icon_button(ui, icons::TRASH, "Delete this layer").clicked() {
+                    action = Some((i, 0));
+                }
+            });
+        }
+        match action {
+            Some((i, 1)) => layers.swap(i, i + 1),
+            Some((i, -1)) => layers.swap(i, i - 1),
+            Some((i, 2)) if n < MAX_LAYERS => {
+                let c = layers[i].clone();
+                layers.insert(i + 1, c);
             }
-            let text = RichText::new(title(l)).color(if l.enabled { theme::TEXT } else { theme::TEXT_MUTED });
-            egui::CollapsingHeader::new(text).id_salt((id, "layer", i)).default_open(i + 1 == n).show(ui, |ui| layer_editor(ui, l, &format!("{id}-{i}")));
+            Some((i, 0)) => {
+                layers.remove(i);
+            }
+            _ => {}
+        }
+        ui.add_enabled_ui(n < MAX_LAYERS, |ui| {
+            if ui.button(format!("{}  Add layer", icons::PLUS)).on_hover_text(format!("Add a texture layer on top (up to {MAX_LAYERS} per material)")).clicked() {
+                layers.push(TextureLayer::default());
+            }
         });
-        ui.horizontal(|ui| {
-            ui.add_space(30.0);
-            if i + 1 < n && widgets::icon_button(ui, egui_phosphor::regular::ARROW_UP, "Move this layer up (over the next one)").clicked() {
-                action = Some((i, 1));
-            }
-            if i > 0 && widgets::icon_button(ui, egui_phosphor::regular::ARROW_DOWN, "Move this layer down").clicked() {
-                action = Some((i, -1));
-            }
-            if widgets::icon_button(ui, egui_phosphor::regular::COPY, "Duplicate this layer").clicked() {
-                action = Some((i, 2));
-            }
-            if widgets::icon_button(ui, icons::TRASH, "Delete this layer").clicked() {
-                action = Some((i, 0));
-            }
-        });
     }
-    match action {
-        Some((i, 1)) => layers.swap(i, i + 1),
-        Some((i, -1)) => layers.swap(i, i - 1),
-        Some((i, 2)) if n < MAX_LAYERS => {
-            let c = layers[i].clone();
-            layers.insert(i + 1, c);
-        }
-        Some((i, 0)) => {
-            layers.remove(i);
-        }
-        _ => {}
-    }
-    ui.add_enabled_ui(n < MAX_LAYERS, |ui| {
-        if ui.button(format!("{}  Add layer", icons::PLUS)).on_hover_text(format!("Add a texture layer on top (up to {MAX_LAYERS} per material)")).clicked() {
-            layers.push(TextureLayer::default());
-        }
-    });
 }
 
 fn layer_editor(ui: &mut Ui, l: &mut TextureLayer, id: &str) {

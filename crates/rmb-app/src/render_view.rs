@@ -252,7 +252,7 @@ impl RenderView {
                     }
                 });
                 widgets::label(ui, "Samples", "Samples per pixel: more give a cleaner image");
-                ui.add(egui::DragValue::new(&mut self.samples).range(1..=4096).speed(1.0)).on_hover_text("Samples per pixel: more give a cleaner image");
+                widgets::reset_on_double_click(ui.add(egui::DragValue::new(&mut self.samples).range(1..=4096).speed(1.0)).on_hover_text("Samples per pixel: more give a cleaner image. Double click: 64"), &mut self.samples, 64);
                 if self.job.is_some() {
                     if ui.button(format!("{}  Cancel", icons::X)).on_hover_text("Stop rendering (keeps the image so far)").clicked()
                         && let Some(j) = &self.job

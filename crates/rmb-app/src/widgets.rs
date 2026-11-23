@@ -18,13 +18,49 @@ pub fn label(ui: &mut Ui, text: &str, tip: &str) {
     }
 }
 
-/// Section header with an optional reset button. Returns true if reset was clicked.
-pub fn section(ui: &mut Ui, text: &str, reset: bool) -> bool {
+/// A section header: open or closed, and whether its reset button was clicked.
+pub struct Section {
+    pub open: bool,
+    pub reset: bool,
+}
+
+/// Keys of the closed sections (kept in the preferences, see [`set_closed_sections`]).
+static CLOSED: std::sync::Mutex<std::collections::BTreeSet<String>> = std::sync::Mutex::new(std::collections::BTreeSet::new());
+
+/// Sets the closed sections (from the preferences, at start).
+pub fn set_closed_sections(keys: &[String]) {
+    if let Ok(mut c) = CLOSED.lock() {
+        *c = keys.iter().cloned().collect();
+    }
+}
+
+/// The closed sections (to keep in the preferences).
+pub fn closed_sections() -> Vec<String> {
+    CLOSED.lock().map(|c| c.iter().cloned().collect()).unwrap_or_default()
+}
+
+/// Section header, a click opens or closes the section, with an optional reset button. The
+/// caller draws the content only when `open`.
+pub fn section(ui: &mut Ui, text: &str, reset: bool) -> Section {
+    let key = format!("{:016x}", ui.id().with(("section", text)).value());
+    let mut open = CLOSED.lock().map(|c| !c.contains(&key)).unwrap_or(true);
     let mut clicked = false;
     ui.add_space(8.0);
     ui.horizontal(|ui| {
-        ui.label(RichText::new(text.to_uppercase()).size(theme::fs(10.5)).color(theme::TEXT_MUTED).strong());
-        if reset {
+        let arrow = if open { crate::icons::CARET_DOWN } else { crate::icons::CARET_RIGHT };
+        let header = RichText::new(format!("{arrow}  {}", text.to_uppercase())).size(theme::fs(10.5)).color(theme::TEXT_MUTED).strong();
+        let r = ui.add(egui::Label::new(header).sense(egui::Sense::click())).on_hover_text(if open { "Click to close this section" } else { "Click to open this section" });
+        if r.clicked() {
+            open = !open;
+            if let Ok(mut c) = CLOSED.lock() {
+                if open {
+                    c.remove(&key);
+                } else {
+                    c.insert(key.clone());
+                }
+            }
+        }
+        if reset && open {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 clicked = ui
                     .add(egui::Button::new(RichText::new(crate::icons::REFRESH).size(theme::fs(11.0))).small().frame(false))
@@ -34,7 +70,7 @@ pub fn section(ui: &mut Ui, text: &str, reset: bool) -> bool {
         }
     });
     ui.add_space(2.0);
-    clicked
+    Section { open, reset: clicked }
 }
 
 pub fn reset_on_double_click<T: Copy + PartialEq>(mut r: Response, v: &mut T, default: T) -> Response {

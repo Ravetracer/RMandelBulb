@@ -55,6 +55,7 @@ pub struct App {
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, initial: Option<PathBuf>) -> Self {
         let prefs = Prefs::load();
+        crate::widgets::set_closed_sections(&prefs.closed_sections);
         crate::icons::install(&cc.egui_ctx);
         theme::apply(&cc.egui_ctx, prefs.font_percent);
         rmb_core::formula::load_user_formulas(&crate::prefs::user_formula_dir());
@@ -447,82 +448,88 @@ impl App {
         egui::Window::new("Preferences").open(&mut open).resizable(false).collapsible(false).default_width(380.0).show(ctx, |ui| {
             let d = Prefs::default();
             let p = &mut self.prefs;
-            widgets::section(ui, "Preview", false);
-            widgets::grid(ui, "prefs-preview", |ui| {
-                widgets::slider_u32(ui, "Resolution", "Preview resolution in percent of the view size. Lower is faster.", &mut p.preview_percent, 25..=100, d.preview_percent);
-                widgets::slider_u32(ui, "While moving", "Resolution while navigating, in percent of the preview resolution", &mut p.navigate_percent, 10..=100, d.navigate_percent);
-                widgets::slider_u32(ui, "Samples", "The preview stops refining after this many samples per pixel", &mut p.preview_samples, 1..=4096, d.preview_samples);
-                widgets::checkbox(ui, "Image aspect", "Show the preview in the aspect ratio of the image size (else fill the view)", &mut p.keep_aspect);
-                widgets::checkbox(
-                    ui,
-                    "Optimize at rest",
-                    "When the view and the settings rest for a moment, compile a shader with all settings as constants in the background and continue with it: the same image, often 5-30 % faster passes. Costs a compile (about a second) after each change",
-                    &mut p.optimize_resting,
-                );
-            });
-            widgets::section(ui, "Navigation", false);
-            widgets::grid(ui, "prefs-nav", |ui| {
-                widgets::slider(ui, "Mouse speed", "", &mut p.mouse_speed, 0.1..=4.0, d.mouse_speed);
-                widgets::checkbox(ui, "Invert Y", "Invert the vertical mouse direction", &mut p.invert_y);
-            });
-            widgets::section(ui, "Interface", false);
-            widgets::grid(ui, "prefs-ui", |ui| {
-                widgets::slider_u32(ui, "Font size", "In percent", &mut p.font_percent, 50..=200, d.font_percent);
-                widgets::slider_u32(ui, "Export samples", "Default samples per pixel of exported images", &mut p.export_samples, 1..=1024, d.export_samples);
-            });
-            widgets::section(ui, "Formulas", false);
-            let dir = crate::prefs::user_formula_dir();
-            ui.label(RichText::new(format!("Your formulas (*.mbf) are loaded from {} at start.", dir.display())).size(theme::fs(11.5)).color(theme::TEXT_MUTED));
-            ui.horizontal(|ui| {
-                if ui.button("Open folder").on_hover_text("Creates the folder if needed").clicked() {
-                    let _ = std::fs::create_dir_all(&dir);
-                    let _ = open_folder(&dir);
-                }
-                if ui.button("Reload formulas").clicked() {
-                    rmb_core::formula::load_user_formulas(&dir);
-                    if let Some(d) = &p.formula_dir {
-                        rmb_core::formula::load_user_formulas(d);
+            if widgets::section(ui, "Preview", false).open {
+                widgets::grid(ui, "prefs-preview", |ui| {
+                    widgets::slider_u32(ui, "Resolution", "Preview resolution in percent of the view size. Lower is faster.", &mut p.preview_percent, 25..=100, d.preview_percent);
+                    widgets::slider_u32(ui, "While moving", "Resolution while navigating, in percent of the preview resolution", &mut p.navigate_percent, 10..=100, d.navigate_percent);
+                    widgets::slider_u32(ui, "Samples", "The preview stops refining after this many samples per pixel", &mut p.preview_samples, 1..=4096, d.preview_samples);
+                    widgets::checkbox(ui, "Image aspect", "Show the preview in the aspect ratio of the image size (else fill the view)", &mut p.keep_aspect);
+                    widgets::checkbox(
+                        ui,
+                        "Optimize at rest",
+                        "When the view and the settings rest for a moment, compile a shader with all settings as constants in the background and continue with it: the same image, often 5-30 % faster passes. Costs a compile (about a second) after each change",
+                        &mut p.optimize_resting,
+                    );
+                });
+            }
+            if widgets::section(ui, "Navigation", false).open {
+                widgets::grid(ui, "prefs-nav", |ui| {
+                    widgets::slider(ui, "Mouse speed", "", &mut p.mouse_speed, 0.1..=4.0, d.mouse_speed);
+                    widgets::checkbox(ui, "Invert Y", "Invert the vertical mouse direction", &mut p.invert_y);
+                });
+            }
+            if widgets::section(ui, "Interface", false).open {
+                widgets::grid(ui, "prefs-ui", |ui| {
+                    widgets::slider_u32(ui, "Font size", "In percent", &mut p.font_percent, 50..=200, d.font_percent);
+                    widgets::slider_u32(ui, "Export samples", "Default samples per pixel of exported images", &mut p.export_samples, 1..=1024, d.export_samples);
+                });
+            }
+            if widgets::section(ui, "Formulas", false).open {
+                let dir = crate::prefs::user_formula_dir();
+                ui.label(RichText::new(format!("Your formulas (*.mbf) are loaded from {} at start.", dir.display())).size(theme::fs(11.5)).color(theme::TEXT_MUTED));
+                ui.horizontal(|ui| {
+                    if ui.button("Open folder").on_hover_text("Creates the folder if needed").clicked() {
+                        let _ = std::fs::create_dir_all(&dir);
+                        let _ = open_folder(&dir);
                     }
-                }
-            });
-            widgets::section(ui, "Maps", false);
-            let maps_label = match &p.maps_dir {
-                Some(d) => format!("Mandelbulb3D maps (height maps and other images formulas read) from {}", d.display()),
-                None => "Mandelbulb3D maps: set the M3Maps folder of Mandelbulb3D for formulas that read maps (also RMB_MAPS_DIR or a maps folder next to the program).".to_string(),
-            };
-            ui.label(RichText::new(maps_label).size(theme::fs(11.5)).color(theme::TEXT_MUTED));
-            ui.horizontal(|ui| {
-                if ui.button("Choose folder…").on_hover_text("Mandelbulb3D's M3Maps folder (files named by their number, e.g. 10.jpg)").clicked()
-                    && let Some(d) = rfd::FileDialog::new().pick_folder()
-                {
-                    p.maps_dir = Some(d);
-                    rmb_core::maps::set_dirs(p.maps_dir.iter().cloned().collect());
-                }
-                if p.maps_dir.is_some() && ui.button("Clear").on_hover_text("Use only the default folders").clicked() {
-                    p.maps_dir = None;
-                    rmb_core::maps::set_dirs(Vec::new());
-                }
-            });
-            widgets::section(ui, "Movies", false);
-            let program = rmb_core::video::ffmpeg_program(p.ffmpeg.as_deref());
-            let found = rmb_core::video::ffmpeg_available(&program);
-            let ff_label = match (&p.ffmpeg, found) {
-                (Some(f), true) => format!("ffmpeg: {}", f.display()),
-                (Some(f), false) => format!("ffmpeg not working: {}", f.display()),
-                (None, true) => "ffmpeg found on the search path: animations can be saved as movies.".to_string(),
-                (None, false) => "ffmpeg not found: animations are saved as PNG images. Install ffmpeg or choose the program.".to_string(),
-            };
-            ui.label(RichText::new(ff_label).size(theme::fs(11.5)).color(if found { theme::TEXT_MUTED } else { theme::WARN }));
-            ui.horizontal(|ui| {
-                if ui.button("Choose ffmpeg…").on_hover_text("The ffmpeg program that writes movie files (MP4, MOV, WebM, GIF)").clicked()
-                    && let Some(f) = rfd::FileDialog::new().pick_file()
-                {
-                    p.ffmpeg = Some(f);
-                }
-                if p.ffmpeg.is_some() && ui.button("Clear").on_hover_text("Use ffmpeg from the search path").clicked() {
-                    p.ffmpeg = None;
-                }
-            });
+                    if ui.button("Reload formulas").clicked() {
+                        rmb_core::formula::load_user_formulas(&dir);
+                        if let Some(d) = &p.formula_dir {
+                            rmb_core::formula::load_user_formulas(d);
+                        }
+                    }
+                });
+            }
+            if widgets::section(ui, "Maps", false).open {
+                let maps_label = match &p.maps_dir {
+                    Some(d) => format!("Mandelbulb3D maps (height maps and other images formulas read) from {}", d.display()),
+                    None => "Mandelbulb3D maps: set the M3Maps folder of Mandelbulb3D for formulas that read maps (also RMB_MAPS_DIR or a maps folder next to the program).".to_string(),
+                };
+                ui.label(RichText::new(maps_label).size(theme::fs(11.5)).color(theme::TEXT_MUTED));
+                ui.horizontal(|ui| {
+                    if ui.button("Choose folder…").on_hover_text("Mandelbulb3D's M3Maps folder (files named by their number, e.g. 10.jpg)").clicked()
+                        && let Some(d) = rfd::FileDialog::new().pick_folder()
+                    {
+                        p.maps_dir = Some(d);
+                        rmb_core::maps::set_dirs(p.maps_dir.iter().cloned().collect());
+                    }
+                    if p.maps_dir.is_some() && ui.button("Clear").on_hover_text("Use only the default folders").clicked() {
+                        p.maps_dir = None;
+                        rmb_core::maps::set_dirs(Vec::new());
+                    }
+                });
+            }
+            if widgets::section(ui, "Movies", false).open {
+                let program = rmb_core::video::ffmpeg_program(p.ffmpeg.as_deref());
+                let found = rmb_core::video::ffmpeg_available(&program);
+                let ff_label = match (&p.ffmpeg, found) {
+                    (Some(f), true) => format!("ffmpeg: {}", f.display()),
+                    (Some(f), false) => format!("ffmpeg not working: {}", f.display()),
+                    (None, true) => "ffmpeg found on the search path: animations can be saved as movies.".to_string(),
+                    (None, false) => "ffmpeg not found: animations are saved as PNG images. Install ffmpeg or choose the program.".to_string(),
+                };
+                ui.label(RichText::new(ff_label).size(theme::fs(11.5)).color(if found { theme::TEXT_MUTED } else { theme::WARN }));
+                ui.horizontal(|ui| {
+                    if ui.button("Choose ffmpeg…").on_hover_text("The ffmpeg program that writes movie files (MP4, MOV, WebM, GIF)").clicked()
+                        && let Some(f) = rfd::FileDialog::new().pick_file()
+                    {
+                        p.ffmpeg = Some(f);
+                    }
+                    if p.ffmpeg.is_some() && ui.button("Clear").on_hover_text("Use ffmpeg from the search path").clicked() {
+                        p.ffmpeg = None;
+                    }
+                });
+            }
         });
         if self.prefs != before {
             if self.prefs.font_percent != before.font_percent {
@@ -582,6 +589,12 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.close_dialog(&ctx);
+        // Sections opened or closed since the last frame: keep them in the preferences.
+        let closed = crate::widgets::closed_sections();
+        if closed != self.prefs.closed_sections {
+            self.prefs.closed_sections = closed;
+            self.save_prefs();
+        }
 
         // Files dropped onto the window
         let dropped: Vec<PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()).collect());

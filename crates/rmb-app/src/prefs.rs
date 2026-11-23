@@ -32,6 +32,8 @@ pub struct Prefs {
     pub maps_dir: Option<PathBuf>,
     /// The ffmpeg program for movies (None: `ffmpeg` on the search path).
     pub ffmpeg: Option<PathBuf>,
+    /// Settings sections the user closed (`widgets::section` keys).
+    pub closed_sections: Vec<String>,
 }
 
 impl Default for Prefs {
@@ -51,6 +53,7 @@ impl Default for Prefs {
             invert_y: false,
             maps_dir: None,
             ffmpeg: None,
+            closed_sections: Vec::new(),
         }
     }
 }
