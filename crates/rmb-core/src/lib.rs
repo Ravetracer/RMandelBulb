@@ -12,6 +12,7 @@ pub mod gradient;
 pub mod io;
 pub mod maps;
 pub mod mesh;
+pub mod palette;
 pub mod math;
 pub mod render;
 pub mod scene;

@@ -98,7 +98,9 @@ pub fn color(ui: &mut Ui, text: &str, tip: &str, c: &mut [f32; 3]) -> Response {
 pub fn color_button(ui: &mut Ui, c: &mut [f32; 3]) -> Response {
     let mut rgb = *c;
     let r = egui::widgets::color_picker::color_edit_button_rgb(ui, &mut rgb);
-    if rgb != *c {
+    // The picker converts through HSV every frame, which changes the last bits: only real
+    // edits count (else showing a color would mark the scene as modified).
+    if (0..3).any(|k| (rgb[k] - c[k]).abs() > 1e-5) {
         *c = rgb;
     }
     r
@@ -136,11 +138,6 @@ pub fn segmented<T: PartialEq + Copy>(ui: &mut Ui, value: &mut T, options: &[(T,
 
 pub fn icon_button(ui: &mut Ui, icon: &str, tip: &str) -> Response {
     ui.add(egui::Button::new(RichText::new(icon).size(theme::fs(15.0))).frame(false).min_size(vec2(26.0, 26.0))).on_hover_text(tip)
-}
-
-/// A gradient preview strip.
-pub fn gradient_strip(ui: &mut Ui, stops: &[rmb_core::scene::ColorStop], height: f32) -> Response {
-    gradient_strip_sized(ui, stops, ui.available_width(), height)
 }
 
 /// A gradient strip of a fixed width (in grids, where the available width is unbounded).

@@ -121,6 +121,15 @@
         directly; only BSDF sampling finds them (next-event estimation covers the lights)
   - [x] ~~Adaptive sampling~~: measured and dropped, see Performance
 
+- [x] Random palette generator (harmonies incl. "dark + neon", number of colors, hue,
+      saturation and lightness ranges, order, hardness, seamless, emissive share; OKLCh colors,
+      `palette.rs`) and a better palette editor: draggable stops on the strip (click adds,
+      right-click removes), saved palettes, tools (reverse, shift, mirror, repeat, space evenly,
+      sort, invert, hard steps / smooth), adjustments (hue, saturation, lightness, contrast,
+      hardness)
+- [ ] Volumetric haze shaped by the fractal (like Mandelbulber's iteration fog)
+- [ ] Post effects: chromatic aberration, color grading
+
 ## Performance
 
 A 1920 × 1080 GPU render (64 samples, the CLI default) took about 2 minutes on the RTX A2000

@@ -511,52 +511,9 @@ fn color(ui: &mut Ui, scene: &mut Scene) {
     }
 }
 
-/// Gradient strip, presets and the color stops (surface, highlight, transparency with `glass`,
-/// emission, position).
+/// Gradient strip, presets, generator, tools and the color stops (see `palette_editor`).
 pub fn gradient_editor(ui: &mut Ui, gradient: &mut Vec<ColorStop>, glass: bool) {
-    widgets::gradient_strip(ui, gradient, 22.0);
-    ui.add_space(4.0);
-    ui.horizontal_wrapped(|ui| {
-        for name in rmb_core::gradient::preset_names() {
-            if ui.small_button(name).on_hover_text("Replace the colors with this gradient").clicked()
-                && let Some(g) = rmb_core::gradient::preset(name)
-            {
-                *gradient = g;
-            }
-        }
-    });
-    ui.add_space(4.0);
-    let mut remove = None;
-    let n = gradient.len();
-    for (i, s) in gradient.iter_mut().enumerate() {
-        ui.horizontal(|ui| {
-            widgets::color_button(ui, &mut s.color).on_hover_text("Surface color");
-            widgets::color_button(ui, &mut s.specular).on_hover_text("Highlight color: multiplies the specular light here");
-            if glass {
-                ui.add(egui::DragValue::new(&mut s.transparency).range(0.0..=1.0).speed(0.01).max_decimals(2))
-                    .on_hover_text("Transparency of the glass at this color (0 = opaque, 1 = clear)");
-                ui.spacing_mut().slider_width = (ui.spacing().slider_width - 50.0).max(60.0);
-            }
-            let e = ui
-                .add(egui::DragValue::new(&mut s.emission).range(0.0..=100.0).speed(0.02).max_decimals(2).prefix(format!("{} ", egui_phosphor::regular::SPARKLE)))
-                .on_hover_text("Emission: this color shines by itself, lights its surroundings and glows (0 = off; settings under Mapping › Emissive colors)");
-            if s.emission > 0.0 {
-                e.highlight();
-            }
-            ui.spacing_mut().slider_width = (ui.spacing().slider_width - 55.0).max(50.0);
-            ui.add(egui::Slider::new(&mut s.pos, 0.0..=1.0).max_decimals(3)).on_hover_text("Position of this color on the gradient");
-            if n > 2 && widgets::icon_button(ui, icons::X, "Remove this color").clicked() {
-                remove = Some(i);
-            }
-        });
-    }
-    if let Some(i) = remove {
-        gradient.remove(i);
-    }
-    if ui.button(format!("{}  Add color", icons::PLUS)).on_hover_text("Add a color in the middle of the gradient").clicked() {
-        let c = rmb_core::gradient::sample(gradient, 0.5);
-        gradient.push(ColorStop::new(0.5, c));
-    }
+    crate::palette_editor::gradient_editor(ui, gradient, glass);
 }
 
 /// The glow bands of a gradient: a strip of the gradient with the bands (drag a band's marker
