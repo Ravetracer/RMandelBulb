@@ -231,7 +231,14 @@ impl Viewport {
     pub fn show(&mut self, ui: &mut Ui, frame: &eframe::Frame, doc: &mut Document, prefs: &Prefs) {
         let canvas = ui.available_rect_before_wrap();
         ui.painter().rect_filled(canvas, 0.0, theme::CANVAS);
-        let rect = Self::image_rect(canvas.shrink(if prefs.keep_aspect { 12.0 } else { 0.0 }), &doc.scene, prefs);
+        // egui lays out the first frames on a placeholder screen of 10000 x 10000 points; a
+        // render target that large does not fit into the GPU memory. Wait for the real window.
+        let window = ui.ctx().input(|i| i.viewport().inner_rect.map(|r| r.size()));
+        if window.is_none_or(|w| canvas.width() > w.x + 1.0 || canvas.height() > w.y + 1.0) {
+            ui.ctx().request_repaint();
+            return;
+        }
+        let rect =Self::image_rect(canvas.shrink(if prefs.keep_aspect { 12.0 } else { 0.0 }), &doc.scene, prefs);
         let resp = ui.interact(rect, ui.id().with("viewport"), Sense::click_and_drag());
         let ppp = ui.ctx().pixels_per_point();
         let full = ((rect.width() * ppp * prefs.preview_percent as f32 / 100.0).round().max(16.0) as u32, (rect.height() * ppp * prefs.preview_percent as f32 / 100.0).round().max(16.0) as u32);
