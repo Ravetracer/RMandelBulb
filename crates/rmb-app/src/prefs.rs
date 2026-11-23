@@ -18,6 +18,8 @@ pub struct Prefs {
     pub preview_samples: u32,
     /// Show the image in the scene's aspect ratio (else fill the canvas).
     pub keep_aspect: bool,
+    /// Compile a shader with all settings baked in when the preview rests (faster passes).
+    pub optimize_resting: bool,
     pub export_samples: u32,
     pub last_dir: Option<PathBuf>,
     pub recent: Vec<PathBuf>,
@@ -40,6 +42,7 @@ impl Default for Prefs {
             navigate_percent: 50,
             preview_samples: 256,
             keep_aspect: true,
+            optimize_resting: true,
             export_samples: 128,
             last_dir: None,
             recent: Vec::new(),

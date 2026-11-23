@@ -163,8 +163,15 @@ Curvichrome 1052 -> 254 ms, AboxShapes-Misty 44 -> 17 ms, temple 71 -> 35 ms, Ho
       window) write the formula parameters into their shader as constants, animations the ones
       that stay the same in all frames (`GpuRenderer::set_baking`). They compile their own
       shader anyway; another 8-38 % (Hydra 173 -> 108 ms, AboxShapes-Misty 16 -> 14 ms)
-  - [ ] Possible: the preview could switch to a baked shader once the view rests (compile
-        1-7 s in the background); iteration counts and feature flags as constants
+  - [x] Uniform settings as constants too (feature switches, iteration counts, light count,
+        colors; `codegen::bake_uniforms`): switched-off features drop out of the shader.
+        Passes another 1-28 % faster (640 x 360: Curvichrome 282 -> 204 ms, Housing problem
+        910 -> 733 ms, AboxShapes-Misty 19.3 -> 14.5 ms, Hydra and temple within noise), and
+        the shaders compile 2-5x faster (Housing problem 7.9 -> 1.5 s). Animations bake the
+        settings that stay the same in all frames
+  - [x] The preview switches to such a shader when the view and settings rest for 0.7 s
+        (compiled in the background, continues the accumulation; Preferences › Optimize at
+        rest)
 - [x] Animation pipelining: encoding and writing of frame N on a second thread while frame N+1
       renders (PNG sequences about 17 % faster at 1280 x 720, 16 samples; movies unchanged, as
       ffmpeg already encodes in its own process). The denoiser stays on the render thread.

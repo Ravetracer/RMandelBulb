@@ -57,9 +57,13 @@ cargo clippy -j 8 --workspace --all-targets
   surface: the hit refinement, the normal, the first steps of AO and shadow rays. The binary
   refinement stops at steps below threshold/128 (`REFINE_TOLERANCE`; `refine_steps` is the
   maximum). AO, emission and scatter rays skip the refinement (`march_rough`).
-- Renders without a window bake the formula parameters into the shader as constants
-  (`GpuRenderer::set_baking`, `codegen::march_shader_baked`); the preview keeps reading them
-  from `prm`, so editing never recompiles.
+- Renders without a window bake the formula parameters and the uniform settings into the
+  shader as constants (`GpuRenderer::set_baking`, `set_uniform_baking`,
+  `codegen::march_shader_baked`, `codegen::bake_uniforms`: reads like `u.fog.x` with constant
+  indexes; the sample index, band rows and `deep_hi.w` (`dd_one`) stay run-time values). The
+  preview keeps reading them from the buffers, so editing never recompiles; once the view rests
+  it compiles a fully baked shader in the background and continues with it
+  (`set_rest_baking`).
 - Data read on every distance estimate (formula parameters `prm`, composed objects `objs`)
   lives in uniform buffers: all threads read the same values, which the constant cache serves
   far faster than a storage buffer (1.4-1.8x on whole passes). Large or per-pixel data (LUT,

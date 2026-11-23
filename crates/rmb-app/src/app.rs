@@ -453,6 +453,12 @@ impl App {
                 widgets::slider_u32(ui, "While moving", "Resolution while navigating, in percent of the preview resolution", &mut p.navigate_percent, 10..=100, d.navigate_percent);
                 widgets::slider_u32(ui, "Samples", "The preview stops refining after this many samples per pixel", &mut p.preview_samples, 1..=4096, d.preview_samples);
                 widgets::checkbox(ui, "Image aspect", "Show the preview in the aspect ratio of the image size (else fill the view)", &mut p.keep_aspect);
+                widgets::checkbox(
+                    ui,
+                    "Optimize at rest",
+                    "When the view and the settings rest for a moment, compile a shader with all settings as constants in the background and continue with it: the same image, often 5-30 % faster passes. Costs a compile (about a second) after each change",
+                    &mut p.optimize_resting,
+                );
             });
             widgets::section(ui, "Navigation", false);
             widgets::grid(ui, "prefs-nav", |ui| {

@@ -30,6 +30,8 @@ pub enum NavMode {
 
 /// How long after the last navigation input the preview stays in the fast mode.
 const SETTLE: Duration = Duration::from_millis(250);
+/// How long the view and settings rest before the preview compiles a shader with everything baked in.
+const REST_DELAY: Duration = Duration::from_millis(700);
 
 struct CpuJob {
     scene: Scene,
@@ -428,6 +430,7 @@ impl Viewport {
             self.pass_start = Instant::now();
             self.converged_after = None;
         }
+        gpu.set_rest_baking(prefs.optimize_resting.then_some(REST_DELAY));
         gpu.set_scene(scene, size.0, size.1, fast);
         let max = if self.paused { 0 } else if fast { 1 } else { prefs.preview_samples.max(1) };
         let budget = if fast { Duration::from_millis(40) } else { Duration::from_millis(28) };

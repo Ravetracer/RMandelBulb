@@ -103,6 +103,126 @@ fn bake_constants(src: &str, baked: &[Option<f64>]) -> String {
     out
 }
 
+/// A field of march.wgsl's uniform struct `U`: offset in 4-byte words, u32 (else f32), array
+/// length (`None`: a single `vec4`). Arrays of structs (the lights) are left out.
+struct UField {
+    name: String,
+    word: usize,
+    uint: bool,
+    array: Option<usize>,
+}
+
+/// The layout of `struct U` in march.wgsl (every member is a `vec4` or an array of 16-byte
+/// aligned items, so the offsets are the plain sums of the sizes).
+fn uniform_layout() -> (Vec<UField>, usize) {
+    let body = TEMPLATE.split_once("struct U {").and_then(|(_, r)| r.split_once("\n}")).map(|(b, _)| b).unwrap_or("");
+    let light_words = TEMPLATE.split_once("struct GLight {").and_then(|(_, r)| r.split_once("\n}")).map_or(0, |(b, _)| b.matches("vec4<").count() * 4);
+    let mut fields = Vec::new();
+    let mut word = 0;
+    for line in body.lines() {
+        let line = line.split("//").next().unwrap_or("").trim();
+        let Some((name, ty)) = line.split_once(':') else { continue };
+        let ty = ty.trim().trim_end_matches(',');
+        let (item, count) = match ty.strip_prefix("array<") {
+            Some(a) => {
+                let (item, n) = a.trim_end_matches('>').rsplit_once(',').unwrap_or((a, "1"));
+                (item.trim(), n.trim().parse::<usize>().ok())
+            }
+            None => (ty, None),
+        };
+        let words = if item == "GLight" { light_words } else { 4 };
+        if item != "GLight" {
+            fields.push(UField { name: name.trim().to_string(), word, uint: item.contains("u32"), array: count });
+        }
+        word += words * count.unwrap_or(1);
+    }
+    (fields, word)
+}
+
+/// Words of `U` that change with every band or pass and are never baked: the sample index and
+/// the band rows; also `deep_hi.w`, the `dd_one` that must stay a run-time value (df64.wgsl).
+pub fn uniform_words_never_baked() -> Vec<usize> {
+    let (fields, _) = uniform_layout();
+    let at = |n: &str| fields.iter().find(|f| f.name == n).map_or(usize::MAX, |f| f.word);
+    vec![at("size") + 2, at("band"), at("band") + 1, at("deep_hi") + 3]
+}
+
+/// Replaces the reads of uniform fields with constant indexes (`u.fog.x`, `u.glow2.xyz`,
+/// `u.bg_rot[1].w`, `u.julia`) by the values in `words` (the bytes of `U` as 4-byte words) where
+/// `bake[word]` is true (beyond the slice: true) for all words read. Feature switches, counts
+/// and settings then become constants the compiler folds; reads with run-time indexes stay.
+pub fn bake_uniforms(src: &str, words: &[u32], bake: &[bool]) -> String {
+    let (fields, total) = uniform_layout();
+    let never = uniform_words_never_baked();
+    let ok = |w: usize| w < total && w < words.len() && !never.contains(&w) && bake.get(w).copied().unwrap_or(true);
+    let lit = |w: usize, uint: bool| -> Option<String> {
+        if uint {
+            return Some(format!("{}u", words[w]));
+        }
+        let x = f32::from_bits(words[w]);
+        x.is_finite().then(|| format!("{x:?}"))
+    };
+    let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let mut out = String::with_capacity(src.len());
+    let mut i = 0;
+    let bytes = src.as_bytes();
+    while i < src.len() {
+        let start_ok = src[i..].starts_with("u.") && (i == 0 || !(ident(bytes[i - 1] as char) || bytes[i - 1] == b'.'));
+        if start_ok && let Some((text, len)) = bake_read(&src[i..], &fields, &ok, &lit, ident) {
+            out.push_str(&text);
+            i += len;
+            continue;
+        }
+        let ch = src[i..].chars().next().unwrap_or(' ');
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
+/// One uniform read at the start of `s` (`u.` …): the literal and the length it replaces.
+fn bake_read(s: &str, fields: &[UField], ok: &impl Fn(usize) -> bool, lit: &impl Fn(usize, bool) -> Option<String>, ident: impl Fn(char) -> bool) -> Option<(String, usize)> {
+    let rest = &s[2..];
+    let name_len = rest.find(|c: char| !ident(c)).unwrap_or(rest.len());
+    let f = fields.iter().find(|f| f.name == rest[..name_len])?;
+    let mut len = 2 + name_len;
+    let mut base = f.word;
+    if let Some(n) = f.array {
+        // Only constant indexes: `[2]` or `[2u]`.
+        let r = s[len..].strip_prefix('[')?;
+        let (idx, _) = r.split_once(']')?;
+        let k: usize = idx.trim_end_matches('u').parse().ok()?;
+        if k >= n {
+            return None;
+        }
+        base += 4 * k;
+        len += idx.len() + 2;
+    }
+    // Swizzle (none: the whole vec4).
+    let mut comps: Vec<usize> = vec![0, 1, 2, 3];
+    if let Some(r) = s[len..].strip_prefix('.') {
+        let n = r.find(|c: char| !ident(c)).unwrap_or(r.len());
+        let sw = &r[..n];
+        if sw.is_empty() || sw.len() > 4 || !sw.chars().all(|c| "xyzw".contains(c)) {
+            return None;
+        }
+        comps = sw.chars().map(|c| "xyzw".find(c).unwrap_or(0)).collect();
+        len += 1 + n;
+    }
+    // The next character must not continue an index or a member access.
+    if s[len..].starts_with('[') {
+        return None;
+    }
+    let vals: Option<Vec<String>> = comps.iter().map(|&c| ok(base + c).then(|| lit(base + c, f.uint)).flatten()).collect();
+    let vals = vals?;
+    let text = if vals.len() == 1 {
+        format!("({})", vals[0])
+    } else {
+        format!("vec{}<{}>({})", vals.len(), if f.uint { "u32" } else { "f32" }, vals.join(", "))
+    };
+    Some((text, len))
+}
+
 /// The composed objects (mirrors fractal.rs Evaluator::orbit): a chain per fractal object and
 /// `compose_objects`, which folds them into the estimate in order.
 fn objects(prog: &Program) -> String {
@@ -511,7 +631,36 @@ fn chain_de_K(p: vec3<f32>, h: f32) -> Orbit {
 
 #[cfg(test)]
 mod tests {
-    use super::bake_constants;
+    use super::{bake_constants, bake_uniforms, uniform_layout};
+
+    #[test]
+    fn uniform_layout_matches_the_struct() {
+        let (fields, words) = uniform_layout();
+        assert_eq!(words * 4, crate::renderer::uniforms_size());
+        assert_eq!(fields[0].name, "cam_pos");
+        assert!(fields.iter().any(|f| f.name == "slots" && f.uint && f.array == Some(8)));
+    }
+
+    #[test]
+    fn bakes_uniform_reads_with_constant_indexes() {
+        let (fields, words) = uniform_layout();
+        let mut w = vec![0u32; words];
+        let at = |n: &str| fields.iter().find(|f| f.name == n).unwrap().word;
+        w[at("fog") + 3] = 0.5f32.to_bits();
+        w[at("glow2")] = 1.0f32.to_bits();
+        w[at("glow2") + 1] = 2.0f32.to_bits();
+        w[at("glow2") + 2] = 3.0f32.to_bits();
+        w[at("bg_rot") + 4 + 3] = 7.0f32.to_bits();
+        w[at("band") + 2] = 400;
+        w[at("band")] = 9;
+        let mut bake = vec![true; words];
+        bake[at("fog") + 2] = false;
+        let src = "a = u.fog.w; b = u.glow2.xyz; c = u.bg_rot[1].w; d = u.band.z; e = u.band.x; f = u.lights[i].dir; g = mu.fog.w; h = u.fog.xyz; k = u.slots[slot + 2u].x;";
+        assert_eq!(
+            bake_uniforms(src, &w, &bake),
+            "a = (0.5); b = vec3<f32>(1.0, 2.0, 3.0); c = (7.0); d = (400u); e = u.band.x; f = u.lights[i].dir; g = mu.fog.w; h = u.fog.xyz; k = u.slots[slot + 2u].x;"
+        );
+    }
 
     #[test]
     fn bakes_only_the_given_finite_parameters() {

@@ -1,6 +1,7 @@
 //! Times GPU render passes with features switched off one at a time, to see where the pass
-//! time goes: `bench [scene…] [-W width] [-H height] [-s samples] [--bake]` (default scene
-//! without arguments; `--bake`: formula parameters as shader constants, as final renders do).
+//! time goes: `bench [scene…] [-W width] [-H height] [-s samples] [--bake] [--bake-uniforms] [--full]`
+//! (default scene without arguments; `--bake`: formula parameters as shader constants, as final
+//! renders do; `--bake-uniforms`: the uniform settings too; `--full`: no feature toggles).
 use std::time::{Duration, Instant};
 
 use rmb_core::scene::AoMode;
@@ -11,7 +12,7 @@ type Variant = (&'static str, Box<dyn Fn(&mut Scene)>);
 
 fn main() {
     let mut scenes = Vec::new();
-    let (mut w, mut h, mut samples, mut bake) = (1920u32, 1080u32, 8u32, false);
+    let (mut w, mut h, mut samples, mut bake, mut bake_u, mut full_only) = (1920u32, 1080u32, 8u32, false, false, false);
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -19,6 +20,8 @@ fn main() {
             "-H" => h = it.next().and_then(|v| v.parse().ok()).expect("height"),
             "-s" => samples = it.next().and_then(|v| v.parse().ok()).expect("samples"),
             "--bake" => bake = true,
+            "--bake-uniforms" => bake_u = true,
+            "--full" => full_only = true,
             p => scenes.push((p.to_string(), rmb_core::io::load(std::path::Path::new(p)).expect("load"))),
         }
     }
@@ -41,13 +44,16 @@ fn main() {
             ("no normal smoothing", Box::new(|s| s.march.smooth_normals = 0)),
         ];
         let mut base = 0.0;
-        for (label, change) in &variants {
+        for (label, change) in variants.iter().take(if full_only { 1 } else { usize::MAX }) {
             let mut s = scene.clone();
             change(&mut s);
             let ctx = GpuContext::new_headless().expect("gpu");
             let mut r = GpuRenderer::new(ctx);
             if bake {
                 r.set_baking(Some(Vec::new()));
+            }
+            if bake_u {
+                r.set_uniform_baking(Some(Vec::new()));
             }
             let t = Instant::now();
             r.set_scene(&s, w, h, false);

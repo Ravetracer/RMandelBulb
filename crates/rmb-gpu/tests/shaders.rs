@@ -999,3 +999,71 @@ fn gpu_matches_cpu_with_a_3d_model() {
     assert!(changed > 200, "normal map and emission change only {changed} channels");
     parity(scene);
 }
+
+/// Renders with the formula parameters and the uniform settings baked into the shader (final
+/// renders) look the same as the preview's, which reads them from buffers.
+#[test]
+fn baked_settings_render_like_the_preview() {
+    let Ok(ctx) = rmb_gpu::GpuContext::new_headless() else {
+        eprintln!("no GPU, skipped");
+        return;
+    };
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../mb3d/M3Parameter");
+    let names = ["AboxShapes-Misty", "Dainbramage - Hydra", "6 AM - Torii temple", "MarkJayBee - Curvichrome", "toricaleggs"];
+    let (w, h) = (96, 64);
+    for name in names {
+        let path = dir.join(format!("{name}.m3p"));
+        let Ok(scene) = rmb_core::io::load(&path) else {
+            eprintln!("{name}: not found, skipped");
+            continue;
+        };
+        let mut r = rmb_gpu::GpuRenderer::new(ctx.clone());
+        r.set_scene(&scene, w, h, false);
+        r.wait_for_pipeline().expect("pipeline");
+        while r.samples() < 1 {
+            r.work(std::time::Duration::from_secs(10), 1);
+        }
+        let preview = r.read_rgba8().expect("read back");
+        let baked = rmb_gpu::render_blocking(ctx.clone(), &scene, w, h, 1, |_| true).expect("gpu render");
+        let diff: Vec<i32> = preview.iter().zip(&baked).map(|(a, b)| (*a as i32 - *b as i32).abs()).collect();
+        let mean = diff.iter().sum::<i32>() as f64 / diff.len() as f64;
+        let big = diff.iter().filter(|d| **d > 40).count();
+        eprintln!("{name}: mean difference {mean:.3}, {big} channels off by more than 40");
+        assert!(mean < 1.0 && big * 200 < diff.len(), "{name}: mean {mean}, {big} far off");
+    }
+}
+
+/// A resting preview switches to the baked shader and keeps accumulating the same image.
+#[test]
+fn resting_preview_continues_with_the_baked_shader() {
+    let Ok(ctx) = rmb_gpu::GpuContext::new_headless() else {
+        eprintln!("no GPU, skipped");
+        return;
+    };
+    let scene = Scene::default();
+    let (w, h) = (96, 64);
+    // With the baked shader taking over (rest) or the buffer shader only, `min` samples at least.
+    let render = |rest: bool, min: u32| {
+        let mut r = rmb_gpu::GpuRenderer::new(ctx.clone());
+        r.set_rest_baking(rest.then_some(std::time::Duration::ZERO));
+        r.set_scene(&scene, w, h, false);
+        r.wait_for_pipeline().expect("pipeline");
+        let start = std::time::Instant::now();
+        // Passes until the baked shader took over (or a timeout), then 4 more.
+        while rest && !r.rest_baked() && start.elapsed().as_secs() < 60 {
+            r.work(std::time::Duration::from_millis(5), u32::MAX);
+        }
+        assert_eq!(r.rest_baked(), rest, "baked shader in use");
+        let target = (r.samples() + 4).max(min);
+        while r.samples() < target {
+            r.work(std::time::Duration::from_secs(10), target);
+        }
+        (r.read_rgba8().expect("read back"), r.samples())
+    };
+    let (baked, n) = render(true, 0);
+    assert!(n >= 5, "accumulation went on ({n} samples)");
+    let (plain, _) = render(false, n);
+    let mean = baked.iter().zip(&plain).map(|(a, b)| (*a as i32 - *b as i32).abs()).sum::<i32>() as f64 / baked.len() as f64;
+    eprintln!("mean difference {mean:.3} after {n} samples");
+    assert!(mean < 1.0, "mean difference {mean}");
+}

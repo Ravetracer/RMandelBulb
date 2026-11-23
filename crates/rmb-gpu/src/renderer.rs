@@ -72,6 +72,11 @@ struct GLight {
     shape2: [f32; 4],
 }
 
+/// Size of march.wgsl's uniform struct `U` in bytes.
+pub fn uniforms_size() -> usize {
+    std::mem::size_of::<Uniforms>()
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct Uniforms {
@@ -667,6 +672,40 @@ fn post_uniforms(scene: &Scene, w: u32, h: u32) -> PostUniforms {
     }
 }
 
+/// The program the GPU renders for `scene` (`prog` = `Program::for_scene(scene)`), and in deep
+/// zoom the scene shifted relative to the camera that it renders instead.
+fn render_program(scene: &Scene, mut prog: Program, deep: bool) -> (Option<Scene>, Program) {
+    let mut shifted = None;
+    if deep {
+        // Deep zoom: everything relative to the camera, the fractal in double-float.
+        let r = scene.camera.position;
+        let s = rmb_core::render::shifted_scene(scene, r);
+        prog = Program::for_scene(&s);
+        // A placed main fractal iterates from the camera in its own coordinates; the shader then
+        // only turns and scales the local position (uniforms: no offset).
+        prog.deep = Some(prog.main_transform.map_or(r, |t| t.local(rmb_core::V3::ZERO)).to_array());
+        shifted = Some(s);
+    }
+    let s = shifted.as_ref().unwrap_or(scene);
+    // Path tracing needs the bounce loop too.
+    prog.reflections = s.material.reflection > 0.0 || s.lighting.render_mode == rmb_core::scene::RenderMode::PathTraced;
+    (shifted, prog)
+}
+
+/// The uniforms of a final render of `scene` as 4-byte words (`prog` = `Program::for_scene`).
+fn render_uniform_words(scene: &Scene, prog: Program, width: u32, height: u32) -> Vec<u32> {
+    use rmb_core::scene::Precision;
+    let deep = match scene.march.precision {
+        Precision::Single => false,
+        Precision::Double => true,
+        Precision::Auto => rmb_core::render::zoom_ratio(scene, &prog, height) < rmb_core::render::DEEP_ZOOM_RATIO,
+    };
+    let (shifted, prog) = render_program(scene, prog, deep);
+    let shade = rmb_core::render::shading_scene(shifted.as_ref().unwrap_or(scene));
+    let un = uniforms(&shade, &prog, width, height, false);
+    bytemuck::cast_slice(bytemuck::bytes_of(&un)).to_vec()
+}
+
 fn storage_buffer(device: &wgpu::Device, label: &str, size: u64) -> wgpu::Buffer {
     device.create_buffer(&wgpu::BufferDescriptor {
         label: Some(label),
@@ -752,12 +791,26 @@ pub struct GpuRenderer {
     prm_error: Option<String>,
     /// Which formula parameters go into the shader as constants (see `set_baking`).
     bake: Option<Vec<bool>>,
+    /// Which words of the uniforms go into the shader as constants (see `set_uniform_baking`).
+    bake_uniforms: Option<Vec<bool>>,
     /// The scene renders in double precision (deep zoom).
     deep: bool,
     /// Validation errors outside error scopes (instead of the default panic).
     device_error: std::sync::Arc<std::sync::Mutex<Option<String>>>,
     compiling: bool,
     signature: String,
+    /// Resting view (see `set_rest_baking`): after how long a shader with everything baked is
+    /// compiled in the background.
+    rest_delay: Option<Duration>,
+    /// When the scene last changed.
+    key_time: Instant,
+    /// The program of the current scene (for the resting view's shader).
+    prog: Option<Program>,
+    /// The resting view's shader: its signature, the one wanted for the current scene (`None`:
+    /// not requested yet), and the compile in flight.
+    rest: Option<(String, wgpu::ComputePipeline)>,
+    rest_wanted: Option<String>,
+    rest_pending: Option<(String, mpsc::Receiver<Compiled>)>,
 }
 
 const CACHE_SIZE: usize = 8;
@@ -862,10 +915,17 @@ impl GpuRenderer {
             last_error: None,
             prm_error: None,
             bake: None,
+            bake_uniforms: None,
             deep: false,
             device_error,
             compiling: false,
             signature: String::new(),
+            rest_delay: None,
+            key_time: Instant::now(),
+            prog: None,
+            rest: None,
+            rest_wanted: None,
+            rest_pending: None,
             ctx,
         }
     }
@@ -944,22 +1004,10 @@ impl GpuRenderer {
         if self.key.as_ref() == Some(&key) {
             return;
         }
-        let mut prog = Program::for_scene(scene);
-        // Deep zoom: everything relative to the camera, the fractal in double-float.
-        let shifted;
-        let scene = if self.deep_mode(scene, &prog, height) {
-            let r = scene.camera.position;
-            shifted = rmb_core::render::shifted_scene(scene, r);
-            prog = Program::for_scene(&shifted);
-            // A placed main fractal iterates from the camera in its own coordinates; the
-            // shader then only turns and scales the local position (uniforms: no offset).
-            prog.deep = Some(prog.main_transform.map_or(r, |t| t.local(rmb_core::V3::ZERO)).to_array());
-            &shifted
-        } else {
-            scene
-        };
-        // Path tracing needs the bounce loop too.
-        prog.reflections = scene.material.reflection > 0.0 || scene.lighting.render_mode == rmb_core::scene::RenderMode::PathTraced;
+        let prog = Program::for_scene(scene);
+        let deep = self.deep_mode(scene, &prog, height);
+        let (shifted, prog) = render_program(scene, prog, deep);
+        let scene = shifted.as_ref().unwrap_or(scene);
         self.ensure_target(width, height);
         // Parameters
         // High parts, then from PRM_LO on the low parts (double-float deep zoom).
@@ -998,7 +1046,10 @@ impl GpuRenderer {
         self.ctx.queue.write_buffer(&self.lut, 0, bytemuck::cast_slice(&lut));
         self.uniforms = Some(uniforms(&shade, &prog, width, height, fast));
         self.request_pipeline(&prog);
+        self.prog = Some(prog);
         self.key = Some(key);
+        self.key_time = Instant::now();
+        self.rest_wanted = None;
         self.samples = 0;
         self.row = 0;
     }
@@ -1140,22 +1191,77 @@ impl GpuRenderer {
         self.bake = mask;
     }
 
+    /// Uniform settings to write into the shader as constants (see
+    /// [`crate::codegen::bake_uniforms`]): `None` none (the default), else per 4-byte word of the
+    /// uniforms whether to bake it (`true` beyond the slice). Switched-off features then drop out
+    /// of the shader. The sample index and band rows always stay run-time values.
+    pub fn set_uniform_baking(&mut self, mask: Option<Vec<bool>>) {
+        self.bake_uniforms = mask;
+    }
+
+    /// The uniform words to bake (`None`: none).
+    fn baked_uniforms(&self) -> Option<(Vec<u32>, Vec<bool>)> {
+        let mask = self.bake_uniforms.as_ref()?;
+        let un = self.uniforms.as_ref()?;
+        let words: Vec<u32> = bytemuck::cast_slice(bytemuck::bytes_of(un)).to_vec();
+        let never = crate::codegen::uniform_words_never_baked();
+        let mask: Vec<bool> = (0..words.len()).map(|i| mask.get(i).copied().unwrap_or(true) && !never.contains(&i)).collect();
+        Some((words, mask))
+    }
+
     /// The parameter values to bake for `prog` (see [`GpuRenderer::set_baking`]).
     fn baked(&self, prog: &Program) -> Vec<Option<f64>> {
         let Some(mask) = &self.bake else { return Vec::new() };
         prog.constants.iter().enumerate().map(|(i, v)| mask.get(i).copied().unwrap_or(true).then_some(*v)).collect()
     }
 
-    fn request_pipeline(&mut self, prog: &Program) {
-        let baked = self.baked(prog);
+    /// The signature and (on demand) the source of the shader for `prog` with the parameters
+    /// `baked` and the uniform words `baked_u` as constants.
+    fn shader_signature(prog: &Program, baked: &[Option<f64>], baked_u: Option<&(Vec<u32>, Vec<bool>)>) -> String {
         let mut sig = prog.signature();
         if baked.iter().any(Option::is_some) {
             // Baked values are part of the shader.
             sig.push_str("|baked:");
-            for v in &baked {
+            for v in baked {
                 let _ = write!(sig, "{},", v.map_or(String::new(), |x| format!("{:016x}", x.to_bits())));
             }
         }
+        if let Some((words, mask)) = baked_u {
+            sig.push_str("|uniforms:");
+            for (w, m) in words.iter().zip(mask) {
+                if *m {
+                    let _ = write!(sig, "{w:x},");
+                } else {
+                    sig.push(',');
+                }
+            }
+        }
+        sig
+    }
+
+    fn shader_source(prog: &Program, baked: &[Option<f64>], baked_u: Option<&(Vec<u32>, Vec<bool>)>) -> String {
+        let src = crate::codegen::march_shader_baked(prog, baked);
+        match baked_u {
+            Some((words, mask)) => crate::codegen::bake_uniforms(&src, words, mask),
+            None => src,
+        }
+    }
+
+    /// Compiles `src` on a background thread.
+    fn spawn_compile(&self, src: String) -> mpsc::Receiver<Compiled> {
+        let device = self.ctx.device.clone();
+        let layout = self.march_pipeline_layout.clone();
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(compile(&device, &layout, &src));
+        });
+        rx
+    }
+
+    fn request_pipeline(&mut self, prog: &Program) {
+        let baked = self.baked(prog);
+        let baked_u = self.baked_uniforms();
+        let sig = Self::shader_signature(prog, &baked, baked_u.as_ref());
         if self.signature == sig {
             return;
         }
@@ -1170,15 +1276,68 @@ impl GpuRenderer {
             self.last_error = None;
             return;
         }
-        let src = crate::codegen::march_shader_baked(prog, &baked);
-        let device = self.ctx.device.clone();
-        let layout = self.march_pipeline_layout.clone();
-        let (tx, rx) = mpsc::channel();
-        std::thread::spawn(move || {
-            let _ = tx.send(compile(&device, &layout, &src));
-        });
+        let rx = self.spawn_compile(Self::shader_source(prog, &baked, baked_u.as_ref()));
         self.pending = Some((sig, rx));
         self.compiling = true;
+    }
+
+    /// Lets a window's preview compile a shader with all parameters and settings baked in once
+    /// the scene stayed the same for `delay` (`None`: never, the default). It takes over the
+    /// accumulation without restarting it (same image, faster passes); any change goes back to
+    /// the shader that reads the buffers.
+    pub fn set_rest_baking(&mut self, delay: Option<Duration>) {
+        self.rest_delay = delay;
+        if delay.is_none() {
+            self.rest_wanted = None;
+        }
+    }
+
+    /// The resting view's shader is in use.
+    pub fn rest_baked(&self) -> bool {
+        self.rest_pipeline().is_some()
+    }
+
+    fn rest_pipeline(&self) -> Option<&wgpu::ComputePipeline> {
+        let want = self.rest_wanted.as_ref()?;
+        self.rest.as_ref().filter(|(s, _)| s == want).map(|(_, p)| p)
+    }
+
+    /// Starts the resting view's shader when due, and picks up a finished one.
+    fn update_rest(&mut self, max_samples: u32) {
+        if let Some((sig, rx)) = &self.rest_pending {
+            match rx.try_recv() {
+                Ok(Ok(p)) => {
+                    self.rest = Some((sig.clone(), p));
+                    self.rest_pending = None;
+                }
+                // A failed bake keeps the buffer shader (it renders the same image).
+                Ok(Err(_)) | Err(mpsc::TryRecvError::Disconnected) => self.rest_pending = None,
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        let Some(delay) = self.rest_delay else { return };
+        let fast = self.key.as_ref().is_some_and(|k| k.fast);
+        // One compile at a time; only for a view that rests and still has passes to go.
+        if self.rest_wanted.is_some() || self.rest_pending.is_some() || fast || self.prm_error.is_some() {
+            return;
+        }
+        if self.key_time.elapsed() < delay || self.samples >= max_samples || self.current_pipeline().is_none() {
+            return;
+        }
+        let Some(prog) = self.prog.as_ref() else { return };
+        let baked: Vec<Option<f64>> = prog.constants.iter().map(|v| Some(*v)).collect();
+        let Some(un) = self.uniforms.as_ref() else { return };
+        let words: Vec<u32> = bytemuck::cast_slice(bytemuck::bytes_of(un)).to_vec();
+        let never = crate::codegen::uniform_words_never_baked();
+        let mask: Vec<bool> = (0..words.len()).map(|i| !never.contains(&i)).collect();
+        let baked_u = Some((words, mask));
+        let sig = Self::shader_signature(prog, &baked, baked_u.as_ref());
+        self.rest_wanted = Some(sig.clone());
+        if self.rest.as_ref().is_some_and(|(s, _)| *s == sig) {
+            return;
+        }
+        let rx = self.spawn_compile(Self::shader_source(prog, &baked, baked_u.as_ref()));
+        self.rest_pending = Some((sig, rx));
     }
 
     fn poll_pipeline(&mut self) {
@@ -1221,12 +1380,15 @@ impl GpuRenderer {
     /// Returns true if anything was rendered.
     pub fn work(&mut self, budget: Duration, max_samples: u32) -> bool {
         self.poll_pipeline();
+        self.update_rest(max_samples);
         if self.samples >= max_samples {
             return false;
         }
         let (Some(t), Some(mut un)) = (self.target.as_ref(), self.uniforms) else { return false };
         let (accum, aux, width, height) = (t.accum.clone(), t.aux.clone(), t.width, t.height);
         let Some(pipeline) = self.current_pipeline().cloned() else { return false };
+        // A resting view renders with everything baked in (the same image, faster).
+        let pipeline = self.rest_pipeline().cloned().unwrap_or(pipeline);
         let device = self.ctx.device.clone();
         let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("march"),
@@ -1571,29 +1733,39 @@ pub fn render_animation(
     })
 }
 
-/// Per formula constant whether it is the same at all `times` (all false where the formulas
-/// themselves change): those can be baked into one shader for the whole animation.
-fn invariant_constants(times: impl Iterator<Item = f64>, frame_scene: &impl Fn(f64) -> Scene) -> Vec<bool> {
-    let mut first: Option<(String, Vec<f64>)> = None;
-    let mut mask = Vec::new();
-    for t in times {
-        let p = Program::for_scene(&frame_scene(t));
+/// What can be baked into one shader for a whole animation: per formula constant whether it is
+/// the same in all `scenes` (all false where the formulas themselves change), and per word of
+/// the uniforms whether it is the same.
+fn invariant_bakes(scenes: impl Iterator<Item = Scene>, width: u32, height: u32) -> (Vec<bool>, Vec<bool>) {
+    let mut first: Option<(String, Vec<f64>, Vec<u32>)> = None;
+    let (mut mask, mut umask) = (Vec::new(), Vec::new());
+    let mut formulas_change = false;
+    for scene in scenes {
+        let p = Program::for_scene(&scene);
+        let words = render_uniform_words(&scene, Program::for_scene(&scene), width, height);
         match &first {
             None => {
                 mask = vec![true; p.constants.len()];
-                first = Some((p.signature(), p.constants));
+                umask = vec![true; words.len()];
+                first = Some((p.signature(), p.constants, words));
             }
-            Some((sig, c)) => {
+            Some((sig, c, w)) => {
                 if p.signature() != *sig || p.constants.len() != c.len() {
-                    return vec![false; c.len().max(p.constants.len())];
+                    formulas_change = true;
+                    mask = vec![false; c.len().max(p.constants.len())];
                 }
-                for (m, (a, b)) in mask.iter_mut().zip(c.iter().zip(&p.constants)) {
+                if !formulas_change {
+                    for (m, (a, b)) in mask.iter_mut().zip(c.iter().zip(&p.constants)) {
+                        *m &= a == b;
+                    }
+                }
+                for (m, (a, b)) in umask.iter_mut().zip(w.iter().zip(&words)) {
                     *m &= a == b;
                 }
             }
         }
     }
-    mask
+    (mask, umask)
 }
 
 /// The time (in frames) of pass `k` of `samples` of frame `f`: the start of its slice of the
@@ -1637,12 +1809,15 @@ fn render_frames(
     let mut gpu = ctx.map(GpuRenderer::new);
     if let Some(r) = gpu.as_mut() {
         r.set_band_target(OFFLINE_BAND_TARGET);
-        // With motion blur the parameters also change within a frame's exposure.
-        let times = frames.clone().flat_map(|f| {
-            let f = f as f64;
-            if shutter > 0.0 { vec![f - 0.5 * shutter, f, f + 0.5 * shutter] } else { vec![f] }
+        // With motion blur the settings also change within a frame's exposure: the first,
+        // middle and last pass.
+        let scenes = frames.clone().flat_map(|f| {
+            let passes = if shutter > 0.0 { vec![0, samples / 2, samples - 1] } else { vec![0] };
+            passes.into_iter().map(|k| pass_scene(&frame_scene, f, k, samples, shutter)).collect::<Vec<_>>()
         });
-        r.set_baking(Some(invariant_constants(times, &frame_scene)));
+        let (constants, words) = invariant_bakes(scenes, width, height);
+        r.set_baking(Some(constants));
+        r.set_uniform_baking(Some(words));
     }
     for (done, f) in frames.enumerate() {
         if cancel.load(Ordering::Relaxed) {
@@ -1707,8 +1882,9 @@ fn render_frames(
 pub fn render_progressive(ctx: GpuContext, scene: &Scene, width: u32, height: u32, samples: u32, mut progress: impl FnMut(f32) -> bool, mut snapshot: impl FnMut(HdrImage, u32)) -> Result<HdrImage, String> {
     rmb_core::compose::load_models(scene);
     let mut r = GpuRenderer::new(ctx);
-    // Its own shader anyway: with the parameters as constants.
+    // Its own shader anyway: with the parameters and settings as constants.
     r.set_baking(Some(Vec::new()));
+    r.set_uniform_baking(Some(Vec::new()));
     r.set_scene(scene, width, height, false);
     r.wait_for_pipeline()?;
     let samples = samples.max(1);
@@ -1742,6 +1918,7 @@ fn render_to(ctx: GpuContext, scene: &Scene, width: u32, height: u32, samples: u
     let mut r = GpuRenderer::new(ctx);
     r.set_band_target(OFFLINE_BAND_TARGET);
     r.set_baking(Some(Vec::new()));
+    r.set_uniform_baking(Some(Vec::new()));
     r.set_scene(scene, width, height, false);
     r.wait_for_pipeline()?;
     let samples = samples.max(1);
