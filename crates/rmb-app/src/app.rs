@@ -45,6 +45,9 @@ pub struct App {
     render: crate::render_view::RenderView,
     timeline: crate::timeline::Timeline,
     explorer: crate::explorer::Explorer,
+    /// Top bar: width of the left part with labels, and of the right part (compact mode).
+    topbar_full: f32,
+    topbar_right: f32,
     help: Help,
     prefs: Prefs,
     prefs_open: bool,
@@ -69,6 +72,8 @@ impl App {
             view: Viewport::new(cc.wgpu_render_state.as_ref()),
             formulas: FormulasPanel::default(),
             explorer: Default::default(),
+            topbar_full: 0.0,
+            topbar_right: 0.0,
             inspector: Inspector::default(),
             export: Export::new(prefs.export_samples),
             render: crate::render_view::RenderView::new(prefs.export_samples),
@@ -245,6 +250,12 @@ impl App {
 
     fn top_bar(&mut self, ui: &mut Ui) -> Option<Action> {
         let mut action = None;
+        // Compact: icons only when the labels did not fit (measured in the last full frame).
+        let total = ui.available_width();
+        let compact = self.topbar_full > 0.0 && self.topbar_full + self.topbar_right + 12.0 > total;
+        let lbl = |icon: &str, text: &str| if compact { icon.to_string() } else { format!("{icon}  {text}") };
+        let tip = |t: &str, label: &str| if compact { format!("{label}: {t}") } else { t.to_string() };
+        let start_x = ui.cursor().min.x;
         ui.horizontal_centered(|ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
             ui.label(RichText::new(icons::ATOM).color(theme::ACCENT).size(theme::fs(19.0)));
@@ -337,33 +348,33 @@ impl App {
             });
             ui.separator();
             let mut m = self.view.mode;
-            if ui.selectable_label(m == NavMode::Orbit, format!("{}  Orbit", icons::ORBIT)).on_hover_text("Orbit around the point under the cursor (Tab switches)").clicked() {
+            if ui.selectable_label(m == NavMode::Orbit, lbl(icons::ORBIT, "Orbit")).on_hover_text(tip("Orbit around the point under the cursor (Tab switches)", "Orbit")).clicked() {
                 m = NavMode::Orbit;
             }
-            if ui.selectable_label(m == NavMode::Fly, format!("{}  Fly", icons::FLY)).on_hover_text("Fly with WASD, look with the mouse (Tab switches)").clicked() {
+            if ui.selectable_label(m == NavMode::Fly, lbl(icons::FLY, "Fly")).on_hover_text(tip("Fly with WASD, look with the mouse (Tab switches)", "Fly")).clicked() {
                 m = NavMode::Fly;
             }
             self.view.mode = m;
             ui.separator();
-            let tip = match rmb_core::render::denoise::available() {
+            let dn_tip = match rmb_core::render::denoise::available() {
                 Ok(_) => "Show the preview through the AI denoiser (Intel Open Image Denoise). Updates at 1, 4, 16, 64, … samples. Saving denoises only with Effects › Image › Denoise.".to_string(),
                 Err(e) => format!("The denoiser library is not available: {e}. Run python3 tools/fetch_oidn.py or set RMB_OIDN_DIR."),
             };
             let enabled = self.view.gpu_context().is_some();
-            if ui.add_enabled(enabled, egui::Button::selectable(self.view.show_denoised, "Denoised")).on_hover_text(tip).on_disabled_hover_text("Needs the GPU renderer").clicked() {
+            if ui.add_enabled(enabled, egui::Button::selectable(self.view.show_denoised, lbl(egui_phosphor::regular::SPARKLE, "Denoised"))).on_hover_text(tip(&dn_tip, "Denoised")).on_disabled_hover_text("Needs the GPU renderer").clicked() {
                 self.view.show_denoised = !self.view.show_denoised;
             }
             ui.separator();
             if ui
-                .selectable_label(self.view.show_guides, format!("{}  Grid", egui_phosphor::regular::GRID_FOUR))
-                .on_hover_text("Ground grid (z = 0) with the x (red), y (green) and z (blue) axes, and the axis cross in the corner (click an axis to look along it)")
+                .selectable_label(self.view.show_guides, lbl(egui_phosphor::regular::GRID_FOUR, "Grid"))
+                .on_hover_text(tip("Ground grid (z = 0) with the x (red), y (green) and z (blue) axes, and the axis cross in the corner (click an axis to look along it)", "Grid"))
                 .clicked()
             {
                 self.view.show_guides = !self.view.show_guides;
             }
             if ui
-                .selectable_label(self.view.show_lights, format!("{}  Lights", icons::LIGHT))
-                .on_hover_text("Show the lights in the view with handles to move and aim them (click one to edit it)")
+                .selectable_label(self.view.show_lights, lbl(icons::LIGHT, "Lights"))
+                .on_hover_text(tip("Show the lights in the view with handles to move and aim them (click one to edit it)", "Lights"))
                 .clicked()
             {
                 self.view.show_lights = !self.view.show_lights;
@@ -371,8 +382,8 @@ impl App {
             ui.separator();
             for mode in crate::gizmos::GizmoMode::ALL {
                 if ui
-                    .selectable_label(self.view.gizmo_mode == mode, format!("{}  {}", mode.icon(), mode.label()))
-                    .on_hover_text(format!("{} (select an object in the scene list or Ctrl+click it in the view)", mode.tip()))
+                    .selectable_label(self.view.gizmo_mode == mode, lbl(mode.icon(), mode.label()))
+                    .on_hover_text(tip(&format!("{} (select an object in the scene list or Ctrl+click it in the view)", mode.tip()), mode.label()))
                     .clicked()
                 {
                     self.view.gizmo_mode = mode;
@@ -380,21 +391,25 @@ impl App {
             }
             ui.separator();
             if ui
-                .selectable_label(self.timeline.open, format!("{}  Animation", egui_phosphor::regular::FILM_STRIP))
-                .on_hover_text("Timeline: keyframes, flight recording, playback and movie export")
+                .selectable_label(self.timeline.open, lbl(egui_phosphor::regular::FILM_STRIP, "Animation"))
+                .on_hover_text(tip("Timeline: keyframes, flight recording, playback and movie export", "Animation"))
                 .clicked()
             {
                 self.timeline.open = !self.timeline.open;
             }
             if ui
-                .selectable_label(self.explorer.open, format!("{}  Explore", egui_phosphor::regular::COMPASS))
-                .on_hover_text("Explore lane: presets to start from, random fractals and variants of the current scene")
+                .selectable_label(self.explorer.open, lbl(egui_phosphor::regular::COMPASS, "Explore"))
+                .on_hover_text(tip("Explore lane: presets to start from, random fractals and variants of the current scene", "Explore"))
                 .clicked()
             {
                 self.explorer.open = !self.explorer.open;
             }
 
+            if !compact {
+                self.topbar_full = ui.cursor().min.x - start_x;
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let right_start = ui.cursor().max.x;
                 let label = if self.export.busy() { format!("{}  Exporting…", icons::EXPORT) } else { format!("{}  Export", icons::EXPORT) };
                 if ui.add(egui::Button::new(RichText::new(label).strong()).fill(theme::ACCENT_DIM)).on_hover_text("Render and save an image (Ctrl+E)").clicked() {
                     action = Some(Action::Export);
@@ -407,8 +422,14 @@ impl App {
                 {
                     action = Some(Action::Render);
                 }
-                ui.add_space(8.0);
-                ui.label(RichText::new(self.doc.title()).color(theme::TEXT_MUTED));
+                self.topbar_right = right_start - ui.cursor().max.x;
+                // The document name only where it fits.
+                let title = RichText::new(self.doc.title()).color(theme::TEXT_MUTED);
+                let width = ui.painter().layout_no_wrap(self.doc.title(), egui::FontId::proportional(theme::fs(14.0)), theme::TEXT_MUTED).size().x;
+                if ui.available_width() > width + 24.0 {
+                    ui.add_space(8.0);
+                    ui.label(title);
+                }
             });
         });
         action

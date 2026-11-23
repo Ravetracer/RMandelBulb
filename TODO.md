@@ -152,8 +152,9 @@
   - [ ] Possible: more presets, quality filter against noisy random scenes, snapshot of the
         current scene into the strip
 - [ ] Help: Markdown in docs/help with screenshots and how-tos, shown in the app, offline PDF
-- [ ] Preferences like RWildFire (UI scale/font size, ...); the top bar overlaps at narrow
-      widths
+- [ ] Preferences like RWildFire (UI scale/font size, ...)
+  - [x] The top bar no longer overlaps: icons only when the labels do not fit, the document
+        name only where there is room
 
 ## Performance
 
