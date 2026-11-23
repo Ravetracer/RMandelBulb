@@ -445,6 +445,7 @@ impl App {
         }
         let mut open = true;
         let before = self.prefs.clone();
+        let mut m3f_result = None;
         egui::Window::new("Preferences").open(&mut open).resizable(false).collapsible(false).default_width(380.0).show(ctx, |ui| {
             let d = Prefs::default();
             let p = &mut self.prefs;
@@ -482,11 +483,17 @@ impl App {
                         let _ = std::fs::create_dir_all(&dir);
                         let _ = open_folder(&dir);
                     }
-                    if ui.button("Reload formulas").clicked() {
+                    if ui.button("Reload formulas").on_hover_text("Load the formula files again (after editing them outside the app)").clicked() {
                         rmb_core::formula::load_user_formulas(&dir);
                         if let Some(d) = &p.formula_dir {
                             rmb_core::formula::load_user_formulas(d);
                         }
+                    }
+                    if ui.button("Import .m3f…").on_hover_text("Translate the Mandelbulb3D formula files (*.m3f, also JIT formulas) of a folder and add those that translate to the library for this session; save scenes to keep them").clicked()
+                        && let Some(folder) = rfd::FileDialog::new().set_title("Folder with Mandelbulb3D formulas (*.m3f)").pick_folder()
+                    {
+                        let (ok, failed) = rmb_core::formula::load_m3f_formulas(&folder);
+                        m3f_result = Some(format!("Mandelbulb3D formulas from {}: {ok} added, {failed} could not be translated", folder.display()));
                     }
                 });
             }
@@ -531,6 +538,9 @@ impl App {
                 });
             }
         });
+        if let Some(msg) = m3f_result {
+            self.notify(msg);
+        }
         if self.prefs != before {
             if self.prefs.font_percent != before.font_percent {
                 theme::apply(ctx, self.prefs.font_percent);

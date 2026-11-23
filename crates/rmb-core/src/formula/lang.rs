@@ -876,10 +876,26 @@ pub fn is_bool(e: &Expr) -> bool {
 
 /// Parses a formula library source (any number of `formula` blocks).
 pub fn parse_library(src: &str) -> Result<Vec<FormulaDef>, LangError> {
+    Ok(parse_library_texts(src)?.into_iter().map(|(d, _)| d).collect())
+}
+
+/// [`parse_library`] with the source text of each formula (its lines from `formula` to the
+/// closing brace, with the comment lines right above it).
+pub fn parse_library_texts(src: &str) -> Result<Vec<(FormulaDef, String)>, LangError> {
     let mut p = Parser { toks: lex(src)?, pos: 0 };
+    let lines: Vec<&str> = src.lines().collect();
     let mut out = Vec::new();
     while *p.peek() != Tok::Eof {
-        out.push(p.formula()?);
+        let first = p.line();
+        let def = p.formula()?;
+        let last = p.toks[p.pos.saturating_sub(1)].1;
+        // Comment lines directly above belong to the formula.
+        let mut start = first.saturating_sub(1);
+        while start > 0 && lines.get(start - 1).is_some_and(|l| l.trim_start().starts_with("//")) {
+            start -= 1;
+        }
+        let text = lines.get(start..last.min(lines.len())).map(|l| l.join("\n")).unwrap_or_default();
+        out.push((def, text + "\n"));
     }
     Ok(out)
 }

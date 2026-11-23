@@ -38,7 +38,7 @@ struct U {
     color: vec4<f32>,      // mode, scale, offset, repeat
     color2: vec4<f32>,     // saturation, cut count, depth shift, depth reference
     cuts: array<vec4<f32>, 3>,   // axis, position, keep above
-    slots: array<vec4<u32>, 8>,  // x: iterations
+    slots: array<vec4<u32>, 16>, // x: iterations, y: first iteration, z: last, w: flags (1 no constant, 2 no escape test)
     lights: array<GLight, 8>,
     comb: vec4<f32>,       // DE combination: mode, max iterations 2, repeat from 2, smoothing
     scales: vec4<f32>,     // DE scale of chain 1, chain 2, inside rendering, ray start distance
@@ -90,6 +90,8 @@ struct U {
     haze: vec4<f32>,
     haze_col: vec4<f32>,
     haze2: vec4<f32>,      // haze shape (0 distance, 1 iterations), size
+    slotw: array<vec4<f32>, 4>, // weight per slot (Mandelbulber per-slot settings)
+    cfac: vec4<f32>,       // constant factor xyz, w: minimum iterations
 }
 
 @group(0) @binding(0) var<uniform> u: U;
@@ -142,7 +144,7 @@ struct Obj {
     misc: vec4<f32>,  // bailout², formula DE scale, DE scale, kind (0 fractal, 1 primitive, 2 model)
     mat: vec4<f32>,   // material: color mode, scale, offset, repeat
     mat2: vec4<f32>,  // saturation, pattern, pattern size, LUT base
-    slots: array<vec4<u32>, 2>,
+    slots: array<vec4<u32>, 4>,
     size: vec4<f32>,  // scale per own axis
     rep: vec4<f32>,   // repetition: spacing per own axis (0 = none)
     rep_lim: vec4<f32>, // copies on each side (0 = endless)

@@ -299,7 +299,7 @@ pub fn import_binary(b: &[u8]) -> Result<Import, String> {
             continue;
         }
         let iterations = if hybrid_type == 1 { 1 } else { its.min(1000) as u32 };
-        let mut slot = Slot { formula: name.clone(), iterations, params: Default::default() };
+        let mut slot = Slot { formula: name.clone(), iterations, ..Slot::default() };
         match lib.find_alias(&name) {
             Some(fm) => {
                 let alias = fm.def.aliases.iter().find(|a| a.name.eq_ignore_ascii_case(&name));

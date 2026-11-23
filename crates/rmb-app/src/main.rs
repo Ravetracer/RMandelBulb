@@ -8,6 +8,7 @@
 mod app;
 mod doc;
 mod export;
+mod formula_editor;
 mod formulas_panel;
 mod gizmos;
 mod help;

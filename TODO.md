@@ -137,6 +137,22 @@
 - [x] Post effects (Image): chromatic aberration, white balance (temperature, tint), split
       toning (shadow and highlight colors)
 
+- [x] Formula editing like Mandelbulb3D and Mandelbulber 2 (gap analysis 2026-11-23):
+  - [x] In-app formula editor (syntax colors, line numbers, errors with line, copy from any
+        formula, apply into the slot, save to the formula folder); edited formulas recompile
+  - [x] Scenes carry the code of their non-built-in formulas
+  - [x] Mandelbulber per-slot settings: iteration range, weight, add C, escape test; minimum
+        iterations and constant factor; up to 9 slots
+  - [ ] .m3f import from the app (Preferences), inside + outside rendering, more DE kinds
+        (Kleinian, max axis, custom DE block)
+  - [ ] Possible later: nested boolean groups (Mandelbulber's object tree), `_Cond*`
+        formulas, per-slot settings and 4D rotation for object fractals, language helpers
+        (functions, vectors, enum parameters)
+- [ ] Explore lane: own presets (thumbnails), random batches, mutations (like RWildFire)
+- [ ] Help: Markdown in docs/help with screenshots and how-tos, shown in the app, offline PDF
+- [ ] Preferences like RWildFire (UI scale/font size, ...); the top bar overlaps at narrow
+      widths
+
 ## Performance
 
 A 1920 × 1080 GPU render (64 samples, the CLI default) took about 2 minutes on the RTX A2000

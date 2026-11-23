@@ -16,6 +16,7 @@ use crate::{icons, theme, widgets};
 pub struct FormulasPanel {
     pub selected: usize,
     search: String,
+    editor: crate::formula_editor::FormulaEditor,
 }
 
 impl FormulasPanel {
@@ -43,6 +44,9 @@ impl FormulasPanel {
                     ui.add_space(4.0);
                     ui.separator();
                     self.params(ui, &mut scene.fractal);
+                    if let Some(slot) = scene.fractal.slots.get_mut(self.selected) {
+                        slot_settings(ui, slot, self.selected);
+                    }
                     ui.separator();
                     iteration(ui, &mut scene.fractal, true);
                     let cam = scene.camera.clone();
@@ -61,6 +65,19 @@ impl FormulasPanel {
                 }
             }
         });
+        // The formula editor works on the selected slot of the fractal being edited.
+        if let Some(crate::formula_editor::EditorAction::Use(name)) = self.editor.show(ui.ctx()) {
+            let fractal = match *selected {
+                None => Some(&mut scene.fractal),
+                Some(k) => match &mut scene.objects[k].shape {
+                    Shape::Fractal(f) => Some(f.as_mut()),
+                    _ => None,
+                },
+            };
+            if let Some(slot) = fractal.and_then(|f| f.slots.get_mut(self.selected)) {
+                slot.formula = name;
+            }
+        }
     }
 
     /// The list of the scene's objects with the buttons to add, order and remove them.
@@ -235,8 +252,9 @@ impl FormulasPanel {
             });
             match &mut o.shape {
                 Shape::Primitive(p) => {
-                    widgets::section(ui, p.name(), false);
-                    primitive_params(ui, p);
+                    if widgets::section(ui, p.name(), false).open {
+                        primitive_params(ui, p);
+                    }
                 }
                 Shape::Fractal(f) => {
                     ui.separator();
@@ -383,6 +401,18 @@ impl FormulasPanel {
                 ui.label(RichText::new(&def.description).size(theme::fs(11.5)).color(theme::TEXT_MUTED));
                 ui.add_space(4.0);
             }
+            ui.horizontal(|ui| {
+                if ui.small_button(format!("{}  Edit code", icons::ATOM)).on_hover_text("Open this formula in the formula editor (built-in formulas open as a copy)").clicked() {
+                    self.editor.open_formula(&def.name);
+                }
+                if ui.small_button(format!("{}  New formula", icons::PLUS)).on_hover_text("Write a new formula in the formula editor; Apply puts it into this slot").clicked() {
+                    self.editor.open_new();
+                }
+                if !fm.builtin {
+                    ui.label(RichText::new(format!("from {}", fm.source)).size(theme::fs(10.5)).color(theme::TEXT_MUTED));
+                }
+            });
+            ui.add_space(2.0);
             if def.params.is_empty() {
                 ui.label(RichText::new("No parameters.").color(theme::TEXT_MUTED));
                 return;
@@ -422,6 +452,36 @@ impl FormulasPanel {
             });
         }
     }
+}
+
+/// Mandelbulber's per-slot settings of the main fractal: iteration range, weight, adding the
+/// constant, escape test.
+fn slot_settings(ui: &mut Ui, slot: &mut Slot, index: usize) {
+    let sec = widgets::section(ui, &format!("Slot {} settings", index + 1), slot.has_extras());
+    if sec.reset {
+        let (formula, iterations, params) = (slot.formula.clone(), slot.iterations, slot.params.clone());
+        *slot = Slot { formula, iterations, params, ..Slot::default() };
+    }
+    if !sec.open {
+        return;
+    }
+    widgets::grid(ui, "slot-settings", |ui| {
+        widgets::slider_u32(ui, "From iteration", "The slot runs only from this iteration on (0: from the start; transforms do not count). Before it the chain skips the slot (Mandelbulber's start iteration)", &mut slot.start, 0..=100, 0);
+        widgets::label(ui, "To iteration", "The slot runs only up to this iteration (inclusive); after it the chain skips the slot (Mandelbulber's stop iteration). Off: to the end");
+        ui.horizontal(|ui| {
+            let mut limited = slot.stop.is_some();
+            if ui.checkbox(&mut limited, "").on_hover_text("Limit the slot to a last iteration").changed() {
+                slot.stop = limited.then_some(slot.start.max(5));
+            }
+            if let Some(stop) = &mut slot.stop {
+                widgets::reset_on_double_click(ui.add(egui::DragValue::new(stop).range(0..=1000).speed(0.1)).on_hover_text("Last iteration of the slot. Double click: 5"), stop, 5);
+            }
+        });
+        ui.end_row();
+        widgets::slider(ui, "Weight", "Share of the formula's result (Mandelbulber's formula weight): below 1 the point blends with where it was before the formula, for soft hybrids", &mut slot.weight, 0.0..=1.0, 1.0);
+        widgets::checkbox(ui, "Add C", "The formula adds the constant (the point's position, or the Julia constant). Off: it runs as if the constant were zero (Mandelbulber's \"don't add c\")", &mut slot.add_c);
+        widgets::checkbox(ui, "Escape test", "Test for escape after this slot. Off: points may grow past the bailout here and come back in later slots (Mandelbulber's \"check for bailout\")", &mut slot.check_bailout);
+    });
 }
 
 /// Button with the formula name that opens a searchable list. Returns true if a formula was chosen.
@@ -936,6 +996,17 @@ fn iteration(ui: &mut Ui, f: &mut Fractal, main: bool) {
             if main {
                 for (k, n) in ["Rotate XW", "Rotate YW", "Rotate ZW"].iter().enumerate() {
                     widgets::slider(ui, n, "Rotates the start point into the 4th dimension (formulas that use w)", &mut f.rotation_4d[k], -180.0..=180.0, 0.0);
+                }
+                widgets::slider_u32(
+                    ui,
+                    "Min iterations",
+                    "No point escapes before this many iterations (Mandelbulber's and Mandelbulb3D's minimum iterations): fills thin or empty parts of hybrids whose first formulas throw points out",
+                    &mut f.min_iterations,
+                    0..=50,
+                    d.min_iterations,
+                );
+                for (k, n) in ["C factor X", "C factor Y", "C factor Z"].iter().enumerate() {
+                    widgets::slider(ui, n, "Multiplies the constant (the point's position, or the Julia constant) per axis before the formulas add it (Mandelbulber's constant factor)", &mut f.c_factor[k], -2.0..=2.0, 1.0);
                 }
             }
         });

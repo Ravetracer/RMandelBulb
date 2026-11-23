@@ -10,7 +10,7 @@ use crate::math::{V3, v3};
 
 pub const FORMAT_VERSION: u32 = 1;
 /// Number of formula slots of a hybrid (as in Mandelbulb3D).
-pub const MAX_SLOTS: usize = 6;
+pub const MAX_SLOTS: usize = 9;
 pub const MAX_LIGHTS: usize = 8;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -40,6 +40,11 @@ pub struct Scene {
     /// between `camera` and this one (set per pass by the animation renderer, never saved).
     #[serde(skip)]
     pub motion_end: Option<Camera>,
+    /// Source texts of the formulas the scene uses that do not come with the program, by name:
+    /// filled when the scene is written, registered (and emptied) when it is read, so a scene
+    /// with own or edited formulas renders anywhere.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub formulas: std::collections::BTreeMap<String, String>,
 }
 
 impl Default for Scene {
@@ -62,6 +67,7 @@ impl Default for Scene {
             objects: Vec::new(),
             animation: None,
             motion_end: None,
+            formulas: Default::default(),
         }
     }
 }
@@ -71,12 +77,39 @@ impl Scene {
         self.width.max(1) as f64 / self.height.max(1) as f64
     }
 
-    pub fn to_json(&self) -> String {
-        serde_json::to_string_pretty(self).unwrap_or_default()
+    /// The names of all formulas the scene uses (main fractal, object fractals, keyframes).
+    pub fn formula_names(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        let mut add = |f: &Fractal| out.extend(f.slots.iter().map(|s| s.formula.clone()));
+        add(&self.fractal);
+        for o in &self.objects {
+            if let crate::compose::Shape::Fractal(f) = &o.shape {
+                add(f);
+            }
+        }
+        if let Some(a) = &self.animation {
+            for k in &a.keyframes {
+                out.extend(k.scene.formula_names());
+            }
+        }
+        out.sort();
+        out.dedup();
+        out
     }
 
+    /// JSON text, with the sources of the formulas that do not come with the program.
+    pub fn to_json(&self) -> String {
+        let mut s = self.clone();
+        let names = s.formula_names();
+        s.formulas = crate::formula::user_sources(names.iter().map(String::as_str));
+        serde_json::to_string_pretty(&s).unwrap_or_default()
+    }
+
+    /// Reads JSON text and registers the formula sources it carries.
     pub fn from_json(s: &str) -> Result<Scene, String> {
-        serde_json::from_str(s).map_err(|e| e.to_string())
+        let mut scene: Scene = serde_json::from_str(s).map_err(|e| e.to_string())?;
+        crate::formula::register_sources(&std::mem::take(&mut scene.formulas));
+        Ok(scene)
     }
 }
 
@@ -198,18 +231,37 @@ pub struct Slot {
     pub iterations: u32,
     /// Parameter values by parameter identifier; missing ones use the formula default.
     pub params: BTreeMap<String, f64>,
+    /// Iteration range (Mandelbulber): the slot runs only from iteration `start` (0-based,
+    /// counted without transforms) up to `stop` (inclusive; None: to the end). Outside the
+    /// range the chain skips it.
+    pub start: u32,
+    pub stop: Option<u32>,
+    /// Share of the formula's result (Mandelbulber's weight): below 1 the point and the
+    /// derivative blend with their values before the formula.
+    pub weight: f64,
+    /// The formula adds the constant (pixel position or Julia constant); off: it runs with a
+    /// zero constant.
+    pub add_c: bool,
+    /// The escape test runs after this slot (off: the point may grow past the bailout here).
+    pub check_bailout: bool,
 }
 
 impl Default for Slot {
     fn default() -> Self {
-        Slot { formula: "Mandelbulb".into(), iterations: 1, params: BTreeMap::new() }
+        Slot { formula: "Mandelbulb".into(), iterations: 1, params: BTreeMap::new(), start: 0, stop: None, weight: 1.0, add_c: true, check_bailout: true }
     }
 }
 
 impl Slot {
     pub fn new(formula: &str) -> Slot {
         let iterations = crate::formula::find(formula).map(|f| f.def.iterations).unwrap_or(1);
-        Slot { formula: formula.into(), iterations, params: BTreeMap::new() }
+        Slot { formula: formula.into(), iterations, ..Slot::default() }
+    }
+
+    /// Uses one of the Mandelbulber per-slot settings (iteration range, weight, add C, bailout
+    /// check).
+    pub fn has_extras(&self) -> bool {
+        self.start > 0 || self.stop.is_some() || self.weight != 1.0 || !self.add_c || !self.check_bailout
     }
 
     /// Value of a parameter, falling back to the formula's default.
@@ -265,6 +317,12 @@ pub struct Fractal {
     pub de_scale: f64,
     /// Rotation of the start point into 4D (XW, YW, ZW planes, degrees; 4D formulas).
     pub rotation_4d: [f64; 3],
+    /// No escape before this many iterations (Mandelbulb3D's and Mandelbulber's minimum
+    /// iterations).
+    pub min_iterations: u32,
+    /// Multiplies the constant (pixel position or Julia constant) per axis before the
+    /// formulas add it (Mandelbulber's constant factor).
+    pub c_factor: [f64; 3],
     /// Render the inside of the set: points that escape are solid, the set is empty space
     /// (Mandelbulb3D's inside rendering, for views from within the fractal).
     pub inside: bool,
@@ -351,6 +409,8 @@ impl Default for Fractal {
             de_mode: DeMode::Auto,
             de_scale: 1.0,
             rotation_4d: [0.0; 3],
+            min_iterations: 0,
+            c_factor: [1.0; 3],
             inside: false,
             combine: None,
             blend: None,

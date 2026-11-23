@@ -101,7 +101,7 @@ struct Uniforms {
     color: [f32; 4],
     color2: [f32; 4],
     cuts: [[f32; 4]; 3],
-    slots: [[u32; 4]; 8],
+    slots: [[u32; 4]; 16],
     lights: [GLight; rmb_core::scene::MAX_LIGHTS],
     comb: [f32; 4],
     scales: [f32; 4],
@@ -145,6 +145,8 @@ struct Uniforms {
     haze: [f32; 4],
     haze_col: [f32; 4],
     haze2: [f32; 4],
+    slotw: [[f32; 4]; 4],
+    cfac: [f32; 4],
 }
 
 /// Splits an f64 into the high and low f32 of a double-float.
@@ -165,7 +167,7 @@ struct ObjGpu {
     misc: [f32; 4],
     mat: [f32; 4],
     mat2: [f32; 4],
-    slots: [[u32; 4]; 2],
+    slots: [[u32; 4]; 4],
     size: [f32; 4],
     rep: [f32; 4],
     rep_lim: [f32; 4],
@@ -345,9 +347,9 @@ fn objects_gpu(scene: &Scene, prog: &Program, lut: &mut Vec<[f32; 4]>) -> Vec<Ob
                 g.frac = [f.w_slice as f32, if f.julia { 1.0 } else { 0.0 }, f.max_iterations as f32, f.repeat_from as f32];
                 g.julia = f.julia_c.map(|v| v as f32);
                 g.misc = [f.bailout2 as f32, f.de_scale as f32, f.scene_de_scale as f32, 0.0];
-                // Both chains of a DE combination share the eight slot entries.
+                // Both chains of a DE combination share the sixteen slot entries.
                 let p2 = f.part2.as_deref();
-                for (i, s) in f.slots.iter().chain(p2.map(|p| p.slots.iter()).into_iter().flatten()).take(8).enumerate() {
+                for (i, s) in f.slots.iter().chain(p2.map(|p| p.slots.iter()).into_iter().flatten()).take(16).enumerate() {
                     g.slots[i / 4][i % 4] = s.iterations.max(1);
                 }
                 let [w1, w2] = f.blend.unwrap_or([0.0; 2]);
@@ -500,11 +502,16 @@ fn uniforms(scene: &Scene, prog: &Program, w: u32, h: u32, fast: bool) -> Unifor
     for (c, (axis, pos, above)) in cuts.iter_mut().zip(&prog.cuts) {
         *c = [*axis as f32, *pos as f32, if *above { 1.0 } else { 0.0 }, 0.0];
     }
-    let mut slots = [[0u32; 4]; 8];
+    // Per slot: iterations, iteration range, flags (1: no constant, 2: no escape test) and
+    // weight (Mandelbulber per-slot settings).
+    let mut slots = [[0u32; 4]; 16];
+    let mut slotw = [[1.0f32; 4]; 4];
     let all = prog.slots.iter().chain(prog.part2.iter().flat_map(|p| p.slots.iter()));
-    for (s, ps) in slots.iter_mut().zip(all) {
-        s[0] = ps.iterations.max(1);
+    for (i, (s, ps)) in slots.iter_mut().zip(all).enumerate() {
+        *s = [ps.iterations.max(1), ps.start, ps.stop, u32::from(!ps.add_c) | (u32::from(!ps.check_bailout) << 1)];
+        slotw[i / 4][i % 4] = ps.weight as f32;
     }
+    let cfac = [prog.c_factor[0] as f32, prog.c_factor[1] as f32, prog.c_factor[2] as f32, prog.min_iterations as f32];
     let p2 = prog.part2.as_deref();
     let comb = [prog.combine_mode.index() as f32, p2.map(|p| p.max_iterations).unwrap_or(1) as f32, p2.map(|p| p.repeat_from).unwrap_or(0) as f32, prog.combine_smooth as f32];
     let scales = [
@@ -645,6 +652,8 @@ fn uniforms(scene: &Scene, prog: &Program, w: u32, h: u32, fast: bool) -> Unifor
         mt_pos: prog.main_transform.filter(|_| prog.deep.is_none()).map_or([0.0; 4], |t| v4(t.pos, 0.0)),
         haze: [scene.fog.haze.max(0.0) as f32, scene.fog.haze_start as f32, scene.fog.haze_glow as f32, if scene.fog.haze_gradient { 1.0 } else { 0.0 }],
         haze_col: c4(scene.fog.haze_color, scene.fog.haze_end),
+        slotw,
+        cfac,
         haze2: [if scene.fog.haze_shape == rmb_core::scene::HazeShape::Iterations { 1.0 } else { 0.0 }, scene.fog.haze_size as f32, 0.0, 0.0],
     }
 }

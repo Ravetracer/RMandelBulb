@@ -1128,3 +1128,42 @@ fn display_matches_cpu_with_chromatic_aberration_and_grading() {
     let diff = shown.iter().zip(&base).map(|(a, b)| (*a as i32 - *b as i32).abs()).sum::<i32>() as f64 / shown.len() as f64;
     assert!(diff > 3.0, "mean change {diff}");
 }
+
+/// Mandelbulber's per-slot settings (iteration range, weight, add C, bailout check), the
+/// minimum iterations and the constant factor: valid shaders (also in double-float) and the
+/// GPU matches the CPU.
+#[test]
+fn gpu_matches_cpu_with_mandelbulber_slot_settings() {
+    let mut scene = Scene::default();
+    scene.lighting.ao_mode = rmb_core::scene::AoMode::Fast;
+    let f = &mut scene.fractal;
+    f.slots = vec![Slot::new("Mandelbulb"), Slot::new("Mandelbulb"), Slot::new("Rotate")];
+    f.slots[0].stop = Some(2);
+    f.slots[1].start = 1;
+    f.slots[1].weight = 0.7;
+    f.slots[1].add_c = false;
+    f.slots[2].check_bailout = false;
+    f.min_iterations = 2;
+    f.c_factor = [1.1, 1.0, 0.9];
+    f.max_iterations = 10;
+    let mut prog = Program::for_scene(&scene);
+    assert!(prog.slot_extras());
+    validate(&rmb_gpu::codegen::march_shader(&prog), "slot settings");
+    prog.deep = Some([0.1, -0.2, 0.3]);
+    validate(&rmb_gpu::codegen::march_shader(&prog), "slot settings (deep)");
+    // The settings change the fractal.
+    let mut plain = scene.clone();
+    for s in &mut plain.fractal.slots {
+        let formula = s.formula.clone();
+        *s = Slot::new(&formula);
+    }
+    plain.fractal.min_iterations = 0;
+    plain.fractal.c_factor = [1.0; 3];
+    if let Ok(ctx) = rmb_gpu::GpuContext::new_headless() {
+        let a = rmb_gpu::render_blocking(ctx.clone(), &scene, 48, 32, 1, |_| true).expect("gpu render");
+        let b = rmb_gpu::render_blocking(ctx, &plain, 48, 32, 1, |_| true).expect("gpu render");
+        let diff = a.iter().zip(&b).map(|(x, y)| (*x as i32 - *y as i32).abs()).sum::<i32>() as f64 / a.len() as f64;
+        assert!(diff > 2.0, "settings change the image ({diff})");
+    }
+    parity(scene);
+}

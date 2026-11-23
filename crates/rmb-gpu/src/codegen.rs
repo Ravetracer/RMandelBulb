@@ -40,10 +40,11 @@ pub fn march_shader_baked(prog: &Program, baked: &[Option<f64>]) -> String {
     // Deep zoom: the main fractal in double-float arithmetic (composed objects stay f32, they
     // are evaluated in local coordinates).
     let main_chain = if prog.deep.is_some() { chain_dd } else { chain };
-    s.push_str(&main_chain(prog, "1", &Uni::main(0, "u.frac.z", "u.frac.w", "u.scales.x")));
+    let extras = prog.slot_extras();
+    s.push_str(&main_chain(prog, "1", &Uni { extras, ..Uni::main(0, "u.frac.z", "u.frac.w", "u.scales.x") }));
     match prog.part2.as_deref() {
         Some(p2) => {
-            s.push_str(&main_chain(p2, "2", &Uni::main(prog.slots.len(), "u.comb.y", "u.comb.z", "u.scales.y")));
+            s.push_str(&main_chain(p2, "2", &Uni { extras, ..Uni::main(prog.slots.len(), "u.comb.y", "u.comb.z", "u.scales.y") }));
             if prog.is_mix() {
                 // Mix (mirrors fractal.rs Evaluator::orbit): the dIFS from where chain 1 ends.
                 let _ = writeln!(s, "const MIX_LINEAR: bool = {};", prog.de_kind == DeKind::Linear && !prog.difs);
@@ -223,6 +224,61 @@ fn bake_read(s: &str, fields: &[UField], ok: &impl Fn(usize) -> bool, lit: &impl
     Some((text, len))
 }
 
+/// Mandelbulber per-slot settings in a hybrid loop (mirrors fractal.rs iterate_from): skips
+/// slots outside their iteration range (all of them in a row ends the orbit) and reads the
+/// slot's flags and weight. Empty without extras.
+fn extras_skip(cfg: &Uni, k: &str) -> String {
+    if !cfg.extras {
+        return String::new();
+    }
+    let b = cfg.slot_base;
+    format!(
+        "        let slot_ix = slot + {b}u;\n        if (n < u.slots[slot_ix].y || n > u.slots[slot_ix].z) {{\n            count = 0u;\n            slot += 1u;\n            if (slot >= NSLOTS_{k}) {{\n                slot = repeat_from;\n            }}\n            skipped += 1u;\n            if (skipped > NSLOTS_{k}) {{\n                break;\n            }}\n            continue;\n        }}\n        skipped = 0u;\n        let slot_flags = u.slots[slot_ix].w;\n        let slot_wt = u.slotw[slot_ix / 4u][slot_ix % 4u];\n"
+    )
+}
+
+/// Before the formula: no constant for slots with flag 1 (`zero`: the zero value).
+fn extras_pre(cfg: &Uni, n: &[String], zero: &str) -> String {
+    if !cfg.extras {
+        return String::new();
+    }
+    let (c0, c1, c2, c3) = (&n[4], &n[5], &n[6], &n[7]);
+    format!("        let keep_c0 = {c0};\n        let keep_c1 = {c1};\n        let keep_c2 = {c2};\n        let keep_c3 = {c3};\n        if ((slot_flags & 1u) != 0u) {{\n            {c0} = {zero};\n            {c1} = {zero};\n            {c2} = {zero};\n            {c3} = {zero};\n        }}\n")
+}
+
+/// After the formula: the constant back, the weight blend with the point before it (`prev`:
+/// the previous point and derivative per component; `blend`: a, b, w -> a + (b - a) w).
+fn extras_post(cfg: &Uni, n: &[String], prev: [&str; 5], blend: impl Fn(&str, &str) -> String) -> String {
+    if !cfg.extras {
+        return String::new();
+    }
+    let (c0, c1, c2, c3) = (&n[4], &n[5], &n[6], &n[7]);
+    let mut s = format!("        if ((slot_flags & 1u) != 0u) {{\n            {c0} = keep_c0;\n            {c1} = keep_c1;\n            {c2} = keep_c2;\n            {c3} = keep_c3;\n        }}\n        if (slot_wt != 1.0) {{\n");
+    for (name, p) in [&n[0], &n[1], &n[2], &n[3], &n[8]].into_iter().zip(prev) {
+        let _ = writeln!(s, "            {name} = {};", blend(p, name));
+    }
+    s.push_str("        }\n");
+    s
+}
+
+/// The extra escape condition: the slot tests (no flag 2) and the minimum iterations passed.
+fn extras_bail(cfg: &Uni) -> &'static str {
+    if cfg.extras { " && (slot_flags & 2u) == 0u && n >= u32(u.cfac.w)" } else { "" }
+}
+
+/// `chain` / `chain_dd` start: the constant factor (main fractal with extras).
+fn extras_init(cfg: &Uni, n: &[String], mul: impl Fn(&str, &str) -> String) -> String {
+    if !cfg.extras {
+        return String::new();
+    }
+    let mut s = String::new();
+    for (c, f) in [(&n[4], "u.cfac.x"), (&n[5], "u.cfac.y"), (&n[6], "u.cfac.z")] {
+        let _ = writeln!(s, "    {c} = {};", mul(c, f));
+    }
+    s.push_str("    var skipped = 0u;\n");
+    s
+}
+
 /// The composed objects (mirrors fractal.rs Evaluator::orbit): a chain per fractal object and
 /// `compose_objects`, which folds them into the estimate in order.
 fn objects(prog: &Program) -> String {
@@ -288,6 +344,10 @@ struct Uni {
     rot4: &'static str,
     /// Interpolation hybrid weights (first chain only).
     blend: Option<(String, String)>,
+    /// Mandelbulber per-slot settings in the shader (main fractal: `u.slots`, `u.slotw`,
+    /// `u.cfac`); the chain's first slot in those tables.
+    extras: bool,
+    slot_base: usize,
 }
 
 impl Uni {
@@ -304,6 +364,8 @@ impl Uni {
             scale: scale.into(),
             rot4: "ROTATE_4D",
             blend: (slot_base == 0).then(|| ("u.blend.x".into(), "u.blend.y".into())),
+            extras: false,
+            slot_base,
         }
     }
 
@@ -320,6 +382,8 @@ impl Uni {
             scale: format!("objs[{j}].misc.y"),
             rot4: "false",
             blend: Some((format!("objs[{j}].comb2.z"), format!("objs[{j}].comb2.w"))),
+            extras: false,
+            slot_base: 0,
         }
     }
 
@@ -358,6 +422,7 @@ fn chain(prog: &Program, k: &str, cfg: &Uni) -> String {
     let _ = writeln!(s, "    var {}: fl = v.x;\n    var {}: fl = v.y;\n    var {}: fl = v.z;\n    var {}: fl = v.w;", names[4], names[5], names[6], names[7]);
     let (jo, j) = (&cfg.julia_on, &cfg.julia);
     let _ = writeln!(s, "    if ({jo}) {{\n        {} = {j}.x;\n        {} = {j}.y;\n        {} = {j}.z;\n        {} = {j}.w;\n    }}", names[4], names[5], names[6], names[7]);
+    s.push_str(&extras_init(cfg, &names, |c, f| format!("{c} * fl({f})")));
     let _ = writeln!(s, "    var {}: fl = 1.0;\n    var {}: fl = 0.0;", names[8], names[9]);
     let _ = writeln!(s, "    var {}: fl = dot(v, v);\n    var {}: fl = 0.0;", names[STATE_ROUT], names[STATE_ROLD]);
     // A mix continues from the first chain's point; the constant stays the original one.
@@ -408,11 +473,13 @@ fn chain(prog: &Program, k: &str, cfg: &Uni) -> String {
 fn f32_loop(prog: &Program, k: &str, cfg: &Uni, names: &[String]) -> String {
     let mut s = String::new();
     s.push_str("    loop {\n        if (n >= limit || steps >= cap) {\n            break;\n        }\n        steps += 1u;\n");
+    s.push_str(&extras_skip(cfg, k));
     let _ = writeln!(
         s,
         "        let prev_s = vec4<fl>({}, {}, {}, {});\n        let prev_dr = {};",
         names[0], names[1], names[2], names[3], names[8]
     );
+    s.push_str(&extras_pre(cfg, names, "0.0"));
     let _ = writeln!(s, "        {} = fl(n);\n        {} = {};\n        var transform = false;\n        switch slot {{", names[9], names[STATE_ROLD], names[STATE_ROUT]);
     for (i, sl) in prog.slots.iter().enumerate() {
         let _ = writeln!(s, "            case {i}u: {{ // {}", sl.formula.def.name);
@@ -423,12 +490,13 @@ fn f32_loop(prog: &Program, k: &str, cfg: &Uni, names: &[String]) -> String {
         s.push_str("            }\n");
     }
     s.push_str("            default: {}\n        }\n");
+    s.push_str(&extras_post(cfg, names, ["prev_s.x", "prev_s.y", "prev_s.z", "prev_s.w", "prev_dr"], |a, b| format!("{a} + ({b} - {a}) * fl(slot_wt)")));
     let _ = write!(
         s,
         "        if (!transform) {{\n            n += 1u;\n        }}\n        count += 1u;\n        if (count >= {slot_iter}) {{\n            count = 0u;\n            slot += 1u;\n            if (slot >= NSLOTS_{k}) {{\n                slot = repeat_from;\n            }}\n        }}\n\
          \x20       if (DIFS_{k}) {{\n            if (!transform) {{\n                let de_i = f32({rout} / {a0});\n                if (de_i < out.de) {{\n                    out.de = de_i;\n                    out.trap = f32({a2} * {a2});\n                }}\n            }}\n            continue;\n        }}\n\
          \x20       if (!transform) {{\n            let r2 = f32({x} * {x} + {y} * {y} + {z} * {z} + {w} * {w});\n            out.trap = min(out.trap, r2);\n            {rout} = fl(r2);\n\
-         \x20           if ((!use_fixed || color_bail) && !(r2 <= select({bail2}, {bail2} * {bail2} * 64.0, color_bail))) {{\n                out.escaped = true;\n                if (!is_finite(r2)) {{\n                    {x} = prev_s.x;\n                    {y} = prev_s.y;\n                    {z} = prev_s.z;\n                    {w} = prev_s.w;\n                    {dr} = prev_dr;\n                }}\n                break;\n            }}\n        }}\n    }}\n",
+         \x20           if ((!use_fixed || color_bail) && !(r2 <= select({bail2}, {bail2} * {bail2} * 64.0, color_bail)){extra_bail}) {{\n                out.escaped = true;\n                if (!is_finite(r2)) {{\n                    {x} = prev_s.x;\n                    {y} = prev_s.y;\n                    {z} = prev_s.z;\n                    {w} = prev_s.w;\n                    {dr} = prev_dr;\n                }}\n                break;\n            }}\n        }}\n    }}\n",
         x = names[0],
         y = names[1],
         z = names[2],
@@ -439,6 +507,7 @@ fn f32_loop(prog: &Program, k: &str, cfg: &Uni, names: &[String]) -> String {
         dr = names[8],
         slot_iter = cfg.slot_iter,
         bail2 = cfg.bail2,
+        extra_bail = extras_bail(cfg),
     );
     s
 }
@@ -480,6 +549,7 @@ fn chain_dd(prog: &Program, k: &str, cfg: &Uni) -> String {
         "    if ({jo}) {{\n        {} = dd({j}.x, u.julia_lo.x);\n        {} = dd({j}.y, u.julia_lo.y);\n        {} = dd({j}.z, u.julia_lo.z);\n        {} = dd({j}.w, u.julia_lo.w);\n    }}",
         n[4], n[5], n[6], n[7]
     );
+    s.push_str(&extras_init(cfg, &n, |c, f| format!("dd_mulf({c}, {f})")));
     let _ = writeln!(s, "    var {dr}: dd = dd_f(1.0);\n    var {it}: dd = dd_f(0.0);");
     let _ = writeln!(s, "    var {rout}: dd = dd_add(dd_add(dd_sqr(v0), dd_sqr(v1)), dd_add(dd_sqr(v2), dd_sqr(v3)));\n    var {rold}: dd = dd_f(0.0);");
     // A mix continues from the first chain's point (passed in `mix_start`).
@@ -496,7 +566,9 @@ fn chain_dd(prog: &Program, k: &str, cfg: &Uni) -> String {
     let _ = writeln!(s, "    if (NSLOTS_{k} == 0u) {{\n        return out;\n    }}");
     let _ = writeln!(s, "    let limit = select(u32({limit}), fixed_n, use_fixed);\n    let repeat_from = u32({repeat});");
     s.push_str("    var n = 0u;\n");
-    let bail = format!("(!use_fixed || color_bail) && !(r2 <= select({b}, {b} * {b} * 64.0, color_bail))", b = cfg.bail2);
+    let bail_plain = format!("(!use_fixed || color_bail) && !(r2 <= select({b}, {b} * {b} * 64.0, color_bail))", b = cfg.bail2);
+    // The interpolation hybrid ignores the per-slot settings (like fractal.rs).
+    let bail = format!("{bail_plain}{}", extras_bail(cfg));
     let blend = k == "1" && prog.blend.is_some() && prog.slots.len() >= 2;
     if blend {
         let _ = writeln!(s, "    loop {{\n        if (n >= limit) {{\n            break;\n        }}\n        {rold} = {rout};\n        {it} = dd_f(f32(n));");
@@ -510,13 +582,15 @@ fn chain_dd(prog: &Program, k: &str, cfg: &Uni) -> String {
         s.push_str(&emit_iter_dd(&prog.slots[1].formula.def, prog.slots[1].offset, 3));
         let _ = writeln!(
             s,
-            "        }}\n        let w1 = dd(u.blend.x, u.blend_lo.x);\n        let w2 = dd(u.blend.y, u.blend_lo.y);\n        let len_a = dd_sqrt(dd_add(dd_add(dd_sqr(a_x), dd_sqr(a_y)), dd_sqr(a_z)));\n        let len_b = dd_sqrt(dd_add(dd_add(dd_sqr({x}), dd_sqr({y})), dd_sqr({z})));\n        let l = dd_add(dd_mul(len_a, w1), dd_mul(len_b, w2));\n        {x} = dd_add(dd_mul(a_x, w1), dd_mul({x}, w2));\n        {y} = dd_add(dd_mul(a_y, w1), dd_mul({y}, w2));\n        {z} = dd_add(dd_mul(a_z, w1), dd_mul({z}, w2));\n        {w} = dd_add(dd_mul(a_w, w1), dd_mul({w}, w2));\n        {dr} = dd_add(dd_mul(dd_abs(a_dr), w1), dd_mul(dd_abs({dr}), w2));\n        let f = dd_div(l, dd_sqrt(dd_add(dd_add(dd_add(dd_sqr({x}), dd_sqr({y})), dd_sqr({z})), dd_f(1.0e-40))));\n        {x} = dd_mul({x}, f);\n        {y} = dd_mul({y}, f);\n        {z} = dd_mul({z}, f);\n        n += 1u;\n        {rout} = dd_sqr(l);\n        let r2 = dd_hi({rout});\n        out.trap = min(out.trap, r2);\n        if ({bail}) {{\n            out.escaped = true;\n            break;\n        }}\n    }}\n    // The normal hybrid loop is not used.\n    if (false) {{"
+            "        }}\n        let w1 = dd(u.blend.x, u.blend_lo.x);\n        let w2 = dd(u.blend.y, u.blend_lo.y);\n        let len_a = dd_sqrt(dd_add(dd_add(dd_sqr(a_x), dd_sqr(a_y)), dd_sqr(a_z)));\n        let len_b = dd_sqrt(dd_add(dd_add(dd_sqr({x}), dd_sqr({y})), dd_sqr({z})));\n        let l = dd_add(dd_mul(len_a, w1), dd_mul(len_b, w2));\n        {x} = dd_add(dd_mul(a_x, w1), dd_mul({x}, w2));\n        {y} = dd_add(dd_mul(a_y, w1), dd_mul({y}, w2));\n        {z} = dd_add(dd_mul(a_z, w1), dd_mul({z}, w2));\n        {w} = dd_add(dd_mul(a_w, w1), dd_mul({w}, w2));\n        {dr} = dd_add(dd_mul(dd_abs(a_dr), w1), dd_mul(dd_abs({dr}), w2));\n        let f = dd_div(l, dd_sqrt(dd_add(dd_add(dd_add(dd_sqr({x}), dd_sqr({y})), dd_sqr({z})), dd_f(1.0e-40))));\n        {x} = dd_mul({x}, f);\n        {y} = dd_mul({y}, f);\n        {z} = dd_mul({z}, f);\n        n += 1u;\n        {rout} = dd_sqr(l);\n        let r2 = dd_hi({rout});\n        out.trap = min(out.trap, r2);\n        if ({bail_plain}) {{\n            out.escaped = true;\n            break;\n        }}\n    }}\n    // The normal hybrid loop is not used.\n    if (false) {{"
         );
     }
     s.push_str("    var slot = 0u;\n    var count = 0u;\n    let cap = limit * 8u + 64u;\n    var steps = 0u;\n");
     s.push_str("    var switched = false;\n");
     s.push_str("    loop {\n        if (n >= limit || steps >= cap) {\n            break;\n        }\n        steps += 1u;\n");
+    s.push_str(&extras_skip(cfg, k));
     let _ = writeln!(s, "        let prev_x = {x};\n        let prev_y = {y};\n        let prev_z = {z};\n        let prev_w = {w};\n        let prev_dr = {dr};");
+    s.push_str(&extras_pre(cfg, &n, "dd_f(0.0)"));
     let _ = writeln!(s, "        {it} = dd_f(f32(n));\n        {rold} = {rout};\n        var transform = false;\n        switch slot {{");
     for (i, sl) in prog.slots.iter().enumerate() {
         let _ = writeln!(s, "            case {i}u: {{ // {}", sl.formula.def.name);
@@ -527,6 +601,7 @@ fn chain_dd(prog: &Program, k: &str, cfg: &Uni) -> String {
         s.push_str("            }\n");
     }
     s.push_str("            default: {}\n        }\n");
+    s.push_str(&extras_post(cfg, &n, ["prev_x", "prev_y", "prev_z", "prev_w", "prev_dr"], |a, b| format!("dd_add({a}, dd_mulf(dd_sub({b}, {a}), slot_wt))")));
     let _ = write!(
         s,
         "        if (!transform) {{\n            n += 1u;\n        }}\n        count += 1u;\n        if (count >= {slot_iter}) {{\n            count = 0u;\n            slot += 1u;\n            if (slot >= NSLOTS_{k}) {{\n                slot = repeat_from;\n            }}\n        }}\n\
@@ -638,7 +713,7 @@ mod tests {
         let (fields, words) = uniform_layout();
         assert_eq!(words * 4, crate::renderer::uniforms_size());
         assert_eq!(fields[0].name, "cam_pos");
-        assert!(fields.iter().any(|f| f.name == "slots" && f.uint && f.array == Some(8)));
+        assert!(fields.iter().any(|f| f.name == "slots" && f.uint && f.array == Some(16)));
     }
 
     #[test]

@@ -20,6 +20,13 @@ pub struct ProgramSlot {
     /// Offset of this slot's constants in `Program::constants`.
     pub offset: usize,
     pub transform: bool,
+    /// Mandelbulber per-slot settings (see `scene::Slot`): iteration range (`stop` u32::MAX:
+    /// no end), weight, add C, escape test.
+    pub start: u32,
+    pub stop: u32,
+    pub weight: f64,
+    pub add_c: bool,
+    pub check_bailout: bool,
 }
 
 /// Value of a constant expression over a slot's parameters and `init` constants.
@@ -53,6 +60,10 @@ pub struct Program {
     /// Slot the chain continues with after the last one (index into `slots`).
     pub repeat_from: usize,
     pub max_iterations: u32,
+    /// No escape before this many iterations.
+    pub min_iterations: u32,
+    /// Factor of the constant per axis (1 = unchanged).
+    pub c_factor: [f64; 3],
     pub bailout2: f64,
     pub julia: bool,
     pub julia_c: [f64; 4],
@@ -285,7 +296,17 @@ impl Program {
             let values: Vec<f64> = formula.def.params.iter().map(|p| s.value(p)).collect();
             let offset = const_base + constants.len();
             constants.extend(formula.cpu.constants(&values));
-            slots.push(ProgramSlot { transform: formula.def.transform, formula, iterations: s.iterations, offset });
+            slots.push(ProgramSlot {
+                transform: formula.def.transform,
+                formula,
+                iterations: s.iterations,
+                offset,
+                start: s.start,
+                stop: s.stop.unwrap_or(u32::MAX),
+                weight: s.weight,
+                add_c: s.add_c,
+                check_bailout: s.check_bailout,
+            });
         }
         let difs = slots.iter().any(|s| s.formula.def.de == DeKind::Difs);
         let kinds: Vec<DeKind> = slots.iter().filter(|s| !s.transform && s.formula.def.de != DeKind::Difs).map(|s| s.formula.def.de).collect();
@@ -308,6 +329,8 @@ impl Program {
             repeat_from: repeat_from.unwrap_or(0).min(slots.len().saturating_sub(1)),
             slots,
             max_iterations: max_iterations.max(1),
+            min_iterations: f.min_iterations,
+            c_factor: f.c_factor,
             bailout2: f.bailout * f.bailout,
             julia: f.julia,
             julia_c: f.julia_c,
@@ -356,6 +379,9 @@ impl Program {
                     // rotation for the main fractal only).
                     let mut op = Self::new_at(f, &crate::scene::Cutting::default(), p.constants.len());
                     op.rotation_4d = None;
+                    // The Mandelbulber per-slot settings belong to the main fractal (the GPU
+                    // keeps only iteration counts per object slot).
+                    op.clear_extras();
                     op.color2 = p.color2;
                     p.constants.append(&mut op.constants);
                     p.missing.append(&mut op.missing);
@@ -399,9 +425,33 @@ impl Program {
         self.combine_mode == CombineMode::Mix && self.part2.as_deref().is_some_and(|p| p.difs)
     }
 
+    /// Any slot (of either chain) uses the Mandelbulber per-slot settings, or the minimum
+    /// iterations or constant factor are set: the shader then includes that code.
+    pub fn slot_extras(&self) -> bool {
+        let uses = |p: &Program| {
+            p.min_iterations > 0 || p.c_factor != [1.0; 3] || p.slots.iter().any(|s| s.start > 0 || s.stop != u32::MAX || s.weight != 1.0 || !s.add_c || !s.check_bailout)
+        };
+        uses(self) || self.part2.as_deref().is_some_and(uses)
+    }
+
+    /// Drops the per-slot settings, the minimum iterations and the constant factor.
+    pub fn clear_extras(&mut self) {
+        let clear = |p: &mut Program| {
+            p.min_iterations = 0;
+            p.c_factor = [1.0; 3];
+            for s in &mut p.slots {
+                (s.start, s.stop, s.weight, s.add_c, s.check_bailout) = (0, u32::MAX, 1.0, true, true);
+            }
+        };
+        clear(self);
+        if let Some(p2) = self.part2.as_deref_mut() {
+            clear(p2);
+        }
+    }
+
     pub fn signature(&self) -> String {
         let part = |p: &Program| -> String {
-            let mut s: String = p.slots.iter().map(|sl| format!("{}|{}|", sl.formula.def.name, sl.formula.source)).collect();
+            let mut s: String = p.slots.iter().map(|sl| format!("{}|{:x}|", sl.formula.def.name, sl.formula.text_hash())).collect();
             s.push_str(&format!("{:?}{}{}", p.de_kind, p.numeric, p.difs));
             s
         };
@@ -417,6 +467,7 @@ impl Program {
         s.push_str(if self.main_transform.is_some() { "|mt" } else { "" });
         s.push_str(if self.color_on_it >= 0 { "|coi" } else { "" });
         s.push_str(if self.is_mix() { "|mix" } else { "" });
+        s.push_str(if self.slot_extras() { "|extras" } else { "" });
         s.push_str(if self.layers { "|layers" } else { "" });
         s.push_str(if self.bump { "|bump" } else { "" });
         for o in &self.objects {
@@ -524,6 +575,9 @@ fn iterate_from(top: &Program, prog: &Program, regs: &mut [Vec<f64>], p: V3, fix
     if top.julia {
         st[4..8].copy_from_slice(&top.julia_c);
     }
+    for k in 0..3 {
+        st[4 + k] *= prog.c_factor[k];
+    }
     // A mix continues from the first chain's point; the constant stays the original one.
     if let Some(s) = start {
         v = s;
@@ -587,16 +641,44 @@ fn iterate_from(top: &Program, prog: &Program, regs: &mut [Vec<f64>], p: V3, fix
     // Transforms do not count as iterations; the step cap ends chains of only transforms.
     let cap = limit.saturating_mul(8).saturating_add(64);
     let mut steps = 0u32;
+    // Slots skipped in a row (iteration ranges): all of them out of range ends the orbit.
+    let mut skipped = 0usize;
     while out.n < limit && steps < cap {
         steps += 1;
         let s = &prog.slots[slot];
+        if out.n < s.start || out.n > s.stop {
+            count = 0;
+            slot += 1;
+            if slot >= prog.slots.len() {
+                slot = prog.repeat_from;
+            }
+            skipped += 1;
+            if skipped > prog.slots.len() {
+                break;
+            }
+            continue;
+        }
+        skipped = 0;
         let regs = &mut regs[slot];
         let prev = st;
         st[STATE_ROLD] = st[STATE_ROUT];
         st[STATE_ITER] = out.n as f64;
         regs[..STATE_COUNT].copy_from_slice(&st);
+        if !s.add_c {
+            regs[4..8].fill(0.0);
+        }
         (s.formula.cpu.iter)(regs);
         st.copy_from_slice(&regs[..STATE_COUNT]);
+        if !s.add_c {
+            st[4..8].copy_from_slice(&prev[4..8]);
+        }
+        if s.weight != 1.0 {
+            // Blend with the point before the formula (Mandelbulber's formula weight).
+            for k in 0..4 {
+                st[k] = prev[k] + (st[k] - prev[k]) * s.weight;
+            }
+            st[STATE_DR] = prev[STATE_DR] + (st[STATE_DR] - prev[STATE_DR]) * s.weight;
+        }
         if !s.transform {
             out.n += 1;
         }
@@ -625,7 +707,7 @@ fn iterate_from(top: &Program, prog: &Program, regs: &mut [Vec<f64>], p: V3, fix
             st[STATE_ROUT] = r2;
             // NaN counts as escaped (it never comes back): `inside` is false for NaN.
             let inside = r2 <= bail2;
-            if check && !inside {
+            if check && !inside && s.check_bailout && out.n >= prog.min_iterations {
                 out.escaped = true;
                 // Overflow in the last step: the estimate uses the state before it.
                 if !r2.is_finite() {
