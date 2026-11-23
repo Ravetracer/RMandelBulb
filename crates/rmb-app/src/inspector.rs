@@ -3,7 +3,7 @@
 //! Right panel: camera, ray marching, light, color, effects and scene notes.
 
 use egui::{RichText, Ui};
-use rmb_core::scene::{AoMode, BackgroundMode, ColorMode, ColorStop, DiffuseCurve, FogMode, GlowShape, Light, LightKind, MAX_LIGHTS, Scene};
+use rmb_core::scene::{AoMode, BackgroundMode, ColorMode, ColorStop, DiffuseCurve, FogMode, GlowShape, HazeShape, Light, LightKind, MAX_LIGHTS, Scene};
 use rmb_core::{V3, v3};
 
 use crate::viewport::{NavMode, Viewport};
@@ -922,6 +922,36 @@ fn effects(ui: &mut Ui, scene: &mut Scene) {
         widgets::color(ui, "Second glow color", "", &mut f.glow_color2);
         widgets::checkbox(ui, "Cover", "The glow covers the image instead of adding light", &mut f.glow_blend);
         widgets::slider_u32(ui, "Glow iteration", "Only ray steps where the fractal escaped after this many iterations glow (0 = all steps)", &mut f.glow_iteration, 0..=100, df.glow_iteration);
+        widgets::slider_log(
+            ui,
+            "Fractal haze",
+            "A glowing haze shaped by the main fractal: around its surfaces and in its gaps (Distance) or where its orbits take long to escape (Iterations, like Mandelbulber's iteration fog). It shines by itself and hides what lies behind it (0 = off)",
+            &mut f.haze,
+            0.0..=100.0,
+            df.haze,
+        );
+        if f.haze > 0.0 {
+            widgets::label(ui, "Haze shape", "What shapes the haze");
+            egui::ComboBox::from_id_salt("haze-shape").selected_text(f.haze_shape.label()).show_ui(ui, |ui| {
+                ui.selectable_value(&mut f.haze_shape, HazeShape::Distance, "Distance").on_hover_text("Thickest at the surfaces, fading with the distance from them: hugs every structure and fills narrow gaps");
+                ui.selectable_value(&mut f.haze_shape, HazeShape::Iterations, "Iterations").on_hover_text("Where the orbits take long to escape: shells around the fractal (Mandelbulber's iteration fog); depends a lot on the formula");
+            });
+            ui.end_row();
+            match f.haze_shape {
+                HazeShape::Distance => {
+                    widgets::slider_log(ui, "Haze reach", "How far the haze reaches from the surfaces, relative to the distance from the camera", &mut f.haze_size, 0.001..=1.0, df.haze_size);
+                }
+                HazeShape::Iterations => {
+                    widgets::slider(ui, "Haze from", "Share of the maximum iterations from which on there is haze (higher: closer to the fractal)", &mut f.haze_start, 0.0..=1.0, df.haze_start);
+                    widgets::slider(ui, "Haze to", "Share of the maximum iterations above which there is no haze again (1: none cut; lower keeps it out of regions that never escape)", &mut f.haze_end, 0.0..=1.0, df.haze_end);
+                }
+            }
+            widgets::slider(ui, "Haze glow", "Brightness of the haze's own light (0: a dark smoke that only hides)", &mut f.haze_glow, 0.0..=10.0, df.haze_glow);
+            widgets::checkbox(ui, "Haze from gradient", "The haze takes the gradient's colors by the iteration count (like the Iterations color mode) instead of one color", &mut f.haze_gradient);
+            if !f.haze_gradient {
+                widgets::color(ui, "Haze color", "", &mut f.haze_color);
+            }
+        }
     });
 
     let dd = rmb_core::scene::Dof::default();
@@ -975,6 +1005,17 @@ fn effects(ui: &mut Ui, scene: &mut Scene) {
             widgets::slider(ui, "Streak angle", "Direction of the streaks in degrees (0: horizontal, like anamorphic lenses)", &mut p.streak_angle, -90.0..=90.0, dp.streak_angle);
             widgets::slider_u32(ui, "Streak directions", "1: a line, 2: a cross, 3 and 4: stars", &mut p.streak_count, 1..=4, dp.streak_count);
             widgets::color(ui, "Streak tint", "Color of the streaks (multiplies the light they spread)", &mut p.streak_tint);
+        }
+        widgets::slider(ui, "Chromatic aberration", "Colored fringes toward the edges like a cheap lens: red drawn outward, blue inward, by this many percent of the distance from the center (0 = off)", &mut p.chromatic, -3.0..=3.0, dp.chromatic);
+        widgets::slider(ui, "Temperature", "White balance: warmer (above 0) or cooler colors", &mut p.temperature, -1.0..=1.0, dp.temperature);
+        widgets::slider(ui, "Tint", "White balance: toward magenta (above 0) or green", &mut p.tint, -1.0..=1.0, dp.tint);
+        widgets::slider(ui, "Shadow tint", "Split toning: the dark parts take the shadow color by this much (brightness stays; 0 = off)", &mut p.shadow_amount, 0.0..=1.0, dp.shadow_amount);
+        if p.shadow_amount > 0.0 {
+            widgets::color(ui, "Shadow color", "Color of the dark parts (e.g. teal against orange highlights)", &mut p.shadow_color);
+        }
+        widgets::slider(ui, "Highlight tint", "Split toning: the bright parts take the highlight color by this much (brightness stays; 0 = off)", &mut p.highlight_amount, 0.0..=1.0, dp.highlight_amount);
+        if p.highlight_amount > 0.0 {
+            widgets::color(ui, "Highlight color", "Color of the bright parts", &mut p.highlight_color);
         }
         let note = match rmb_core::render::denoise::available() {
             Ok(p) => format!("Intel Open Image Denoise on saved images (and the \"Denoised\" preview). Library: {}", p.display()),

@@ -127,8 +127,15 @@
       right-click removes), saved palettes, tools (reverse, shift, mirror, repeat, space evenly,
       sort, invert, hard steps / smooth), adjustments (hue, saturation, lightness, contrast,
       hardness)
-- [ ] Volumetric haze shaped by the fractal (like Mandelbulber's iteration fog)
-- [ ] Post effects: chromatic aberration, color grading
+- [x] Volumetric haze shaped by the fractal (Fog › Fractal haze): glows by itself and hides what
+      lies behind it, one color or the gradient's colors by the iteration count. Shapes:
+      Distance (falls off from the surfaces, hugs every structure; default) and Iterations
+      (Mandelbulber's iteration fog with a from/to share of the maximum iterations). Iteration
+      fog alone depends a lot on the formula: on a Mandelbulb the high counts only occur in a
+      thin shell at the surface, on scenes with large regions that never escape it covers
+      everything
+- [x] Post effects (Image): chromatic aberration, white balance (temperature, tint), split
+      toning (shadow and highlight colors)
 
 ## Performance
 

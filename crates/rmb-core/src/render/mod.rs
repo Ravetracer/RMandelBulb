@@ -525,21 +525,84 @@ impl Rng {
     }
 }
 
+/// Chromatic aberration on a linear RGB image (3 floats per pixel): red sampled `amount`
+/// percent farther from the center, blue as much closer (bilinear; display.wgsl does the same).
+pub fn chromatic_aberration(color: &mut [f32], width: u32, height: u32, amount: f64) {
+    if amount == 0.0 || width == 0 || height == 0 {
+        return;
+    }
+    let src = color.to_vec();
+    let (w, h) = (width as usize, height as usize);
+    let k = amount * 0.01;
+    let sample = |fx: f64, fy: f64, ch: usize| -> f32 {
+        let fx = fx.clamp(0.0, (w - 1) as f64);
+        let fy = fy.clamp(0.0, (h - 1) as f64);
+        let (x0, y0) = (fx.floor() as usize, fy.floor() as usize);
+        let (x1, y1) = ((x0 + 1).min(w - 1), (y0 + 1).min(h - 1));
+        let (tx, ty) = ((fx - x0 as f64) as f32, (fy - y0 as f64) as f32);
+        let at = |x: usize, y: usize| src[(y * w + x) * 3 + ch];
+        let top = at(x0, y0) + (at(x1, y0) - at(x0, y0)) * tx;
+        let bottom = at(x0, y1) + (at(x1, y1) - at(x0, y1)) * tx;
+        top + (bottom - top) * ty
+    };
+    let (cx, cy) = (0.5 * (w as f64 - 1.0), 0.5 * (h as f64 - 1.0));
+    use rayon::prelude::*;
+    color.par_chunks_mut(w * 3).enumerate().for_each(|(y, row)| {
+        for x in 0..w {
+            let (dx, dy) = (x as f64 - cx, y as f64 - cy);
+            row[x * 3] = sample(cx + dx * (1.0 + k), cy + dy * (1.0 + k), 0);
+            row[x * 3 + 2] = sample(cx + dx * (1.0 - k), cy + dy * (1.0 - k), 2);
+        }
+    });
+}
+
 /// Filmic curve (Narkowicz ACES fit).
 pub fn aces(x: f64) -> f64 {
     ((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14)).clamp(0.0, 1.0)
 }
 
-/// Linear radiance to display RGB (0..1): exposure, tone map, saturation, contrast, vignette, gamma.
-/// `u`, `v` are the pixel center in 0..1.
+fn luma(c: [f64; 3]) -> f64 {
+    0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
+}
+
+/// White balance factors of `post` (temperature: red against blue, tint: green), scaled so
+/// that gray keeps its brightness (display.wgsl `white_balance`).
+pub fn white_balance(post: &crate::scene::Post) -> [f64; 3] {
+    let (t, g) = (post.temperature.clamp(-1.0, 1.0), post.tint.clamp(-1.0, 1.0));
+    let f = [1.0 + 0.3 * t, 1.0 - 0.3 * g, 1.0 - 0.3 * t];
+    let l = luma(f).max(1e-6);
+    f.map(|x| x / l)
+}
+
+/// Split toning: `c` (0..1) toward the shadow color in the dark and the highlight color in the
+/// bright parts, each color scaled to the brightness of gray (display.wgsl `split_tone`).
+fn split_tone(c: [f64; 3], post: &crate::scene::Post) -> [f64; 3] {
+    if post.shadow_amount <= 0.0 && post.highlight_amount <= 0.0 {
+        return c;
+    }
+    let l = luma(c).clamp(0.0, 1.0);
+    let tone = |col: [f32; 3], w: f64| {
+        let col = col.map(|x| x as f64);
+        let lc = luma(col).max(1e-3);
+        col.map(|x| 1.0 + (x / lc - 1.0) * w)
+    };
+    let ts = tone(post.shadow_color, post.shadow_amount.clamp(0.0, 1.0) * (1.0 - l) * (1.0 - l));
+    let th = tone(post.highlight_color, post.highlight_amount.clamp(0.0, 1.0) * l * l);
+    [0, 1, 2].map(|k| c[k] * ts[k] * th[k])
+}
+
+/// Linear radiance to display RGB (0..1): exposure and white balance, tone map, saturation,
+/// split toning, contrast, vignette, gamma. `u`, `v` are the pixel center in 0..1.
 pub fn post_process(c: [f64; 3], post: &crate::scene::Post, u: f64, v: f64) -> [f64; 3] {
     let e = 2f64.powf(post.exposure);
-    let mut c = c.map(|x| (x * e).max(0.0));
+    let wb = white_balance(post);
+    let mut c = [0, 1, 2].map(|k| (c[k] * e * wb[k]).max(0.0));
     if post.tone_map {
         c = c.map(aces);
     }
-    let luma = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+    let luma = luma(c);
     c = c.map(|x| luma + (x - luma) * post.saturation);
+    c = split_tone(c, post);
     // Display space: the values are already gamma encoded.
     let g = if post.display_space { 2.2 / post.gamma.max(0.1) } else { 1.0 / post.gamma.max(0.1) };
     let (du, dv) = (u - 0.5, v - 0.5);

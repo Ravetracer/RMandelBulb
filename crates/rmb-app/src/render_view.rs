@@ -217,6 +217,7 @@ impl RenderView {
             let mut img = (*base).clone();
             img.add_flares(&scene);
             rmb_core::render::bloom::apply(&mut img.color, img.width, img.height, post);
+            rmb_core::render::chromatic_aberration(&mut img.color, img.width, img.height, post.chromatic);
             let rgba = img.to_rgba8(post);
             let _ = tx.send(Developed { rgba, width: img.width, height: img.height, post: post.clone(), generation, denoised, note });
         });

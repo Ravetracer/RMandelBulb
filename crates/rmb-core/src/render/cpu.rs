@@ -63,17 +63,23 @@ pub fn path_specular_share(amount: f64, spec: [f64; 3], trans: f64, glass: f64) 
     s.max(g).clamp(0.0, 0.9)
 }
 
-/// The glow and steam sample of a ray: random seed, total weight, the picked point, its falloff
-/// size, ray distance and whether the light falls off along the way to the surface (steam;
-/// march.wgsl `pick_*`).
+/// What the primary march of a ray collects besides the hit (march.wgsl `pick_*`, `haze_*`):
+/// the glow and steam sample (`steam` on, random seed, total weight, the picked point, its
+/// falloff size, ray distance and whether the light falls off along the way to the surface),
+/// and the fractal haze (`haze` on, the light it added and the share of light behind it that
+/// gets through).
 #[derive(Clone, Copy, Default)]
 pub struct SteamPick {
+    pub steam: bool,
     pub seed: u32,
     pub w: f64,
     pub pos: V3,
     pub rs: f64,
     pub t: f64,
     pub fall: bool,
+    pub haze: bool,
+    pub haze_light: [f64; 3],
+    pub haze_keep: f64,
 }
 
 impl SteamPick {
@@ -236,7 +242,24 @@ impl<'a> Shader<'a> {
             }
             // At least a tenth of the threshold: no stalling where the estimate is near zero.
             last_step = (orbit.de * m.step).max(eps * 0.1);
-            if let Some(pk) = pick.as_deref_mut() {
+            if let Some(pk) = pick.as_deref_mut().filter(|pk| pk.haze) {
+                // Fractal haze over this step: thickness relative to the distance of the step's middle
+                // (the same at every zoom), its own light dimmed by the haze in front of it.
+                let f = &self.scene.fog;
+                let tm = (t + 0.5 * last_step).max(eps);
+                let n = crate::scene::Fog::haze_iterations(orbit.iterations, orbit.r2, orbit.r2_old, orbit.escaped, self.prog.bailout2);
+                let dens = if orbit.object == 0 { f.haze_density(orbit.de, n, self.prog.max_iterations as f64, tm) } else { 0.0 };
+                if dens > 1e-4 {
+                    let a = 1.0 - (-f.haze * dens * last_step / tm).exp();
+                    // Colors from the main gradient by the smooth iteration count.
+                    let col = if f.haze_gradient { self.gradient(0, n, t).0 } else { f.haze_color.map(|v| v as f64) };
+                    for (l, c) in pk.haze_light.iter_mut().zip(col) {
+                        *l += pk.haze_keep * a * c * f.haze_glow;
+                    }
+                    pk.haze_keep *= 1.0 - a;
+                }
+            }
+            if let Some(pk) = pick.as_deref_mut().filter(|pk| pk.steam) {
                 // Glow and steam: offer the point in proportion to its weight (glow: falloff from
                 // the surface; steam: also the noise density).
                 let r = (sm.emission_glow_size * t).max(eps);
@@ -909,8 +932,10 @@ impl<'a> Shader<'a> {
         // nearest surface (cosine weighted around the falling distance) finds the emitted light
         // of that surface, so glow and steam take the color of the glowing parts themselves.
         let steam_on = self.emissive && (sc.material.steam > 0.0 || sc.material.emission_glow > 0.0);
-        let mut pick = SteamPick { seed: if steam_on { (rng.next_f64() * 16_777_216.0) as u32 } else { 0 }, ..SteamPick::default() };
-        let (hit, _, steps) = self.march_ex(ev, o, d, t0, max_t, sc.march.max_steps, true, steam_on.then_some(&mut pick));
+        // Fractal haze along the ray (not inside glass).
+        let haze_on = sc.fog.haze > 0.0 && !inside;
+        let mut pick = SteamPick { steam: steam_on, seed: if steam_on { (rng.next_f64() * 16_777_216.0) as u32 } else { 0 }, haze: haze_on, haze_keep: 1.0, ..SteamPick::default() };
+        let (hit, _, steps) = self.march_ex(ev, o, d, t0, max_t, sc.march.max_steps, true, (steam_on || haze_on).then_some(&mut pick));
         let mut halo = [0.0; 3];
         if steam_on {
             let (u1, u2) = (rng.next_f64(), rng.next_f64());
@@ -1089,6 +1114,15 @@ impl<'a> Shader<'a> {
                         *ck += lk * w;
                     }
                 }
+            }
+        }
+        // The fractal haze in front of everything the ray saw.
+        let mut albedo = albedo;
+        if haze_on {
+            let keep = pick.haze_keep;
+            for k in 0..3 {
+                c[k] = c[k] * keep + pick.haze_light[k];
+                albedo[k] = albedo[k] * keep + (1.0 - keep) * (pick.haze_light[k] / (1.0 - keep).max(1e-9)).clamp(0.0, 1.0);
             }
         }
         if inside {
@@ -1293,6 +1327,7 @@ impl CpuRenderer {
         // Bloom works on the whole image (like the GPU preview, without lens flares here).
         let mut lin: Vec<f32> = self.accum.iter().flat_map(|a| a.map(|v| (v / n) as f32)).collect();
         super::bloom::apply(&mut lin, self.width, self.height, &self.scene.post);
+        super::chromatic_aberration(&mut lin, self.width, self.height, self.scene.post.chromatic);
         let mut out = Vec::with_capacity(self.accum.len() * 4);
         for (i, a) in lin.as_chunks::<3>().0.iter().enumerate() {
             let (x, y) = ((i as u32 % self.width) as f64, (i as u32 / self.width) as f64);

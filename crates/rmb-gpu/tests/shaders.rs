@@ -1067,3 +1067,64 @@ fn resting_preview_continues_with_the_baked_shader() {
     eprintln!("mean difference {mean:.3} after {n} samples");
     assert!(mean < 1.0, "mean difference {mean}");
 }
+
+#[test]
+fn gpu_matches_cpu_with_fractal_haze() {
+    use rmb_core::scene::HazeShape;
+    for (shape, gradient) in [(HazeShape::Distance, false), (HazeShape::Distance, true), (HazeShape::Iterations, true)] {
+        let mut scene = Scene::default();
+        scene.lighting.ao_mode = rmb_core::scene::AoMode::Fast;
+        // The bulb's iteration counts only climb right at the surface: a thicker haze.
+        scene.fog.haze = if shape == HazeShape::Iterations { 40.0 } else { 4.0 };
+        scene.fog.haze_shape = shape;
+        scene.fog.haze_size = 0.06;
+        scene.fog.haze_start = 0.0;
+        scene.fog.haze_glow = 1.5;
+        scene.fog.haze_gradient = gradient;
+        // The haze must change the image.
+        let mut plain = scene.clone();
+        plain.fog.haze = 0.0;
+        let w = (48, 32);
+        if let Ok(ctx) = rmb_gpu::GpuContext::new_headless() {
+            let a = rmb_gpu::render_blocking(ctx.clone(), &scene, w.0, w.1, 1, |_| true).expect("gpu render");
+            let b = rmb_gpu::render_blocking(ctx, &plain, w.0, w.1, 1, |_| true).expect("gpu render");
+            let diff = a.iter().zip(&b).map(|(x, y)| (*x as i32 - *y as i32).abs()).sum::<i32>() as f64 / a.len() as f64;
+            eprintln!("{shape:?} gradient {gradient}: haze changes the image by {diff:.2}");
+            assert!(diff > 2.0, "{shape:?}: the haze must change the image (mean difference {diff})");
+        }
+        if let Some((mean, big, n)) = gpu_cpu_difference(scene) {
+            assert!(mean < 4.0 && big * 100 < n, "{shape:?} gradient {gradient}: mean {mean}, {big} of {n} channels far off");
+        }
+    }
+}
+
+/// Chromatic aberration, white balance and split toning look the same in the GPU display pass
+/// and in the CPU post processing of exports.
+#[test]
+fn display_matches_cpu_with_chromatic_aberration_and_grading() {
+    let Ok(ctx) = rmb_gpu::GpuContext::new_headless() else {
+        eprintln!("no GPU, skipped");
+        return;
+    };
+    let mut scene = Scene::default();
+    scene.lighting.ao_mode = rmb_core::scene::AoMode::Fast;
+    let p = &mut scene.post;
+    p.chromatic = 1.5;
+    p.temperature = 0.4;
+    p.tint = -0.3;
+    p.shadow_amount = 0.6;
+    p.highlight_amount = 0.5;
+    let (w, h) = (96, 64);
+    let shown = rmb_gpu::render_blocking(ctx.clone(), &scene, w, h, 1, |_| true).expect("gpu render");
+    let mut img = rmb_gpu::render_blocking_hdr(ctx.clone(), &scene, w, h, 1, |_| true).expect("gpu render");
+    rmb_core::render::chromatic_aberration(&mut img.color, w, h, scene.post.chromatic);
+    let mine = img.to_rgba8(&scene.post);
+    let worst = shown.iter().zip(&mine).map(|(a, b)| (*a as i32 - *b as i32).abs()).max().unwrap();
+    assert!(worst <= 2, "display differs by {worst}");
+    // The effects change the image.
+    let mut plain = scene.clone();
+    plain.post = rmb_core::scene::Post::default();
+    let base = rmb_gpu::render_blocking(ctx, &plain, w, h, 1, |_| true).expect("gpu render");
+    let diff = shown.iter().zip(&base).map(|(a, b)| (*a as i32 - *b as i32).abs()).sum::<i32>() as f64 / shown.len() as f64;
+    assert!(diff > 3.0, "mean change {diff}");
+}

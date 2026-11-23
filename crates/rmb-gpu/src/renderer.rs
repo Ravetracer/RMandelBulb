@@ -142,6 +142,9 @@ struct Uniforms {
     mt1: [f32; 4],
     mt2: [f32; 4],
     mt_pos: [f32; 4],
+    haze: [f32; 4],
+    haze_col: [f32; 4],
+    haze2: [f32; 4],
 }
 
 /// Splits an f64 into the high and low f32 of a double-float.
@@ -397,6 +400,11 @@ struct PostUniforms {
     slv: [u32; 4],
     /// Streak threshold, length, angle, directions (used by the bloom passes).
     sprm: [f32; 4],
+    /// White balance factors, w: chromatic aberration (share of the distance from the center).
+    wb: [f32; 4],
+    /// Split toning: shadow color, w: amount; highlight color, w: amount.
+    shadow: [f32; 4],
+    highlight: [f32; 4],
 }
 
 /// Streak regions after the bloom pyramid: source, two scratch levels, the sum (first texel,
@@ -635,6 +643,9 @@ fn uniforms(scene: &Scene, prog: &Program, w: u32, h: u32, fast: bool) -> Unifor
         mt1: prog.main_transform.map_or([0.0; 4], |t| v4(rmb_core::v3(t.inv[1][0], t.inv[1][1], t.inv[1][2]) * (1.0 / t.size.y), 0.0)),
         mt2: prog.main_transform.map_or([0.0; 4], |t| v4(rmb_core::v3(t.inv[2][0], t.inv[2][1], t.inv[2][2]) * (1.0 / t.size.z), 0.0)),
         mt_pos: prog.main_transform.filter(|_| prog.deep.is_none()).map_or([0.0; 4], |t| v4(t.pos, 0.0)),
+        haze: [scene.fog.haze.max(0.0) as f32, scene.fog.haze_start as f32, scene.fog.haze_glow as f32, if scene.fog.haze_gradient { 1.0 } else { 0.0 }],
+        haze_col: c4(scene.fog.haze_color, scene.fog.haze_end),
+        haze2: [if scene.fog.haze_shape == rmb_core::scene::HazeShape::Iterations { 1.0 } else { 0.0 }, scene.fog.haze_size as f32, 0.0, 0.0],
     }
 }
 
@@ -669,6 +680,12 @@ fn post_uniforms(scene: &Scene, w: u32, h: u32) -> PostUniforms {
         },
         slv: streak_regions(w, h).0[3],
         sprm: [p.streak_threshold as f32, p.streak_length as f32, p.streak_angle as f32, p.streak_count.clamp(1, 4) as f32],
+        wb: {
+            let f = rmb_core::render::white_balance(p);
+            [f[0] as f32, f[1] as f32, f[2] as f32, (p.chromatic * 0.01) as f32]
+        },
+        shadow: c4(p.shadow_color, p.shadow_amount.clamp(0.0, 1.0)),
+        highlight: c4(p.highlight_color, p.highlight_amount.clamp(0.0, 1.0)),
     }
 }
 

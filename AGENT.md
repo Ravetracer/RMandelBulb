@@ -180,6 +180,15 @@ cargo clippy -j 8 --workspace --all-targets
   (`Fog::scatter_phase`). GPU in `trace` with `fog_density_at`, `fog_distance_for`,
   `scatter_phase` (uniform `fog4`).
 
+## Fractal haze
+
+- `Fog::haze*` (`HazeShape::Distance` / `Iterations`): accumulated in `march_ex` (CPU, through
+  `SteamPick::haze*`) and `march_ray` (GPU, private `haze_*`) on the primary march of every
+  `trace` segment (not inside glass). Optical depth per step is density × step / distance of
+  the step's middle (scale-free: the same at every zoom); the haze's light is added and the
+  rest dimmed at the end of `trace`. `Fog::haze_iterations` is the smooth iteration count from
+  the growth of the last radius (any power); it also picks the gradient color.
+
 ## Path tracing
 
 - `Lighting::render_mode` (`RenderMode::Classic` default, `PathTraced`). `sample_aux` /
@@ -197,6 +206,9 @@ cargo clippy -j 8 --workspace --all-targets
   evaluated exactly at the gradient position (`apply_bands`, GPU: `gradient()` in march.wgsl, LUT from `LUT_BANDS`).
   `Material::rotation` and `GlowBand::speed` are integrated over the frames in
   `animation.rs` (`color_phases`), so they only act in animations.
+- Post effects: `render::post_process` (white balance before the tone mapping, split toning
+  after the saturation) and `render::chromatic_aberration` (on the linear image after bloom);
+  display.wgsl mirrors both (`lin_at`, `lin_bilinear`, `split_tone`).
 - `render/bloom.rs`: bloom pyramid and streaks (Kawase streak filter) applied in
   `HdrImage::finish*` and `CpuRenderer::rgba8`; the GPU preview runs the same passes
   (`bloom.wgsl`, composite in display.wgsl; streak regions after the pyramid in one buffer).

@@ -13,6 +13,9 @@ struct P {
     streak: vec4<f32>, // streak tint times strength, on
     slv: vec4<u32>, // streaks: first texel, width, height
     sprm: vec4<f32>, // streak settings (bloom passes only)
+    wb: vec4<f32>,   // white balance factors, w: chromatic aberration
+    shadow: vec4<f32>,    // split toning: shadow color, w: amount
+    highlight: vec4<f32>, // highlight color, w: amount
 }
 
 @group(0) @binding(0) var<uniform> p: P;
@@ -50,21 +53,18 @@ fn aces(x: f32) -> f32 {
     return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);
 }
 
-@compute @workgroup_size(8, 8)
-fn display_main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    if (gid.x >= p.size.x || gid.y >= p.size.y) {
-        return;
-    }
-    let a = accum[gid.y * p.size.x + gid.x];
+// The linear color of pixel (x, y): samples, lens flares, bloom and streaks.
+fn lin_at(x: u32, y: u32) -> vec3<f32> {
+    let a = accum[y * p.size.x + x];
     var lin = a.xyz / max(a.w, 1.0);
     if (p.size.z > 0u && p.size.w > 0u) {
-        let fx = min(gid.x * p.size.z / p.size.x, p.size.z - 1u);
-        let fy = min(gid.y * p.size.w / p.size.y, p.size.w - 1u);
+        let fx = min(x * p.size.z / p.size.x, p.size.z - 1u);
+        let fy = min(y * p.size.w / p.size.y, p.size.w - 1u);
         lin += flare[fy * p.size.z + fx].xyz;
     }
+    let u = (f32(x) + 0.5) / f32(p.size.x);
+    let v = (f32(y) + 0.5) / f32(p.size.y);
     if (p.bloom.x > 0.0) {
-        let u = (f32(gid.x) + 0.5) / f32(p.size.x);
-        let v = (f32(gid.y) + 0.5) / f32(p.size.y);
         var s = vec3<f32>(0.0);
         for (var k = 0u; k < u32(p.bloom.y); k++) {
             s += bloom_sample(k, u, v) * p.lw[k].x;
@@ -72,16 +72,60 @@ fn display_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         lin += s * p.bloom.x;
     }
     if (p.streak.w > 0.5) {
-        let u = (f32(gid.x) + 0.5) / f32(p.size.x);
-        let v = (f32(gid.y) + 0.5) / f32(p.size.y);
         lin += level_sample(p.slv, u, v) * p.streak.xyz;
     }
-    var c = max(lin * exp2(p.a.x), vec3<f32>(0.0));
+    return lin;
+}
+
+// Bilinear linear color at the pixel position (fx, fy) (mirrors render::chromatic_aberration).
+fn lin_bilinear(fx_in: f32, fy_in: f32) -> vec3<f32> {
+    let fx = clamp(fx_in, 0.0, f32(p.size.x) - 1.0);
+    let fy = clamp(fy_in, 0.0, f32(p.size.y) - 1.0);
+    let x0 = u32(floor(fx));
+    let y0 = u32(floor(fy));
+    let x1 = min(x0 + 1u, p.size.x - 1u);
+    let y1 = min(y0 + 1u, p.size.y - 1u);
+    let tx = fx - f32(x0);
+    let ty = fy - f32(y0);
+    let top = mix(lin_at(x0, y0), lin_at(x1, y0), tx);
+    let bottom = mix(lin_at(x0, y1), lin_at(x1, y1), tx);
+    return mix(top, bottom, ty);
+}
+
+// Mirrors render::split_tone.
+fn split_tone(c: vec3<f32>) -> vec3<f32> {
+    if (p.shadow.w <= 0.0 && p.highlight.w <= 0.0) {
+        return c;
+    }
+    let w = vec3<f32>(0.2126, 0.7152, 0.0722);
+    let l = clamp(dot(c, w), 0.0, 1.0);
+    let ts = 1.0 + (p.shadow.xyz / max(dot(p.shadow.xyz, w), 1.0e-3) - 1.0) * (p.shadow.w * (1.0 - l) * (1.0 - l));
+    let th = 1.0 + (p.highlight.xyz / max(dot(p.highlight.xyz, w), 1.0e-3) - 1.0) * (p.highlight.w * l * l);
+    return c * ts * th;
+}
+
+@compute @workgroup_size(8, 8)
+fn display_main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    if (gid.x >= p.size.x || gid.y >= p.size.y) {
+        return;
+    }
+    var lin = lin_at(gid.x, gid.y);
+    if (p.wb.w != 0.0) {
+        // Chromatic aberration: red from farther out, blue from closer to the center.
+        let cx = 0.5 * (f32(p.size.x) - 1.0);
+        let cy = 0.5 * (f32(p.size.y) - 1.0);
+        let dx = f32(gid.x) - cx;
+        let dy = f32(gid.y) - cy;
+        lin.x = lin_bilinear(cx + dx * (1.0 + p.wb.w), cy + dy * (1.0 + p.wb.w)).x;
+        lin.z = lin_bilinear(cx + dx * (1.0 - p.wb.w), cy + dy * (1.0 - p.wb.w)).z;
+    }
+    var c = max(lin * exp2(p.a.x) * p.wb.xyz, vec3<f32>(0.0));
     if (p.b.x > 0.5) {
         c = vec3<f32>(aces(c.x), aces(c.y), aces(c.z));
     }
     let luma = dot(c, vec3<f32>(0.2126, 0.7152, 0.0722));
     c = luma + (c - luma) * p.a.w;
+    c = split_tone(c);
     // Display space: the values are already gamma encoded.
     var g = 1.0 / max(p.a.y, 0.1);
     if (p.b.z > 0.5) {

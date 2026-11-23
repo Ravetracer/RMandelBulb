@@ -1093,6 +1093,29 @@ impl Default for Background {
     }
 }
 
+/// What shapes the fractal haze.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum HazeShape {
+    /// Thickest at the surfaces, fading with the distance from them: hugs every structure,
+    /// fills narrow gaps.
+    #[default]
+    Distance,
+    /// Where the fractal's orbits take long to escape (Mandelbulber's iteration fog): shells
+    /// around the fractal, depending a lot on the formula.
+    Iterations,
+}
+
+impl HazeShape {
+    pub const ALL: [HazeShape; 2] = [HazeShape::Distance, HazeShape::Iterations];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            HazeShape::Distance => "Distance",
+            HazeShape::Iterations => "Iterations",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum FogMode {
     /// Exponential with the distance (`density`).
@@ -1139,6 +1162,25 @@ pub struct Fog {
     /// Henyey-Greenstein anisotropy of the scattering: above 0 the fog glows most when looking
     /// toward a light, 0 scatters evenly.
     pub scatter_forward: f64,
+    /// Haze shaped by the main fractal (0 = off): thickness of a glowing haze near its
+    /// surfaces or where its orbits take long to escape (see `haze_shape`).
+    pub haze: f64,
+    pub haze_shape: HazeShape,
+    /// Distance shape: how far the haze reaches from the surfaces, relative to the distance
+    /// from the camera.
+    pub haze_size: f64,
+    /// Iterations shape: share of the maximum iterations (0..1) from which on a point lies in
+    /// the haze; higher values keep it closer to the fractal.
+    pub haze_start: f64,
+    /// Iterations shape: share of the maximum iterations above which there is no haze again
+    /// (1 = none cut): keeps it out of regions that never escape.
+    pub haze_end: f64,
+    /// Brightness of the haze's own light (0: a dark, absorbing smoke).
+    pub haze_glow: f64,
+    pub haze_color: [f32; 3],
+    /// The haze takes its colors from the main gradient (by the smooth iteration count, like
+    /// the "Iterations" color mode) instead of `haze_color`.
+    pub haze_gradient: bool,
 }
 
 impl Default for Fog {
@@ -1161,11 +1203,52 @@ impl Default for Fog {
             glow_iteration: 0,
             scatter: 0.0,
             scatter_forward: 0.3,
+            haze: 0.0,
+            haze_shape: HazeShape::Distance,
+            haze_size: 0.02,
+            haze_start: 0.2,
+            haze_end: 1.0,
+            haze_glow: 1.0,
+            haze_color: [0.25, 0.5, 1.0],
+            haze_gradient: false,
         }
     }
 }
 
 impl Fog {
+    /// Smooth iteration count of an orbit that ran `iterations` (squared radius `r2`, before the
+    /// last iteration `r2_old`, squared bailout `bailout2`): the fraction of the last iteration
+    /// comes from how fast the radius grew, which fits any power (march.wgsl `haze_iterations`).
+    pub fn haze_iterations(iterations: u32, r2: f64, r2_old: f64, escaped: bool, bailout2: f64) -> f64 {
+        let mut n = iterations as f64;
+        if escaped && r2 > 1.0 {
+            let lb = bailout2.max(4.0).sqrt().ln().ln();
+            let d = (0.5 * r2.ln()).ln();
+            let dd = if r2_old > 1.0 { d - (0.5 * r2_old.ln()).ln() } else { std::f64::consts::LN_2 };
+            n += ((lb - d) / dd.max(1e-6)).clamp(-1.0, 0.0);
+        }
+        n
+    }
+
+    /// Density of the fractal haze (0..1) at a point with distance estimate `de` and smooth
+    /// iteration count `n` of at most `max_iterations`, `dist` from the camera (march.wgsl
+    /// `haze_density`). Distance shape: falls off from the surfaces over `haze_size` × `dist`.
+    /// Iterations shape: the iteration share from `haze_start` to `haze_end`, squared for a
+    /// soft onset.
+    pub fn haze_density(&self, de: f64, n: f64, max_iterations: f64, dist: f64) -> f64 {
+        match self.haze_shape {
+            HazeShape::Distance => (-de.max(0.0) / (self.haze_size * dist).max(1e-30)).exp(),
+            HazeShape::Iterations => {
+                let share = n / max_iterations.max(1.0);
+                if share > self.haze_end {
+                    return 0.0;
+                }
+                let x = ((share - self.haze_start) / (self.haze_end - self.haze_start).max(1e-6)).clamp(0.0, 1.0);
+                x * x
+            }
+        }
+    }
+
     /// Fog amount at ray distance `t` (0 = none, 1 = only fog; below 0 brightens like
     /// Mandelbulb3D's depth fog in front of its start).
     pub fn amount(&self, t: f64, near: f64, far: f64) -> f64 {
@@ -1279,6 +1362,19 @@ pub struct Post {
     pub streak_angle: f64,
     pub streak_count: u32,
     pub streak_tint: [f32; 3],
+    /// Chromatic aberration: red drawn outward, blue inward from the image center, by this many
+    /// percent of the distance from the center (0 = off).
+    pub chromatic: f64,
+    /// White balance: warmer (above 0) or cooler colors (-1..1).
+    pub temperature: f64,
+    /// White balance: toward magenta (above 0) or green (-1..1).
+    pub tint: f64,
+    /// Split toning: the dark parts take this color by `shadow_amount` (0..1), the bright parts
+    /// `highlight_color` by `highlight_amount`; brightness stays.
+    pub shadow_color: [f32; 3],
+    pub shadow_amount: f64,
+    pub highlight_color: [f32; 3],
+    pub highlight_amount: f64,
 }
 
 impl Default for Post {
@@ -1302,6 +1398,13 @@ impl Default for Post {
             streak_angle: 0.0,
             streak_count: 1,
             streak_tint: [0.6, 0.8, 1.0],
+            chromatic: 0.0,
+            temperature: 0.0,
+            tint: 0.0,
+            shadow_color: [0.1, 0.45, 0.55],
+            shadow_amount: 0.0,
+            highlight_color: [1.0, 0.6, 0.3],
+            highlight_amount: 0.0,
         }
     }
 }

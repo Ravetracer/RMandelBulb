@@ -102,6 +102,7 @@ impl HdrImage {
         };
         self.add_flares(scene);
         super::bloom::apply(&mut self.color, self.width, self.height, post);
+        super::chromatic_aberration(&mut self.color, self.width, self.height, post.chromatic);
         (self.to_rgba8(post), outcome)
     }
 
@@ -115,6 +116,7 @@ impl HdrImage {
             }
         };
         super::bloom::apply(&mut self.color, self.width, self.height, post);
+        super::chromatic_aberration(&mut self.color, self.width, self.height, post.chromatic);
         (self.to_rgba8(post), outcome)
     }
 }

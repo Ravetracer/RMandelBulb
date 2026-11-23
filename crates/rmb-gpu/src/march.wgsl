@@ -85,6 +85,11 @@ struct U {
     mt1: vec4<f32>,
     mt2: vec4<f32>,
     mt_pos: vec4<f32>,
+    // Fractal haze (Fog::haze*): strength (0 = off), start share, glow, colors from the
+    // gradient; its color, w: end share.
+    haze: vec4<f32>,
+    haze_col: vec4<f32>,
+    haze2: vec4<f32>,      // haze shape (0 distance, 1 iterations), size
 }
 
 @group(0) @binding(0) var<uniform> u: U;
@@ -1331,6 +1336,40 @@ var<private> pick_rs: f32;
 var<private> pick_t: f32;
 var<private> pick_fall: bool;
 
+// The fractal haze of the primary march (SteamPick::haze*): on, light added, share of the light
+// behind it that gets through.
+var<private> haze_on: bool;
+var<private> haze_light: vec3<f32>;
+var<private> haze_keep: f32;
+
+// Mirrors Fog::haze_iterations.
+fn haze_iterations(ob: Orbit) -> f32 {
+    var n = f32(ob.n);
+    if (ob.escaped && ob.r2 > 1.0) {
+        let lb = log(log(sqrt(max(u.march.z, 4.0))));
+        let d = log(0.5 * log(ob.r2));
+        var dd = 0.6931472;
+        if (ob.r2_old > 1.0) {
+            dd = d - log(0.5 * log(ob.r2_old));
+        }
+        n += clamp((lb - d) / max(dd, 1.0e-6), -1.0, 0.0);
+    }
+    return n;
+}
+
+// Mirrors Fog::haze_density (u.haze2.x: shape, 0 distance; y: size).
+fn haze_density(de: f32, n: f32, dist: f32) -> f32 {
+    if (u.haze2.x < 0.5) {
+        return exp(-max(de, 0.0) / max(u.haze2.y * dist, 1.0e-30));
+    }
+    let share = n / max(u.frac.z, 1.0);
+    if (share > u.haze_col.w) {
+        return 0.0;
+    }
+    let x = clamp((share - u.haze.y) / max(u.haze_col.w - u.haze.y, 1.0e-6), 0.0, 1.0);
+    return x * x;
+}
+
 // Mirrors SteamPick::offer.
 fn pick_offer(step: u32, salt: i32, w: f32, p: vec3<f32>, rs: f32, t: f32, fall: bool) {
     if (w <= 0.0) {
@@ -1411,6 +1450,21 @@ fn march_ray(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, max_steps: u32, pr
             return h;
         }
         last_step = max(ob.de * u.march.y, eps * 0.1);
+        if (primary && haze_on && ob.obj == 0u) {
+            // Mirrors Shader::march_ex: the fractal haze over this step.
+            let tm = max(t + 0.5 * last_step, eps);
+            let n = haze_iterations(ob);
+            let dens = haze_density(ob.de, n, tm);
+            if (dens > 1.0e-4) {
+                let a = 1.0 - exp(-u.haze.x * dens * last_step / tm);
+                var col = u.haze_col.xyz;
+                if (u.haze.w > 0.5) {
+                    col = gradient(0u, n, t).base;
+                }
+                haze_light += haze_keep * a * col * u.haze.z;
+                haze_keep *= 1.0 - a;
+            }
+        }
         if (halo) {
             // Mirrors Shader::march_ex: offer the point for the glow and the steam.
             let p = o + d * t;
@@ -2432,8 +2486,14 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sx: f32, 
         pick_seed = u32(rnd() * 16777216.0);
     }
     pick_on = steam_on;
+    // Fractal haze along the ray (not inside glass).
+    let hz = u.haze.x > 0.0 && !inside;
+    haze_on = hz;
+    haze_light = vec3<f32>(0.0);
+    haze_keep = 1.0;
     var h = march_ray(o, d, t0, max_t, u.band.z, true);
     pick_on = false;
+    haze_on = false;
     if (steam_on) {
         let u1 = rnd();
         let u2 = rnd();
@@ -2704,6 +2764,11 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sx: f32, 
                 c += li.color.xyz * w;
             }
         }
+    }
+    // The fractal haze in front of everything the ray saw (mirrors Shader::trace).
+    if (hz) {
+        c = c * haze_keep + haze_light;
+        tr.albedo = tr.albedo * haze_keep + (1.0 - haze_keep) * clamp(haze_light / max(1.0 - haze_keep, 1.0e-9), vec3<f32>(0.0), vec3<f32>(1.0));
     }
     if (inside) {
         // Inside glass: no glow and no visible lights.
