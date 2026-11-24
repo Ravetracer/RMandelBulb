@@ -786,8 +786,8 @@ fn apply_phases(s: &mut Scene, phase: &BTreeMap<String, f64>) {
     let m = &mut s.material;
     turn("m".into(), &mut m.color_offset, &mut m.bands, &mut m.layers);
     // The steam pattern moves with its drift.
-    for k in 0..3 {
-        s.material.steam_offset[k] -= phase.get(&format!("steam{k}")).copied().unwrap_or(0.0);
+    for (k, o) in s.material.steam_offset.iter_mut().enumerate() {
+        *o -= phase.get(&format!("steam{k}")).copied().unwrap_or(0.0);
     }
     s.material.shimmer_phase += phase.get("shimmer").copied().unwrap_or(0.0);
     for (k, o) in s.objects.iter_mut().enumerate() {

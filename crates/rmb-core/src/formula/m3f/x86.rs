@@ -2457,8 +2457,8 @@ impl Tx<'_> {
         } else {
             out.push(S::Line(format!("{} = {}", res[0].0, res[0].1)));
         }
-        for k in 0..lanes {
-            st.xmm_known[x][k] = None;
+        for v in st.xmm_known[x].iter_mut().take(lanes) {
+            *v = None;
         }
         Ok(())
     }

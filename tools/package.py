@@ -118,7 +118,7 @@ def appimage(a, ver: str, out: Path, stage: Path) -> Path:
     shutil.copy2(PKG / "linux" / "rmandelbulb3d.desktop", apps / "rmandelbulb3d.desktop")
     target = out / f"RMandelbulb3D-{ver}-x86_64.AppImage"
     env = dict(os.environ, ARCH="x86_64", APPIMAGE_EXTRACT_AND_RUN="1")
-    subprocess.run([str(a.appimagetool), "--no-appstream", str(app), str(target)], check=True, env=env)
+    subprocess.run([str(a.appimagetool.resolve()), "--no-appstream", str(app), str(target)], check=True, env=env)
     (out / f"RMandelbulb3D-{ver}-x86_64.AppImage.txt").write_text(install_text("INSTALL-appimage.txt", ver))
     return target
 
