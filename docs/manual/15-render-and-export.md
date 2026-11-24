@@ -194,6 +194,11 @@ How it works:
   computer renders more frames than a slow one and nobody waits for the slowest machine. When
   the last frames are in progress and a fast client is idle, it renders the frame of a much
   slower client too; whichever finishes first counts and the other stops.
+- **Still images** are split by their samples: every client renders the whole image with a
+  part of the samples, and the parts add up to exactly the image one computer would render.
+  Big images (above about 16 megapixels, or with `--tiles`) are split into tiles instead,
+  so no client needs the memory for the whole picture; this computer denoises the tiles and
+  puts them together, again identical to a local render.
 - **Files go along.** The scene goes to the clients with every file it uses: 3D models with
   their material files and textures, texture and background images, Mandelbulb3D maps and
   bokeh images. Clients keep them in their cache (by content), so the next job sends only
@@ -371,7 +376,7 @@ progress bar for the current frame and one for the whole job.
 rmb-cli net-render <scene> [-o out.mp4|folder|out.png|out.exr] [-W width] [-H height]
                [-s samples] [--from frame] [--to frame] [--still] [--clients all|a,b]
                [--client host[:port]] [--local] [--key key] [--wait s] [--keep-frames]
-               [--16bit | --exr] [--denoise | --no-denoise] [--ffmpeg path]
+               [--16bit | --exr] [--denoise | --no-denoise] [--ffmpeg path] [--tiles size|off]
 rmb-cli net-clients [--wait s]
 ```
 
@@ -388,6 +393,7 @@ draws a progress bar for the whole job and one line per client.
 | `--key key` | The clients' shared key. |
 | `--keep-frames` | Keeps the PNG frames after encoding a movie. |
 | `--still` | Renders the current view of an animated scene as one image. |
+| `--tiles size` or `--tiles off` | Still images: tiles of about this many pixels per side, one per piece of work (default: tiles of 2048 above about 16 megapixels); `off` splits by samples. |
 
 `net-clients` lists the clients it hears: name, address, hardware, and whether they are busy,
 need a key or run another version.

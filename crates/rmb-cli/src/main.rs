@@ -28,7 +28,7 @@ USAGE:
   rmb-cli net-render <scene> [-o out.mp4|folder|out.png|out.exr] [-W width] [-H height]
                  [-s samples] [--from frame] [--to frame] [--still] [--clients all|a,b]
                  [--client host[:port]] [--local] [--key key] [--wait s] [--keep-frames]
-                 [--16bit | --exr] [--denoise | --no-denoise] [--ffmpeg path]
+                 [--16bit | --exr] [--denoise | --no-denoise] [--ffmpeg path] [--tiles size|off]
                                            Render on the clients of the network
   rmb-cli net-clients [--wait s]           List the clients on the network
   rmb-cli batch <queue.json | scene…> [-o folder] [-s samples] [--cpu] [--ffmpeg path]
@@ -78,7 +78,8 @@ the voxels next to empty space.
 Network rendering: start `rmb-cli --network` on every machine that should help (same version;
 UDP port 47810 and TCP port 47811 open in the firewall). `net-render` on the server finds them
 by their announcements, sends the scene with its files and renders the animation frames (or,
-for a still image or with --still, ranges of its samples) on all clients or the ones named
+for a still image or with --still, ranges of its samples, or tiles for images above about 16
+megapixels or with --tiles) on all clients or the ones named
 with --clients; --local renders on this machine too, --client adds one by address where the
 network blocks the announcements. Frames go into the output folder (movies are encoded after
 the last frame; --keep-frames keeps the PNG files). A shared --key on both sides keeps other

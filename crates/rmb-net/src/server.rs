@@ -41,6 +41,9 @@ pub struct JobRequest {
     pub output: Output,
     /// Shared key for clients that need one.
     pub key: Option<String>,
+    /// Still images in tiles of about this many pixels per side, one tile per piece (images
+    /// larger than a client's graphics memory). None: above about 16 megapixels; Some(0): never.
+    pub tiles: Option<u32>,
 }
 
 /// A client to render on.
@@ -200,6 +203,62 @@ pub fn encode_hdr(img: &HdrImage) -> Vec<u8> {
     out
 }
 
+/// The inverse of [`encode_hdr`].
+pub fn decode_hdr(bytes: &[u8]) -> Result<HdrImage, String> {
+    let rd = |i: usize| u32::from_le_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]);
+    if bytes.len() < 8 {
+        return Err("an empty image arrived".into());
+    }
+    let (w, h) = (rd(0), rd(4));
+    let n = w as usize * h as usize;
+    if bytes.len() != 8 + n * 44 {
+        return Err("an image of the wrong size arrived".into());
+    }
+    let mut img = HdrImage::blank(w, h, true);
+    let f = |i: usize| f32::from_bits(rd(8 + i * 4));
+    for i in 0..n {
+        let b = i * 11;
+        for k in 0..3 {
+            img.color[i * 3 + k] = f(b + k);
+            img.albedo[i * 3 + k] = f(b + 3 + k);
+            img.normal[i * 3 + k] = f(b + 6 + k);
+        }
+        img.alpha[i] = f(b + 9);
+        img.depth[i] = f(b + 10);
+    }
+    Ok(img)
+}
+
+/// A tiled still image: tiles are denoised (with their margin) and pasted as they arrive.
+struct TiledStill {
+    layout: rmb_core::render::denoise::TileLayout,
+    img: HdrImage,
+    denoise: Option<f64>,
+    outcome: Option<rmb_core::render::denoise::Outcome>,
+}
+
+impl TiledStill {
+    fn add(&mut self, i: u32, bytes: &[u8]) -> Result<(), String> {
+        use rmb_core::render::denoise::Outcome;
+        let t = *self.layout.tiles.get(i as usize).ok_or("a tile that does not exist arrived")?;
+        let mut part = decode_hdr(bytes)?;
+        if (part.width, part.height) != (self.layout.rw, self.layout.rh) {
+            return Err("a tile of the wrong size arrived".into());
+        }
+        if let Some(blend) = self.denoise {
+            let res = part.denoise(blend);
+            self.outcome = match (self.outcome.take(), res) {
+                (_, Err(e)) => Some(Outcome::Failed(e)),
+                (Some(Outcome::Failed(e)), _) => Some(Outcome::Failed(e)),
+                (None, Ok(d)) => Some(Outcome::Denoised(d)),
+                (o, Ok(_)) => o,
+            };
+        }
+        self.img.paste_tile(&part, &t);
+        Ok(())
+    }
+}
+
 impl StillSum {
     fn new(w: u32, h: u32) -> StillSum {
         let n = (w * h) as usize;
@@ -255,6 +314,7 @@ struct Shared {
     work: Mutex<Work>,
     status: Arc<Mutex<Status>>,
     still: Option<Mutex<StillSum>>,
+    tiled: Option<Mutex<TiledStill>>,
     cancel: Arc<AtomicBool>,
     /// Frames folder (animations) and the frames' file extension.
     frames_dir: Option<PathBuf>,
@@ -284,7 +344,17 @@ pub fn run_job(req: JobRequest, targets: Vec<Target>, status: Arc<Mutex<Status>>
     rmb_core::compose::load_models(&req.scene);
     let prepared = crate::assets::prepare(&req.scene)?;
     let job_id = crate::proto::random_u64();
+    // Tiled still images: the tiles' layout (the margin lets the server denoise each tile).
+    let layout = match (req.kind, req.tiles) {
+        (JobKind::Still, Some(0)) | (JobKind::Animation { .. }, _) => None,
+        (JobKind::Still, t) => t.or_else(|| rmb_core::io::image::auto_tile(req.width, req.height)).map(|t| {
+            let denoise = req.scene.post.denoise && req.scene.post.denoise_blend > 0.0;
+            let margin = if denoise { rmb_core::render::denoise::TILE_MARGIN } else { 0 };
+            (t, margin, rmb_core::render::denoise::TileLayout::new(req.width, req.height, t, margin))
+        }),
+    };
     let units: Vec<Unit> = match req.kind {
+        JobKind::Still if layout.is_some() => (0..layout.as_ref().map_or(0, |l| l.2.tiles.len() as u32)).map(|i| Unit::Tile { i }).collect(),
         JobKind::Animation { from, to } => (from..=to).map(|f| Unit::Frame { f }).collect(),
         JobKind::Still => {
             // About four pieces per client, so faster ones can take more.
@@ -305,7 +375,7 @@ pub fn run_job(req: JobRequest, targets: Vec<Target>, status: Arc<Mutex<Status>>
         Output::Animation { format, .. } => format.image_kind(),
         Output::Still { .. } => rmb_core::io::image::ImageKind::Png8,
     };
-    let spec = JobSpec { job_id, scene: prepared.scene.to_json(), width: req.width, height: req.height, samples: req.samples, kind: req.kind, files: prepared.files.iter().map(|f| f.1.clone()).collect(), frame_kind };
+    let spec = JobSpec { job_id, scene: prepared.scene.to_json(), width: req.width, height: req.height, samples: req.samples, kind: req.kind, files: prepared.files.iter().map(|f| f.1.clone()).collect(), frame_kind, tiles: layout.as_ref().map(|l| [l.0, l.1]) };
     let total = units.len();
     {
         let mut s = status.lock().map_err(|_| "status lock")?;
@@ -314,7 +384,12 @@ pub fn run_job(req: JobRequest, targets: Vec<Target>, status: Arc<Mutex<Status>>
     let shared = Arc::new(Shared {
         work: Mutex::new(Work { queue: units.into(), running: HashMap::new(), done: HashSet::new(), total, speed: vec![None; targets.len()], guess: targets.iter().map(|t| guess_time(&t.specs)).collect(), samples: req.samples }),
         status: status.clone(),
-        still: matches!(req.kind, JobKind::Still).then(|| Mutex::new(StillSum::new(req.width, req.height))),
+        still: (matches!(req.kind, JobKind::Still) && layout.is_none()).then(|| Mutex::new(StillSum::new(req.width, req.height))),
+        tiled: layout.map(|(_, _, layout)| {
+            let exr = matches!(req.output, Output::Still { kind: rmb_core::io::image::ImageKind::Exr, .. });
+            let denoise = (req.scene.post.denoise && req.scene.post.denoise_blend > 0.0).then_some(req.scene.post.denoise_blend);
+            Mutex::new(TiledStill { img: HdrImage::blank(layout.width, layout.height, exr), layout, denoise, outcome: None })
+        }),
         cancel: cancel.clone(),
         frames_dir: frames_dir.clone(),
         from,
@@ -397,9 +472,19 @@ fn finish(req: &JobRequest, shared: &Shared, set_phase: &impl Fn(&str)) -> Resul
         }
         (Output::Still { path, kind }, JobKind::Still) => {
             set_phase("Finishing the image");
-            let sum = shared.still.as_ref().ok_or("no image")?.lock().map_err(|_| "image lock")?;
-            let img = sum.image(req.width, req.height);
-            let outcome = rmb_core::io::image::save_render(path, img, &req.scene, *kind)?;
+            let outcome = match &shared.tiled {
+                Some(t) => {
+                    let mut t = t.lock().map_err(|_| "image lock")?;
+                    let img = std::mem::take(&mut t.img);
+                    rmb_core::io::image::save_render_ex(path, img, &req.scene, *kind, true)?;
+                    t.outcome.take().unwrap_or(rmb_core::render::denoise::Outcome::Off)
+                }
+                None => {
+                    let sum = shared.still.as_ref().ok_or("no image")?.lock().map_err(|_| "image lock")?;
+                    let img = sum.image(req.width, req.height);
+                    rmb_core::io::image::save_render(path, img, &req.scene, *kind)?
+                }
+            };
             let note = if req.scene.post.denoise { format!(", {}", outcome.describe()) } else { String::new() };
             Ok(format!("{} ({} × {}, {} samples{note})", path.display(), req.width, req.height, req.samples))
         }
@@ -624,6 +709,9 @@ fn store(i: usize, shared: &Shared, unit: Unit, blob: &[u8]) -> Result<(), Strin
         }
         Unit::Samples { count, .. } => {
             shared.still.as_ref().ok_or("no image")?.lock().map_err(|_| "image lock")?.add(blob, count)?;
+        }
+        Unit::Tile { i } => {
+            shared.tiled.as_ref().ok_or("no tiled image")?.lock().map_err(|_| "image lock")?.add(i, blob)?;
         }
     }
     let mut w = shared.work.lock().map_err(|_| "lock")?;

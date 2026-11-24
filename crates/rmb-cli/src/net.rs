@@ -117,10 +117,11 @@ struct NetOpts {
     keep_frames: bool,
     ffmpeg: Option<PathBuf>,
     denoise: Option<bool>,
+    tiles: Option<u32>,
 }
 
 fn parse(args: &[String]) -> Result<NetOpts, String> {
-    let mut o = NetOpts { input: None, output: None, width: None, height: None, samples: 64, from: None, to: None, still: false, clients: None, addresses: Vec::new(), key: None, local: false, wait: 3.0, sixteen: false, exr: false, keep_frames: false, ffmpeg: None, denoise: None };
+    let mut o = NetOpts { input: None, output: None, width: None, height: None, samples: 64, from: None, to: None, still: false, clients: None, addresses: Vec::new(), key: None, local: false, wait: 3.0, sixteen: false, exr: false, keep_frames: false, ffmpeg: None, denoise: None, tiles: None };
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let mut val = |name: &str| it.next().cloned().ok_or_else(|| format!("{name} needs a value"));
@@ -143,6 +144,10 @@ fn parse(args: &[String]) -> Result<NetOpts, String> {
             "--16bit" => o.sixteen = true,
             "--exr" => o.exr = true,
             "--keep-frames" => o.keep_frames = true,
+            "--tiles" => {
+                let v = val("--tiles")?;
+                o.tiles = Some(if v == "off" { 0 } else { v.parse().map_err(|_| "bad tile size")? });
+            }
             "--ffmpeg" => o.ffmpeg = Some(PathBuf::from(val("--ffmpeg")?)),
             "--denoise" => o.denoise = Some(true),
             "--no-denoise" => o.denoise = Some(false),
@@ -231,7 +236,7 @@ pub fn render(args: &[String]) -> Result<(), String> {
     for t in &targets {
         eprintln!("  {:<20} {}", t.name, t.specs.summary());
     }
-    let req = JobRequest { scene, scene_dir: input.parent().map(|p| p.to_path_buf()), width: w, height: h, samples: o.samples, kind, output, key: o.key.clone() };
+    let req = JobRequest { scene, scene_dir: input.parent().map(|p| p.to_path_buf()), width: w, height: h, samples: o.samples, kind, output, key: o.key.clone(), tiles: o.tiles };
     let status = Arc::new(Mutex::new(Status::default()));
     let cancel = Arc::new(AtomicBool::new(false));
     let st = status.clone();

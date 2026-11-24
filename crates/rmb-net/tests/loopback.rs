@@ -49,7 +49,7 @@ fn clients_render_an_animation_and_a_still() {
     let plan = rmb_core::animation::AnimationPlan::new(scene.animation.as_ref().unwrap()).unwrap();
     let last = plan.frame_count() - 1;
     let out = dir.join("frames");
-    let req = JobRequest { scene: scene.clone(), scene_dir: None, width: 32, height: 20, samples: 2, kind: JobKind::Animation { from: 0, to: last }, output: Output::Animation { path: out.clone(), format: rmb_core::video::VideoFormat::PngSequence, ffmpeg: "ffmpeg".into(), keep_frames: true }, key: None };
+    let req = JobRequest { scene: scene.clone(), scene_dir: None, width: 32, height: 20, samples: 2, kind: JobKind::Animation { from: 0, to: last }, output: Output::Animation { path: out.clone(), format: rmb_core::video::VideoFormat::PngSequence, ffmpeg: "ffmpeg".into(), keep_frames: true }, key: None, tiles: None };
     let status = Arc::new(Mutex::new(Status::default()));
     let summary = run_job(req, clients.clone(), status.clone(), Arc::new(AtomicBool::new(false))).unwrap();
     assert!(summary.contains("frames"), "{summary}");
@@ -69,9 +69,9 @@ fn clients_render_an_animation_and_a_still() {
     // Still: samples split over the clients equal one render with all samples.
     let still = small_scene();
     let path = dir.join("still.exr");
-    let req = JobRequest { scene: still.clone(), scene_dir: None, width: 32, height: 20, samples: 6, kind: JobKind::Still, output: Output::Still { path: path.clone(), kind: rmb_core::io::image::ImageKind::Exr }, key: None };
-    run_job(req, clients, Arc::new(Mutex::new(Status::default())), Arc::new(AtomicBool::new(false))).unwrap();
-    let mut local = rmb_core::render::cpu::CpuRenderer::new(still, 32, 20);
+    let req = JobRequest { scene: still.clone(), scene_dir: None, width: 32, height: 20, samples: 6, kind: JobKind::Still, output: Output::Still { path: path.clone(), kind: rmb_core::io::image::ImageKind::Exr }, key: None, tiles: None };
+    run_job(req, clients.clone(), Arc::new(Mutex::new(Status::default())), Arc::new(AtomicBool::new(false))).unwrap();
+    let mut local = rmb_core::render::cpu::CpuRenderer::new(still.clone(), 32, 20);
     for _ in 0..6 {
         local.render_pass();
     }
@@ -80,5 +80,22 @@ fn clients_render_an_animation_and_a_still() {
     let r: Vec<f32> = exr.layer_data[0].channel_data.list.iter().find(|c| c.name.to_string() == "R").unwrap().sample_data.values_as_f32().collect();
     let worst = r.iter().enumerate().map(|(i, v)| (v - want.color[i * 3]).abs()).fold(0.0f32, f32::max);
     assert!(worst < 1e-4, "split render differs by {worst}");
+
+    // Tiled still: tiles rendered by the clients and stitched equal one render.
+    let path = dir.join("tiled.exr");
+    let (tw, th) = (150, 90);
+    let req = JobRequest { scene: still.clone(), scene_dir: None, width: tw, height: th, samples: 2, kind: JobKind::Still, output: Output::Still { path: path.clone(), kind: rmb_core::io::image::ImageKind::Exr }, key: None, tiles: Some(64) };
+    let status = Arc::new(Mutex::new(Status::default()));
+    run_job(req, clients.clone(), status.clone(), Arc::new(AtomicBool::new(false))).unwrap();
+    assert_eq!(status.lock().unwrap().total, 6, "3 x 2 tiles");
+    let mut local = rmb_core::render::cpu::CpuRenderer::new(still.clone(), tw, th);
+    for _ in 0..2 {
+        local.render_pass();
+    }
+    let want = local.hdr_image();
+    let exr = exr::prelude::read_all_flat_layers_from_file(&path).unwrap();
+    let r: Vec<f32> = exr.layer_data[0].channel_data.list.iter().find(|c| c.name.to_string() == "R").unwrap().sample_data.values_as_f32().collect();
+    let worst = r.iter().enumerate().map(|(i, v)| (v - want.color[i * 3]).abs()).fold(0.0f32, f32::max);
+    assert!(worst < 1e-4, "tiled render differs by {worst}");
     std::fs::remove_dir_all(&dir).ok();
 }

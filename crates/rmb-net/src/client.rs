@@ -119,6 +119,14 @@ struct Job {
     frames: Option<FramesJob>,
     still: Option<rmb_gpu::GpuRenderer>,
     still_cpu: Option<rmb_core::render::cpu::CpuRenderer>,
+    tiles: Option<TilesJob>,
+}
+
+/// A tiled still image: the layout and the renderer of its regions.
+struct TilesJob {
+    layout: rmb_core::render::denoise::TileLayout,
+    gpu: Option<rmb_gpu::TileRenderer>,
+    cpu: Option<rmb_core::render::cpu::CpuRenderer>,
 }
 
 struct FramesJob {
@@ -235,7 +243,7 @@ impl Session {
         let maps = self.cache.job_dir(spec.job_id).join("maps");
         rmb_core::maps::set_dirs(vec![maps]);
         rmb_core::compose::load_models(&scene);
-        let mut job = Job { spec: spec.clone(), frames: None, still: None, still_cpu: None };
+        let mut job = Job { spec: spec.clone(), frames: None, still: None, still_cpu: None, tiles: None };
         match spec.kind {
             JobKind::Animation { from, to } => {
                 let anim = scene.animation.clone().ok_or("the scene has no animation")?;
@@ -243,6 +251,15 @@ impl Session {
                 let fs = |t: f64| plan.scene_at_time(t);
                 let renderer = rmb_gpu::FrameRenderer::new(self.ctx.clone(), from..to + 1, spec.width, spec.height, spec.samples, anim.shutter, &fs);
                 job.frames = Some(FramesJob { plan, renderer });
+            }
+            JobKind::Still if spec.tiles.is_some() => {
+                let [tile, margin] = spec.tiles.unwrap_or_default();
+                let layout = rmb_core::render::denoise::TileLayout::new(spec.width, spec.height, tile, margin);
+                let (gpu, cpu) = match &self.ctx {
+                    Some(ctx) => (Some(rmb_gpu::TileRenderer::new(ctx.clone(), &scene, &layout)?), None),
+                    None => (None, Some(rmb_core::render::cpu::CpuRenderer::new(scene.clone(), layout.rw, layout.rh))),
+                };
+                job.tiles = Some(TilesJob { layout, gpu, cpu });
             }
             JobKind::Still => match &self.ctx {
                 Some(ctx) => {
@@ -322,6 +339,27 @@ impl Session {
                 };
                 img.map(|i| crate::server::encode_hdr(&i)).ok_or_else(|| "reading the image back failed".to_string())
             }
+            Unit::Tile { i } => {
+                let tj = job.tiles.as_mut().ok_or("not a tiled job")?;
+                let t = *tj.layout.tiles.get(i as usize).ok_or("no such tile")?;
+                let samples = job.spec.samples.max(1);
+                let img = if let Some(r) = tj.gpu.as_mut() {
+                    r.render(&t, samples, &cancel, &mut report)
+                } else if let Some(r) = tj.cpu.as_mut() {
+                    r.set_tile(Some([t.ox, t.oy, tj.layout.width, tj.layout.height]));
+                    for k in 0..samples {
+                        if cancel.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        r.render_pass();
+                        report((k + 1) as f32 / samples as f32);
+                    }
+                    Ok(r.hdr_image())
+                } else {
+                    Err("no renderer".into())
+                };
+                img.map(|i| crate::server::encode_hdr(&i))
+            }
         };
         if let Some(e) = net_error {
             return Err(e);
@@ -386,12 +424,16 @@ fn spool_name(u: Unit) -> String {
     match u {
         Unit::Frame { f } => format!("frame_{f}.png"),
         Unit::Samples { start, count } => format!("samples_{start}_{count}.bin"),
+        Unit::Tile { i } => format!("tile_{i}.bin"),
     }
 }
 
 fn parse_spool_name(n: &str) -> Option<Unit> {
     if let Some(f) = n.strip_prefix("frame_").and_then(|r| r.strip_suffix(".png")) {
         return f.parse().ok().map(|f| Unit::Frame { f });
+    }
+    if let Some(i) = n.strip_prefix("tile_").and_then(|r| r.strip_suffix(".bin")) {
+        return i.parse().ok().map(|i| Unit::Tile { i });
     }
     let r = n.strip_prefix("samples_")?.strip_suffix(".bin")?;
     let (a, b) = r.split_once('_')?;
@@ -431,7 +473,7 @@ mod tests {
 
     #[test]
     fn spool_names_round_trip() {
-        for u in [Unit::Frame { f: 12 }, Unit::Samples { start: 4, count: 8 }] {
+        for u in [Unit::Frame { f: 12 }, Unit::Samples { start: 4, count: 8 }, Unit::Tile { i: 3 }] {
             assert_eq!(parse_spool_name(&spool_name(u)), Some(u));
         }
     }

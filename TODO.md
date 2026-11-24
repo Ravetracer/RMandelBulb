@@ -194,7 +194,8 @@ Features the two programs have that RMandelbulb3D does not have yet, in the plan
       render the full image's pixels (identical without the denoiser), denoised per tile with a
       64 px overlap, post processing on the stitched image. Export window › Tiles,
       `rmb-cli render --tiles`. MB3D `Tiling`
-  - [ ] Possible: tiles for the CPU renderer, writing PNG rows while tiles finish (less memory
+  - [ ] Possible: tiled renders in the CPU path of `render`/queue (`CpuRenderer::set_tile`
+        exists), writing PNG rows while tiles finish (less memory
         for 32K images), tiled animation frames
 - [x] Batch rendering / render queue (several scenes and animations overnight): File › Render
       queue… (jobs from "Add to queue" in the export window with a scene snapshot, or scene
@@ -244,8 +245,10 @@ Features the two programs have that RMandelbulb3D does not have yet, in the plan
   - Also done: stills split by sample ranges (identical to one computer's render), tail
     duplication of the slowest frame, reconnects, files shipped by hash, version check,
     optional shared key, "this computer too"
-  - [ ] Possible: tiled stills over the network,
-        subnet broadcast addresses per network interface (macOS/Windows may need them),
+  - [x] Tiled stills over the network (`Unit::Tile`, `JobSpec::tiles`, protocol 3): clients
+        render tile regions (GPU `TileRenderer`, CPU `CpuRenderer::set_tile`), the server
+        denoises each with its margin and stitches (identical to a local tiled render)
+  - [ ] Possible: subnet broadcast addresses per network interface (macOS/Windows may need them),
         resuming a job after the server restarts
 - Low value (covered by raytraced AO and bloom): SSAO, HDR blur post effects
 

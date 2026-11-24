@@ -27,6 +27,81 @@ pub struct HdrImage {
     pub depth: Vec<f32>,
 }
 
+/// Overlap of tiles that are denoised one by one (the denoiser needs the surroundings).
+pub const TILE_MARGIN: u32 = 64;
+
+/// One tile of a [`TileLayout`]: its own part `x0..x1` × `y0..y1` and the corner of the
+/// rendered region (`rw` × `rh` of the layout, with the margin).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TileRect {
+    pub x0: u32,
+    pub y0: u32,
+    pub x1: u32,
+    pub y1: u32,
+    pub ox: u32,
+    pub oy: u32,
+}
+
+/// An image split into tiles of `tile` pixels per side. Every rendered region has the same
+/// size `rw` × `rh` (one shader); regions at the edges move inward.
+#[derive(Clone, Debug)]
+pub struct TileLayout {
+    pub width: u32,
+    pub height: u32,
+    pub rw: u32,
+    pub rh: u32,
+    pub tiles: Vec<TileRect>,
+}
+
+impl TileLayout {
+    pub fn new(width: u32, height: u32, tile: u32, margin: u32) -> TileLayout {
+        let (w, h) = (width.max(1), height.max(1));
+        let inner = tile.clamp(64, 16384);
+        let (rw, rh) = ((inner + 2 * margin).min(w), (inner + 2 * margin).min(h));
+        let mut tiles = Vec::new();
+        for ty in 0..h.div_ceil(inner) {
+            for tx in 0..w.div_ceil(inner) {
+                let (x0, y0) = (tx * inner, ty * inner);
+                tiles.push(TileRect { x0, y0, x1: (x0 + inner).min(w), y1: (y0 + inner).min(h), ox: x0.saturating_sub(margin).min(w - rw), oy: y0.saturating_sub(margin).min(h - rh) });
+            }
+        }
+        TileLayout { width: w, height: h, rw, rh, tiles }
+    }
+}
+
+impl HdrImage {
+    /// An empty image to paste tiles into (`passes`: with albedo, normal, coverage and depth).
+    pub fn blank(width: u32, height: u32, passes: bool) -> HdrImage {
+        let n = (width * height) as usize;
+        let mut img = HdrImage { width, height, color: vec![0.0; n * 3], ..Default::default() };
+        if passes {
+            img.albedo = vec![0.0; n * 3];
+            img.normal = vec![0.0; n * 3];
+            img.alpha = vec![0.0; n];
+            img.depth = vec![0.0; n];
+        }
+        img
+    }
+
+    /// Copies the own part of tile `t` from its rendered region `part` into this image (the
+    /// passes only when this image has them).
+    pub fn paste_tile(&mut self, part: &HdrImage, t: &TileRect) {
+        let (w, rw) = (self.width, part.width);
+        let passes = !self.albedo.is_empty();
+        for y in t.y0..t.y1 {
+            let (src, dst) = (((y - t.oy) * rw + (t.x0 - t.ox)) as usize, (y * w + t.x0) as usize);
+            let len = (t.x1 - t.x0) as usize;
+            self.color[dst * 3..(dst + len) * 3].copy_from_slice(&part.color[src * 3..(src + len) * 3]);
+            if passes {
+                self.albedo[dst * 3..(dst + len) * 3].copy_from_slice(&part.albedo[src * 3..(src + len) * 3]);
+                self.normal[dst * 3..(dst + len) * 3].copy_from_slice(&part.normal[src * 3..(src + len) * 3]);
+                self.alpha[dst..dst + len].copy_from_slice(&part.alpha[src..src + len]);
+                self.depth[dst..dst + len].copy_from_slice(&part.depth[src..src + len]);
+            }
+        }
+    }
+}
+
 /// What happened to the denoiser when finishing an image.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Outcome {

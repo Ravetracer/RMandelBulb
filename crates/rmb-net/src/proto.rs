@@ -42,12 +42,14 @@ impl Specs {
     }
 }
 
-/// A piece of work: one frame of an animation, or a range of samples of a still image.
+/// A piece of work: one frame of an animation, a range of samples of a still image, or one
+/// tile of a tiled still image (all samples; `JobSpec::tiles`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "k")]
 pub enum Unit {
     Frame { f: usize },
     Samples { start: u32, count: u32 },
+    Tile { i: u32 },
 }
 
 impl Unit {
@@ -55,13 +57,14 @@ impl Unit {
         match self {
             Unit::Frame { f } => format!("frame {f}"),
             Unit::Samples { start, count } => format!("samples {}-{}", start, start + count - 1),
+            Unit::Tile { i } => format!("tile {}", i + 1),
         }
     }
 
     /// Relative amount of work (speed estimates).
     pub fn weight(&self, samples_per_frame: u32) -> f64 {
         match self {
-            Unit::Frame { .. } => samples_per_frame.max(1) as f64,
+            Unit::Frame { .. } | Unit::Tile { .. } => samples_per_frame.max(1) as f64,
             Unit::Samples { count, .. } => *count as f64,
         }
     }
@@ -101,6 +104,9 @@ pub struct JobSpec {
     /// Animation frames: PNG 8 or 16 bit, or EXR.
     #[serde(default)]
     pub frame_kind: rmb_core::io::image::ImageKind,
+    /// A tiled still image: tile size and margin (`render::denoise::TileLayout`).
+    #[serde(default)]
+    pub tiles: Option<[u32; 2]>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

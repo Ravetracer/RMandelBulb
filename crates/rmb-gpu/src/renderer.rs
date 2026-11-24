@@ -9,6 +9,7 @@
 
 use std::borrow::Cow;
 use std::fmt::Write as _;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -2061,9 +2062,6 @@ fn render_to(ctx: GpuContext, scene: &Scene, width: u32, height: u32, samples: u
     Ok(r)
 }
 
-/// Overlap of the tiles when they are denoised one by one (cut off afterwards).
-const TILE_MARGIN: u32 = 64;
-
 /// Renders `scene` at `width` × `height` in tiles of about `tile` pixels per side (images
 /// larger than the GPU memory holds). Every tile renders the same pixels as a render of the
 /// whole image would; with the scene's denoiser on, each tile is denoised with a margin that
@@ -2072,76 +2070,76 @@ const TILE_MARGIN: u32 = 64;
 /// `progress` gets the completed fraction and returns false to cancel.
 #[allow(clippy::too_many_arguments)]
 pub fn render_tiled_hdr(ctx: GpuContext, scene: &Scene, width: u32, height: u32, samples: u32, tile: u32, passes: bool, mut progress: impl FnMut(f32) -> bool) -> Result<(HdrImage, rmb_core::render::denoise::Outcome), String> {
-    use rmb_core::render::denoise::Outcome;
+    use rmb_core::render::denoise::{Outcome, TILE_MARGIN, TileLayout};
     rmb_core::compose::load_models(scene);
-    let (w, h) = (width.max(1), height.max(1));
     let denoise = scene.post.denoise && scene.post.denoise_blend > 0.0;
-    let inner = tile.clamp(64, 16384);
-    let margin = if denoise { TILE_MARGIN } else { 0 };
-    // All tiles have the same size (one shader); the ones at the edges move inward.
-    let (rw, rh) = ((inner + 2 * margin).min(w), (inner + 2 * margin).min(h));
-    let (nx, ny) = (w.div_ceil(inner), h.div_ceil(inner));
-    let n = (w * h) as usize;
-    let mut img = HdrImage { width: w, height: h, color: vec![0.0; n * 3], ..Default::default() };
-    if passes {
-        img.albedo = vec![0.0; n * 3];
-        img.normal = vec![0.0; n * 3];
-        img.alpha = vec![0.0; n];
-        img.depth = vec![0.0; n];
-    }
-    let mut r = GpuRenderer::new(ctx);
-    r.set_band_target(OFFLINE_BAND_TARGET);
-    r.set_baking(Some(Vec::new()));
-    r.set_uniform_baking(Some(Vec::new()));
-    let samples = samples.max(1);
+    let layout = TileLayout::new(width, height, tile, if denoise { TILE_MARGIN } else { 0 });
+    let mut img = HdrImage::blank(layout.width, layout.height, passes);
+    let mut r = TileRenderer::new(ctx, scene, &layout)?;
     let mut outcome = if denoise { None } else { Some(Outcome::Off) };
-    let count = (nx * ny) as f32;
-    for ty in 0..ny {
-        for tx in 0..nx {
-            let (x0, y0) = (tx * inner, ty * inner);
-            let (x1, y1) = ((x0 + inner).min(w), (y0 + inner).min(h));
-            let ox = x0.saturating_sub(margin).min(w - rw);
-            let oy = y0.saturating_sub(margin).min(h - rh);
-            r.set_tile(Some([ox, oy, w, h]));
-            r.set_scene(scene, rw, rh, false);
-            r.wait_for_pipeline()?;
-            let done = (ty * nx + tx) as f32;
-            while r.samples() < samples {
-                r.work(Duration::from_millis(100), samples);
-                if let Some(e) = r.last_error() {
-                    return Err(e);
-                }
-                let p = (r.samples() as f32 + r.pass_progress()) / samples as f32;
-                if !progress((done + p) / count) {
-                    return Err("cancelled".into());
-                }
+    let count = layout.tiles.len() as f32;
+    for (i, t) in layout.tiles.iter().enumerate() {
+        let done = i as f32;
+        let cancel = AtomicBool::new(false);
+        let mut part = r.render(t, samples, &cancel, &mut |p| {
+            if !progress((done + p) / count) {
+                cancel.store(true, Ordering::Relaxed);
             }
-            let mut part = r.read_hdr().ok_or("reading a tile back failed")?;
-            if denoise {
-                let res = part.denoise(scene.post.denoise_blend);
-                // The first tile's device; any failure wins.
-                outcome = match (outcome.take(), res) {
-                    (_, Err(e)) => Some(Outcome::Failed(e)),
-                    (Some(Outcome::Failed(e)), _) => Some(Outcome::Failed(e)),
-                    (None, Ok(d)) => Some(Outcome::Denoised(d)),
-                    (o, Ok(_)) => o,
-                };
-            }
-            // Copy the tile's own part (without the margin) into the image.
-            for y in y0..y1 {
-                let (src, dst) = (((y - oy) * rw + (x0 - ox)) as usize, (y * w + x0) as usize);
-                let len = (x1 - x0) as usize;
-                img.color[dst * 3..(dst + len) * 3].copy_from_slice(&part.color[src * 3..(src + len) * 3]);
-                if passes {
-                    img.albedo[dst * 3..(dst + len) * 3].copy_from_slice(&part.albedo[src * 3..(src + len) * 3]);
-                    img.normal[dst * 3..(dst + len) * 3].copy_from_slice(&part.normal[src * 3..(src + len) * 3]);
-                    img.alpha[dst..dst + len].copy_from_slice(&part.alpha[src..src + len]);
-                    img.depth[dst..dst + len].copy_from_slice(&part.depth[src..src + len]);
-                }
-            }
+        })?;
+        if cancel.load(Ordering::Relaxed) {
+            return Err("cancelled".into());
         }
+        if denoise {
+            let res = part.denoise(scene.post.denoise_blend);
+            // The first tile's device; any failure wins.
+            outcome = match (outcome.take(), res) {
+                (_, Err(e)) => Some(Outcome::Failed(e)),
+                (Some(Outcome::Failed(e)), _) => Some(Outcome::Failed(e)),
+                (None, Ok(d)) => Some(Outcome::Denoised(d)),
+                (o, Ok(_)) => o,
+            };
+        }
+        img.paste_tile(&part, t);
     }
     Ok((img, outcome.unwrap_or(Outcome::Off)))
+}
+
+/// Renders the regions of a [`TileLayout`] one at a time with one shader (tiled renders,
+/// network tiles).
+pub struct TileRenderer {
+    r: GpuRenderer,
+    scene: Scene,
+    width: u32,
+    height: u32,
+    rw: u32,
+    rh: u32,
+}
+
+impl TileRenderer {
+    pub fn new(ctx: GpuContext, scene: &Scene, layout: &rmb_core::render::denoise::TileLayout) -> Result<TileRenderer, String> {
+        let mut r = GpuRenderer::new(ctx);
+        r.set_band_target(OFFLINE_BAND_TARGET);
+        r.set_baking(Some(Vec::new()));
+        r.set_uniform_baking(Some(Vec::new()));
+        Ok(TileRenderer { r, scene: scene.clone(), width: layout.width, height: layout.height, rw: layout.rw, rh: layout.rh })
+    }
+
+    /// The region of tile `t` with all `samples` (with the denoiser's helper images; not
+    /// denoised). `progress` gets 0..1; setting `cancel` stops early.
+    pub fn render(&mut self, t: &rmb_core::render::denoise::TileRect, samples: u32, cancel: &AtomicBool, progress: &mut dyn FnMut(f32)) -> Result<HdrImage, String> {
+        let samples = samples.max(1);
+        self.r.set_tile(Some([t.ox, t.oy, self.width, self.height]));
+        self.r.set_scene(&self.scene, self.rw, self.rh, false);
+        self.r.wait_for_pipeline()?;
+        while self.r.samples() < samples && !cancel.load(Ordering::Relaxed) {
+            self.r.work(Duration::from_millis(100), samples);
+            if let Some(e) = self.r.last_error() {
+                return Err(e);
+            }
+            progress((self.r.samples() as f32 + self.r.pass_progress()) / samples as f32);
+        }
+        self.r.read_hdr().ok_or_else(|| "reading a tile back failed".to_string())
+    }
 }
 
 /// Distance estimates for the mesh export, computed on the GPU (rmb-core `mesh_export::Field`).

@@ -1365,6 +1365,9 @@ pub struct CpuRenderer {
     samples: u32,
     /// Index of the first sample in the sums (network renders split the samples).
     first: u32,
+    /// Renders the region at (left, top) of a full image (full width, full height): the same
+    /// rays and random numbers as that image's pixels (tiled renders).
+    tile: Option<[u32; 4]>,
 }
 
 impl CpuRenderer {
@@ -1372,7 +1375,7 @@ impl CpuRenderer {
         let scene = crate::animation::still_scene(&scene).unwrap_or(scene);
         let prog = Program::for_scene(&scene);
         let n = (width * height) as usize;
-        CpuRenderer { scene, prog, width, height, accum: vec![[0.0; 3]; n], aux: vec![[0.0; 8]; n], samples: 0, first: 0 }
+        CpuRenderer { scene, prog, width, height, accum: vec![[0.0; 3]; n], aux: vec![[0.0; 8]; n], samples: 0, first: 0, tile: None }
     }
 
     /// Starts again at sample `first` with empty sums: the next passes are samples `first`,
@@ -1386,6 +1389,13 @@ impl CpuRenderer {
 
     pub fn samples(&self) -> u32 {
         self.samples
+    }
+
+    /// Renders this renderer's size as the region at `[left, top]` of an image of
+    /// `[full width, full height]` (None: the whole image). Starts again.
+    pub fn set_tile(&mut self, tile: Option<[u32; 4]>) {
+        self.tile = tile;
+        self.start_at_sample(0);
     }
 
     /// Renders the next passes with `scene` but keeps the samples so far (motion blur: the scene
@@ -1402,14 +1412,15 @@ impl CpuRenderer {
 
     pub fn render_pass(&mut self) {
         let sc = shading_scene(&self.scene);
-        let shader = Shader::new(&sc, &self.prog, self.width, self.height);
+        let [ox, oy, fw, fh] = self.tile.unwrap_or([0, 0, self.width, self.height]);
+        let shader = Shader::new(&sc, &self.prog, fw, fh);
         let (w, sample) = (self.width, self.samples);
         let prog = &self.prog;
         self.accum.par_chunks_mut(w as usize).zip(self.aux.par_chunks_mut(w as usize)).enumerate().for_each_init(
             || prog.evaluator(),
             |ev, (y, (row, aux_row))| {
                 for (x, (acc, aux)) in row.iter_mut().zip(aux_row.iter_mut()).enumerate() {
-                    let s = shader.sample_aux(ev, x as u32, y as u32, sample);
+                    let s = shader.sample_aux(ev, x as u32 + ox, y as u32 + oy, sample);
                     let n = s.normal.to_array();
                     for k in 0..3 {
                         acc[k] += s.color[k];

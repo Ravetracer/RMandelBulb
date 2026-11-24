@@ -398,7 +398,7 @@ impl NetWindow {
             let Some(path) = self.image_path.clone() else { return };
             (JobKind::Still, Output::Still { path, kind: self.image_kind })
         };
-        let req = JobRequest { scene: scene.clone(), scene_dir: self.doc_dir.clone(), width: self.width, height: self.height, samples: self.samples, kind, output, key: (!self.key.is_empty()).then(|| self.key.clone()) };
+        let req = JobRequest { scene: scene.clone(), scene_dir: self.doc_dir.clone(), width: self.width, height: self.height, samples: self.samples, kind, output, key: (!self.key.is_empty()).then(|| self.key.clone()), tiles: None };
         let status = Arc::new(Mutex::new(Status::default()));
         let cancel = Arc::new(AtomicBool::new(false));
         let (st, ca) = (status.clone(), cancel.clone());

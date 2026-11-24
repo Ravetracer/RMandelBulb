@@ -262,11 +262,16 @@ cargo clippy -j 8 --workspace --all-targets
   Frames: `rmb_gpu::FrameRenderer` (one shader per job). Stills: `Samples { start, count }`
   with `start_at_sample` on the GPU/CPU renderer, summed on the server (`StillSum`), so the
   split render equals a single one. Results stay in the client's spool folder until `Ack`.
+- Tiled stills (`JobRequest::tiles`, auto above `io::image::auto_tile`): `Unit::Tile { i }`
+  over `render::denoise::TileLayout` (tile size and margin in `JobSpec::tiles`); clients
+  render the region with all samples (`rmb_gpu::TileRenderer`, `CpuRenderer::set_tile`) and
+  send it undenoised; the server's `TiledStill` denoises and pastes (`HdrImage::paste_tile`).
 - `client::start_local` runs a client in-process ("this computer too", `--local`).
 
 ## Tiled renders
 
-- `rmb_gpu::render_tiled_hdr`: equal-size tiles (edge tiles moved inward; one shader), uniform
+- `rmb_gpu::render_tiled_hdr` (layout `render::denoise::TileLayout`, regions by
+  `TileRenderer`): equal-size tiles (edge tiles moved inward; one shader), uniform
   `tile` = left, top, full width, full height (`GpuRenderer::set_tile`). The kernel passes
   full-image pixel coordinates to `sample_image` and `eye_screen` uses the full size, so the
   rays and random numbers equal a whole-image render. Tile offsets are never baked
