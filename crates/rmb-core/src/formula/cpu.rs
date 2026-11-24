@@ -4,6 +4,11 @@
 //!
 //! Register layout of `iter`: `[state (STATE_COUNT)] [params + init constants] [locals]`.
 //! Register layout of `init`: `[params + init constants] [init locals]`.
+//!
+//! `iter` also compiles to native code (`super::jit`, Cranelift) on first use; the closures
+//! stay as the fallback when the host is not supported, compilation fails or `RMB_NO_JIT=1`.
+
+use std::sync::OnceLock;
 
 use super::lang::{BinOp, Expr, FormulaDef, Func, STATE_COUNT, Stmt, VarRef};
 
@@ -17,15 +22,15 @@ pub const BREAK: u8 = 1;
 pub const CONTINUE: u8 = 2;
 
 /// Register offsets of the three variable classes.
-#[derive(Clone, Copy)]
-struct Layout {
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Layout {
     state: usize,
     param: usize,
     local: usize,
 }
 
 impl Layout {
-    fn index(&self, v: VarRef) -> usize {
+    pub(super) fn index(&self, v: VarRef) -> usize {
         match v {
             VarRef::State(i) => self.state + i,
             VarRef::Param(i) => self.param + i,
@@ -36,7 +41,13 @@ impl Layout {
 
 /// A formula compiled for the CPU.
 pub struct CpuFormula {
-    pub iter: StmtFn,
+    /// `iter` as closures (the reference, and the fallback of the native code).
+    closure: StmtFn,
+    /// `iter` as native code, compiled on first use (None: not available).
+    jit: OnceLock<Option<super::jit::JitFn>>,
+    /// The `iter` block and its layout, kept for the native compilation.
+    iter_ast: Vec<Stmt>,
+    iter_layout: Layout,
     init: StmtFn,
     /// Registers needed by `iter`.
     pub iter_regs: usize,
@@ -51,13 +62,38 @@ impl CpuFormula {
         let iter_layout = Layout { state: 0, param: STATE_COUNT, local: STATE_COUNT + n_const };
         let init_layout = Layout { state: usize::MAX / 4, param: 0, local: n_const };
         CpuFormula {
-            iter: block(&f.iter, iter_layout),
+            closure: block(&f.iter, iter_layout),
+            jit: OnceLock::new(),
+            iter_ast: f.iter.clone(),
+            iter_layout,
             init: block(&f.init, init_layout),
             iter_regs: STATE_COUNT + n_const + f.locals.len(),
             n_params: f.params.len(),
             n_const,
             init_regs: n_const + f.init_locals,
         }
+    }
+
+    /// Runs one iteration on the register file `r` (at least `iter_regs` long; the state,
+    /// then the constants, then the locals). Returns `NEXT`, `BREAK` or `CONTINUE`.
+    #[inline]
+    pub fn iter(&self, r: &mut [f64]) -> u8 {
+        match self.native() {
+            // SAFETY: the code reads and writes registers below `iter_regs` only.
+            Some(f) if r.len() >= self.iter_regs => unsafe { f(r.as_mut_ptr()) },
+            _ => (self.closure)(r),
+        }
+    }
+
+    /// [`Self::iter`] through the closures, never the native code.
+    pub fn iter_closure(&self, r: &mut [f64]) -> u8 {
+        (self.closure)(r)
+    }
+
+    /// The native code of `iter`, compiled on the first call (None when disabled by
+    /// `RMB_NO_JIT`, not supported on this host or failed).
+    pub fn native(&self) -> Option<super::jit::JitFn> {
+        *self.jit.get_or_init(|| if super::jit::disabled() { None } else { super::jit::compile(&self.iter_ast, self.iter_layout, self.iter_regs) })
     }
 
     /// Parameters followed by the `init` constants computed from them.

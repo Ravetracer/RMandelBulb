@@ -616,13 +616,13 @@ fn iterate_from(top: &Program, prog: &Program, regs: &mut [Vec<f64>], p: V3, fix
             st[STATE_ITER] = out.n as f64;
             let input = st;
             regs[0][..STATE_COUNT].copy_from_slice(&st);
-            (prog.slots[0].formula.cpu.iter)(&mut regs[0]);
+            prog.slots[0].formula.cpu.iter(&mut regs[0]);
             let a: [f64; STATE_COUNT] = regs[0][..STATE_COUNT].try_into().unwrap_or(st);
             let mut b = a;
             b[..4].copy_from_slice(&input[..4]);
             b[STATE_DR] = input[STATE_DR];
             regs[1][..STATE_COUNT].copy_from_slice(&b);
-            (prog.slots[1].formula.cpu.iter)(&mut regs[1]);
+            prog.slots[1].formula.cpu.iter(&mut regs[1]);
             st.copy_from_slice(&regs[1][..STATE_COUNT]);
             let len = |v: &[f64]| (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
             let l = len(&a) * w1 + len(&st) * w2;
@@ -679,7 +679,7 @@ fn iterate_from(top: &Program, prog: &Program, regs: &mut [Vec<f64>], p: V3, fix
         if !s.add_c {
             regs[4..8].fill(0.0);
         }
-        (s.formula.cpu.iter)(regs);
+        s.formula.cpu.iter(regs);
         st.copy_from_slice(&regs[..STATE_COUNT]);
         if !s.add_c {
             st[4..8].copy_from_slice(&prev[4..8]);
