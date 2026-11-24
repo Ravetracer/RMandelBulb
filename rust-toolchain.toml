@@ -1,0 +1,5 @@
+# The Rust version for local builds, CI and releases (identical lints and code generation).
+# Raise it deliberately, together with the workflows' "toolchain:" lines.
+[toolchain]
+channel = "1.98.1"
+components = ["clippy", "rustfmt"]
