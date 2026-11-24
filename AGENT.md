@@ -350,7 +350,10 @@ cargo clippy -j 8 --workspace --all-targets
   (`dz / steep + x (1 - open / steep)`, no min/max switch: a kink there tilts normals).
   `water_spray`: one drop per cell (3 × 3 cells checked, margin inside the cell, so the
   bound is ≥ a cell where no drop flies), flight after each crest reaches the coast
-  (`water_shore_phase`), radius falling with `s`; its zone bound is combined with `max`, never
+  (`water_shore_phase`), radius falling with `s`, size `a[10]`, variation `a[11]`, stretched
+  along its velocity. Sideways flight: `water_spray_drift` warps the grid by a smooth field
+  (direction and distance from noise, out during the flights and back while none fly), so
+  the bound divides by 1 + `water_spray_warp` (its measured rate of change); its zone bound is combined with `max`, never
   returned alone near the zone (a bound that goes to 0 at a zone's edge renders as a
   surface). Parameters `a[8]` shore, `a[9]` spray (`Obj.prim3`); test
   `water_with_a_shore_stays_a_distance_bound` checks balls of the bound for sign changes.

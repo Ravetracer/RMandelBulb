@@ -145,7 +145,9 @@ is not needed for it, and the rest of the scene keeps its own setting.
 | Direction | Wind direction in degrees; the waves run mostly along it. | 0 |
 | Foam | White, broken foam on the highest crests, streaked along the wind. | 0.3 |
 | Shore waves | Waves running in toward the other objects and breaking on them, with foam along the coast (0 = none, 2 = strong surf). | 1 |
-| Spray | Drops splashing up where the waves break (0 = none, 2 = high splashes; needs shore waves). | 1 |
+| Spray | Drops splashing up where the waves break and flying in arcs (0 = none, 2 = high, wide splashes; needs shore waves). | 1 |
+| Drop size | Size of the spray drops (0.2–3; larger drops are fewer). | 1 |
+| Drop size variation | How much the drop sizes differ: 0 = all alike, 1 = from tiny to full size. | 0.5 |
 | Reflection | How strongly the water reflects (1 = like water, 2 = twice as much). | 1 |
 | Speed | How fast the waves move in animations (per second; 0 = still). Long waves run faster than ripples. | 1 |
 | Time | The moment of the waves: another value shows another wave pattern in a still image. Animations add the speed per second to it. | 0 |
@@ -161,7 +163,9 @@ sky gradient and a low light give the contrast of open sea.
 The water knows how far every point of it is from the rest of the scene: fractals, other
 primitives and models. Near them, shore waves run in toward the coast, growing shorter,
 steeper and higher, and collapse into foam right at it; a belt of foam lines the coast. Each
-time a wave reaches the coast, drops splash up and fall back. Everything moves with the
+time a wave reaches the coast, drops splash up and fly in arcs: up, sideways and back down.
+Their direction comes from slow noise around the wind direction, so nearby drops fly
+together while their heights, sizes and moments stay random. Everything moves with the
 waves in animations. Objects just below the surface count as shallows: the waves break over
 them too.
 

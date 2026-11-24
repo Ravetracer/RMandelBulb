@@ -135,6 +135,12 @@ pub enum Primitive {
         /// Drops splashing up where the waves break (0 = none, 1 = normal, 2 = high).
         #[serde(default = "water_spray_default")]
         spray: f64,
+        /// Size of the spray drops (1 = normal, 0.2-3).
+        #[serde(default = "water_drop_size_default")]
+        drop_size: f64,
+        /// How much the drop sizes vary (0 = all alike, 1 = from tiny to full size).
+        #[serde(default = "water_drop_variation_default")]
+        drop_variation: f64,
     },
     /// Upright pill: a cylinder with half-sphere ends, `height` from end to end.
     Capsule { radius: f64, height: f64 },
@@ -187,7 +193,7 @@ impl Primitive {
 
     /// Water with good start values (moving waves in animations).
     pub fn water() -> Primitive {
-        Primitive::Water { amplitude: 0.08, wavelength: 2.0, phase: 0.0, angle: 0.0, choppy: water_choppy(), detail: water_detail(), foam: 0.3, reflect: water_reflect(), speed: 1.0, shore: water_shore_default(), spray: water_spray_default() }
+        Primitive::Water { amplitude: 0.08, wavelength: 2.0, phase: 0.0, angle: 0.0, choppy: water_choppy(), detail: water_detail(), foam: 0.3, reflect: water_reflect(), speed: 1.0, shore: water_shore_default(), spray: water_spray_default(), drop_size: water_drop_size_default(), drop_variation: water_drop_variation_default() }
     }
 
     /// The parameters in a fixed order (GPU buffer: `prim`, `prim2`, `prim3`).
@@ -199,7 +205,7 @@ impl Primitive {
             Primitive::Sphere { radius } => p4([radius, 0.0, 0.0, 0.0]),
             Primitive::Cylinder { radius, height, rounding } => p4([radius, height, rounding, 0.0]),
             Primitive::Torus { major, minor } => p4([major, minor, 0.0, 0.0]),
-            Primitive::Water { amplitude, wavelength, phase, angle, choppy, detail, foam, reflect, shore, spray, .. } => [amplitude, wavelength, phase, angle, choppy, detail, foam, reflect, shore, spray, 0.0, 0.0],
+            Primitive::Water { amplitude, wavelength, phase, angle, choppy, detail, foam, reflect, shore, spray, drop_size, drop_variation, .. } => [amplitude, wavelength, phase, angle, choppy, detail, foam, reflect, shore, spray, drop_size, drop_variation],
             Primitive::Capsule { radius, height } => p4([radius, height, 0.0, 0.0]),
             Primitive::Cone { bottom, top, height } => p4([bottom, top, height, 0.0]),
             Primitive::HexPrism { radius, height } => p4([radius, height, 0.0, 0.0]),
@@ -300,6 +306,14 @@ fn water_shore_default() -> f64 {
 
 fn water_spray_default() -> f64 {
     1.0
+}
+
+fn water_drop_size_default() -> f64 {
+    1.0
+}
+
+fn water_drop_variation_default() -> f64 {
+    0.5
 }
 
 /// Waves of a water surface: their number grows with the detail.
@@ -451,9 +465,33 @@ pub fn water_distance(a: &[f64; 12], q: V3, s: f64) -> f64 {
     d.min(spray)
 }
 
+/// Sideways drift of the spray at (`x`, `y`) (mirrors march.wgsl `water_spray_drift`): a
+/// direction around the wind and a distance (up to `drift`) from slow noise, so neighboring
+/// drops fly together, scaled by the flight time from the shore waves' phase: out during the
+/// flights, back while no drop flies. Returns the offset and the drift velocity (per cycle).
+fn water_spray_drift(a: &[f64; 12], x: f64, y: f64, drift: f64) -> (f64, f64, f64, f64) {
+    let len = a[1].max(1e-6);
+    let (gx, gy) = (x / (len * 1.5), y / (len * 1.5));
+    let ang = a[3].to_radians() + (water_noise(gx + 13.1, gy + 7.7) * 2.0 - 1.0) * 2.5;
+    let far = drift * (0.4 + 0.6 * water_noise(gx + 2.9, gy + 21.4));
+    let cycle = (water_shore_phase(a, x, y) - std::f64::consts::FRAC_PI_2) / std::f64::consts::TAU;
+    let c = cycle - cycle.floor();
+    let t = if c < 0.65 { c / 0.65 } else { (1.0 - c) / 0.35 };
+    (ang.cos() * far * t, ang.sin() * far * t, ang.cos() * far / 0.65, ang.sin() * far / 0.65)
+}
+
+/// How fast the spray drift changes per unit of position: drift / wave length × 6 (measured:
+/// 5.1; checked by `water_with_a_shore_stays_a_distance_bound`).
+fn water_spray_warp(drift: f64, len: f64) -> f64 {
+    drift / len * 6.0
+}
+
 /// Drops splashing up where the shore waves break (mirrors march.wgsl `water_spray`): one drop
-/// at most in every cell of a grid on the surface, flying up and back after each wave reaches
-/// the coast, smaller farther from it. The cell of `q` and its eight neighbors are checked;
+/// at most in every cell of a grid on the surface, flying in an arc after each wave reaches
+/// the coast: up and back down, and sideways with the drift (`water_spray_drift`, the same
+/// for nearby drops), smaller farther from the coast. `a[10]` scales the drops, `a[11]` how
+/// much their sizes vary. The drift moves the grid (a smooth warp, so the bound divides by
+/// 1 + its rate of change). The cell of the warped point and its eight neighbors are checked;
 /// drops beyond them are at least the distance to that block's edge away (drops keep a margin
 /// inside their cell).
 fn water_spray(a: &[f64; 12], q: V3, s: f64) -> f64 {
@@ -461,17 +499,22 @@ fn water_spray(a: &[f64; 12], q: V3, s: f64) -> f64 {
     if amount <= 0.0 || a[8] <= 0.0 {
         return NO_SHORE;
     }
+    let (size, vary) = (a[10].clamp(0.2, 3.0), a[11].clamp(0.0, 1.0));
     let range = len * SPRAY_RANGE;
-    let (top, cell, r0) = (amp * 3.0 * amount, amp * 0.6, amp * 0.07);
-    // Outside the zone of the drops: at least the distance to it, and never less than the
-    // bound from the cells (at most 1.6 cells), so the zone's edge never looks like a surface.
-    let outside = (s - range).max(q.z - top - r0);
+    let (top, cell, r0) = (amp * 3.0 * amount, amp * 0.6 * size.max(1.0), amp * 0.07 * size);
+    let drift = top * 0.6;
+    // Outside the zone of the drops (they drift up to `drift` beyond the spray range): at least
+    // the distance to it, and never less than the bound from the cells (at most 1.6 cells), so
+    // the zone's edge never looks like a surface.
+    let outside = (s - range - drift).max(q.z - top - r0);
     if outside >= cell * 1.6 {
         return outside;
     }
-    let (fx, fy) = ((q.x / cell).floor(), (q.y / cell).floor());
+    let (wx, wy, vx, vy) = water_spray_drift(a, q.x, q.y, drift);
+    let p = v3(q.x - wx, q.y - wy, q.z);
+    let (fx, fy) = ((p.x / cell).floor(), (p.y / cell).floor());
     let margin = cell * 0.1;
-    let mut d = cell * 1.5 - (q.x - (fx + 0.5) * cell).abs().max((q.y - (fy + 0.5) * cell).abs()) + margin;
+    let mut d = cell * 1.5 - (p.x - (fx + 0.5) * cell).abs().max((p.y - (fy + 0.5) * cell).abs()) + margin;
     // The radius shrinks with the shore distance (squared): at most 2 r0 / range per unit.
     let fall = (1.0 - s / range).clamp(0.0, 1.0).powi(2);
     let lip = 1.0 + 2.0 * r0 / range;
@@ -489,14 +532,18 @@ fn water_spray(a: &[f64; 12], q: V3, s: f64) -> f64 {
             continue;
         }
         let reach = cell * 0.5 - r0 - margin;
-        let c = v3(cx + (h(33) * 2.0 - 1.0) * reach, cy + (h(34) * 2.0 - 1.0) * reach, top * (0.35 + 0.65 * h(35)) * 4.0 * u * (1.0 - u));
-        let r = r0 * (0.5 + 0.5 * h(36)) * (1.0 - 0.5 * u) * fall;
-        // Stretched along the flight while fast (an ellipsoid's bound: z scaled down).
+        let height = top * (0.35 + 0.65 * h(35));
+        let c = v3(cx + (h(33) * 2.0 - 1.0) * reach, cy + (h(34) * 2.0 - 1.0) * reach, height * 4.0 * u * (1.0 - u));
+        let r = r0 * (1.0 - vary * h(36)) * (1.0 - 0.5 * u) * fall;
+        // Stretched along the flight while fast: an ellipsoid along the velocity (sideways
+        // drift and the rise or fall), whose bound scales that component down.
+        let v = v3(vx, vy, height * 4.0 * (1.0 - 2.0 * u) / 0.5).normalize();
         let stretch = 1.0 + 1.2 * (1.0 - 2.0 * u).abs();
-        let e = q - c;
-        d = d.min((v3(e.x, e.y, e.z / stretch).length() - r) / lip);
+        let e = p - c;
+        let e = e - v * (e.dot(v) * (1.0 - 1.0 / stretch));
+        d = d.min((e.length() - r) / lip);
     }
-    d.max(outside)
+    (d / (1.0 + water_spray_warp(drift, len))).max(outside)
 }
 
 /// How water reflects light arriving at the cosine `cos_i` to its normal (Schlick, water's
@@ -864,7 +911,7 @@ mod tests {
             }
         }
         // Water: never more than the vertical distance to the surface.
-        let w = Primitive::Water { amplitude: 0.05, wavelength: 0.3, phase: 0.4, angle: 20.0, choppy: 1.0, detail: 16.0, foam: 0.3, reflect: 1.0, speed: 0.0, shore: 1.0, spray: 1.0 };
+        let w = Primitive::Water { amplitude: 0.05, wavelength: 0.3, phase: 0.4, angle: 20.0, choppy: 1.0, detail: 16.0, foam: 0.3, reflect: 1.0, speed: 0.0, shore: 1.0, spray: 1.0, drop_size: 1.0, drop_variation: 0.5 };
         let a = w.params();
         for i in 0..200 {
             let (x, y) = (i as f64 * 0.013, i as f64 * 0.007);
@@ -901,8 +948,9 @@ mod tests {
         // of a point lies below the surface or inside a drop (the sign of the distance tells).
         let shore = |q: V3| q.length() - 0.4;
         let mut worst_slope: f64 = 0.0;
-        for (amp, len, strength, spray, t) in [(0.08, 1.0, 1.0, 1.0, 0.3), (0.05, 0.5, 2.0, 2.0, 1.7), (0.1, 2.0, 2.0, 1.0, 4.1), (0.03, 0.4, 0.5, 2.0, 2.6)] {
-            let a = [amp, len, t, 25.0, 1.0, 24.0, 0.3, 1.0, strength, spray, 0.0, 0.0];
+        let mut worst_warp: f64 = 0.0;
+        for (amp, len, strength, spray, t, size, vary) in [(0.08, 1.0, 1.0, 1.0, 0.3, 1.0, 0.5), (0.05, 0.5, 2.0, 2.0, 1.7, 3.0, 1.0), (0.1, 2.0, 2.0, 1.0, 4.1, 0.2, 0.0), (0.03, 0.4, 0.5, 2.0, 2.6, 1.5, 0.8)] {
+            let a = [amp, len, t, 25.0, 1.0, 24.0, 0.3, 1.0, strength, spray, size, vary];
             let d_at = |q: V3| water_distance(&a, q, shore(q));
             let mut drops = 0;
             for i in 0..6000 {
@@ -946,8 +994,22 @@ mod tests {
                 let gy = (shore_h(x, y + e, s) - shore_h(x, y - e, s)) / (2.0 * e);
                 worst_slope = worst_slope.max((gs.abs() + (gx * gx + gy * gy).sqrt()) / steep);
             }
+            // The spray drift changes at most by water_spray_warp per unit (any direction).
+            let drift = amp * 3.0 * spray * 0.6;
+            let warp = water_spray_warp(drift, len);
+            for i in 0..20000 {
+                let (x, y) = ((i as f64 * 0.6180339) % 1.0 * len * 10.0, (i as f64 * 0.7548776) % 1.0 * len * 10.0);
+                let w = |x: f64, y: f64| {
+                    let (wx, wy, _, _) = water_spray_drift(&a, x, y, drift);
+                    v3(wx, wy, 0.0)
+                };
+                let (gx, gy) = ((w(x + e, y) - w(x - e, y)) * (0.5 / e), (w(x, y + e) - w(x, y - e)) * (0.5 / e));
+                // Norm of the 2 × 2 Jacobian, bounded by its Frobenius norm.
+                worst_warp = worst_warp.max((gx.dot(gx) + gy.dot(gy)).sqrt() / warp);
+            }
         }
         assert!(worst_slope < 1.0, "shore slope {worst_slope} of the bound");
+        assert!(worst_warp < 1.0, "spray warp {worst_warp} of the bound");
     }
 
     #[test]

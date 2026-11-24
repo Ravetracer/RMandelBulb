@@ -849,6 +849,19 @@ fn water_distance(a: vec4<f32>, a2: vec4<f32>, a3: vec4<f32>, q: vec3<f32>, s: f
     return min(d, spray);
 }
 
+// Mirrors compose::water_spray_drift: xy the offset, zw the drift velocity.
+fn water_spray_drift(a: vec4<f32>, x: f32, y: f32, drift: f32) -> vec4<f32> {
+    let len = max(a.y, 1.0e-6);
+    let g = vec2<f32>(x, y) / (len * 1.5);
+    let ang = radians(a.w) + (water_noise(g.x + 13.1, g.y + 7.7) * 2.0 - 1.0) * 2.5;
+    let far = drift * (0.4 + 0.6 * water_noise(g.x + 2.9, g.y + 21.4));
+    let cycle = (water_shore_phase(a, x, y) - 1.5707963267948966) / 6.283185307179586;
+    let c = cycle - floor(cycle);
+    let t = select((1.0 - c) / 0.35, c / 0.65, c < 0.65);
+    let dir = vec2<f32>(cos(ang), sin(ang));
+    return vec4<f32>(dir * far * t, dir * far / 0.65);
+}
+
 // Mirrors compose::water_spray.
 fn water_spray(a: vec4<f32>, a3: vec4<f32>, q: vec3<f32>, s: f32) -> f32 {
     let amp = max(abs(a.x), 1.0e-9);
@@ -857,17 +870,22 @@ fn water_spray(a: vec4<f32>, a3: vec4<f32>, q: vec3<f32>, s: f32) -> f32 {
     if (amount <= 0.0 || a3.x <= 0.0) {
         return 1.0e30;
     }
+    let size = clamp(a3.z, 0.2, 3.0);
+    let vary = clamp(a3.w, 0.0, 1.0);
     let range = len * 0.25;
     let top = amp * 3.0 * amount;
-    let cell = amp * 0.6;
-    let r0 = amp * 0.07;
-    let outside = max(s - range, q.z - top - r0);
+    let cell = amp * 0.6 * max(size, 1.0);
+    let r0 = amp * 0.07 * size;
+    let drift = top * 0.6;
+    let outside = max(s - range - drift, q.z - top - r0);
     if (outside >= cell * 1.6) {
         return outside;
     }
-    let fc = floor(q.xy / cell);
+    let w = water_spray_drift(a, q.x, q.y, drift);
+    let p = vec3<f32>(q.xy - w.xy, q.z);
+    let fc = floor(p.xy / cell);
     let margin = cell * 0.1;
-    var d = cell * 1.5 - max(abs(q.x - (fc.x + 0.5) * cell), abs(q.y - (fc.y + 0.5) * cell)) + margin;
+    var d = cell * 1.5 - max(abs(p.x - (fc.x + 0.5) * cell), abs(p.y - (fc.y + 0.5) * cell)) + margin;
     let fall0 = clamp(1.0 - s / range, 0.0, 1.0);
     let fall = fall0 * fall0;
     let lip = 1.0 + 2.0 * r0 / range;
@@ -885,13 +903,16 @@ fn water_spray(a: vec4<f32>, a3: vec4<f32>, q: vec3<f32>, s: f32) -> f32 {
             continue;
         }
         let reach = cell * 0.5 - r0 - margin;
-        let c = vec3<f32>(cx + (hash3(i, j, 33) * 2.0 - 1.0) * reach, cy + (hash3(i, j, 34) * 2.0 - 1.0) * reach, top * (0.35 + 0.65 * hash3(i, j, 35)) * 4.0 * u * (1.0 - u));
-        let r = r0 * (0.5 + 0.5 * hash3(i, j, 36)) * (1.0 - 0.5 * u) * fall;
+        let height = top * (0.35 + 0.65 * hash3(i, j, 35));
+        let c = vec3<f32>(cx + (hash3(i, j, 33) * 2.0 - 1.0) * reach, cy + (hash3(i, j, 34) * 2.0 - 1.0) * reach, height * 4.0 * u * (1.0 - u));
+        let r = r0 * (1.0 - vary * hash3(i, j, 36)) * (1.0 - 0.5 * u) * fall;
+        let v = normalize(vec3<f32>(w.zw, height * 4.0 * (1.0 - 2.0 * u) / 0.5));
         let stretch = 1.0 + 1.2 * abs(1.0 - 2.0 * u);
-        let e = q - c;
-        d = min(d, (length(vec3<f32>(e.x, e.y, e.z / stretch)) - r) / lip);
+        let e0 = p - c;
+        let e = e0 - v * (dot(e0, v) * (1.0 - 1.0 / stretch));
+        d = min(d, (length(e) - r) / lip);
     }
-    return max(d, outside);
+    return max(d / (1.0 + drift / len * 6.0), outside);
 }
 
 // Mirrors compose::water_fresnel.

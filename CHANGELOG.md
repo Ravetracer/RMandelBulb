@@ -12,6 +12,9 @@ and the release workflow uses it as the release notes.
 
 ## [Unreleased]
 
+- Water spray: drops fly in arcs, sideways with a direction shared by nearby drops; new
+  settings Drop size and Drop size variation.
+
 ## [1.1.0] - 2026-11-24
 
 - Water: no more even, repeating pattern in wide views. Waves from long swells down to
