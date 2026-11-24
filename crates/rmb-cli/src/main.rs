@@ -10,7 +10,7 @@ RMandelbulb3D command line
 
 USAGE:
   rmb-cli render <scene> [-o out.png|out.exr] [-W width] [-H height] [-s samples] [--cpu]
-                 [-t threads] [--denoise [blend] | --no-denoise] [--16bit]
+                 [-t threads] [--denoise [blend] | --no-denoise] [--16bit] [--tiles size|off]
   rmb-cli animate <scene> [-o out.mp4|folder] [-W width] [-H height] [-s samples] [--cpu]
                  [--fps n] [--from frame] [--to frame] [--denoise [blend] | --no-denoise]
                  [--ffmpeg path] [--audio file [--audio-offset s] | --no-audio]
@@ -31,7 +31,9 @@ giving only one keeps the aspect ratio. Rendering uses the GPU unless --cpu is g
 --denoise runs the AI denoiser (Intel Open Image Denoise; blend 0..1, default 1) whatever the
 scene says, --no-denoise skips it. --16bit writes a 16-bit PNG. An .exr output gets the linear
 image before the post processing (denoised as the scene says) with the passes coverage, Z
-(distance from the camera), albedo and normal. The library is loaded at runtime: RMB_OIDN_DIR, next to the
+(distance from the camera), albedo and normal. --tiles renders on the GPU in tiles of about
+that many pixels per side (images larger than the GPU memory holds); by default images above
+about 16 megapixels use tiles of 2048, --tiles off never. The library is loaded at runtime: RMB_OIDN_DIR, next to the
 executable (lib/ on Linux), ./oidn (python3 tools/fetch_oidn.py) or the system.
 
 animate renders the scene's keyframe animation. The output's extension picks the format
@@ -103,10 +105,12 @@ struct Opts {
     audio_offset: Option<f64>,
     shutter: Option<f64>,
     sixteen: bool,
+    /// Tile size: None automatic, Some(0) off.
+    tiles: Option<u32>,
 }
 
 fn parse(args: &[String]) -> Result<Opts, String> {
-    let mut o = Opts { input: None, output: None, width: None, height: None, samples: 64, cpu: false, threads: None, denoise: None, fps: None, from: None, to: None, ffmpeg: None, audio: None, audio_offset: None, shutter: None, sixteen: false };
+    let mut o = Opts { input: None, output: None, width: None, height: None, samples: 64, cpu: false, threads: None, denoise: None, fps: None, from: None, to: None, ffmpeg: None, audio: None, audio_offset: None, shutter: None, sixteen: false, tiles: None };
     let mut it = args.iter().peekable();
     while let Some(a) = it.next() {
         let mut val = |name: &str| it.next().cloned().ok_or_else(|| format!("{name} needs a value"));
@@ -118,6 +122,10 @@ fn parse(args: &[String]) -> Result<Opts, String> {
             "-t" => o.threads = Some(val("-t")?.parse().map_err(|_| "bad thread count")?),
             "--cpu" => o.cpu = true,
             "--16bit" => o.sixteen = true,
+            "--tiles" => {
+                let v = val("--tiles")?;
+                o.tiles = Some(if v == "off" { 0 } else { v.parse().map_err(|_| "bad tile size")? });
+            }
             "--fps" => o.fps = Some(val("--fps")?.parse().map_err(|_| "bad frame rate")?),
             "--from" => o.from = Some(val("--from")?.parse().map_err(|_| "bad frame number")?),
             "--to" => o.to = Some(val("--to")?.parse().map_err(|_| "bad frame number")?),
@@ -344,6 +352,32 @@ fn render(args: &[String]) -> Result<(), String> {
         eprintln!("warning: formulas not available: {}", prog.missing.join(", "));
     }
     let start = std::time::Instant::now();
+    let kind = rmb_core::io::image::ImageKind::of_path(&out, o.sixteen);
+    let tile = match o.tiles {
+        Some(0) => None,
+        Some(t) => Some(t),
+        None => rmb_core::io::image::auto_tile(w, h),
+    };
+    if let (Some(t), false) = (tile, o.cpu) {
+        let ctx = rmb_gpu::GpuContext::new_headless()?;
+        eprintln!("GPU: {}, tiles of {t} px ({} × {})", ctx.adapter_name, w.div_ceil(t.clamp(64, 16384)), h.div_ceil(t.clamp(64, 16384)));
+        let mut last = 0;
+        let (image, denoised) = rmb_gpu::render_tiled_hdr(ctx, &scene, w, h, o.samples, t, kind == rmb_core::io::image::ImageKind::Exr, |p| {
+            let pct = (p * 100.0) as u32;
+            if pct != last {
+                last = pct;
+                eprint!("\r{pct:3}%");
+            }
+            true
+        })?;
+        eprintln!();
+        rmb_core::io::image::save_render_ex(&out, image, &scene, kind, true)?;
+        if scene.post.denoise {
+            eprintln!("{}", denoised.describe());
+        }
+        eprintln!("{} ({w} x {h}, {} samples, {:.1} s)", out.display(), o.samples, start.elapsed().as_secs_f64());
+        return Ok(());
+    }
     let image = if o.cpu {
         if let Some(t) = o.threads {
             let _ = rayon::ThreadPoolBuilder::new().num_threads(t).build_global();
@@ -370,7 +404,6 @@ fn render(args: &[String]) -> Result<(), String> {
         eprintln!();
         r
     };
-    let kind = rmb_core::io::image::ImageKind::of_path(&out, o.sixteen);
     let denoised = rmb_core::io::image::save_render(&out, image, &scene, kind)?;
     if scene.post.denoise {
         eprintln!("{}", denoised.describe());

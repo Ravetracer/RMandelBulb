@@ -30,7 +30,8 @@ modern egui interface and import of Mandelbulb3D parameters.
   STL) for 3D printing and 3D programs, or as voxels (PNG slices, MagicaVoxel `.vox`), sampled
   on the GPU (File › Export mesh… / Export voxels…, `rmb-cli mesh` / `voxels`).
 - **Image formats**: PNG 8 or 16 bit with the scene inside; OpenEXR with the linear image and
-  coverage, depth, albedo and normal passes for compositing.
+  coverage, depth, albedo and normal passes for compositing. Large images (up to 32768 px)
+  render in tiles.
 - **Projections and stereo**: fisheye (full frame or dome-master circle, up to 360°),
   equirectangular 360° and 180° panoramas; stereo as red/cyan anaglyph, side by side or
   over / under (omnidirectional stereo in the panoramas, for VR video).

@@ -182,7 +182,12 @@ Features the two programs have that RMandelbulb3D does not have yet, in the plan
       depth and coverage in the w components of the aux buffer). MB3D `zbuf16bit`, Mandelbulber
   - [ ] Possible: EXR / 16-bit PNG for animations (frame sequences), an emission pass, larger
         MagicaVoxel scenes (several 256³ models)
-- [ ] Big renders in tiles (sizes beyond the GPU memory, for prints). MB3D `Tiling`
+- [x] Big renders in tiles (sizes beyond the GPU memory, for prints; up to 32768 px): tiles
+      render the full image's pixels (identical without the denoiser), denoised per tile with a
+      64 px overlap, post processing on the stitched image. Export window › Tiles,
+      `rmb-cli render --tiles`. MB3D `Tiling`
+  - [ ] Possible: tiles for the CPU renderer, writing PNG rows while tiles finish (less memory
+        for 32K images), tiled animation frames
 - [ ] Batch rendering / render queue (several scenes and animations overnight). MB3D
       `BatchForm`, Mandelbulber `render_queue`
 - [ ] Script expressions: parameters driven by formulas of time or other parameters (animations).

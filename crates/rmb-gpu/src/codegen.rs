@@ -145,7 +145,8 @@ fn uniform_layout() -> (Vec<UField>, usize) {
 pub fn uniform_words_never_baked() -> Vec<usize> {
     let (fields, _) = uniform_layout();
     let at = |n: &str| fields.iter().find(|f| f.name == n).map_or(usize::MAX, |f| f.word);
-    vec![at("size") + 2, at("band"), at("band") + 1, at("deep_hi") + 3]
+    // Tile offsets change between the tiles of one render, which share the shader.
+    vec![at("size") + 2, at("band"), at("band") + 1, at("deep_hi") + 3, at("tile"), at("tile") + 1]
 }
 
 /// Replaces the reads of uniform fields with constant indexes (`u.fog.x`, `u.glow2.xyz`,

@@ -120,21 +120,42 @@ impl ImageKind {
 /// Finishes a rendered image (denoiser as the scene says; PNG with flares and post processing,
 /// EXR linear with passes) and writes it with the scene inside.
 pub fn save_render(path: &Path, img: crate::render::denoise::HdrImage, scene: &Scene, kind: ImageKind) -> Result<crate::render::denoise::Outcome, String> {
+    save_render_ex(path, img, scene, kind, false)
+}
+
+/// [`save_render`] for an image that is `denoised` already (tiled renders denoise every
+/// tile): the denoiser is skipped, the scene inside the file stays as it is.
+pub fn save_render_ex(path: &Path, img: crate::render::denoise::HdrImage, scene: &Scene, kind: ImageKind, denoised: bool) -> Result<crate::render::denoise::Outcome, String> {
     let (w, h) = (img.width, img.height);
+    let finish_scene;
+    let fs = if denoised {
+        let mut s = scene.clone();
+        s.post.denoise = false;
+        finish_scene = s;
+        &finish_scene
+    } else {
+        scene
+    };
     match kind {
         ImageKind::Png8 => {
-            let (rgba, outcome) = img.finish_scene(scene);
+            let (rgba, outcome) = img.finish_scene(fs);
             write_png(path, w, h, &rgba, Some(scene)).map(|_| outcome)
         }
         ImageKind::Png16 => {
-            let (rgba, outcome) = img.finish_scene16(scene);
+            let (rgba, outcome) = img.finish_scene16(fs);
             write_png16(path, w, h, &rgba, Some(scene)).map(|_| outcome)
         }
         ImageKind::Exr => {
-            let (lin, outcome) = img.finish_linear(scene);
+            let (lin, outcome) = img.finish_linear(fs);
             write_exr(path, &lin, Some(scene)).map(|_| outcome)
         }
     }
+}
+
+/// Tile size for an image of `width` × `height`: `Some` (2048) above about 16 megapixels,
+/// where the GPU buffers of a whole image get large (52 bytes per pixel).
+pub fn auto_tile(width: u32, height: u32) -> Option<u32> {
+    (width as u64 * height as u64 > 4096 * 4096).then_some(2048)
 }
 
 /// The scene stored in a PNG written by `write_png`.

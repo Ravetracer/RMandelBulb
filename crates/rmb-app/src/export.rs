@@ -17,6 +17,9 @@ use rmb_gpu::GpuContext;
 
 use crate::{theme, widgets};
 
+/// Tiles when the image is large (`io::image::auto_tile`).
+const TILES_AUTO: u32 = u32::MAX;
+
 /// The last finished frame of an animation export (size, RGBA), for the preview.
 type Preview = Arc<Mutex<Option<(u32, u32, Vec<u8>)>>>;
 
@@ -43,6 +46,8 @@ pub struct Export {
     path: Option<PathBuf>,
     /// Image file kind (PNG 8/16 bit, EXR).
     kind: rmb_core::io::image::ImageKind,
+    /// Tile size: `TILES_AUTO`, 0 (off) or pixels per side.
+    tiles: u32,
     /// Animation: output file (movies) or folder (images), format and frame range.
     movie_path: Option<PathBuf>,
     format: VideoFormat,
@@ -67,6 +72,7 @@ impl Export {
             samples,
             path: None,
             kind: Default::default(),
+            tiles: TILES_AUTO,
             movie_path: None,
             format: VideoFormat::Mp4,
             from: 0,
@@ -153,12 +159,12 @@ impl Export {
             let aspect = scene.aspect();
             widgets::grid(ui, "export", |ui| {
                 widgets::label(ui, "Width", "Image width in pixels");
-                if ui.add(egui::DragValue::new(&mut self.width).range(16..=16384).suffix(" px")).changed() {
+                if ui.add(egui::DragValue::new(&mut self.width).range(16..=32768).suffix(" px")).changed() {
                     self.height = ((self.width as f64) / aspect).round().max(16.0) as u32;
                 }
                 ui.end_row();
                 widgets::label(ui, "Height", "Image height in pixels (follows the scene's aspect)");
-                if ui.add(egui::DragValue::new(&mut self.height).range(16..=16384).suffix(" px")).changed() {
+                if ui.add(egui::DragValue::new(&mut self.height).range(16..=32768).suffix(" px")).changed() {
                     self.width = ((self.height as f64) * aspect).round().max(16.0) as u32;
                 }
                 ui.end_row();
@@ -252,7 +258,31 @@ impl Export {
                 *p = p.with_extension(self.kind.extension());
             }
             ui.end_row();
+            widgets::label(
+                ui,
+                "Tiles",
+                "Renders large images in parts on the GPU and puts them together (sizes beyond the graphics memory, prints). Every tile renders the same pixels as the whole image would; the denoiser works per tile with an overlap. Auto: tiles of 2048 pixels above about 16 megapixels",
+            );
+            let name = |t: u32| match t {
+                TILES_AUTO => "Auto".to_string(),
+                0 => "Off".to_string(),
+                t => format!("{t} px"),
+            };
+            egui::ComboBox::from_id_salt("export-tiles").selected_text(name(self.tiles)).show_ui(ui, |ui| {
+                for t in [TILES_AUTO, 0, 1024, 2048, 4096] {
+                    ui.selectable_value(&mut self.tiles, t, name(t));
+                }
+            });
+            ui.end_row();
         });
+        let (w, h) = (self.width as u64, self.height as u64);
+        let tile = self.tile_size();
+        let tiles = tile.map(|t| format!("{} × {} tiles, ", w.div_ceil(t as u64), h.div_ceil(t as u64))).unwrap_or_default();
+        // Main memory: the image (12 bytes per pixel; EXR passes 32 more) and the output.
+        let per_px = 12 + if self.kind == ImageKind::Exr { 32 } else { 8 };
+        let bytes = (w * h * per_px) as f64;
+        let mem = if bytes >= 1e9 { format!("{:.1} GB", bytes / 1e9) } else { format!("{:.0} MB", (bytes / 1e6).max(1.0)) };
+        ui.label(RichText::new(format!("{tiles}about {mem} of memory")).size(theme::fs(11.5)).color(theme::TEXT_MUTED));
         ui.horizontal(|ui| {
             let label = self.path.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "No file chosen".into());
             let ext = self.kind.extension();
@@ -349,6 +379,15 @@ impl Export {
         });
     }
 
+    /// The tile size of the current settings (None: the whole image at once).
+    fn tile_size(&self) -> Option<u32> {
+        match self.tiles {
+            TILES_AUTO => rmb_core::io::image::auto_tile(self.width, self.height),
+            0 => None,
+            t => Some(t),
+        }
+    }
+
     fn start(&mut self, scene: &Scene, gpu: Option<GpuContext>) {
         let (Some(path), Some(ctx)) = (self.path.clone(), gpu) else { return };
         let progress = Arc::new(AtomicU32::new(0));
@@ -356,20 +395,25 @@ impl Export {
         let (tx, rx) = mpsc::channel();
         let (w, h, n) = (self.width, self.height, self.samples);
         let kind = self.kind;
+        let tile = self.tile_size();
         let mut sc = scene.clone();
         sc.width = w;
         sc.height = h;
         sc.animation = None;
         let (pr, ca) = (progress.clone(), cancel.clone());
         std::thread::spawn(move || {
-            let res = rmb_gpu::render_blocking_hdr(ctx, &sc, w, h, n, |p| {
+            let report = |p: f32| {
                 pr.store(p.to_bits(), Ordering::Relaxed);
                 !ca.load(Ordering::Relaxed)
-            })
-            .and_then(|img| {
-                let outcome = rmb_core::io::image::save_render(&path, img, &sc, kind)?;
+            };
+            let res = match tile {
+                // Tiles are denoised one by one while rendering.
+                Some(t) => rmb_gpu::render_tiled_hdr(ctx, &sc, w, h, n, t, kind == rmb_core::io::image::ImageKind::Exr, report).and_then(|(img, outcome)| rmb_core::io::image::save_render_ex(&path, img, &sc, kind, true).map(|_| outcome)),
+                None => rmb_gpu::render_blocking_hdr(ctx, &sc, w, h, n, report).and_then(|img| rmb_core::io::image::save_render(&path, img, &sc, kind)),
+            }
+            .map(|outcome| {
                 let note = if sc.post.denoise { format!(", {}", outcome.describe()) } else { String::new() };
-                Ok((path.clone(), note))
+                (path.clone(), note)
             });
             let _ = tx.send(res);
         });

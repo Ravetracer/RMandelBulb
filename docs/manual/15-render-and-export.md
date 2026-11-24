@@ -71,10 +71,11 @@ export window. When the scene has keyframes, two buttons at the top choose betwe
 
 | Control | What it does |
 |---------|--------------|
-| **Width**, **Height** | Size in pixels (16–16384). Changing one changes the other with the scene's aspect. |
+| **Width**, **Height** | Size in pixels (16–32768). Changing one changes the other with the scene's aspect. |
 | **Scale** | ½×, 1×, 2×, 4× of the scene's image size. |
 | **Samples** | Samples per pixel (1–1024). The default comes from **Preferences › Interface › Export samples** (128). |
 | **Format** | **PNG 8-bit**, **PNG 16-bit** or **EXR (linear, passes)**, see below. |
+| **Tiles** | Renders large images in parts and puts them together, see below. **Auto** uses tiles of 2048 pixels above about 16 megapixels. The line below shows the tile count and the memory the export needs. |
 | **File…** | Where to save the image. It defaults to the scene file's name. |
 | **Render and save** | Renders in the background and saves. A progress bar shows the remaining time; **Cancel** stops it. |
 
@@ -87,6 +88,15 @@ whether and where the image was denoised.
 | PNG 8-bit | The image as shown, with lens flares, bloom and all **Image** settings. |
 | PNG 16-bit | The same with 16 bits per channel: no banding in dark gradients and fog when you edit the image further. |
 | EXR (linear, passes) | OpenEXR, 32-bit float, lossless compression: the linear light *before* the **Image** settings (denoised when **Denoise** is on; no lens flares, bloom, exposure, tone mapping or color grading), for compositing and grading in other programs. Scenes in display space (Mandelbulb3D imports) are converted to linear light. |
+
+**Tiles.** The graphics card keeps about 52 bytes per pixel while rendering, so very large
+images (prints, 8K and more) do not fit at once. With tiles, the export renders one part after
+the other and puts them together in main memory (about 20 bytes per pixel; the line under the
+settings shows the estimate). Every tile renders exactly the pixels a render of the whole image
+would: without the denoiser the result is identical. With the denoiser, each tile is denoised
+with an overlap of 64 pixels that is cut off, so no seams show. Lens flares, bloom and the
+**Image** settings work on the finished image as usual. An 8192 × 8192 image of the Mandelbulb
+preset with 4 samples took about a minute on an RTX A2000 laptop GPU and 1.6 GB of memory.
 
 An EXR file holds these channels:
 
@@ -180,7 +190,7 @@ RMandelbulb3D. Run `rmb-cli --help` for a summary.
 
 ```
 rmb-cli render <scene> [-o out.png|out.exr] [-W width] [-H height] [-s samples] [--cpu]
-               [-t threads] [--denoise [blend] | --no-denoise] [--16bit]
+               [-t threads] [--denoise [blend] | --no-denoise] [--16bit] [--tiles size|off]
 ```
 
 Renders one image and saves it as PNG with the scene inside, or as EXR with passes when the
@@ -196,6 +206,7 @@ output ends in `.exr` (see "Export window" above).
 | `--denoise [blend]` | Runs the denoiser whatever the scene says; blend 0–1, default 1. |
 | `--no-denoise` | Skips the denoiser. |
 | `--16bit` | Writes a 16-bit PNG. |
+| `--tiles size` | Renders in tiles of about `size` pixels per side (GPU only). Default: tiles of 2048 above about 16 megapixels; `--tiles off` never. |
 
 ### animate
 

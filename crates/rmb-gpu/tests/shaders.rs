@@ -1253,3 +1253,24 @@ fn mesh_export_distances_match_on_gpu_and_cpu() {
         assert!(off * 100 <= n, "slice {z}: {off} of {n} distances differ");
     }
 }
+
+#[test]
+fn tiled_render_equals_the_whole_image() {
+    let Ok(ctx) = rmb_gpu::GpuContext::new_headless() else {
+        eprintln!("no GPU, skipped");
+        return;
+    };
+    let mut scene = Scene::default();
+    scene.lighting.ao_mode = rmb_core::scene::AoMode::Fast;
+    scene.post.denoise = false;
+    // Side by side stereo: the eyes depend on the position in the full image.
+    scene.view.stereo = rmb_core::scene::StereoMode::SideBySide;
+    scene.view.convergence = 2.5;
+    let (w, h) = (150, 70);
+    let whole = rmb_gpu::render_blocking_hdr(ctx.clone(), &scene, w, h, 2, |_| true).expect("render");
+    let (tiled, _) = rmb_gpu::render_tiled_hdr(ctx, &scene, w, h, 2, 64, true, |_| true).expect("tiled render");
+    let diff = whole.color.iter().zip(&tiled.color).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+    assert!(diff < 1e-4, "largest difference {diff}");
+    let dz = whole.depth.iter().zip(&tiled.depth).filter(|(a, b)| a.is_finite() && (*a - *b).abs() > 1e-4).count();
+    assert_eq!(dz, 0);
+}

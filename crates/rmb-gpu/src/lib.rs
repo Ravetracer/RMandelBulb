@@ -5,4 +5,4 @@
 pub mod codegen;
 pub mod renderer;
 
-pub use renderer::{GpuContext, GpuRenderer, GridField, read_texture_rgba8, render_animation, render_blocking, render_blocking_hdr, render_progressive};
+pub use renderer::{GpuContext, GpuRenderer, GridField, read_texture_rgba8, render_animation, render_blocking, render_blocking_hdr, render_progressive, render_tiled_hdr};

@@ -210,6 +210,16 @@ cargo clippy -j 8 --workspace --all-targets
   empty 6-neighbor), colors only on shell voxels (the inside gets the layer's mean), PNG slices
   or MagicaVoxel (`write_vox`, median-cut `palette`; resolution limited by `limited`).
 
+## Tiled renders
+
+- `rmb_gpu::render_tiled_hdr`: equal-size tiles (edge tiles moved inward; one shader), uniform
+  `tile` = left, top, full width, full height (`GpuRenderer::set_tile`). The kernel passes
+  full-image pixel coordinates to `sample_image` and `eye_screen` uses the full size, so the
+  rays and random numbers equal a whole-image render. Tile offsets are never baked
+  (`uniform_words_never_baked`). With the denoiser, tiles get a `TILE_MARGIN` overlap and are
+  denoised one by one; `io::image::save_render_ex(…, denoised = true)` finishes without
+  denoising again. `io::image::auto_tile` decides Auto.
+
 ## Image formats
 
 - `io::image::save_render` with `ImageKind` (PNG 8 / 16 bit, EXR). EXR (`write_exr`, `exr`

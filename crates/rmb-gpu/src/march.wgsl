@@ -96,6 +96,7 @@ struct U {
     view2: vec4<f32>,      // half eye distance, convergence distance, anaglyph in color, images per sample
     grid: vec4<f32>,       // mesh export (grid_main): grid origin, step
     grid2: vec4<f32>,      // mesh export: slice index
+    tile: vec4<u32>,       // rendered tile of a larger image: left, top, full width, full height
 }
 
 @group(0) @binding(0) var<uniform> u: U;
@@ -2807,19 +2808,19 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sx: f32, 
 // (-1 left, 1 right, 0 without stereo) for the image position (fx, fy) and image k.
 fn eye_screen(fx: f32, fy: f32, k: u32) -> vec3<f32> {
     let mode = u32(u.view.z);
-    var ew = f32(u.size.x);
-    var eh = f32(u.size.y);
+    var ew = f32(u.tile.z);
+    var eh = f32(u.tile.w);
     var x = fx;
     var y = fy;
     var eye = 0.0;
     if (mode == 1u) {
         eye = select(1.0, -1.0, k == 0u);
     } else if (mode == 2u) {
-        ew = f32(max(u.size.x / 2u, 1u));
+        ew = f32(max(u.tile.z / 2u, 1u));
         eye = select(1.0, -1.0, fx < ew);
         x = select(fx - ew, fx, fx < ew);
     } else if (mode == 3u) {
-        eh = f32(max(u.size.y / 2u, 1u));
+        eh = f32(max(u.tile.w / 2u, 1u));
         eye = select(1.0, -1.0, fy < eh);
         y = select(fy - eh, fy, fy < eh);
     }
@@ -3198,7 +3199,8 @@ fn march_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (px >= u.size.x || gid.y >= u.band.y || py >= u.size.y) {
         return;
     }
-    var c = sample_image(px, py, u.size.z);
+    // Pixels of the full image (tiles): same rays and random numbers as without tiles.
+    var c = sample_image(px + u.tile.x, py + u.tile.y, u.size.z);
     if (!(is_finite(c.x) && is_finite(c.y) && is_finite(c.z))) {
         c = vec3<f32>(0.0);
     }

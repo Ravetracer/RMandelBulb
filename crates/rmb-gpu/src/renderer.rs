@@ -151,6 +151,7 @@ struct Uniforms {
     view2: [f32; 4],
     grid: [f32; 4],
     grid2: [f32; 4],
+    tile: [u32; 4],
 }
 
 /// Splits an f64 into the high and low f32 of a double-float.
@@ -466,8 +467,11 @@ fn emissive_any(scene: &Scene, prog: &Program) -> bool {
         || own.iter().any(|so| glow_layer(&so.material.layers))
 }
 
-fn uniforms(scene: &Scene, prog: &Program, w: u32, h: u32, fast: bool) -> Uniforms {
-    let fr = Frame::new(scene, w, h);
+/// `tile`: the rendered part of a larger image (left, top, full width, full height).
+fn uniforms(scene: &Scene, prog: &Program, w: u32, h: u32, fast: bool, tile: Option<[u32; 4]>) -> Uniforms {
+    let tile = tile.unwrap_or([0, 0, w, h]);
+    // Camera and pixel size follow the full image.
+    let fr = Frame::new(scene, tile[2], tile[3]);
     let cam = &scene.camera;
     let l = &scene.lighting;
     let bg = &scene.background;
@@ -662,6 +666,7 @@ fn uniforms(scene: &Scene, prog: &Program, w: u32, h: u32, fast: bool) -> Unifor
         view2: [fr.view.half_eye as f32, fr.view.convergence as f32, if fr.view.anaglyph_color { 1.0 } else { 0.0 }, fr.view.eye_count() as f32],
         grid: [0.0; 4],
         grid2: [0.0; 4],
+        tile,
         haze2: [if scene.fog.haze_shape == rmb_core::scene::HazeShape::Iterations { 1.0 } else { 0.0 }, scene.fog.haze_size as f32, 0.0, 0.0],
     }
 }
@@ -736,7 +741,7 @@ fn render_uniform_words(scene: &Scene, prog: Program, width: u32, height: u32) -
     };
     let (shifted, prog) = render_program(scene, prog, deep);
     let shade = rmb_core::render::shading_scene(shifted.as_ref().unwrap_or(scene));
-    let un = uniforms(&shade, &prog, width, height, false);
+    let un = uniforms(&shade, &prog, width, height, false, None);
     bytemuck::cast_slice(bytemuck::bytes_of(&un)).to_vec()
 }
 
@@ -768,6 +773,7 @@ struct Key {
     width: u32,
     height: u32,
     fast: bool,
+    tile: Option<[u32; 4]>,
 }
 
 pub struct GpuRenderer {
@@ -842,6 +848,9 @@ pub struct GpuRenderer {
     prog: Option<Program>,
     /// Mesh export only: no march shader is compiled (see `GridField`).
     grid_only: bool,
+    /// Renders one tile of a larger image (left, top, full width, full height; see
+    /// `render_tiled_hdr`).
+    tile: Option<[u32; 4]>,
     /// The resting view's shader: its signature, the one wanted for the current scene (`None`:
     /// not requested yet), and the compile in flight.
     rest: Option<(String, wgpu::ComputePipeline)>,
@@ -960,11 +969,18 @@ impl GpuRenderer {
             key_time: Instant::now(),
             prog: None,
             grid_only: false,
+            tile: None,
             rest: None,
             rest_wanted: None,
             rest_pending: None,
             ctx,
         }
+    }
+
+    /// Renders only a part of a larger image from the next `set_scene` on: the part's left and
+    /// top pixel and the full image's size (`None`: the whole image).
+    pub fn set_tile(&mut self, tile: Option<[u32; 4]>) {
+        self.tile = tile;
     }
 
     /// Sets the time per submission (default 12 ms, which keeps a window responsive). Renders
@@ -1017,7 +1033,7 @@ impl GpuRenderer {
         render_scene.post = Post { display_space: scene.post.display_space, ..Default::default() };
         render_scene.notes.clear();
         render_scene.animation = None;
-        let key = Key { scene: render_scene, width, height, fast };
+        let key = Key { scene: render_scene, width, height, fast, tile: self.tile };
         // Other map folders: reload the maps and render again.
         if self.maps_generation != rmb_core::maps::generation() {
             self.maps_generation = rmb_core::maps::generation();
@@ -1042,7 +1058,7 @@ impl GpuRenderer {
             return;
         }
         let prog = Program::for_scene(scene);
-        let deep = self.deep_mode(scene, &prog, height);
+        let deep = self.deep_mode(scene, &prog, self.tile.map_or(height, |t| t[3]));
         let (shifted, prog) = render_program(scene, prog, deep);
         let scene = shifted.as_ref().unwrap_or(scene);
         self.ensure_target(width, height);
@@ -1081,7 +1097,7 @@ impl GpuRenderer {
             self.lut = storage_buffer(device, "lut", lut_bytes.next_power_of_two());
         }
         self.ctx.queue.write_buffer(&self.lut, 0, bytemuck::cast_slice(&lut));
-        self.uniforms = Some(uniforms(&shade, &prog, width, height, fast));
+        self.uniforms = Some(uniforms(&shade, &prog, width, height, fast, self.tile));
         if !self.grid_only {
             self.request_pipeline(&prog);
         }
@@ -1985,6 +2001,89 @@ fn render_to(ctx: GpuContext, scene: &Scene, width: u32, height: u32, samples: u
         }
     }
     Ok(r)
+}
+
+/// Overlap of the tiles when they are denoised one by one (cut off afterwards).
+const TILE_MARGIN: u32 = 64;
+
+/// Renders `scene` at `width` × `height` in tiles of about `tile` pixels per side (images
+/// larger than the GPU memory holds). Every tile renders the same pixels as a render of the
+/// whole image would; with the scene's denoiser on, each tile is denoised with a margin that
+/// is cut off. Returns the stitched image (already denoised: finish it with the denoiser off)
+/// and the denoiser's outcome. `passes`: also keep albedo, normal, coverage and depth (EXR).
+/// `progress` gets the completed fraction and returns false to cancel.
+#[allow(clippy::too_many_arguments)]
+pub fn render_tiled_hdr(ctx: GpuContext, scene: &Scene, width: u32, height: u32, samples: u32, tile: u32, passes: bool, mut progress: impl FnMut(f32) -> bool) -> Result<(HdrImage, rmb_core::render::denoise::Outcome), String> {
+    use rmb_core::render::denoise::Outcome;
+    rmb_core::compose::load_models(scene);
+    let (w, h) = (width.max(1), height.max(1));
+    let denoise = scene.post.denoise && scene.post.denoise_blend > 0.0;
+    let inner = tile.clamp(64, 16384);
+    let margin = if denoise { TILE_MARGIN } else { 0 };
+    // All tiles have the same size (one shader); the ones at the edges move inward.
+    let (rw, rh) = ((inner + 2 * margin).min(w), (inner + 2 * margin).min(h));
+    let (nx, ny) = (w.div_ceil(inner), h.div_ceil(inner));
+    let n = (w * h) as usize;
+    let mut img = HdrImage { width: w, height: h, color: vec![0.0; n * 3], ..Default::default() };
+    if passes {
+        img.albedo = vec![0.0; n * 3];
+        img.normal = vec![0.0; n * 3];
+        img.alpha = vec![0.0; n];
+        img.depth = vec![0.0; n];
+    }
+    let mut r = GpuRenderer::new(ctx);
+    r.set_band_target(OFFLINE_BAND_TARGET);
+    r.set_baking(Some(Vec::new()));
+    r.set_uniform_baking(Some(Vec::new()));
+    let samples = samples.max(1);
+    let mut outcome = if denoise { None } else { Some(Outcome::Off) };
+    let count = (nx * ny) as f32;
+    for ty in 0..ny {
+        for tx in 0..nx {
+            let (x0, y0) = (tx * inner, ty * inner);
+            let (x1, y1) = ((x0 + inner).min(w), (y0 + inner).min(h));
+            let ox = x0.saturating_sub(margin).min(w - rw);
+            let oy = y0.saturating_sub(margin).min(h - rh);
+            r.set_tile(Some([ox, oy, w, h]));
+            r.set_scene(scene, rw, rh, false);
+            r.wait_for_pipeline()?;
+            let done = (ty * nx + tx) as f32;
+            while r.samples() < samples {
+                r.work(Duration::from_millis(100), samples);
+                if let Some(e) = r.last_error() {
+                    return Err(e);
+                }
+                let p = (r.samples() as f32 + r.pass_progress()) / samples as f32;
+                if !progress((done + p) / count) {
+                    return Err("cancelled".into());
+                }
+            }
+            let mut part = r.read_hdr().ok_or("reading a tile back failed")?;
+            if denoise {
+                let res = part.denoise(scene.post.denoise_blend);
+                // The first tile's device; any failure wins.
+                outcome = match (outcome.take(), res) {
+                    (_, Err(e)) => Some(Outcome::Failed(e)),
+                    (Some(Outcome::Failed(e)), _) => Some(Outcome::Failed(e)),
+                    (None, Ok(d)) => Some(Outcome::Denoised(d)),
+                    (o, Ok(_)) => o,
+                };
+            }
+            // Copy the tile's own part (without the margin) into the image.
+            for y in y0..y1 {
+                let (src, dst) = (((y - oy) * rw + (x0 - ox)) as usize, (y * w + x0) as usize);
+                let len = (x1 - x0) as usize;
+                img.color[dst * 3..(dst + len) * 3].copy_from_slice(&part.color[src * 3..(src + len) * 3]);
+                if passes {
+                    img.albedo[dst * 3..(dst + len) * 3].copy_from_slice(&part.albedo[src * 3..(src + len) * 3]);
+                    img.normal[dst * 3..(dst + len) * 3].copy_from_slice(&part.normal[src * 3..(src + len) * 3]);
+                    img.alpha[dst..dst + len].copy_from_slice(&part.alpha[src..src + len]);
+                    img.depth[dst..dst + len].copy_from_slice(&part.depth[src..src + len]);
+                }
+            }
+        }
+    }
+    Ok((img, outcome.unwrap_or(Outcome::Off)))
 }
 
 /// Distance estimates for the mesh export, computed on the GPU (rmb-core `mesh_export::Field`).
