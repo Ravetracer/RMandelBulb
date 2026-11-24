@@ -582,7 +582,7 @@ fn projection(ui: &mut Ui, scene: &mut Scene) {
         }
     });
     if !scene.view.is_plain() {
-        ui.label(RichText::new("Lens flares, gizmos and guides only show in the perspective projection without stereo.").size(theme::fs(11.0)).color(theme::TEXT_MUTED));
+        ui.label(RichText::new("Gizmos and guides only show in the perspective projection without stereo; lens flares need the perspective projection (per eye in stereo).").size(theme::fs(11.0)).color(theme::TEXT_MUTED));
     }
 }
 

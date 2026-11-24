@@ -488,10 +488,53 @@ fn screen_pos(scene: &Scene, p: V3, directional: bool, w: f64, h: f64) -> Option
 /// The lens flares of all lights of `scene` at `width` × `height` (RGB per pixel, top row
 /// first), or None when no light has a flare in view.
 pub fn layer(scene: &Scene, width: u32, height: u32) -> Option<Vec<[f32; 3]>> {
-    // Screen-space flares follow the perspective; other projections and stereo pairs get none.
-    if !scene.view.is_plain() {
+    use crate::scene::{Projection, StereoMode};
+    // Screen-space flares follow the perspective camera (no fisheyes or panoramas).
+    if scene.view.projection != Projection::Perspective {
         return None;
     }
+    if scene.view.stereo == StereoMode::Off {
+        return mono_layer(scene, width, height);
+    }
+    // Stereo: each eye's flares from its own position.
+    let v = crate::render::ViewFrame::new(scene);
+    let eye_scene = |eye: f64| {
+        let mut s = scene.clone();
+        s.view.stereo = StereoMode::Off;
+        s.camera.position = s.camera.position + s.camera.right * (eye * v.half_eye);
+        s
+    };
+    let (wi, hi) = (width.max(1) as usize, height.max(1) as usize);
+    let (first, second) = if v.swap { (1.0, -1.0) } else { (-1.0, 1.0) };
+    if scene.view.stereo == StereoMode::Anaglyph {
+        let (l, r) = (mono_layer(&eye_scene(first), width, height), mono_layer(&eye_scene(second), width, height));
+        if l.is_none() && r.is_none() {
+            return None;
+        }
+        let zero = vec![[0.0f32; 3]; wi * hi];
+        let (l, r) = (l.unwrap_or_else(|| zero.clone()), r.unwrap_or(zero));
+        return Some(l.iter().zip(&r).map(|(a, b)| v.anaglyph(a.map(f64::from), b.map(f64::from)).map(|x| x as f32)).collect());
+    }
+    let (ew, eh) = v.eye_size(width, height);
+    let mut out = vec![[0.0f32; 3]; wi * hi];
+    let mut any = false;
+    for (k, eye) in [first, second].into_iter().enumerate() {
+        let Some(part) = mono_layer(&eye_scene(eye), ew, eh) else { continue };
+        any = true;
+        let (ox, oy) = if scene.view.stereo == StereoMode::SideBySide { (k * ew as usize, 0) } else { (0, k * eh as usize) };
+        for y in 0..eh as usize {
+            for x in 0..ew as usize {
+                if ox + x < wi && oy + y < hi {
+                    out[(oy + y) * wi + ox + x] = part[y * ew as usize + x];
+                }
+            }
+        }
+    }
+    any.then_some(out)
+}
+
+/// The flares of a perspective camera without stereo.
+fn mono_layer(scene: &Scene, width: u32, height: u32) -> Option<Vec<[f32; 3]>> {
     let (w, h) = (width.max(1) as f64, height.max(1) as f64);
     let mut flares = Vec::new();
     for l in &scene.lighting.lights {

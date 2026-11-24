@@ -199,8 +199,10 @@ cargo clippy -j 8 --workspace --all-targets
   (`Shader::sample_aux` → `sample_eye`; GPU `sample_image` loops over `sample_pixel` with one
   call site) and mix them (`ViewFrame::anaglyph`). GPU: uniforms `view`, `view2`,
   `eye_screen`, `view_dir` in march.wgsl. Pixel angle per projection in `Frame::new`.
-- Screen-space overlays (lens flares, gizmos, guides, path overlay) assume the plain
-  perspective; they are skipped unless `View::is_plain()`. `cpu::pick` / `pick_object` take
+- Screen-space overlays (gizmos, guides, path overlay) assume the plain perspective; they are
+  skipped unless `View::is_plain()`. Lens flares (`flare::layer`) work in perspective stereo:
+  one `mono_layer` per eye (camera moved by half the eye distance), placed into the eye's
+  half or mixed like the anaglyph. `cpu::pick` / `pick_object` take
   the projection into account; `cpu::pick_center` marches along the camera's forward axis.
 
 ## Mesh export

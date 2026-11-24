@@ -130,9 +130,10 @@ Depth of field works with every projection: the sharp distance lies on a sphere 
 camera instead of a plane, except for the perspective.
 
 !!! note
-    Lens flares, the light and object gizmos, the guides and the animation path overlay are
-    drawn in screen space for the perspective camera, so they only show in the perspective
-    projection without stereo. Clicks into the image (focus, picking objects) work in every
+    The light and object gizmos, the guides and the animation path overlay are drawn in
+    screen space for the perspective camera, so they only show in the perspective projection
+    without stereo. Lens flares need the perspective projection; in stereo images every eye
+    gets its own flares (mixed red/cyan in anaglyphs). Clicks into the image (focus, picking objects) work in every
     projection; in a side-by-side or over/under image they use the eye you click on.
 
 ### Image size

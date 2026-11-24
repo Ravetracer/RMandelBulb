@@ -170,8 +170,9 @@ Features the two programs have that RMandelbulb3D does not have yet, in the plan
 - [x] Stereo rendering: anaglyph (red/cyan, color or half color), side-by-side and over-under
       pairs, eye distance and convergence; omnidirectional stereo in the panoramas (eye
       distance fades out toward the poles). Mandelbulber `stereo`, MB3D stereo
-  - [ ] Possible: lens flares, gizmos and guides in the other projections / per eye (now only
-        in the plain perspective), VR video metadata in exported movies
+  - [x] Lens flares per eye in stereo images (perspective; anaglyphs mix them red/cyan)
+  - [ ] Possible: gizmos and guides in the other projections / per eye, VR video metadata in
+        exported movies
 - [x] Mesh export: distance field sampled on a grid (GPU `grid_main`, or CPU), surface nets
       (closed, caps on the box faces), vertex refinement, vertex colors, PLY/OBJ/STL; File ›
       Export mesh…, `rmb-cli mesh`. Mandelbulber `mesh_export`, MB3D BulbTracer2
