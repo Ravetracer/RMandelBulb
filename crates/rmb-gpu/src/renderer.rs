@@ -1798,18 +1798,19 @@ pub fn render_animation(
     frame_scene: impl Fn(f64) -> Scene,
     cancel: &std::sync::atomic::AtomicBool,
     mut progress: impl FnMut(f32),
-    mut on_frame: impl FnMut(usize, Vec<u8>) -> Result<(), String> + Send,
+    hdr: bool,
+    mut on_frame: impl FnMut(usize, rmb_core::video::Frame) -> Result<(), String> + Send,
 ) -> Result<(), String> {
     // `on_frame` (encoding, writing) runs on a second thread while the next frame renders.
     std::thread::scope(|s| {
-        let (tx, rx) = mpsc::sync_channel::<(usize, Vec<u8>)>(1);
+        let (tx, rx) = mpsc::sync_channel::<(usize, rmb_core::video::Frame)>(1);
         let writer = s.spawn(move || -> Result<(), String> {
-            for (f, rgba) in rx {
-                on_frame(f, rgba)?;
+            for (f, frame) in rx {
+                on_frame(f, frame)?;
             }
             Ok(())
         });
-        let rendered = render_frames(ctx, frames, width, height, samples, shutter, frame_scene, cancel, &mut progress, &tx);
+        let rendered = render_frames(ctx, frames, width, height, samples, shutter, frame_scene, cancel, &mut progress, hdr, &tx);
         drop(tx);
         let written = writer.join().unwrap_or_else(|_| Err("writing a frame failed".into()));
         // A writer error ends the rendering too (the channel closes): report it first.
@@ -1884,13 +1885,14 @@ fn render_frames(
     frame_scene: impl Fn(f64) -> Scene,
     cancel: &std::sync::atomic::AtomicBool,
     progress: &mut impl FnMut(f32),
-    tx: &mpsc::SyncSender<(usize, Vec<u8>)>,
+    hdr: bool,
+    tx: &mpsc::SyncSender<(usize, rmb_core::video::Frame)>,
 ) -> Result<(), String> {
     let total = frames.len().max(1) as f32;
     let mut r = FrameRenderer::new(ctx, frames.clone(), width, height, samples, shutter, &frame_scene);
     for (done, f) in frames.enumerate() {
-        let rgba = r.render(f, &frame_scene, cancel, &mut |p| progress((done as f32 + p) / total))?;
-        if tx.send((f, rgba)).is_err() {
+        let frame = r.render_frame(f, &frame_scene, cancel, &mut |p| progress((done as f32 + p) / total), hdr)?;
+        if tx.send((f, frame)).is_err() {
             // The writer stopped with an error.
             return Ok(());
         }
@@ -1936,6 +1938,12 @@ impl FrameRenderer {
     /// Renders frame `f` and returns it finished (denoised and post processed as its scene
     /// says) as RGBA8. `progress` gets the frame's completed fraction.
     pub fn render(&mut self, f: usize, frame_scene: &impl Fn(f64) -> Scene, cancel: &std::sync::atomic::AtomicBool, progress: &mut dyn FnMut(f32)) -> Result<Vec<u8>, String> {
+        self.render_frame(f, frame_scene, cancel, progress, false).map(|fr| fr.into_rgba())
+    }
+
+    /// Renders frame `f`: finished as RGBA8, or (`hdr`) the image before the 8-bit conversion
+    /// with the frame's scene (16-bit PNG and EXR sequences).
+    pub fn render_frame(&mut self, f: usize, frame_scene: &impl Fn(f64) -> Scene, cancel: &std::sync::atomic::AtomicBool, progress: &mut dyn FnMut(f32), hdr: bool) -> Result<rmb_core::video::Frame, String> {
         use std::sync::atomic::Ordering;
         let (width, height, samples, shutter) = (self.width, self.height, self.samples, self.shutter);
         if cancel.load(Ordering::Relaxed) {
@@ -1983,8 +1991,11 @@ impl FrameRenderer {
                 r.hdr_image()
             }
         };
+        if hdr {
+            return Ok(rmb_core::video::Frame::Hdr(Box::new(image), Box::new(scene)));
+        }
         let (rgba, _) = image.finish_scene(&scene);
-        Ok(rgba)
+        Ok(rmb_core::video::Frame::Rgba(rgba))
     }
 }
 

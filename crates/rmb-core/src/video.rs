@@ -24,18 +24,44 @@ pub enum VideoFormat {
     WebM,
     /// Animated GIF (256 colors).
     Gif,
+    /// Numbered 16-bit PNG files (smooth gradients for grading).
+    Png16Sequence,
+    /// Numbered OpenEXR files: linear light before the post processing, with passes.
+    ExrSequence,
 }
 
 impl VideoFormat {
-    pub const ALL: [VideoFormat; 6] = [VideoFormat::Mp4, VideoFormat::Hevc, VideoFormat::ProRes, VideoFormat::WebM, VideoFormat::Gif, VideoFormat::PngSequence];
+    pub const ALL: [VideoFormat; 8] = [VideoFormat::Mp4, VideoFormat::Hevc, VideoFormat::ProRes, VideoFormat::WebM, VideoFormat::Gif, VideoFormat::PngSequence, VideoFormat::Png16Sequence, VideoFormat::ExrSequence];
 
     pub fn needs_ffmpeg(self) -> bool {
-        self != VideoFormat::PngSequence
+        !self.is_images()
+    }
+
+    /// A folder of numbered images (no movie file).
+    pub fn is_images(self) -> bool {
+        matches!(self, VideoFormat::PngSequence | VideoFormat::Png16Sequence | VideoFormat::ExrSequence)
+    }
+
+    /// The image kind of the frames: 16-bit PNG and EXR need the frames before the 8-bit
+    /// conversion (`Frame::Hdr`).
+    pub fn image_kind(self) -> crate::io::image::ImageKind {
+        match self {
+            VideoFormat::Png16Sequence => crate::io::image::ImageKind::Png16,
+            VideoFormat::ExrSequence => crate::io::image::ImageKind::Exr,
+            _ => crate::io::image::ImageKind::Png8,
+        }
+    }
+
+    /// Frames are needed in full precision (16-bit PNG, EXR).
+    pub fn hdr_frames(self) -> bool {
+        self.image_kind() != crate::io::image::ImageKind::Png8
     }
 
     pub fn label(self) -> &'static str {
         match self {
             VideoFormat::PngSequence => "PNG images",
+            VideoFormat::Png16Sequence => "PNG 16-bit images",
+            VideoFormat::ExrSequence => "EXR images (passes)",
             VideoFormat::Mp4 => "MP4 (H.264)",
             VideoFormat::Hevc => "MP4 (H.265)",
             VideoFormat::ProRes => "MOV (ProRes)",
@@ -47,7 +73,7 @@ impl VideoFormat {
     /// File extension (none: a folder of images).
     pub fn extension(self) -> Option<&'static str> {
         match self {
-            VideoFormat::PngSequence => None,
+            VideoFormat::PngSequence | VideoFormat::Png16Sequence | VideoFormat::ExrSequence => None,
             VideoFormat::Mp4 | VideoFormat::Hevc => Some("mp4"),
             VideoFormat::ProRes => Some("mov"),
             VideoFormat::WebM => Some("webm"),
@@ -72,7 +98,7 @@ impl VideoFormat {
             VideoFormat::Hevc => &["-c:v", "libx265", "-preset", "slow", "-crf", "18", "-pix_fmt", "yuv420p", "-tag:v", "hvc1"],
             VideoFormat::ProRes => &["-c:v", "prores_ks", "-profile:v", "3", "-pix_fmt", "yuv422p10le"],
             VideoFormat::WebM => &["-c:v", "libvpx-vp9", "-b:v", "0", "-crf", "20", "-pix_fmt", "yuv420p"],
-            VideoFormat::Gif | VideoFormat::PngSequence => &[],
+            _ => &[],
         }
     }
 
@@ -82,7 +108,7 @@ impl VideoFormat {
             VideoFormat::Mp4 | VideoFormat::Hevc => Some(&["-c:a", "aac", "-b:a", "256k"]),
             VideoFormat::ProRes => Some(&["-c:a", "pcm_s16le"]),
             VideoFormat::WebM => Some(&["-c:a", "libopus", "-b:a", "192k"]),
-            VideoFormat::Gif | VideoFormat::PngSequence => None,
+            _ => None,
         }
     }
 
@@ -120,8 +146,25 @@ pub fn ffmpeg_available(program: &Path) -> bool {
 }
 
 /// Where the frames go.
+/// A finished frame: 8-bit RGBA (post processed), or the image before that with its scene
+/// (16-bit PNG and EXR sequences finish and write it themselves).
+pub enum Frame {
+    Rgba(Vec<u8>),
+    Hdr(Box<crate::render::denoise::HdrImage>, Box<crate::Scene>),
+}
+
+impl Frame {
+    /// 8-bit RGBA (finishing an HDR frame as its scene says).
+    pub fn into_rgba(self) -> Vec<u8> {
+        match self {
+            Frame::Rgba(v) => v,
+            Frame::Hdr(img, scene) => img.finish_scene(&scene).0,
+        }
+    }
+}
+
 pub enum VideoSink {
-    Png { dir: PathBuf, w: u32, h: u32 },
+    Png { dir: PathBuf, w: u32, h: u32, kind: crate::io::image::ImageKind },
     Ffmpeg { child: Child, stdin: Option<ChildStdin>, frame_bytes: usize },
 }
 
@@ -130,9 +173,9 @@ impl VideoSink {
     /// `audio` as its sound track if the format carries one (the movie keeps its length; the
     /// sound is cut at its end).
     pub fn new(path: &Path, format: VideoFormat, w: u32, h: u32, fps: f64, ffmpeg: &Path, audio: Option<&AudioTrack>) -> Result<VideoSink, String> {
-        if format == VideoFormat::PngSequence {
+        if format.is_images() {
             std::fs::create_dir_all(path).map_err(|e| format!("{}: {e}", path.display()))?;
-            return Ok(VideoSink::Png { dir: path.to_path_buf(), w, h });
+            return Ok(VideoSink::Png { dir: path.to_path_buf(), w, h, kind: format.image_kind() });
         }
         if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
             std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
@@ -173,10 +216,22 @@ impl VideoSink {
         Ok(VideoSink::Ffmpeg { child, stdin, frame_bytes: (w * h * 4) as usize })
     }
 
+    /// Adds frame `index` in any form (16-bit PNG and EXR sequences need `Frame::Hdr`; an
+    /// 8-bit frame is written as 8-bit PNG there).
+    pub fn write(&mut self, index: usize, frame: Frame) -> Result<(), String> {
+        match (self, frame) {
+            (VideoSink::Png { dir, kind, .. }, Frame::Hdr(img, scene)) => {
+                let path = dir.join(format!("frame_{index:05}.{}", kind.extension()));
+                crate::io::image::save_render(&path, *img, &scene, *kind).map(|_| ())
+            }
+            (sink, frame) => sink.write_frame(index, &frame.into_rgba()),
+        }
+    }
+
     /// Adds frame `index` (RGBA, 8 bits per channel).
     pub fn write_frame(&mut self, index: usize, rgba: &[u8]) -> Result<(), String> {
         match self {
-            VideoSink::Png { dir, w, h } => crate::io::image::write_png(&dir.join(format!("frame_{index:05}.png")), *w, *h, rgba, None),
+            VideoSink::Png { dir, w, h, .. } => crate::io::image::write_png(&dir.join(format!("frame_{index:05}.png")), *w, *h, rgba, None),
             VideoSink::Ffmpeg { stdin, frame_bytes, .. } => {
                 if rgba.len() != *frame_bytes {
                     return Err("frame size does not match the movie".into());

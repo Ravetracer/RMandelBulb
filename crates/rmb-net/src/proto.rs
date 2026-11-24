@@ -98,6 +98,9 @@ pub struct JobSpec {
     pub samples: u32,
     pub kind: JobKind,
     pub files: Vec<FileEntry>,
+    /// Animation frames: PNG 8 or 16 bit, or EXR.
+    #[serde(default)]
+    pub frame_kind: rmb_core::io::image::ImageKind,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

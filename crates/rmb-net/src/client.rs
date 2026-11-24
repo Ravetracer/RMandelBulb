@@ -290,7 +290,8 @@ impl Session {
                 let fj = job.frames.as_mut().ok_or("not an animation job")?;
                 let plan = &fj.plan;
                 let fs = |t: f64| plan.scene_at_time(t);
-                fj.renderer.render(f, &fs, &cancel, &mut report).and_then(|rgba| png_bytes(w, h, &rgba))
+                let kind = job.spec.frame_kind;
+                fj.renderer.render_frame(f, &fs, &cancel, &mut report, kind != rmb_core::io::image::ImageKind::Png8).and_then(|frame| encode_frame(frame, kind, w, h))
             }
             Unit::Samples { start, count } => {
                 let img = if let Some(r) = job.still.as_mut() {
@@ -395,6 +396,20 @@ fn parse_spool_name(n: &str) -> Option<Unit> {
     let r = n.strip_prefix("samples_")?.strip_suffix(".bin")?;
     let (a, b) = r.split_once('_')?;
     Some(Unit::Samples { start: a.parse().ok()?, count: b.parse().ok()? })
+}
+
+/// A frame as the bytes of its file (PNG 8/16 bit or EXR).
+fn encode_frame(frame: rmb_core::video::Frame, kind: rmb_core::io::image::ImageKind, w: u32, h: u32) -> Io<Vec<u8>> {
+    match frame {
+        rmb_core::video::Frame::Hdr(img, scene) => {
+            let tmp = std::env::temp_dir().join(format!("rmb-frame-{}-{}.{}", std::process::id(), crate::proto::random_u64(), kind.extension()));
+            rmb_core::io::image::save_render(&tmp, *img, &scene, kind)?;
+            let bytes = std::fs::read(&tmp).map_err(|e| e.to_string());
+            let _ = std::fs::remove_file(&tmp);
+            bytes
+        }
+        rmb_core::video::Frame::Rgba(rgba) => png_bytes(w, h, &rgba),
+    }
 }
 
 /// A finished frame as PNG bytes.

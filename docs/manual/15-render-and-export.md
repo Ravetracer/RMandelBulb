@@ -117,10 +117,10 @@ The animation part has the same size and sample settings, plus:
 
 | Control | What it does |
 |---------|--------------|
-| **Format** | MP4 (H.264), MP4 (H.265), MOV (ProRes), WebM (VP9), GIF or PNG images. Movie formats need ffmpeg and are grayed out without it. |
+| **Format** | MP4 (H.264), MP4 (H.265), MOV (ProRes), WebM (VP9), GIF, or a folder of PNG, 16-bit PNG or EXR images. Movie formats need ffmpeg and are grayed out without it. |
 | **Frames** | First and last frame to render, both included. **All** selects all frames. |
 | **Length** | Frames and duration at the animation's frame rate. |
-| **File…** / **Folder…** | The movie file, or the folder for numbered PNG images. |
+| **File…** / **Folder…** | The movie file, or the folder for the numbered images. |
 
 A line tells whether the animation's sound track goes into the movie, is left out (GIF and PNG
 images have no sound) or cannot be found. While rendering, the window shows the last finished
@@ -296,11 +296,12 @@ output ends in `.exr` (see "Export window" above).
 rmb-cli animate <scene> [-o out.mp4|folder] [-W width] [-H height] [-s samples] [--cpu]
                 [--fps n] [--from frame] [--to frame] [--denoise [blend] | --no-denoise]
                 [--ffmpeg path] [--audio file [--audio-offset s] | --no-audio]
-                [--shutter fraction]
+                [--shutter fraction] [--16bit | --exr]
 ```
 
 Renders the scene's keyframe animation. The extension of `-o` picks the format: `.mp4` H.264,
-`.mov` ProRes, `.webm` VP9, `.gif`; anything else is a folder of numbered PNG files. Default
+`.mov` ProRes, `.webm` VP9, `.gif`; anything else is a folder of numbered PNG files (16-bit
+with `--16bit`, EXR with passes with `--exr`). Default
 output: the scene's name with `.mp4`.
 
 | Option | What it does |
@@ -367,7 +368,7 @@ progress bar for the current frame and one for the whole job.
 rmb-cli net-render <scene> [-o out.mp4|folder|out.png|out.exr] [-W width] [-H height]
                [-s samples] [--from frame] [--to frame] [--still] [--clients all|a,b]
                [--client host[:port]] [--local] [--key key] [--wait s] [--keep-frames]
-               [--16bit] [--denoise | --no-denoise] [--ffmpeg path]
+               [--16bit | --exr] [--denoise | --no-denoise] [--ffmpeg path]
 rmb-cli net-clients [--wait s]
 ```
 

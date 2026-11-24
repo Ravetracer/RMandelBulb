@@ -184,8 +184,9 @@ Features the two programs have that RMandelbulb3D does not have yet, in the plan
       `rmb-cli voxels`. MB3D `VoxelExport`, Mandelbulber `voxel_export`
 - [x] 16-bit PNG and EXR output (linear, denoised, with coverage, Z, albedo and normal passes;
       depth and coverage in the w components of the aux buffer). MB3D `zbuf16bit`, Mandelbulber
-  - [ ] Possible: EXR / 16-bit PNG for animations (frame sequences), an emission pass, larger
-        MagicaVoxel scenes (several 256³ models)
+  - [x] EXR / 16-bit PNG frame sequences for animations (export window, `animate --exr /
+        --16bit`, render queue, network renders: `JobSpec::frame_kind`, protocol 2)
+  - [ ] Possible: an emission pass, larger MagicaVoxel scenes (several 256³ models)
 - [x] Big renders in tiles (sizes beyond the GPU memory, for prints; up to 32768 px): tiles
       render the full image's pixels (identical without the denoiser), denoised per tile with a
       64 px overlap, post processing on the stitched image. Export window › Tiles,
@@ -236,7 +237,7 @@ Features the two programs have that RMandelbulb3D does not have yet, in the plan
   - Also done: stills split by sample ranges (identical to one computer's render), tail
     duplication of the slowest frame, reconnects, files shipped by hash, version check,
     optional shared key, "this computer too"
-  - [ ] Possible: EXR / 16-bit frames over the network, tiled stills over the network,
+  - [ ] Possible: tiled stills over the network,
         subnet broadcast addresses per network interface (macOS/Windows may need them),
         resuming a job after the server restarts
 - Low value (covered by raytraced AO and bloom): SSAO, HDR blur post effects

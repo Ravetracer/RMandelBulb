@@ -16,7 +16,7 @@ USAGE:
   rmb-cli animate <scene> [-o out.mp4|folder] [-W width] [-H height] [-s samples] [--cpu]
                  [--fps n] [--from frame] [--to frame] [--denoise [blend] | --no-denoise]
                  [--ffmpeg path] [--audio file [--audio-offset s] | --no-audio]
-                 [--shutter fraction]
+                 [--shutter fraction] [--16bit | --exr]
   rmb-cli mesh <scene> [-o out.ply|.obj|.stl] [-r resolution] [--box x0,y0,z0,x1,y1,z1]
                  [--thickness cells] [--no-colors] [--no-refine] [--y-up] [--min-piece percent]
                  [--cpu]
@@ -27,7 +27,7 @@ USAGE:
   rmb-cli net-render <scene> [-o out.mp4|folder|out.png|out.exr] [-W width] [-H height]
                  [-s samples] [--from frame] [--to frame] [--still] [--clients all|a,b]
                  [--client host[:port]] [--local] [--key key] [--wait s] [--keep-frames]
-                 [--16bit] [--denoise | --no-denoise] [--ffmpeg path]
+                 [--16bit | --exr] [--denoise | --no-denoise] [--ffmpeg path]
                                            Render on the clients of the network
   rmb-cli net-clients [--wait s]           List the clients on the network
   rmb-cli batch <queue.json | scene…> [-o folder] [-s samples] [--cpu] [--ffmpeg path]
@@ -56,7 +56,8 @@ movies need ffmpeg (on the search path, or --ffmpeg). --from/--to limit the fram
 The scene's sound track (Animation › Sound) goes under movies (not GIF); --audio replaces it,
 --audio-offset sets where in the sound frame 0 starts (seconds), --no-audio leaves it out.
 --shutter sets the motion blur (exposure as a fraction of the frame time, 0 = off, 0.5 = 180°
-shutter) instead of the scene's.
+shutter) instead of the scene's. For a folder of images, --16bit writes 16-bit PNG files and
+--exr EXR files (linear, with passes).
 
 mesh exports the scene's surface as a closed triangle mesh (surface nets on a grid of distance
 estimates). The extension picks the format: .ply (binary, normals and vertex colors), .obj
@@ -133,12 +134,14 @@ struct Opts {
     audio_offset: Option<f64>,
     shutter: Option<f64>,
     sixteen: bool,
+    /// Animation frames as EXR files.
+    exr: bool,
     /// Tile size: None automatic, Some(0) off.
     tiles: Option<u32>,
 }
 
 fn parse(args: &[String]) -> Result<Opts, String> {
-    let mut o = Opts { input: None, output: None, width: None, height: None, samples: 64, cpu: false, threads: None, denoise: None, fps: None, from: None, to: None, ffmpeg: None, audio: None, audio_offset: None, shutter: None, sixteen: false, tiles: None };
+    let mut o = Opts { input: None, output: None, width: None, height: None, samples: 64, cpu: false, threads: None, denoise: None, fps: None, from: None, to: None, ffmpeg: None, audio: None, audio_offset: None, shutter: None, sixteen: false, exr: false, tiles: None };
     let mut it = args.iter().peekable();
     while let Some(a) = it.next() {
         let mut val = |name: &str| it.next().cloned().ok_or_else(|| format!("{name} needs a value"));
@@ -150,6 +153,7 @@ fn parse(args: &[String]) -> Result<Opts, String> {
             "-t" => o.threads = Some(val("-t")?.parse().map_err(|_| "bad thread count")?),
             "--cpu" => o.cpu = true,
             "--16bit" => o.sixteen = true,
+            "--exr" => o.exr = true,
             "--tiles" => {
                 let v = val("--tiles")?;
                 o.tiles = Some(if v == "off" { 0 } else { v.parse().map_err(|_| "bad tile size")? });
@@ -387,7 +391,15 @@ fn animate(args: &[String]) -> Result<(), String> {
         return Err("--from is after --to".into());
     }
     let out = o.output.clone().unwrap_or_else(|| o.input.as_ref().map(|p| p.with_extension("mp4")).unwrap_or_else(|| "animation.mp4".into()));
-    let format = rmb_core::video::VideoFormat::from_path(&out);
+    let mut format = rmb_core::video::VideoFormat::from_path(&out);
+    // Image folders: 16-bit PNG or EXR on request.
+    if format.is_images() {
+        if o.exr {
+            format = rmb_core::video::VideoFormat::ExrSequence;
+        } else if o.sixteen {
+            format = rmb_core::video::VideoFormat::Png16Sequence;
+        }
+    }
     let ffmpeg = rmb_core::video::ffmpeg_program(o.ffmpeg.as_deref());
     if format.needs_ffmpeg() && !rmb_core::video::ffmpeg_available(&ffmpeg) {
         return Err(format!("{} needs ffmpeg, which was not found (install it or give --ffmpeg)", format.label()));
@@ -428,7 +440,8 @@ fn animate(args: &[String]) -> Result<(), String> {
                 eprint!("\r{pct:3}%");
             }
         },
-        |f, rgba| sink.write_frame(f - from, &rgba),
+        format.hdr_frames(),
+        |f, frame| sink.write(f - from, frame),
     );
     eprintln!();
     result?;

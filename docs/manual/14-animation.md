@@ -219,6 +219,8 @@ The formats:
 | **WebM (VP9)** | For the web. Sound as Opus. |
 | **GIF** | One 256-color palette for the whole animation, no sound. |
 | **PNG images** | Numbered PNG files in a folder (`frame_00000.png` …). |
+| **PNG 16-bit images** | The same with 16 bits per channel: no banding when the frames are graded later. |
+| **EXR images (passes)** | Numbered OpenEXR files: linear light before the Image settings, with the coverage, depth, albedo and normal passes (see "Export window" in chapter 15), for compositing. |
 
 All movie formats are written by **ffmpeg**, which must be installed. If it is not on the search
 path, choose the program in **Preferences › Movies**. Without ffmpeg only PNG images are

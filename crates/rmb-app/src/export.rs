@@ -484,10 +484,12 @@ impl Export {
                     (s.width, s.height) = size;
                     s
                 };
-                rmb_gpu::render_animation(Some(ctx), from..to + 1, w, h, n, anim.shutter, frame_scene, &ca, |p| pr.store(p.to_bits(), Ordering::Relaxed), |f, rgba| {
-                    sink.write_frame(f - from, &rgba)?;
-                    *pv.lock().unwrap_or_else(|e| e.into_inner()) = Some((w, h, rgba));
-                    Ok(())
+                rmb_gpu::render_animation(Some(ctx), from..to + 1, w, h, n, anim.shutter, frame_scene, &ca, |p| pr.store(p.to_bits(), Ordering::Relaxed), format.hdr_frames(), |f, frame| {
+                    // The preview shows 8-bit frames (HDR frames are written as they are).
+                    if let rmb_core::video::Frame::Rgba(rgba) = &frame {
+                        *pv.lock().unwrap_or_else(|e| e.into_inner()) = Some((w, h, rgba.clone()));
+                    }
+                    sink.write(f - from, frame)
                 })?;
                 sink.finish()?;
                 Ok((path.clone(), format!(", {} frames", to + 1 - from)))

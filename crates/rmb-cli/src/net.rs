@@ -113,13 +113,14 @@ struct NetOpts {
     local: bool,
     wait: f64,
     sixteen: bool,
+    exr: bool,
     keep_frames: bool,
     ffmpeg: Option<PathBuf>,
     denoise: Option<bool>,
 }
 
 fn parse(args: &[String]) -> Result<NetOpts, String> {
-    let mut o = NetOpts { input: None, output: None, width: None, height: None, samples: 64, from: None, to: None, still: false, clients: None, addresses: Vec::new(), key: None, local: false, wait: 3.0, sixteen: false, keep_frames: false, ffmpeg: None, denoise: None };
+    let mut o = NetOpts { input: None, output: None, width: None, height: None, samples: 64, from: None, to: None, still: false, clients: None, addresses: Vec::new(), key: None, local: false, wait: 3.0, sixteen: false, exr: false, keep_frames: false, ffmpeg: None, denoise: None };
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let mut val = |name: &str| it.next().cloned().ok_or_else(|| format!("{name} needs a value"));
@@ -140,6 +141,7 @@ fn parse(args: &[String]) -> Result<NetOpts, String> {
             "--local" => o.local = true,
             "--wait" => o.wait = val("--wait")?.parse().map_err(|_| "bad wait time")?,
             "--16bit" => o.sixteen = true,
+            "--exr" => o.exr = true,
             "--keep-frames" => o.keep_frames = true,
             "--ffmpeg" => o.ffmpeg = Some(PathBuf::from(val("--ffmpeg")?)),
             "--denoise" => o.denoise = Some(true),
@@ -202,7 +204,14 @@ pub fn render(args: &[String]) -> Result<(), String> {
         }
         let path = o.output.clone().unwrap_or_else(|| input.with_extension("mp4"));
         let ffmpeg = rmb_core::video::ffmpeg_program(o.ffmpeg.as_deref());
-        let format = rmb_core::video::VideoFormat::from_path(&path);
+        let mut format = rmb_core::video::VideoFormat::from_path(&path);
+        if format.is_images() {
+            if o.exr {
+                format = rmb_core::video::VideoFormat::ExrSequence;
+            } else if o.sixteen {
+                format = rmb_core::video::VideoFormat::Png16Sequence;
+            }
+        }
         if format.needs_ffmpeg() && !rmb_core::video::ffmpeg_available(&ffmpeg) {
             return Err(format!("{} needs ffmpeg, which was not found (install it or give --ffmpeg)", format.label()));
         }

@@ -534,7 +534,8 @@ fn animation_frames_render_and_differ() {
     assert_eq!(plan.frame_count(), 3);
     let cancel = std::sync::atomic::AtomicBool::new(false);
     let mut frames = Vec::new();
-    rmb_gpu::render_animation(Some(ctx), 0..3, 48, 32, 1, 0.0, |t| plan.scene_at_time(t), &cancel, |_| {}, |f, rgba| {
+    rmb_gpu::render_animation(Some(ctx), 0..3, 48, 32, 1, 0.0, |t| plan.scene_at_time(t), &cancel, |_| {}, false, |f, frame| {
+        let rgba = frame.into_rgba();
         frames.push((f, rgba));
         Ok(())
     })
@@ -641,7 +642,8 @@ fn motion_blur_smears_a_camera_pan() {
     let sharpness = |shutter: f64| {
         let cancel = std::sync::atomic::AtomicBool::new(false);
         let mut out = Vec::new();
-        rmb_gpu::render_animation(Some(ctx.clone()), 0..1, w, h, 16, shutter, |t| plan.scene_at_time(t), &cancel, |_| {}, |_, rgba| {
+        rmb_gpu::render_animation(Some(ctx.clone()), 0..1, w, h, 16, shutter, |t| plan.scene_at_time(t), &cancel, |_| {}, false, |_, frame| {
+            let rgba = frame.into_rgba();
             out = rgba;
             Ok(())
         })

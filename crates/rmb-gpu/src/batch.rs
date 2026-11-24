@@ -77,7 +77,7 @@ pub fn run_job(job: &QueueJob, ctx: Option<GpuContext>, ffmpeg: &Path, cancel: &
                 (s.width, s.height) = size;
                 s
             };
-            crate::render_animation(ctx, from..to + 1, w, h, samples, anim.shutter, frame_scene, cancel, &mut progress, |f, rgba| sink.write_frame(f - from, &rgba))?;
+            crate::render_animation(ctx, from..to + 1, w, h, samples, anim.shutter, frame_scene, cancel, &mut progress, format.hdr_frames(), |f, frame| sink.write(f - from, frame))?;
             sink.finish()?;
             Ok(format!("{} ({} frames, {w} × {h}, {samples} samples)", job.output.display(), to + 1 - from))
         }

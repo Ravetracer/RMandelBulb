@@ -256,9 +256,10 @@ struct Shared {
     status: Arc<Mutex<Status>>,
     still: Option<Mutex<StillSum>>,
     cancel: Arc<AtomicBool>,
-    /// Frames folder (animations).
+    /// Frames folder (animations) and the frames' file extension.
     frames_dir: Option<PathBuf>,
     from: usize,
+    frame_ext: &'static str,
 }
 
 /// Runs a job on `targets` (blocking). `status` is updated for a display; setting `cancel`
@@ -300,7 +301,11 @@ pub fn run_job(req: JobRequest, targets: Vec<Target>, status: Arc<Mutex<Status>>
         }
         _ => (None, 0),
     };
-    let spec = JobSpec { job_id, scene: prepared.scene.to_json(), width: req.width, height: req.height, samples: req.samples, kind: req.kind, files: prepared.files.iter().map(|f| f.1.clone()).collect() };
+    let frame_kind = match &req.output {
+        Output::Animation { format, .. } => format.image_kind(),
+        Output::Still { .. } => rmb_core::io::image::ImageKind::Png8,
+    };
+    let spec = JobSpec { job_id, scene: prepared.scene.to_json(), width: req.width, height: req.height, samples: req.samples, kind: req.kind, files: prepared.files.iter().map(|f| f.1.clone()).collect(), frame_kind };
     let total = units.len();
     {
         let mut s = status.lock().map_err(|_| "status lock")?;
@@ -313,6 +318,7 @@ pub fn run_job(req: JobRequest, targets: Vec<Target>, status: Arc<Mutex<Status>>
         cancel: cancel.clone(),
         frames_dir: frames_dir.clone(),
         from,
+        frame_ext: frame_kind.extension(),
     });
     let files: Arc<HashMap<String, PathBuf>> = Arc::new(prepared.files.iter().map(|(p, e)| (e.hash.clone(), p.clone())).collect());
     let spec = Arc::new(spec);
@@ -612,7 +618,7 @@ fn store(i: usize, shared: &Shared, unit: Unit, blob: &[u8]) -> Result<(), Strin
     match unit {
         Unit::Frame { f } => {
             let dir = shared.frames_dir.as_ref().ok_or("no frames folder")?;
-            let file = dir.join(frame_name(f - shared.from));
+            let file = dir.join(format!("frame_{:05}.{}", f - shared.from, shared.frame_ext));
             let tmp = file.with_extension("part");
             std::fs::write(&tmp, blob).and_then(|_| std::fs::rename(&tmp, &file)).map_err(|e| format!("{}: {e}", file.display()))?;
         }

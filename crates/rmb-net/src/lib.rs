@@ -16,7 +16,7 @@ pub const DISCOVERY_PORT: u16 = 47810;
 /// TCP port a client accepts the server on.
 pub const CLIENT_PORT: u16 = 47811;
 /// Changes whenever the messages change.
-pub const PROTOCOL: u32 = 1;
+pub const PROTOCOL: u32 = 2;
 
 /// This machine's name (shown in the client lists).
 pub fn host_name() -> String {
