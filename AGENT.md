@@ -53,7 +53,9 @@ cargo clippy -j 8 --workspace --all-targets
 - **One formula source**: never write a formula twice. Add it to `formula/lib/*.mbf`.
   Parameters that map to MB3D need `alias "Name" (ident, …)` in MB3D option order.
 - **CPU and GPU parity**: `render/cpu.rs` and `march.wgsl` are the same algorithm step by step,
-  including the random number order. Change both together.
+  including the random number order. Change both together. The first `LD_DRAWS` (6) random
+  numbers of a sample come from the R2 sequence over the sample index with a per-pixel offset
+  (low discrepancy; u32 fixed point, identical on both); later draws are PCG.
 - The shader only changes with the formulas of the slots and the DE variant
   (`Program::signature`). Parameters, iteration counts and all render settings are buffers, so
   changing them never recompiles (renders without a window bake the parameters, see below).

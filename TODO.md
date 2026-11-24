@@ -209,8 +209,14 @@ Features the two programs have that RMandelbulb3D does not have yet, in the plan
       (Lighting › Global illumination), aperture blades (Depth of field › Blades), import of the
       ambient depth as path bounces (+ notes; every file carries MC defaults, so no switch to
       path tracing)
+  - [x] Low-discrepancy sampling (like MB3D's Halton): the first six random numbers of every
+        sample (pixel jitter, lens, first directions) follow the R2 sequence over the sample
+        index with a random offset per pixel (`Rng::next_f64`, march.wgsl `rnd`). Against a
+        common 4096-sample reference (320 x 180, no denoiser) the error drops by 34 % / 56 %
+        (Mandelbulb, 16 / 64 samples) and 29 % / 44 % (Amazing Box); flicker of a 12-frame
+        dolly at 16 samples 1.17 -> 0.80 levels of 255. About the quality of 2-4x the samples
   - [ ] Possible: shadows tinted through glass, light maps as image-based light (needs the
-        light map import), low-discrepancy sampling
+        light map import)
 - [x] Network rendering for long, high-quality animations (owner's wish 2026-11-24). Easy to
       set up, no configuration files (done: crate `rmb-net`, `rmb-cli --network`,
       `net-render`, `net-clients`, File › Network render…):

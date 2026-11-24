@@ -657,18 +657,39 @@ pub fn shifted_scene(scene: &Scene, r: V3) -> Scene {
 }
 
 /// Random number stream of one pixel sample (same sequence on CPU and GPU).
-pub struct Rng(pub u32);
+pub struct Rng {
+    state: u32,
+    /// Low-discrepancy part: per-pixel seed, sample index, draws so far.
+    pixel: u32,
+    sample: u32,
+    n: u32,
+}
+
+/// Draws of a sample that come from the R2 sequence (pairs: jitter, lens, first directions).
+pub const LD_DRAWS: u32 = 6;
+/// R2 sequence steps (1/g and 1/g², g the plastic number) in 32-bit fixed point.
+const R2: [u32; 2] = [3242174889, 2447445414];
 
 impl Rng {
     pub fn new(px: u32, py: u32, sample: u32) -> Rng {
-        Rng(pcg(px ^ pcg(py ^ pcg(sample))))
+        Rng { state: pcg(px ^ pcg(py ^ pcg(sample))), pixel: pcg(px ^ pcg(py ^ 0x5bd1_e995)), sample, n: 0 }
     }
 
+    /// The next number in 0..1. The first `LD_DRAWS` of a sample follow the R2 sequence over
+    /// the sample index, shifted by a random offset per pixel and pair (successive samples
+    /// cover each pair evenly); the rest are independent (march.wgsl `rnd`).
     pub fn next_f64(&mut self) -> f64 {
-        self.0 = pcg(self.0);
-        unit(self.0)
+        if self.n < LD_DRAWS {
+            let j = self.n;
+            self.n += 1;
+            let offset = pcg(self.pixel ^ (j / 2 + 1).wrapping_mul(0x9e37_79b9));
+            return unit(offset.wrapping_add(self.sample.wrapping_mul(R2[(j % 2) as usize])));
+        }
+        self.state = pcg(self.state);
+        unit(self.state)
     }
 }
+
 
 /// Chromatic aberration on a linear RGB image (3 floats per pixel): red sampled `amount`
 /// percent farther from the center, blue as much closer (bilinear; display.wgsl does the same).

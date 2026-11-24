@@ -1301,8 +1301,19 @@ fn pcg(v: u32) -> u32 {
 }
 
 var<private> rng_state: u32;
+// Low-discrepancy part (Rng::next_f64): per-pixel seed, sample index, draws so far.
+var<private> rng_pixel: u32;
+var<private> rng_sample: u32;
+var<private> rng_n: u32;
 
 fn rnd() -> f32 {
+    if (rng_n < 6u) {
+        let j = rng_n;
+        rng_n += 1u;
+        let offset = pcg(rng_pixel ^ ((j / 2u + 1u) * 0x9e3779b9u));
+        let step = select(2447445414u, 3242174889u, (j % 2u) == 0u);
+        return f32((offset + rng_sample * step) >> 8u) / 16777216.0;
+    }
     rng_state = pcg(rng_state);
     return f32(rng_state >> 8u) / 16777216.0;
 }
@@ -2921,6 +2932,9 @@ fn anaglyph(l: vec3<f32>, r: vec3<f32>) -> vec3<f32> {
 
 fn sample_pixel(px: u32, py: u32, sample: u32, k: u32) -> vec3<f32> {
     rng_state = pcg(px ^ pcg(py ^ pcg(sample)));
+    rng_pixel = pcg(px ^ pcg(py ^ 0x5bd1e995u));
+    rng_sample = sample;
+    rng_n = 0u;
     var jx = 0.5;
     var jy = 0.5;
     if (sample > 0u) {
