@@ -58,7 +58,8 @@ pub fn run_job(job: &QueueJob, ctx: Option<GpuContext>, ffmpeg: &Path, cancel: &
             Ok(format!("{} ({w} × {h}, {samples} samples{note})", job.output.display()))
         }
         JobWhat::Animation { format, from, to } => {
-            let anim = scene.animation.clone().filter(|a| !a.keyframes.is_empty()).ok_or("the scene has no animation")?;
+            let mut anim = scene.animation.clone().filter(|a| !a.keyframes.is_empty()).ok_or("the scene has no animation")?;
+            anim.ensure_audio_levels(job.scene_file.as_deref().and_then(Path::parent), ffmpeg)?;
             let plan = rmb_core::animation::AnimationPlan::new(&anim)?;
             let last = plan.frame_count().saturating_sub(1);
             let (from, to) = (from.min(last), to.min(last));

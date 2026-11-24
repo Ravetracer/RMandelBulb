@@ -36,11 +36,14 @@ pub struct Timeline {
     plan: Option<(Animation, Result<AnimationPlan, String>)>,
     /// Search text of the driver value picker.
     driver_filter: String,
+    /// Sound analysis running in the background (file, result).
+    audio_job: Option<(String, std::sync::mpsc::Receiver<Result<rmb_core::audio::AudioLevels, String>>)>,
+    audio_message: Option<String>,
 }
 
 impl Default for Timeline {
     fn default() -> Self {
-        Timeline { open: false, frame: 0, playing: false, play_pos: 0.0, last_tick: None, previewing: false, selected: None, plan: None, driver_filter: String::new() }
+        Timeline { open: false, frame: 0, playing: false, play_pos: 0.0, last_tick: None, previewing: false, selected: None, plan: None, driver_filter: String::new(), audio_job: None, audio_message: None }
     }
 }
 
@@ -213,7 +216,8 @@ impl Timeline {
                 ui.separator();
                 ui.vertical(|ui| {
                     ui.set_width(250.0);
-                    movie_ui(ui, &mut a);
+                    let base = doc.path.as_ref().and_then(|p| p.parent()).map(|p| p.to_path_buf());
+                    self.movie_ui(ui, &mut a, base.as_deref());
                 });
                 ui.separator();
                 ui.vertical(|ui| {
@@ -257,7 +261,7 @@ impl Timeline {
         use rmb_core::animation::{Driver, compile_drivers, value_at};
         ui.horizontal(|ui| {
             ui.label(RichText::new("DRIVERS").size(theme::fs(11.0)).color(theme::TEXT_MUTED)).on_hover_text(
-                "Values computed by an expression in every frame, after the keyframes: for example a power that breathes with 8 + 0.5 * sin(t), or a slow wobble with value + 0.1 * noise(t). Variables: t (seconds), frame, frames, u (0 at the start, 1 at the end), key (keyframe position), fps, value (the value from the keyframes). Functions: sin cos tan asin acos atan atan2 sqrt abs exp ln log10 pow min max clamp mix step smoothstep floor ceil round fract sign noise if deg rad. @path reads another value of the scene (@camera.fov).",
+                "Values computed by an expression in every frame, after the keyframes: for example a power that breathes with 8 + 0.5 * sin(t), or a slow wobble with value + 0.1 * noise(t). Variables: t (seconds), frame, frames, u (0 at the start, 1 at the end), key (keyframe position), fps, value (the value from the keyframes), audio, bass, mid, treble (the sound track's levels 0..1, see MOVIE). Functions: sin cos tan asin acos atan atan2 sqrt abs exp ln log10 pow min max clamp mix step smoothstep floor ceil round fract sign noise if deg rad. @path reads another value of the scene (@camera.fov).",
             );
             if ui.small_button(format!("{}  Driver", ph::PLUS)).on_hover_text("Adds a driver; choose the value with … and write its expression").clicked() {
                 a.drivers.push(Driver::default());
@@ -483,7 +487,8 @@ fn camera_ui(ui: &mut Ui, a: &mut Animation) {
     });
 }
 
-fn movie_ui(ui: &mut Ui, a: &mut Animation) {
+impl Timeline {
+fn movie_ui(&mut self, ui: &mut Ui, a: &mut Animation, base: Option<&std::path::Path>) {
     ui.label(RichText::new("MOVIE").size(theme::fs(11.0)).color(theme::TEXT_MUTED));
     widgets::grid(ui, "motion", |ui| {
         widgets::slider(
@@ -524,5 +529,53 @@ fn movie_ui(ui: &mut Ui, a: &mut Animation) {
         widgets::grid(ui, "movie", |ui| {
             widgets::drag(ui, "Sound offset", "Where in the sound file frame 0 starts, in seconds (negative: the sound starts later)", &mut a.audio_offset_s, 0.01, 0.0);
         });
+        self.audio_levels_ui(ui, a, base);
     }
+}
+
+/// Sound levels for audio-reactive drivers: analysed when a sound is chosen (or on request).
+fn audio_levels_ui(&mut self, ui: &mut Ui, a: &mut Animation, base: Option<&std::path::Path>) {
+    if let Some((src, rx)) = &self.audio_job
+        && let Ok(r) = rx.try_recv()
+    {
+        match r {
+            Ok(l) if a.audio_track(0, base).is_some_and(|t| t.path.to_string_lossy() == *src) => {
+                self.audio_message = Some(format!("Sound analysed ({})", rmb_core::queue::duration(l.duration())));
+                a.audio_levels = Some(l);
+            }
+            Ok(_) => {}
+            Err(e) => self.audio_message = Some(e),
+        }
+        self.audio_job = None;
+    }
+    let Some(track) = a.audio_track(0, base) else { return };
+    let source = track.path.to_string_lossy().into_owned();
+    let current = a.audio_levels.as_ref().is_some_and(|l| l.source == source);
+    let start = |me: &mut Self| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let path = track.path.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(rmb_core::audio::analyse(&path, &rmb_core::video::ffmpeg_program(None)));
+        });
+        me.audio_job = Some((source.clone(), rx));
+        me.audio_message = None;
+    };
+    // A new sound: analyse it right away.
+    if !current && self.audio_job.is_none() && self.audio_message.is_none() && track.path.is_file() {
+        start(self);
+    }
+    ui.horizontal(|ui| {
+        let text = if self.audio_job.is_some() {
+            "Analysing the sound…".to_string()
+        } else if current {
+            self.audio_message.clone().unwrap_or_else(|| "Sound levels ready for drivers".into())
+        } else {
+            self.audio_message.clone().unwrap_or_else(|| "Sound not analysed".into())
+        };
+        ui.label(RichText::new(text).size(theme::fs(11.0)).color(theme::TEXT_MUTED)).on_hover_text("Drivers can follow the music: audio (loudness), bass, mid and treble, each 0..1 and smoothed. Analysed once with ffmpeg and stored in the scene");
+        if self.audio_job.is_none() && ui.small_button("Analyse").on_hover_text("Analyse the sound again (needs ffmpeg)").clicked() {
+            start(self);
+        }
+    });
+}
 }

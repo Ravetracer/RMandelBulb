@@ -148,6 +148,7 @@ expression.
 | `key` | Position between the keyframes (0 at the first, 1 at the second …). |
 | `fps` | Frames per second. |
 | `value` | The value the keyframes give at this moment (or the formula's default). |
+| `audio`, `bass`, `mid`, `treble` | The sound track's levels at this moment, each 0..1 and smoothed (quick rise, slower fall): loudness, bass (below about 150 Hz), mids, treble (above about 2.5 kHz). 0 without a sound. |
 | `@path` | Another value of the scene, for example `@camera.fov`. |
 | `pi`, `e` | The constants. |
 | `+ - * / % ^` | Arithmetic; `^` is the power, `%` the remainder. |
@@ -169,6 +170,15 @@ Examples:
 | `fog.density` | `value * (1 + 0.5 * step(0.5, fract(t * 2)))` | The fog jumps twice a second. |
 | `material.color_offset` | `u` | The colors run through the gradient once over the animation. |
 | `fractal.max_iterations` | `mix(10, 30, smoothstep(0, 1, u))` | More detail toward the end (whole numbers stay whole). |
+| `fractal.slots.0.params.power` | `value + 1.5 * bass` | The bulb pulses with the bass of the sound track. |
+| `material.emission_glow` | `value * (0.3 + treble)` | The glow follows the hi-hats. |
+
+**Music.** For drivers that follow the music, choose the sound track in the **MOVIE** column
+(**Sound…**). It is analysed right away (with ffmpeg, a few seconds) and the levels are stored
+in the scene, so the export, the render queue and network renders follow the music without
+the sound file; **Analyse** analyses it again. The **Sound offset** moves the music against
+the frames for the drivers as for the movie. `rmb-cli animate` analyses the sound by itself
+when a driver uses the levels.
 
 Paths name the scene's settings as they are stored in the scene file (`.rmb`, JSON):
 sections and names separated by dots, list entries by number from 0 (the first slot is

@@ -198,8 +198,9 @@ Features the two programs have that RMandelbulb3D does not have yet, in the plan
 - [x] Script expressions: animation drivers (path + expression of t, frame, u, value, @other
       values; `expr.rs`, `animation::Driver`), timeline › DRIVERS with a value picker.
       Mandelbulber `scripts`
-  - [ ] Possible: drivers outside animations (stills), a curve view of a driver over time,
-        audio-reactive variables (loudness of the sound track per frame)
+  - [x] Audio-reactive variables: audio, bass, mid, treble (levels 0..1 from the sound track,
+        analysed once with ffmpeg and stored in the animation; `audio.rs`)
+  - [ ] Possible: drivers outside animations (stills), a curve view of a driver over time
 - [x] Kleinian DE and inside rendering (see Formula editing above)
 - [ ] Compare with MB3D's own Monte Carlo renderer (`mb3d/CalcMonteCarlo.pas`)
 - [x] Network rendering for long, high-quality animations (owner's wish 2026-11-24). Easy to

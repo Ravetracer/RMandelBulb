@@ -4,6 +4,7 @@
 //! renderer and file formats.
 
 pub mod animation;
+pub mod audio;
 pub mod compose;
 pub mod explore;
 pub mod expr;

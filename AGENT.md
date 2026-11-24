@@ -222,6 +222,11 @@ cargo clippy -j 8 --workspace --all-targets
   JSON, `value_at` / `set_value_at`, back; formula parameters at their default come from the
   formula library, `param_default`). `drivable_values` lists the paths for the timeline's
   picker (`timeline.rs` › `drivers_ui`).
+- Audio-reactive drivers: `rmb_core::audio` (ffmpeg decode, one-pole band split, RMS at 50 Hz,
+  95th-percentile normalization, attack/release envelope) → `Animation::audio_levels` (stored
+  in the scene); `AnimationPlan` feeds `audio/bass/mid/treble` (with the sound offset).
+  `Animation::ensure_audio_levels` runs before CLI animate, queue jobs, network jobs and the
+  export window; the timeline analyses a newly chosen sound in the background.
 
 ## Render queue
 

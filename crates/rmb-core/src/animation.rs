@@ -54,6 +54,9 @@ pub struct Animation {
     pub shutter: f64,
     /// Scene values computed by expressions in every frame (after the keyframes).
     pub drivers: Vec<Driver>,
+    /// Levels of the sound track for audio-reactive drivers (`audio::analyse`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audio_levels: Option<crate::audio::AudioLevels>,
 }
 
 /// A scene value driven by an expression of time (and other values) in an animation.
@@ -74,6 +77,36 @@ impl Default for Driver {
     }
 }
 
+impl Animation {
+    /// Whether a driver reads the sound levels (`audio`, `bass`, `mid`, `treble`).
+    pub fn drivers_use_audio(&self) -> bool {
+        self.drivers.iter().any(|d| d.enabled && ["audio", "bass", "mid", "treble"].iter().any(|v| uses_name(&d.expression, v)))
+    }
+
+    /// Analyses the sound track for the drivers when they need it and the stored levels are
+    /// missing or belong to another file (`base`: folder of the scene file). Returns whether it
+    /// analysed.
+    pub fn ensure_audio_levels(&mut self, base: Option<&std::path::Path>, ffmpeg: &std::path::Path) -> Result<bool, String> {
+        if !self.drivers_use_audio() {
+            return Ok(false);
+        }
+        let track = self.audio_track(0, base).ok_or("the drivers use the sound, but the animation has no sound file")?;
+        let source = track.path.to_string_lossy().into_owned();
+        if self.audio_levels.as_ref().is_some_and(|l| l.source == source) {
+            return Ok(false);
+        }
+        self.audio_levels = Some(crate::audio::analyse(&track.path, ffmpeg)?);
+        Ok(true)
+    }
+}
+
+/// Whether `name` occurs in `expr` as a whole word.
+fn uses_name(expr: &str, name: &str) -> bool {
+    let b = expr.as_bytes();
+    let word = |c: u8| c.is_ascii_alphanumeric() || c == b'_' || c == b'@' || c == b'.';
+    expr.match_indices(name).any(|(i, _)| (i == 0 || !word(b[i - 1])) && b.get(i + name.len()).is_none_or(|c| !word(*c)))
+}
+
 /// Variables of a driver expression at one moment of the animation.
 #[derive(Clone, Copy, Debug)]
 pub struct DriverTime {
@@ -83,6 +116,8 @@ pub struct DriverTime {
     pub fps: f64,
     /// Keyframe position (0 at the first keyframe, 1 at the second …).
     pub key: f64,
+    /// Sound levels at this moment: loudness, bass, mid, treble (0 without a sound).
+    pub audio: [f64; 4],
 }
 
 /// A value at a path of a scene's JSON (`a.b.0.c`), or None.
@@ -195,6 +230,10 @@ pub fn apply_drivers(scene: &mut Scene, drivers: &[CompiledDriver], tm: DriverTi
             "u" => Some(if tm.frames > 1 { tm.frame / (tm.frames - 1) as f64 } else { 0.0 }),
             "key" => Some(tm.key),
             "fps" => Some(fps),
+            "audio" => Some(tm.audio[0]),
+            "bass" => Some(tm.audio[1]),
+            "mid" => Some(tm.audio[2]),
+            "treble" => Some(tm.audio[3]),
             "value" => current,
             _ => None,
         };
@@ -281,6 +320,7 @@ impl Default for Animation {
             audio_offset_s: 0.0,
             shutter: 0.0,
             drivers: Vec::new(),
+            audio_levels: None,
         }
     }
 }
@@ -660,6 +700,8 @@ pub struct AnimationPlan {
     /// Per frame: how far each palette and glow band has turned (see `color_speeds`).
     phases: Vec<BTreeMap<String, f64>>,
     drivers: Vec<CompiledDriver>,
+    /// Sound levels and the sound's position at frame 0 (seconds).
+    audio: Option<(crate::audio::AudioLevels, f64)>,
 }
 
 /// The palette rotations, glow band speeds, texture drifts, the steam drift and the shimmer
@@ -754,7 +796,7 @@ impl AnimationPlan {
             cameraman(&mut frames, &anim.camera, fps, &keys);
         }
         let phases = color_phases(&keys, &us, fps);
-        Ok(AnimationPlan { values, keys, frames, fps, phases, drivers: compile_drivers(&anim.drivers).0 })
+        Ok(AnimationPlan { values, keys, frames, fps, phases, drivers: compile_drivers(&anim.drivers).0, audio: anim.audio_levels.clone().map(|l| (l, anim.audio_offset_s)) })
     }
 
     pub fn frame_count(&self) -> usize {
@@ -839,7 +881,8 @@ impl AnimationPlan {
         if let Some(p) = phase {
             apply_phases(&mut scene, p);
         }
-        apply_drivers(&mut scene, &self.drivers, DriverTime { frame: t, frames: self.frames.len(), fps: self.fps, key: fc.u });
+        let audio = self.audio.as_ref().map_or([0.0; 4], |(l, off)| l.at(off + t / self.fps.max(1e-9)));
+        apply_drivers(&mut scene, &self.drivers, DriverTime { frame: t, frames: self.frames.len(), fps: self.fps, key: fc.u, audio });
         scene
     }
 }
@@ -1125,6 +1168,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn audio_drivers_follow_the_sound_levels() {
+        let mut anim = Animation::default();
+        for _ in 0..2 {
+            anim.keyframes.push(Keyframe { scene: Scene::default(), frames: 30, ..Default::default() });
+        }
+        // Bass on during the first half second only (30 fps: frames 0-14).
+        let levels: Vec<[f32; 4]> = (0..100).map(|i| if i < 25 { [1.0, 1.0, 0.0, 0.0] } else { [0.0; 4] }).collect();
+        anim.audio_levels = Some(crate::audio::AudioLevels { source: "x".into(), rate: crate::audio::RATE, levels });
+        anim.drivers = vec![Driver { path: "fractal.slots.0.params.power".into(), expression: "value + 2 * bass".into(), ..Default::default() }];
+        assert!(anim.drivers_use_audio());
+        let plan = AnimationPlan::new(&anim).unwrap();
+        let p = |f: usize| plan.scene_at(f).fractal.slots[0].params["power"];
+        assert!((p(5) - 10.0).abs() < 1e-6 && (p(20) - 8.0).abs() < 1e-6, "{} {}", p(5), p(20));
+        // The sound offset shifts it: frame 0 now is 1 s into the sound (silent).
+        anim.audio_offset_s = 1.0;
+        let plan = AnimationPlan::new(&anim).unwrap();
+        assert!((plan.scene_at(5).fractal.slots[0].params["power"] - 8.0).abs() < 1e-6);
+        assert!(!uses_name("treble_x + abass", "bass") && uses_name("1 + bass*2", "bass"));
+    }
+
+    #[test]
     fn drivers_change_values_per_frame() {
         let mut anim = Animation::default();
         for _ in 0..2 {
@@ -1149,7 +1213,7 @@ mod tests {
         let (_, errors) = compile_drivers(&[Driver { path: "x".into(), expression: "1 +".into(), ..Default::default() }]);
         assert_eq!(errors.len(), 1);
         let mut s = Scene::default();
-        let e = apply_drivers(&mut s, &compile_drivers(&[Driver { path: "no.such".into(), expression: "1".into(), ..Default::default() }]).0, DriverTime { frame: 0.0, frames: 1, fps: 30.0, key: 0.0 });
+        let e = apply_drivers(&mut s, &compile_drivers(&[Driver { path: "no.such".into(), expression: "1".into(), ..Default::default() }]).0, DriverTime { frame: 0.0, frames: 1, fps: 30.0, key: 0.0, audio: [0.0; 4] });
         assert!(e[0].contains("no such value"), "{e:?}");
         assert!(drivable_values(&Scene::default()).iter().any(|(p, _)| p == "fractal.slots.0.params.power"));
     }

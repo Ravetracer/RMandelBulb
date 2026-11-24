@@ -470,10 +470,13 @@ impl Export {
         let (w, h, n, from, to, format) = (self.width, self.height, self.samples, self.from, self.to, self.format);
         let audio = anim.audio_track(from, self.doc_dir.as_deref());
         let anim = anim.clone();
+        let doc_dir = self.doc_dir.clone();
         let size = (scene.width, scene.height);
         let (pr, ca, pv) = (progress.clone(), cancel.clone(), preview.clone());
         std::thread::spawn(move || {
             let run = || -> Result<(PathBuf, String), String> {
+                let mut anim = anim;
+                anim.ensure_audio_levels(doc_dir.as_deref(), &ffmpeg)?;
                 let plan = AnimationPlan::new(&anim)?;
                 let mut sink = VideoSink::new(&path, format, w, h, plan.fps(), &ffmpeg, audio.as_ref())?;
                 let frame_scene = |t: f64| {

@@ -371,6 +371,10 @@ fn animate(args: &[String]) -> Result<(), String> {
     if let Some(sh) = o.shutter {
         anim.shutter = sh;
     }
+    // Audio-reactive drivers: the sound's levels.
+    if anim.ensure_audio_levels(o.input.as_ref().and_then(|p| p.parent()), &rmb_core::video::ffmpeg_program(o.ffmpeg.as_deref()))? {
+        eprintln!("analysed the sound for the drivers");
+    }
     let plan = rmb_core::animation::AnimationPlan::new(&anim)?;
     let (w, h) = image_size(&o, &scene);
     let last = plan.frame_count() - 1;

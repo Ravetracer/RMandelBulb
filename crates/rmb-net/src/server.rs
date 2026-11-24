@@ -273,6 +273,13 @@ pub fn run_job(req: JobRequest, targets: Vec<Target>, status: Arc<Mutex<Status>>
         }
     };
     set_phase("Preparing the files");
+    // Audio-reactive drivers: the clients get the sound's levels with the scene.
+    let mut req = req;
+    if let Output::Animation { ffmpeg, .. } = &req.output
+        && let Some(a) = req.scene.animation.as_mut()
+    {
+        a.ensure_audio_levels(req.scene_dir.as_deref(), ffmpeg)?;
+    }
     rmb_core::compose::load_models(&req.scene);
     let prepared = crate::assets::prepare(&req.scene)?;
     let job_id = crate::proto::random_u64();
