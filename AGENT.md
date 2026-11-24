@@ -218,6 +218,9 @@ cargo clippy -j 8 --workspace --all-targets
 - `voxel_export.rs`: the same `Grid`/`Field`, three rolling layers (shell = filled with an
   empty 6-neighbor), colors only on shell voxels (the inside gets the layer's mean), PNG slices
   or MagicaVoxel (`write_vox`, median-cut `palette`; resolution limited by `limited`).
+- `mesh_simplify.rs`: `decimate` (Garland-Heckbert quadrics, heap with lazy deletion by
+  vertex versions; link condition, no flips; vertices not on a single closed fan are frozen),
+  after `refine`, before `vertex_colors`.
 
 ## Animation drivers
 

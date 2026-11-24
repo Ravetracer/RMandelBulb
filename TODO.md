@@ -178,8 +178,10 @@ Features the two programs have that RMandelbulb3D does not have yet, in the plan
       Export mesh…, `rmb-cli mesh`. Mandelbulber `mesh_export`, MB3D BulbTracer2
   - [x] The box is shown in the view while the window is open; loose pieces below a share of
         the triangles are removed (Remove pieces under, `--min-piece`)
-  - [ ] Possible: mesh decimation, sparse sampling (skip empty blocks; 2048³ grids),
-        texture-baked colors
+  - [x] Mesh decimation: quadric edge collapse (`mesh_simplify.rs`; Keep triangles,
+        `--reduce`), non-manifold spots of the surface nets frozen, closed meshes stay closed;
+        about 5 s per million triangles (heap traffic dominates)
+  - [ ] Possible: sparse sampling (skip empty blocks; 2048³ grids), texture-baked colors
 - [x] Voxel export: PNG slices per z layer (colors with transparency or white on black, hollow
       option) and MagicaVoxel `.vox` (≤256³, median-cut palette); File › Export voxels…,
       `rmb-cli voxels`. MB3D `VoxelExport`, Mandelbulber `voxel_export`

@@ -181,6 +181,7 @@ impl MeshDialog {
                     }
                     let s = &mut self.settings;
                     widgets::slider(ui, "Remove pieces under", "Removes loose pieces with fewer triangles than this share of the mesh, in percent (the dust around fractal surfaces, which 3D printers cannot print; 0 keeps everything)", &mut s.min_piece, 0.0..=5.0, d.min_piece);
+                    widgets::slider(ui, "Keep triangles", "Reduces the mesh to this share of its triangles, in percent, by merging vertices where the surface is flat; fine detail keeps its triangles (100 = all; smaller files for viewers and printers)", &mut s.reduce, 1.0..=100.0, d.reduce);
                     widgets::checkbox(ui, "Refine", "Moves every vertex onto the surface after the grid placed it: sharper edges, a little slower", &mut s.refine);
                     widgets::checkbox(ui, "Vertex colors", "The scene's colors at every vertex (PLY and OBJ; STL has none)", &mut s.colors);
                     widgets::checkbox(ui, "Y up", "Write y as the up axis (many 3D programs; RMandelbulb3D uses z up)", &mut s.y_up);

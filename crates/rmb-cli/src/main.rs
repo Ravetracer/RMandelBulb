@@ -19,6 +19,7 @@ USAGE:
                  [--shutter fraction] [--16bit | --exr]
   rmb-cli mesh <scene> [-o out.ply|.obj|.stl] [-r resolution] [--box x0,y0,z0,x1,y1,z1]
                  [--thickness cells] [--no-colors] [--no-refine] [--y-up] [--min-piece percent]
+                 [--reduce percent]
                  [--cpu]
   rmb-cli voxels <scene> [-o folder|out.vox] [-r resolution] [--box …] [--thickness cells]
                  [--no-colors] [--hollow] [--cpu]
@@ -65,7 +66,8 @@ estimates). The extension picks the format: .ply (binary, normals and vertex col
 along the longest side of the box (default 256); --box the sampled box (default: fitted to the
 surface); --thickness how many cells outside the fractal the surface lies (default 0.5; more
 thickens thin parts); --y-up writes y up instead of z up; --min-piece removes loose pieces
-with fewer triangles than that percentage of the mesh. The distances come from the GPU
+with fewer triangles than that percentage of the mesh; --reduce keeps that percentage of the
+triangles (merging vertices where the surface is flat). The distances come from the GPU
 unless --cpu is given.
 
 voxels writes the same grid as voxels: a folder of PNG images, one per z layer from the bottom
@@ -206,6 +208,7 @@ fn mesh(args: &[String], voxels: bool) -> Result<(), String> {
             "--hollow" if voxels => vs.hollow = true,
             "--no-refine" => s.refine = false,
             "--min-piece" => s.min_piece = val("--min-piece")?.parse().map_err(|_| "bad piece size")?,
+            "--reduce" => s.reduce = val("--reduce")?.parse::<f64>().map_err(|_| "bad --reduce percentage")?.clamp(0.1, 100.0),
             "--y-up" => s.y_up = true,
             "--cpu" => cpu = true,
             o if o.starts_with('-') => return Err(format!("unknown option '{o}'")),

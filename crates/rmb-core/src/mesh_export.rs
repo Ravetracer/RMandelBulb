@@ -75,11 +75,14 @@ pub struct MeshSettings {
     /// Removes loose pieces with fewer triangles than this share of the whole mesh (percent;
     /// 0 keeps everything): the dust around fractal surfaces.
     pub min_piece: f64,
+    /// Keeps this share of the triangles (percent; 100 = all) by merging vertices where the
+    /// surface is flat (`mesh_simplify::decimate`).
+    pub reduce: f64,
 }
 
 impl Default for MeshSettings {
     fn default() -> Self {
-        MeshSettings { min: v3(-1.5, -1.5, -1.5), max: v3(1.5, 1.5, 1.5), resolution: 256, thickness: 0.5, colors: true, refine: true, y_up: false, format: MeshFormat::Ply, min_piece: 0.0 }
+        MeshSettings { min: v3(-1.5, -1.5, -1.5), max: v3(1.5, 1.5, 1.5), resolution: 256, thickness: 0.5, colors: true, refine: true, y_up: false, format: MeshFormat::Ply, min_piece: 0.0, reduce: 100.0 }
     }
 }
 
@@ -478,7 +481,8 @@ pub fn export(scene: &Scene, settings: &MeshSettings, field: Option<&mut dyn Fie
         None => &mut cpu,
     };
     // The grid takes most of the time; refinement and colors the rest.
-    let extra = (settings.refine as u32 + (settings.colors && settings.format != MeshFormat::Stl) as u32) as f32 * 0.1;
+    let reduce = settings.reduce > 0.0 && settings.reduce < 100.0;
+    let extra = (settings.refine as u32 + (settings.colors && settings.format != MeshFormat::Stl) as u32) as f32 * 0.1 + if reduce { 0.3 } else { 0.0 };
     let share = 1.0 / (1.0 + extra);
     let mut mesh = surface_nets(field, &grid, iso, &mut |f| progress(f * share))?;
     let (pieces, _) = remove_small_pieces(&mut mesh, settings.min_piece.max(0.0) / 100.0);
@@ -491,6 +495,10 @@ pub fn export(scene: &Scene, settings: &MeshSettings, field: Option<&mut dyn Fie
         if !progress(share * 1.1) {
             return Err("cancelled".into());
         }
+    }
+    if reduce {
+        let target = ((mesh.triangles.len() as f64 * settings.reduce / 100.0).round() as usize).max(4);
+        crate::mesh_simplify::decimate(&mut mesh, target, &mut |f| progress(share * (1.1 + 0.3 * f)))?;
     }
     if settings.colors && settings.format != MeshFormat::Stl {
         mesh.colors = vertex_colors(&mesh, scene, &prog);
