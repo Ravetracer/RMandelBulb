@@ -313,6 +313,9 @@ impl Program {
         let auto_kind = if kinds.iter().all(|k| *k == DeKind::Log) && !kinds.is_empty() { DeKind::Log } else { DeKind::Linear };
         let mixed = kinds.iter().any(|k| *k != kinds[0]) || kinds.contains(&DeKind::Numeric);
         let (de_kind, numeric) = match f.de_mode {
+            // Formulas with their own estimate decide (custom first, then max axis).
+            DeMode::Auto if kinds.contains(&DeKind::Custom) => (DeKind::Custom, false),
+            DeMode::Auto if kinds.contains(&DeKind::MaxAxis) && !kinds.contains(&DeKind::Log) => (DeKind::MaxAxis, false),
             DeMode::Auto => (if kinds.contains(&DeKind::Numeric) { DeKind::Log } else { auto_kind }, mixed),
             DeMode::Log => (DeKind::Log, false),
             DeMode::Linear => (DeKind::Linear, false),
@@ -331,7 +334,8 @@ impl Program {
             max_iterations: max_iterations.max(1),
             min_iterations: f.min_iterations,
             c_factor: f.c_factor,
-            bailout2: f.bailout * f.bailout,
+            // Formulas with their own estimate (Kleinian sets) run every iteration.
+            bailout2: if de_kind == DeKind::Custom { 1.0e18 } else { f.bailout * f.bailout },
             julia: f.julia,
             julia_c: f.julia_c,
             w_slice: f.w_slice,
@@ -530,6 +534,8 @@ struct Iterated {
     escaped: bool,
     /// dIFS: smallest distance over the iterations.
     difs_de: f64,
+    /// Custom estimates: `dist` after the last iteration.
+    custom: f64,
     /// The constant (Julia seed or start point).
     c: [f64; 3],
 }
@@ -587,7 +593,7 @@ fn iterate_from(top: &Program, prog: &Program, regs: &mut [Vec<f64>], p: V3, fix
     st[STATE_PX..STATE_PX + 3].copy_from_slice(&[p.x, p.y, p.z]);
     debug_assert_eq!(STATE_AUX + 9, STATE_COUNT);
     st[STATE_JULIA] = if top.julia { 1.0 } else { 0.0 };
-    let mut out = Iterated { state: [0.0; 4], rold: 0.0, dr: 1.0, n: 0, trap: f64::MAX, escaped: false, difs_de: 65535.0, c: [st[4], st[5], st[6]] };
+    let mut out = Iterated { state: [0.0; 4], rold: 0.0, dr: 1.0, n: 0, trap: f64::MAX, escaped: false, difs_de: 65535.0, custom: 0.0, c: [st[4], st[5], st[6]] };
     if prog.difs {
         // VaryScale starts at 1; the shapes' distances are divided by it.
         st[STATE_AUX] = 1.0;
@@ -720,6 +726,7 @@ fn iterate_from(top: &Program, prog: &Program, regs: &mut [Vec<f64>], p: V3, fix
     out.state.copy_from_slice(&st[..4]);
     out.rold = st[STATE_ROLD];
     out.dr = st[STATE_DR];
+    out.custom = st[crate::formula::lang::STATE_DIST];
     out
 }
 
@@ -753,6 +760,9 @@ fn chain_orbit(top: &Program, prog: &Program, regs: &mut [Vec<f64>], p: V3, h: f
     let r = r2.sqrt();
     let mut de = if prog.difs {
         it.difs_de.max(0.0)
+    } else if prog.de_kind == DeKind::Custom {
+        // The formula's own estimate, escaped or not.
+        it.custom.max(0.0)
     } else if !it.escaped {
         0.0
     } else if prog.numeric {
@@ -778,6 +788,7 @@ fn chain_orbit(top: &Program, prog: &Program, regs: &mut [Vec<f64>], p: V3, h: f
     } else {
         match prog.de_kind {
             DeKind::Linear => r / it.dr.abs(),
+            DeKind::MaxAxis => it.state[0].abs().max(it.state[1].abs()).max(it.state[2].abs()) / it.dr.abs(),
             _ => 0.5 * r.ln() * r / it.dr,
         }
     };

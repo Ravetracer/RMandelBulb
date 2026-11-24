@@ -302,7 +302,15 @@ pub enum DeKind {
     /// Distance-estimated IFS (Mandelbulb3D's dIFS): shapes write their distance into `rout`,
     /// transforms scale `a0`; the estimate is the smallest `rout / a0` over the iterations.
     Difs,
+    /// `max(|x|, |y|, |z|) / |dr|`: box-like folds (Mandelbulber's max axis estimate).
+    MaxAxis,
+    /// The formula computes the estimate itself into `dist` (the register `a7`); its value
+    /// after the last iteration is the distance, escaped or not (Kleinian groups, any shape).
+    Custom,
 }
+
+/// Register the `dist` name of custom estimates stands for (`a7`).
+pub const STATE_DIST: usize = STATE_AUX + 7;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum ParamKind {
@@ -410,6 +418,10 @@ impl Scope<'_> {
             && let Some(i) = STATE_NAMES.iter().position(|n| *n == name)
         {
             return Some(VarRef::State(i));
+        }
+        // The estimate of `de custom` formulas.
+        if !self.init && name == "dist" {
+            return Some(VarRef::State(STATE_DIST));
         }
         None
     }
@@ -535,6 +547,8 @@ impl Parser {
                         "linear" => DeKind::Linear,
                         "numeric" => DeKind::Numeric,
                         "difs" => DeKind::Difs,
+                        "maxaxis" => DeKind::MaxAxis,
+                        "custom" => DeKind::Custom,
                         o => return self.err(format!("unknown DE kind '{o}'")),
                     }
                 }

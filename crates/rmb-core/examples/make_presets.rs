@@ -150,11 +150,35 @@ fn hybrid() -> Scene {
     s
 }
 
+fn pseudo_kleinian() -> Scene {
+    let mut s = base("Preset: Knighty's pseudo-Kleinian set, seen from inside its halls.");
+    s.fractal.slots = vec![slot("Pseudo Kleinian", &[])];
+    s.fractal.max_iterations = 10;
+    s.march.max_distance = 20.0;
+    s.material.gradient = palette(Harmony::Analogous, 30.0, 5, 7);
+    s.material.color_mode = ColorMode::OrbitTrap;
+    camera(&mut s, v3(-0.3, 0.2, 0.9), v3(0.4, 0.3, 0.0), 0.0);
+    s.camera.fov = 80.0;
+    s
+}
+
+fn jos_kleinian() -> Scene {
+    let mut s = base("Preset: Jos Leys' Kleinian double-spiral group, spirals of spheres above the plane.");
+    s.fractal.slots = vec![slot("Jos Kleinian", &[])];
+    s.fractal.max_iterations = 30;
+    s.march.max_distance = 20.0;
+    s.material.gradient = palette(Harmony::Complementary, 200.0, 5, 3);
+    s.material.color_mode = ColorMode::OrbitTrap;
+    camera(&mut s, v3(0.3, 1.7, -1.0), v3(0.0, 0.6, 1.0), 0.0);
+    s.camera.fov = 70.0;
+    s
+}
+
 fn main() {
     let dir = std::path::PathBuf::from(std::env::args().nth(1).expect("output folder"));
     std::fs::create_dir_all(&dir).expect("folder");
     type Make = fn() -> Scene;
-    let presets: [(&str, Make); 8] = [
+    let presets: [(&str, Make); 10] = [
         ("mandelbulb", mandelbulb),
         ("amazing-box", amazing_box),
         ("menger", menger),
@@ -163,6 +187,8 @@ fn main() {
         ("neon-box-city", neon_box_city),
         ("glass-bulb", glass_bulb),
         ("hybrid", hybrid),
+        ("pseudo-kleinian", pseudo_kleinian),
+        ("jos-kleinian", jos_kleinian),
     ];
     for (name, make) in presets {
         let s = make();

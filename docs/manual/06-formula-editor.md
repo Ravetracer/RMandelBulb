@@ -96,7 +96,7 @@ Comments start with `//` and run to the end of the line. Semicolons are allowed 
 |------|---------|
 | `category "…"` | The group in the formula list. Default: "Other". |
 | `description "…"` | Shown as hover text and in the formula reference. |
-| `de log` / `linear` / `numeric` / `difs` | The kind of distance estimate (see below). Default: `log`. |
+| `de log` / `linear` / `numeric` / `difs` / `maxaxis` / `custom` | The kind of distance estimate (see below). Default: `log`. |
 | `param name "Label" = default [min, max] kind` | A parameter (see below). |
 | `alias "Name" (p1, p2, …)` | Another name, used when importing Mandelbulb3D parameters (see below). |
 | `transform` | The formula only moves the point: it does not count as an iteration and the escape test is skipped after it. |
@@ -175,6 +175,23 @@ Comparisons give conditions, which can only be used in `if`, in `sel` and with `
 | `linear` | Folding formulas (boxes, sponges, IFS). `dr` is multiplied by the scale, usually `dr = dr * abs(scale) + 1`. |
 | `numeric` | The estimate is measured numerically; `dr` is not needed. Slower. |
 | `difs` | Mandelbulb3D's dIFS formulas: shapes write their distance into `rout`, transforms scale `a0`. |
+| `maxaxis` | Like `linear`, with the largest of `|x|`, `|y|`, `|z|` instead of the length: boxier shapes for box folds. |
+| `custom` | The formula computes the distance itself into `dist` (another name of `a7`); its value after the last iteration is the estimate, whether the point escaped or not. The escape test is off: the formula runs the full iteration count. For limit sets that never escape (the Kleinian formulas) and any shape with a known distance. |
+
+A `custom` estimate in the formula language, for Knighty's pseudo-Kleinian set:
+
+```
+iter {
+    x = 2.0 * clamp(x, -box_x, box_x) - x
+    // … the same for y and z, then the inversion: k = max(inv / r2, 1)
+    dr = dr * k
+    let rxy = sqrt(x * x + y * y)
+    dist = max(rxy - thick, abs(rxy * z) / sqrt(x * x + y * y + z * z)) / abs(dr)
+}
+```
+
+In a hybrid, a formula with a `custom` estimate decides the estimate of the whole chain (then
+`maxaxis`, then the others).
 
 ### Aliases
 

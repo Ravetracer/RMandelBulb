@@ -539,6 +539,15 @@
     "aperture": 0.02,
     "focus_distance": 2.5
   },
+  "view": {
+    "projection": "Perspective",
+    "fisheye_fov": 180.0,
+    "stereo": "Off",
+    "convergence": 0.0,
+    "eye_ratio": 0.03333333333333333,
+    "swap_eyes": false,
+    "anaglyph_color": true
+  },
   "post": {
     "exposure": 0.0,
     "gamma": 2.2,

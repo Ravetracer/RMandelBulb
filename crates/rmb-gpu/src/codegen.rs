@@ -9,7 +9,7 @@
 use std::fmt::Write;
 
 use rmb_core::formula::DeKind;
-use rmb_core::formula::lang::{STATE_AUX, STATE_COUNT, STATE_JULIA, STATE_PX, STATE_ROLD, STATE_ROUT};
+use rmb_core::formula::lang::{STATE_AUX, STATE_COUNT, STATE_DIST, STATE_JULIA, STATE_PX, STATE_ROLD, STATE_ROUT};
 use rmb_core::formula::wgsl::{PRELUDE, emit_iter, emit_iter_dd, state_name};
 use rmb_core::fractal::Program;
 
@@ -409,6 +409,8 @@ fn chain(prog: &Program, k: &str, cfg: &Uni) -> String {
     let _ = writeln!(s, "\nconst NSLOTS_{k}: u32 = {}u;", prog.slots.len());
     let _ = writeln!(s, "const NUMERIC_{k}: bool = {};", prog.numeric);
     let _ = writeln!(s, "const DE_LINEAR_{k}: bool = {};", prog.de_kind == DeKind::Linear);
+    let _ = writeln!(s, "const DE_MAXAXIS_{k}: bool = {};", prog.de_kind == DeKind::MaxAxis);
+    let _ = writeln!(s, "const DE_CUSTOM_{k}: bool = {};", prog.de_kind == DeKind::Custom);
     let _ = writeln!(s, "const DIFS_{k}: bool = {};", prog.difs);
     let _ = writeln!(s, "const DEEP_{k}: bool = false;");
     let _ = writeln!(s, "\nfn iterate_{k}(p: vec3<f32>, fixed_n: u32, use_fixed: bool, start: vec4<f32>, use_start: bool) -> Iterated {{");
@@ -462,7 +464,7 @@ fn chain(prog: &Program, k: &str, cfg: &Uni) -> String {
     if blend.is_some() {
         s.push_str("    }\n");
     }
-    let _ = writeln!(s, "    out.s = vec4<f32>(f32({}), f32({}), f32({}), f32({}));\n    out.rold = f32({});\n    out.dr = f32({});\n    out.n = n;", names[0], names[1], names[2], names[3], names[STATE_ROLD], names[8]);
+    let _ = writeln!(s, "    out.s = vec4<f32>(f32({}), f32({}), f32({}), f32({}));\n    out.rold = f32({});\n    out.dr = f32({});\n    out.n = n;\n    out.cd = f32({});", names[0], names[1], names[2], names[3], names[STATE_ROLD], names[8], names[STATE_DIST]);
     // Mandelbulb3D's second color choice (mirrors fractal.rs chain_orbit).
     let _ = writeln!(s, "    out.c = vec3<f32>(f32({}), f32({}), f32({}));\n    out.c2 = color2_value(out.s, out.c, dot(out.s, out.s), out.rold, out.trap);\n    return out;\n}}", names[4], names[5], names[6]);
     s.push_str(&CHAIN_DE.replace("SCALE_K", &cfg.scale).replace("_K", &format!("_{k}")));
@@ -522,6 +524,8 @@ fn chain_dd(prog: &Program, k: &str, cfg: &Uni) -> String {
     let _ = writeln!(s, "\nconst NSLOTS_{k}: u32 = {}u;", prog.slots.len());
     let _ = writeln!(s, "const NUMERIC_{k}: bool = {};", prog.numeric);
     let _ = writeln!(s, "const DE_LINEAR_{k}: bool = {};", prog.de_kind == DeKind::Linear);
+    let _ = writeln!(s, "const DE_MAXAXIS_{k}: bool = {};", prog.de_kind == DeKind::MaxAxis);
+    let _ = writeln!(s, "const DE_CUSTOM_{k}: bool = {};", prog.de_kind == DeKind::Custom);
     let _ = writeln!(s, "const DIFS_{k}: bool = {};", prog.difs);
     let _ = writeln!(s, "const DEEP_{k}: bool = true;");
     // Mixed precision: once the derivative is large, f32 rounding moves the point by far less
@@ -534,6 +538,7 @@ fn chain_dd(prog: &Program, k: &str, cfg: &Uni) -> String {
     let n: Vec<String> = (0..STATE_COUNT).map(state_name).collect();
     let (x, y, z, w) = (&n[0], &n[1], &n[2], &n[3]);
     let (dr, it, rout, rold) = (&n[8], &n[9], &n[STATE_ROUT], &n[STATE_ROLD]);
+    let dist = &n[STATE_DIST];
     // World position = reference point + local position.
     s.push_str("    let wx = dd_add(dd(u.deep_hi.x, u.deep_lo.x), dd_f(p.x));\n    let wy = dd_add(dd(u.deep_hi.y, u.deep_lo.y), dd_f(p.y));\n    let wz = dd_add(dd(u.deep_hi.z, u.deep_lo.z), dd_f(p.z));\n");
     let _ = writeln!(s, "    var v0 = wx;\n    var v1 = wy;\n    var v2 = wz;\n    var v3 = dd({}, u.deep_lo.w);", cfg.wslice);
@@ -632,10 +637,10 @@ fn chain_dd(prog: &Program, k: &str, cfg: &Uni) -> String {
     s.push_str(&f32_loop(prog, k, cfg, &n));
     let _ = writeln!(
         s,
-        "            out.s = vec4<f32>(f32({x}), f32({y}), f32({z}), f32({w}));\n            out.rold = f32({rold});\n            out.dr = f32({dr});\n            out.n = n;\n            out.sd = array<vec2<f32>, 4>(dd_f(out.s.x), dd_f(out.s.y), dd_f(out.s.z), dd_f(out.s.w));\n            out.rd = dd_f(length(out.s));\n            out.c = vec3<f32>(f32({}), f32({}), f32({}));\n            out.c2 = color2_value(out.s, out.c, dot(out.s, out.s), out.rold, out.trap);\n            return out;\n        }}\n    }}",
+        "            out.s = vec4<f32>(f32({x}), f32({y}), f32({z}), f32({w}));\n            out.rold = f32({rold});\n            out.dr = f32({dr});\n            out.n = n;\n            out.cd = f32({dist});\n            out.sd = array<vec2<f32>, 4>(dd_f(out.s.x), dd_f(out.s.y), dd_f(out.s.z), dd_f(out.s.w));\n            out.rd = dd_f(length(out.s));\n            out.c = vec3<f32>(f32({}), f32({}), f32({}));\n            out.c2 = color2_value(out.s, out.c, dot(out.s, out.s), out.rold, out.trap);\n            return out;\n        }}\n    }}",
         n[4], n[5], n[6]
     );
-    let _ = writeln!(s, "    out.s = vec4<f32>(dd_hi({x}), dd_hi({y}), dd_hi({z}), dd_hi({w}));\n    out.rold = dd_hi({rold});\n    out.dr = dd_hi({dr});\n    out.n = n;");
+    let _ = writeln!(s, "    out.s = vec4<f32>(dd_hi({x}), dd_hi({y}), dd_hi({z}), dd_hi({w}));\n    out.rold = dd_hi({rold});\n    out.dr = dd_hi({dr});\n    out.n = n;\n    out.cd = dd_hi({dist});");
     let _ = writeln!(s, "    out.sd = array<vec2<f32>, 4>({x}, {y}, {z}, {w});\n    out.rd = dd_sqrt(dd_add(dd_add(dd_sqr({x}), dd_sqr({y})), dd_add(dd_sqr({z}), dd_sqr({w}))));");
     let _ = writeln!(s, "    out.c = vec3<f32>(dd_hi({}), dd_hi({}), dd_hi({}));\n    out.c2 = color2_value(out.s, out.c, dot(out.s, out.s), out.rold, out.trap);\n    return out;\n}}", n[4], n[5], n[6]);
     s.push_str(&CHAIN_DE.replace("SCALE_K", &cfg.scale).replace("_K", &format!("_{k}")));
@@ -658,6 +663,9 @@ fn chain_de_K(p: vec3<f32>, h: f32) -> Orbit {
     var de = 0.0;
     if (DIFS_K) {
         de = max(it.de, 0.0);
+    } else if (DE_CUSTOM_K) {
+        // The formula's own estimate, escaped or not.
+        de = max(it.cd, 0.0);
     } else if (it.escaped) {
         if (NUMERIC_K) {
             // Gradient step: at least a little relative to the point (mirrors fractal.rs; f32
@@ -684,7 +692,9 @@ fn chain_de_K(p: vec3<f32>, h: f32) -> Orbit {
                 de = 0.5 * r * log(r) / gl;
             }
         } else {
-            if (DE_LINEAR_K) {
+            if (DE_MAXAXIS_K) {
+                de = max(abs(it.s.x), max(abs(it.s.y), abs(it.s.z))) / abs(it.dr);
+            } else if (DE_LINEAR_K) {
                 de = r / abs(it.dr);
             } else {
                 de = 0.5 * log(r) * r / it.dr;

@@ -16,6 +16,7 @@ pub use lang::{Alias, DeKind, FormulaDef, LangError, ParamDef, ParamKind};
 const BUILTIN: &[(&str, &str)] = &[
     ("bulbs.mbf", include_str!("lib/bulbs.mbf")),
     ("boxes.mbf", include_str!("lib/boxes.mbf")),
+    ("kleinian.mbf", include_str!("lib/kleinian.mbf")),
     ("ifs.mbf", include_str!("lib/ifs.mbf")),
     ("hypercomplex.mbf", include_str!("lib/hypercomplex.mbf")),
     ("transforms.mbf", include_str!("lib/transforms.mbf")),

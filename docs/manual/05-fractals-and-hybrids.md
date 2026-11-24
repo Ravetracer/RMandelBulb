@@ -184,6 +184,7 @@ The formula list groups the formulas by category:
 | Bulbs | Mandelbulb and its variants (cosine, Mandelbar, Square bulb, Bristorbrot, Xenodreambuie, Folding bulb, Tricorn), Aexion C |
 | Boxes | Amazing Box (Mandelbox), Amazing Surf, ABox Mod Kali, Kali box, Kaliset, Mandelbox 4D |
 | IFS | Menger sponge, Sierpinski tetrahedron, Kaleidoscopic IFS, Octahedron |
+| Kleinian | Pseudo Kleinian (Knighty), Jos Kleinian (Jos Leys' double-spiral groups). Limit sets that never escape: they run the full iteration count with their own distance estimate. Pseudo Kleinian is best seen from inside its halls with a wide field of view; Jos Kleinian lives in the slab between y = 0 and y = Klein R (the camera must be inside it). Both have presets in the explore lane. |
 | Hypercomplex | Quaternion, Quaternion cubic, Hypercomplex, Mandelbrot 2D, Quaternion (MB3D) |
 | Transforms | Rotate, Scale, Translate, Add C, Box fold, Sphere fold, Abs, Sphere inversion |
 | Hybrids | Bulbox |

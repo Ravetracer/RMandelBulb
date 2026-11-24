@@ -1274,3 +1274,17 @@ fn tiled_render_equals_the_whole_image() {
     let dz = whole.depth.iter().zip(&tiled.depth).filter(|(a, b)| a.is_finite() && (*a - *b).abs() > 1e-4).count();
     assert_eq!(dz, 0);
 }
+
+#[test]
+fn gpu_matches_cpu_with_a_custom_estimate() {
+    // Pseudo Kleinian: its own estimate in `dist`, no escape test.
+    let mut scene = Scene::default();
+    scene.lighting.ao_mode = rmb_core::scene::AoMode::Fast;
+    scene.fractal.slots = vec![rmb_core::scene::Slot::new("Pseudo Kleinian")];
+    scene.fractal.max_iterations = 8;
+    scene.march.max_distance = 20.0;
+    scene.camera.position = rmb_core::v3(-0.3, 0.2, 0.9);
+    scene.camera.look_at(rmb_core::v3(0.4, 0.3, 0.0), rmb_core::v3(0.0, 0.0, 1.0));
+    scene.camera.fov = 80.0;
+    parity(scene);
+}

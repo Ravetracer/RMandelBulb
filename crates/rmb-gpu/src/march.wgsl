@@ -858,6 +858,8 @@ struct Iterated {
     de: f32,
     // Mandelbulb3D's second color choice.
     c2: f32,
+    // Custom estimates (de custom): `dist` after the last iteration.
+    cd: f32,
     // The constant (Julia seed or start point).
     c: vec3<f32>,
     // Deep zoom: the final point and its length in double-float (numeric estimate, mix).

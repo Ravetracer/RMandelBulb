@@ -1,0 +1,73 @@
+// SPDX-License-Identifier: LGPL-2.1-or-later
+// Kleinian group limit sets: folds and sphere inversions that never escape; each formula
+// computes its own distance estimate into `dist` (de custom), evaluated after the last iteration.
+
+formula "Pseudo Kleinian" {
+    category "Kleinian"
+    description "Knighty's pseudo-Kleinian set: box fold, inversion in a sphere, offset. Endless halls of arches and tubes; best seen from inside with a wide field of view. Runs the full iteration count (no escape)."
+    de custom
+    iterations 1
+    param box_x "Box size X" = 0.92436 [0.1, 2]
+    param box_y "Box size Y" = 0.90756 [0.1, 2]
+    param box_z "Box size Z" = 0.92436 [0.1, 2]
+    param inv "Inversion size" = 1 [0.1, 3]
+    param off_x "Offset X" = 0 [-1, 1]
+    param off_y "Offset Y" = 0 [-1, 1]
+    param off_z "Offset Z" = 0 [-1, 1]
+    param thick "Thickness" = 0 [-0.2, 0.5]
+    iter {
+        x = 2.0 * clamp(x, -box_x, box_x) - x
+        y = 2.0 * clamp(y, -box_y, box_y) - y
+        z = 2.0 * clamp(z, -box_z, box_z) - z
+        let r2 = max(x * x + y * y + z * z, 1.0e-20)
+        let k = max(inv / r2, 1.0)
+        x = x * k + off_x
+        y = y * k + off_y
+        z = z * k + off_z
+        dr = dr * k
+        let rxy = sqrt(x * x + y * y)
+        let r = sqrt(x * x + y * y + z * z) + 1.0e-30
+        dist = max(rxy - thick, abs(rxy * z) / r) / abs(dr)
+    }
+}
+
+formula "Jos Kleinian" {
+    category "Kleinian"
+    description "Jos Leys' Kleinian double-spiral group: the plane wrapped into a skewed cell, a Moebius transformation, folded across the separation line. The limit set floats as a sheet of spheres above the plane. Runs the full iteration count (no escape)."
+    de custom
+    iterations 1
+    param kr "Klein R" = 1.94 [1, 2.2]
+    param ki "Klein I" = 0.03 [-0.5, 0.5]
+    param box_x "Box size X" = 1 [0.1, 3]
+    param box_z "Box size Z" = 1 [0.1, 3]
+    param flat "Distance cap" = 0.3 [0.01, 1]
+    init {
+        let f = 0.5
+        let skew = ki / kr
+    }
+    iter {
+        // Skewed wrap of x and z into the cell.
+        x = x + skew * y
+        let wx = 2.0 * box_x
+        let wz = 2.0 * box_z
+        x = x + box_x - wx * floor((x + box_x) / wx) - box_x
+        z = z + box_z - wz * floor((z + box_z) / wz) - box_z
+        x = x - skew * y
+        // Above the separation line: turn by 180 degrees about (-ki/2, kr/2).
+        let sx = x + ki * 0.5
+        let side = sign(ki) * f * 0.25 * sign(sx) * (1.0 - exp(-3.2 * abs(sx)))
+        if y >= kr * (0.5 + side) {
+            x = -ki - x
+            y = kr - y
+            z = -z
+        }
+        // The transformation: inversion, then a translation.
+        let ir = 1.0 / max(x * x + y * y + z * z, 1.0e-20)
+        x = -ki + x * ir
+        y = kr - y * ir
+        z = -z * ir
+        dr = dr * ir
+        let d = min(y, kr - y)
+        dist = min(d, flat) / max(dr, 2.0)
+    }
+}

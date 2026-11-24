@@ -144,7 +144,9 @@
   - [x] Mandelbulber per-slot settings: iteration range, weight, add C, escape test; minimum
         iterations and constant factor; up to 9 slots
   - [x] .m3f import from the app (Preferences › Formulas › Import .m3f…)
-  - [ ] Inside + outside rendering, more DE kinds (Kleinian, max axis, custom DE block)
+  - [x] More DE kinds: `de maxaxis`, `de custom` (the formula writes `dist`; no escape test),
+        Kleinian formulas (Pseudo Kleinian, Jos Kleinian) with presets. Inside rendering
+        (Mandelbulber's interior mode) is covered by the existing MB3D inside rendering
   - [ ] Possible later: nested boolean groups (Mandelbulber's object tree), `_Cond*`
         formulas, per-slot settings and 4D rotation for object fractals, language helpers
         (functions, vectors, enum parameters)
@@ -198,7 +200,7 @@ Features the two programs have that RMandelbulb3D does not have yet, in the plan
       Mandelbulber `scripts`
   - [ ] Possible: drivers outside animations (stills), a curve view of a driver over time,
         audio-reactive variables (loudness of the sound track per frame)
-- [ ] Kleinian DE and inside rendering (see Formula editing above)
+- [x] Kleinian DE and inside rendering (see Formula editing above)
 - [ ] Compare with MB3D's own Monte Carlo renderer (`mb3d/CalcMonteCarlo.pas`)
 - [x] Network rendering for long, high-quality animations (owner's wish 2026-11-24). Easy to
       set up, no configuration files (done: crate `rmb-net`, `rmb-cli --network`,

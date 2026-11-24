@@ -120,6 +120,10 @@ cargo clippy -j 8 --workspace --all-targets
   `Program::slot_extras()` (part of the signature), emitted by `codegen.rs` `extras_*` into the
   f32 and df64 loops (`u.slots` y/z/w, `u.slotw`, `u.cfac`). Object fractals drop them
   (`Program::clear_extras`). Up to 9 slots (`MAX_SLOTS`; uniform tables hold 16).
+- DE kinds `maxaxis` and `custom` (`DeKind`): custom formulas write `dist` (alias of `a7`,
+  `lang::STATE_DIST`); `Iterated::custom` / WGSL `Iterated.cd` carry its final value, the
+  chain uses it whether escaped or not, and `Program::new` sets the bailout to 1e18 (no escape;
+  finite, as the baked shader squares it). Kleinian formulas in `lib/kleinian.mbf`.
 - Formulas the translator cannot handle are written by hand in `lib/mb3d_builtin.mbf` (also
   MB3D's built-in Bulbox and Aexion C). `m3f-check` falls back to the library formula with the
   .m3f's name, so hand-written versions are checked too; `M3F_VALUES="v1,v2,…"` sets the option
