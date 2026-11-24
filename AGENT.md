@@ -26,7 +26,8 @@ Open work and wished features: `TODO.md`.
 | `crates/rmb-core` | `mesh_export.rs` (mesh export: grid, surface nets, PLY/OBJ/STL), `compose.rs` (scene composition: objects, primitives, boolean ops, transforms; mirrored in march.wgsl), `mesh.rs` (3D model import and distance grid bake), `texture.rs` (texture layers), `palette.rs` (palette generator and edits), `flare.rs` (lens flares: model, presets, screen-space layer added before post processing), `animation.rs` (keyframes, camera path, timing, cameraman smoothing, flight → keyframes), `video.rs` (PNG sequences, movies through ffmpeg), `scene.rs` (model), `formula/` (language `lang.rs`, `cpu.rs` closure compiler, `wgsl.rs` emitter, `lib/*.mbf` built-ins, `m3f/` MB3D machine-code translator, `lib/mb3d.mbf` its generated output), `fractal.rs` (hybrid `Program`, CPU evaluator), `render/` (`cpu.rs` reference renderer, `mod.rs` frame setup and post processing), `io/` (`.rmb` JSON, `m3p.rs` MB3D import, PNG with scene) |
 | `crates/rmb-gpu` | `march.wgsl` (kernel, mirrors `render/cpu.rs`), `codegen.rs` (hybrid `iterate` function), `display.wgsl` (post), `renderer.rs` (progressive bands, async shader compile) |
 | `crates/rmb-app` | egui app: `app.rs`, `viewport.rs` (preview and navigation), `formulas_panel.rs` (scene list, object editors), `inspector.rs`, `layers.rs` (texture layer editor), `palette_editor.rs` (gradient editor: stops on the strip, generator, tools, saved palettes in `palettes.json`), `export.rs` (image and animation export), `render_view.rs` (test render window: `render_progressive`, keeps the raw image and develops it again when the post processing changes), `timeline.rs` (animation panel: keyframes, recording, playback), `gizmos.rs` (light gizmos; object gizmos: move, rotate rings, scale/stretch handles), `doc.rs` (undo), `prefs.rs`, `theme.rs` (from RWildFire) |
-| `crates/rmb-cli` | Command line |
+| `crates/rmb-cli` | Command line (`net.rs`: network render commands) |
+| `crates/rmb-net` | Network rendering: `proto.rs` (messages, specs, hashes), `discovery.rs` (UDP announcements), `assets.rs` (files of a job, client cache), `client.rs`, `server.rs`; test `tests/loopback.rs` |
 
 ## Build and test
 
@@ -209,6 +210,23 @@ cargo clippy -j 8 --workspace --all-targets
 - `voxel_export.rs`: the same `Grid`/`Field`, three rolling layers (shell = filled with an
   empty 6-neighbor), colors only on shell voxels (the inside gets the layer's mean), PNG slices
   or MagicaVoxel (`write_vox`, median-cut `palette`; resolution limited by `limited`).
+
+## Network rendering
+
+- Clients (`rmb-cli --network`) broadcast an `Announce` (UDP 47810, also to 127.0.0.1) every
+  2 s and listen on TCP 47811; the server (`server::run_job`) connects to the chosen ones.
+  Messages: length-prefixed JSON, file/result messages followed by raw bytes (`proto.rs`).
+  Version strings must match (`rmb_net::version`, bump `PROTOCOL` when messages change).
+- Files: `rmb_core::files::visit` lists every file name of a scene (and its keyframes);
+  `assets::prepare` makes them absolute and adds model sidecars (`files::model_files`) and the
+  formulas' maps; clients store blobs by SHA-256 and recreate the server paths below
+  `jobs/<id>/root` (`assets::mirror`, no `..`), maps in `jobs/<id>/maps` (`maps::set_dirs`).
+- Work: pull-based (`Work::next`), tail duplication when an idle client is much faster
+  (measured seconds per sample, hardware guess before), `Progress` replies may `Cancel`.
+  Frames: `rmb_gpu::FrameRenderer` (one shader per job). Stills: `Samples { start, count }`
+  with `start_at_sample` on the GPU/CPU renderer, summed on the server (`StillSum`), so the
+  split render equals a single one. Results stay in the client's spool folder until `Ack`.
+- `client::start_local` runs a client in-process ("this computer too", `--local`).
 
 ## Tiled renders
 

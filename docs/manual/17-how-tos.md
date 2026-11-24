@@ -237,3 +237,26 @@ Example scene: `vr-panorama.rmb` (inside the Amazing Box).
 
 For planetarium domes, use *Fisheye circle* with a fisheye angle of 180° and a square image;
 for VR180, *Panorama 180°* with *Side by side*.
+
+## Render an animation on several computers
+
+1. Copy RMandelbulb3D (the same version) to the computers that should help and start
+   `rmb-cli --network` on each of them. Each shows "Waiting for a server…".
+2. On your computer, open the animated scene and choose **File › Network render…**. After a
+   few seconds the helpers appear in the list.
+3. Tick **This computer too** if your own graphics card should help as well.
+4. Choose the format (for example MP4) and the file, then click **Render on N clients**.
+5. Watch the progress per computer. Faster computers take more frames by themselves; the
+   movie is encoded when the last frame arrived.
+
+On a server without the app, the same works on the command line:
+
+```
+rmb-cli net-render flight.rmb -o flight.mp4 -s 64 --local
+```
+
+If a helper does not show up, check that it runs the same version and that the firewall lets
+UDP port 47810 (server) and TCP port 47811 (helpers) through; `rmb-cli net-clients` lists what
+the server hears. A helper in another subnet can be added by its address
+(`--client host` or the **Add** field).
+

@@ -132,6 +132,62 @@ Chapter "Animation" explains the formats, sound and motion blur.
     The export window and the render window need the GPU renderer. Without a usable graphics
     card, render with `rmb-cli render --cpu`.
 
+## Network rendering
+
+Long animations and big stills render faster on several computers. There is nothing to set up
+beyond starting a program on each helper:
+
+1. On every computer that should help, start a **render client**:
+   ```
+   rmb-cli --network
+   ```
+   It shows its name and hardware and waits. Leave it running; it serves one job after the
+   other.
+2. On your computer, open **File › Network render…**. The clients appear in the list by
+   themselves (they announce themselves on the local network every two seconds).
+3. Choose the clients (all ready clients are chosen at first), set size, samples, frames and
+   the output, and click **Render on N clients**.
+
+![The network render window](images/net-window.png){: .half}
+
+| Setting | What it does |
+|---------|--------------|
+| Client list | Every client found, with its hardware and state: *ready*, *busy* (rendering for another server), *needs the key*, or another program *version* (not usable). **All** / **None** choose quickly. |
+| host or host:port, **Add** | A client the announcements do not reach (another subnet, a network that blocks broadcasts), by its name or address. |
+| This computer too | Renders on this computer's graphics card as well. |
+| Key | The shared key, for clients started with `--key`. |
+| Animation / Image | The keyframe animation (every client renders whole frames) or the current view as one image (every client renders a part of its samples; the parts are added up, so the result equals a render on one computer). |
+| Width, Height, Samples, Frames, Format | As in the export window. Movies are encoded on this computer after the last frame; **Keep frames** keeps the PNG frames next to the movie. |
+
+While the job runs, the window shows a progress bar for the whole job and one per client: the
+frame it works on, how far it is, how many it finished and its speed. **Cancel** stops the
+job; finished frames stay in the output folder.
+
+![Progress of a network render](images/net-progress.png)
+
+How it works:
+
+- **Fair share of the work.** Clients fetch the next frame whenever they are free, so a fast
+  computer renders more frames than a slow one and nobody waits for the slowest machine. When
+  the last frames are in progress and a fast client is idle, it renders the frame of a much
+  slower client too; whichever finishes first counts and the other stops.
+- **Files go along.** The scene goes to the clients with every file it uses: 3D models with
+  their material files and textures, texture and background images, Mandelbulb3D maps and
+  bokeh images. Clients keep them in their cache (by content), so the next job sends only
+  what changed.
+- **Nothing gets lost.** A client keeps every finished frame on its disk until this computer
+  confirmed that it stored it. If the connection breaks, the server reconnects, and the client
+  sends the frames it still holds first. A client that goes away gives its frame back to the
+  others.
+- **Only matching versions work together**, so every client renders exactly the same image.
+- The clients announce only their name, port and hardware (processor, cores, memory, graphics
+  card, operating system), no user data.
+
+!!! note
+    The network needs two ports open in the firewalls: **UDP 47810** (announcements, on the
+    server) and **TCP 47811** (on the clients). Network rendering is meant for your own local
+    network; with `--key` on the clients only servers that know the key can use them.
+
 ## Mesh and voxel export
 
 **File › Export mesh…** saves the surface as a closed triangle mesh: for 3D printing, or to
@@ -262,6 +318,48 @@ rmb-cli voxels <scene> [-o folder|out.vox] [-r resolution] [--box x0,y0,z0,x1,y1
 Exports voxels like **File › Export voxels…**: a folder of PNG slices, or a MagicaVoxel model
 when `-o` ends in `.vox`. The options work as for `mesh`; `--hollow` keeps only the voxels next
 to empty space.
+
+### Network rendering
+
+```
+rmb-cli --network [--name name] [--key key] [--port n] [--cpu] [--cache folder]
+```
+
+Runs a render client until you stop it with <kbd>Ctrl</kbd>+<kbd>C</kbd>. It shows a
+progress bar for the current frame and one for the whole job.
+
+| Option | What it does |
+|--------|--------------|
+| `--name name` | Name shown on the server (default: the computer's name). |
+| `--key key` | Only servers that know this key may use the client. |
+| `--port n` | TCP port (default 47811). |
+| `--cpu` | Renders on the processor even when there is a graphics card. |
+| `--cache folder` | Where received files and unconfirmed frames are kept (default: the user's cache folder, `rmandelbulb/net`). |
+
+```
+rmb-cli net-render <scene> [-o out.mp4|folder|out.png|out.exr] [-W width] [-H height]
+               [-s samples] [--from frame] [--to frame] [--still] [--clients all|a,b]
+               [--client host[:port]] [--local] [--key key] [--wait s] [--keep-frames]
+               [--16bit] [--denoise | --no-denoise] [--ffmpeg path]
+rmb-cli net-clients [--wait s]
+```
+
+`net-render` listens for clients for a few seconds (`--wait`, default 3), then renders the
+scene's animation on them, or a still image (scenes without keyframes, or `--still`). It
+draws a progress bar for the whole job and one line per client.
+
+| Option | What it does |
+|--------|--------------|
+| `-o` | Movie file, folder of PNG frames, or image (`.png`, `.exr`), as for `animate` and `render`. |
+| `--clients all` or `--clients a,b` | All clients found (default) or the ones with these names. |
+| `--client host[:port]` | Adds a client by address (several times for several). |
+| `--local` | Renders on this computer too. |
+| `--key key` | The clients' shared key. |
+| `--keep-frames` | Keeps the PNG frames after encoding a movie. |
+| `--still` | Renders the current view of an animated scene as one image. |
+
+`net-clients` lists the clients it hears: name, address, hardware, and whether they are busy,
+need a key or run another version.
 
 ### Other commands
 

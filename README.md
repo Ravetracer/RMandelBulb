@@ -26,6 +26,9 @@ modern egui interface and import of Mandelbulb3D parameters.
   fast ambient occlusion, sky/ground ambient, gradient coloring (iterations, orbit trap, radius,
   normal), glossy reflections and frosted glass, depth fog with light scattering (light beams
   through gaps, lit haze), glow, depth of field, cutting planes, filmic tone mapping, vignette.
+- **Network rendering**: start `rmb-cli --network` on other computers; File › Network render…
+  or `rmb-cli net-render` finds them by themselves, ships the scene with its files and shares
+  out frames (or sample ranges of stills) fairly by speed, with progress per computer.
 - **Mesh and voxel export**: the surface as a closed triangle mesh (PLY with vertex colors, OBJ,
   STL) for 3D printing and 3D programs, or as voxels (PNG slices, MagicaVoxel `.vox`), sampled
   on the GPU (File › Export mesh… / Export voxels…, `rmb-cli mesh` / `voxels`).

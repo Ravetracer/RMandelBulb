@@ -15,6 +15,7 @@ rayon = "1.12"
 rfd = "0.17.2"
 rmb-core = { version = "0.1.0", path = "../rmb-core" }
 rmb-gpu = { version = "0.1.0", path = "../rmb-gpu" }
+rmb-net = { version = "0.1.0", path = "../rmb-net" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 wgpu = "30"

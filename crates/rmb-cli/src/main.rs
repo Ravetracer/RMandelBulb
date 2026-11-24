@@ -5,6 +5,8 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+mod net;
+
 const USAGE: &str = "\
 RMandelbulb3D command line
 
@@ -19,6 +21,14 @@ USAGE:
                  [--thickness cells] [--no-colors] [--no-refine] [--y-up] [--cpu]
   rmb-cli voxels <scene> [-o folder|out.vox] [-r resolution] [--box …] [--thickness cells]
                  [--no-colors] [--hollow] [--cpu]
+  rmb-cli --network [--name name] [--key key] [--port n] [--cpu]
+                                           Render client for network rendering
+  rmb-cli net-render <scene> [-o out.mp4|folder|out.png|out.exr] [-W width] [-H height]
+                 [-s samples] [--from frame] [--to frame] [--still] [--clients all|a,b]
+                 [--client host[:port]] [--local] [--key key] [--wait s] [--keep-frames]
+                 [--16bit] [--denoise | --no-denoise] [--ffmpeg path]
+                                           Render on the clients of the network
+  rmb-cli net-clients [--wait s]           List the clients on the network
   rmb-cli convert <scene> -o out.rmb       Import (e.g. a Mandelbulb3D .m3p) and save as .rmb
   rmb-cli info <scene>                     Formulas, camera and import notes
   rmb-cli formulas                         List all formulas
@@ -55,13 +65,25 @@ unless --cpu is given.
 voxels writes the same grid as voxels: a folder of PNG images, one per z layer from the bottom
 (colors with transparency, or white on black with --no-colors), or a MagicaVoxel model when -o
 ends in .vox (at most 256 voxels per side, colors in a 255-color palette). --hollow keeps only
-the voxels next to empty space.";
+the voxels next to empty space.
+
+Network rendering: start `rmb-cli --network` on every machine that should help (same version;
+UDP port 47810 and TCP port 47811 open in the firewall). `net-render` on the server finds them
+by their announcements, sends the scene with its files and renders the animation frames (or,
+for a still image or with --still, ranges of its samples) on all clients or the ones named
+with --clients; --local renders on this machine too, --client adds one by address where the
+network blocks the announcements. Frames go into the output folder (movies are encoded after
+the last frame; --keep-frames keeps the PNG files). A shared --key on both sides keeps other
+servers out.";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = match args.first().map(String::as_str) {
         Some("render") => render(&args[1..]),
         Some("animate") => animate(&args[1..]),
+        Some("--network" | "client") => net::client(&args[1..]),
+        Some("net-render") => net::render(&args[1..]),
+        Some("net-clients") => net::list(&args[1..]),
         Some("mesh") => mesh(&args[1..], false),
         Some("voxels") => mesh(&args[1..], true),
         Some("convert") => convert(&args[1..]),

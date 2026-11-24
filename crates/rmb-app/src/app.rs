@@ -29,6 +29,7 @@ enum Action {
     ExportAnimation,
     ExportMesh,
     ExportVoxels,
+    NetRender,
     Render,
     Undo,
     Redo,
@@ -46,6 +47,7 @@ pub struct App {
     inspector: Inspector,
     export: Export,
     mesh: crate::mesh_dialog::MeshDialog,
+    net: crate::net_window::NetWindow,
     render: crate::render_view::RenderView,
     timeline: crate::timeline::Timeline,
     explorer: crate::explorer::Explorer,
@@ -93,6 +95,7 @@ impl App {
             inspector: Inspector::default(),
             export: Export::new(prefs.export_samples),
             mesh: crate::mesh_dialog::MeshDialog::new(),
+            net: crate::net_window::NetWindow::new(prefs.export_samples),
             render: crate::render_view::RenderView::new(prefs.export_samples),
             timeline: crate::timeline::Timeline::default(),
             help: Help::default(),
@@ -213,6 +216,7 @@ impl App {
             Action::ExportAnimation => self.export.open_animation(&self.doc.scene, self.doc.path.as_ref()),
             Action::ExportMesh => self.mesh.open_for(&self.doc.scene, self.doc.path.as_ref(), false),
             Action::ExportVoxels => self.mesh.open_for(&self.doc.scene, self.doc.path.as_ref(), true),
+            Action::NetRender => self.net.open_for(&self.doc.scene, self.doc.path.as_ref()),
             Action::Undo => self.doc.undo(),
             Action::Redo => self.doc.redo(),
             Action::Copy => {
@@ -349,6 +353,11 @@ impl App {
                 }
                 if ui.button("Export voxels…").on_hover_text("Save the scene as voxels: PNG images per layer, or a MagicaVoxel model").clicked() {
                     action = Some(Action::ExportVoxels);
+                    ui.close();
+                }
+                ui.separator();
+                if ui.button("Network render…").on_hover_text("Render the animation or an image on other computers of the network (rmb-cli --network)").clicked() {
+                    action = Some(Action::NetRender);
                     ui.close();
                 }
                 ui.separator();
@@ -842,7 +851,7 @@ impl eframe::App for App {
             self.view.overlay = None;
         }
         egui::CentralPanel::default().frame(egui::Frame::new().fill(theme::CANVAS)).show(ui, |ui| {
-            let paused = self.export.busy() || self.render.busy() || self.mesh.busy();
+            let paused = self.export.busy() || self.render.busy() || self.mesh.busy() || self.net.local_busy();
             self.view.paused = paused;
             self.view.show(ui, frame, &mut self.doc, &self.prefs);
         });
@@ -851,6 +860,13 @@ impl eframe::App for App {
         self.prefs_window(&ctx);
         if let Some(msg) = self.render.show(&ctx, &self.doc.scene, self.view.gpu_context()) {
             if msg.starts_with("Saving failed") {
+                self.notify_err(msg);
+            } else {
+                self.notify(msg);
+            }
+        }
+        if let Some(msg) = self.net.show(&ctx, &self.doc.scene, self.prefs.ffmpeg.as_deref()) {
+            if msg.contains("failed") {
                 self.notify_err(msg);
             } else {
                 self.notify(msg);

@@ -194,8 +194,9 @@ Features the two programs have that RMandelbulb3D does not have yet, in the plan
       Mandelbulber `scripts`
 - [ ] Kleinian DE and inside rendering (see Formula editing above)
 - [ ] Compare with MB3D's own Monte Carlo renderer (`mb3d/CalcMonteCarlo.pas`)
-- [ ] Network rendering for long, high-quality animations (owner's wish 2026-11-24). Easy to
-      set up, no configuration files:
+- [x] Network rendering for long, high-quality animations (owner's wish 2026-11-24). Easy to
+      set up, no configuration files (done: crate `rmb-net`, `rmb-cli --network`,
+      `net-render`, `net-clients`, File › Network render…):
   - In the CLI: render clients just run `rmb-cli` with one option (e.g. `rmb-cli --network`)
   - The server starts a job from the CLI (faster) or from the GUI
   - Automatic discovery: clients announce themselves on the local network (broadcast /
@@ -207,6 +208,12 @@ Features the two programs have that RMandelbulb3D does not have yet, in the plan
     specs only (CPU, RAM, GPU; no user data); the measured frame times refine the share
   - CLI shows progress bars for the current image and the whole job
   - Mandelbulber has a netrender (reference only)
+  - Also done: stills split by sample ranges (identical to one computer's render), tail
+    duplication of the slowest frame, reconnects, files shipped by hash, version check,
+    optional shared key, "this computer too"
+  - [ ] Possible: EXR / 16-bit frames over the network, tiled stills over the network,
+        subnet broadcast addresses per network interface (macOS/Windows may need them),
+        resuming a job after the server restarts
 - Low value (covered by raytraced AO and bloom): SSAO, HDR blur post effects
 
 ## Performance
@@ -289,3 +296,14 @@ Curvichrome 1052 -> 254 ms, AboxShapes-Misty 44 -> 17 ms, temple 71 -> 35 ms, Ho
 - [x] ~~Split rows between CPU and GPU~~ (measured, dropped): the CPU renderer is 700-1900x
       slower than the GPU per pass (8 threads, MB3D test scenes), so it would add 0.1-0.3 %.
       Only worth another look after a CPU JIT
+
+## Windows and macOS (after the features above)
+
+- [ ] Windows and macOS versions of the app and the CLI: platform adjustments (paths, config
+      folders, file dialogs, OIDN libraries per platform, ffmpeg lookup, GPU backends DX12 /
+      Metal, font and UI scale checks)
+- [ ] GitHub Actions: build the macOS version (and Windows) on release; artifacts as
+      downloadable archives
+- [ ] Unsigned builds (users know it, as with the owner's audio plugins): an INSTALL.txt for
+      macOS with the commands to remove the quarantine flag (`xattr -dr com.apple.quarantine
+      …`)

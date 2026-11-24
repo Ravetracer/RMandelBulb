@@ -10,6 +10,7 @@ mod doc;
 mod explorer;
 mod export;
 mod mesh_dialog;
+mod net_window;
 mod formula_editor;
 mod formulas_panel;
 mod gizmos;

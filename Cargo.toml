@@ -1,8 +1,8 @@
 [workspace]
 resolver = "3"
-members = ["crates/rmb-core", "crates/rmb-gpu", "crates/rmb-app", "crates/rmb-cli", "tools/m3f-check"]
+members = ["crates/rmb-core", "crates/rmb-gpu", "crates/rmb-app", "crates/rmb-cli", "crates/rmb-net", "tools/m3f-check"]
 # The checker builds the Unicorn emulator (C): only on request (`cargo run -p m3f-check`).
-default-members = ["crates/rmb-core", "crates/rmb-gpu", "crates/rmb-app", "crates/rmb-cli"]
+default-members = ["crates/rmb-core", "crates/rmb-gpu", "crates/rmb-app", "crates/rmb-cli", "crates/rmb-net"]
 
 [workspace.package]
 version = "0.1.0"

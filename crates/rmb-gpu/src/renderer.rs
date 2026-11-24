@@ -977,6 +977,20 @@ impl GpuRenderer {
         }
     }
 
+    /// Starts again at sample `first` with empty sums: the next passes are samples `first`,
+    /// `first + 1` … of a whole render (same random numbers; network renders split the
+    /// samples). `read_hdr` averages them by themselves. Call after `set_scene`.
+    pub fn start_at_sample(&mut self, first: u32) {
+        if let Some(t) = &self.target {
+            let mut enc = self.ctx.device.create_command_encoder(&Default::default());
+            enc.clear_buffer(&t.accum, 0, None);
+            enc.clear_buffer(&t.aux, 0, None);
+            self.ctx.queue.submit(Some(enc.finish()));
+        }
+        self.samples = first;
+        self.row = 0;
+    }
+
     /// Renders only a part of a larger image from the next `set_scene` on: the part's left and
     /// top pixel and the full image's size (`None`: the whole image).
     pub fn set_tile(&mut self, tile: Option<[u32; 4]>) {
@@ -1870,37 +1884,71 @@ fn render_frames(
     progress: &mut impl FnMut(f32),
     tx: &mpsc::SyncSender<(usize, Vec<u8>)>,
 ) -> Result<(), String> {
-    use std::sync::atomic::Ordering;
-    let samples = samples.max(1);
-    let shutter = shutter.clamp(0.0, 1.0);
     let total = frames.len().max(1) as f32;
-    let mut gpu = ctx.map(GpuRenderer::new);
-    if let Some(r) = gpu.as_mut() {
-        r.set_band_target(OFFLINE_BAND_TARGET);
-        // With motion blur the settings also change within a frame's exposure: the first,
-        // middle and last pass.
-        let scenes = frames.clone().flat_map(|f| {
-            let passes = if shutter > 0.0 { vec![0, samples / 2, samples - 1] } else { vec![0] };
-            passes.into_iter().map(|k| pass_scene(&frame_scene, f, k, samples, shutter)).collect::<Vec<_>>()
-        });
-        let (constants, words) = invariant_bakes(scenes, width, height);
-        r.set_baking(Some(constants));
-        r.set_uniform_baking(Some(words));
-    }
+    let mut r = FrameRenderer::new(ctx, frames.clone(), width, height, samples, shutter, &frame_scene);
     for (done, f) in frames.enumerate() {
+        let rgba = r.render(f, &frame_scene, cancel, &mut |p| progress((done as f32 + p) / total))?;
+        if tx.send((f, rgba)).is_err() {
+            // The writer stopped with an error.
+            return Ok(());
+        }
+        progress((done + 1) as f32 / total);
+    }
+    Ok(())
+}
+
+/// Renders single frames of an animation (GPU, or CPU without a context) with one renderer:
+/// the shader compiles once, with the settings baked in that stay the same in all frames of
+/// the range given to [`FrameRenderer::new`]. Used by the animation export and the network
+/// render clients.
+pub struct FrameRenderer {
+    gpu: Option<GpuRenderer>,
+    width: u32,
+    height: u32,
+    samples: u32,
+    shutter: f64,
+}
+
+impl FrameRenderer {
+    /// `frames`: the frames that will be rendered (for the baked settings); `frame_scene` gives
+    /// the scene at a time in frames.
+    pub fn new(ctx: Option<GpuContext>, frames: std::ops::Range<usize>, width: u32, height: u32, samples: u32, shutter: f64, frame_scene: &impl Fn(f64) -> Scene) -> FrameRenderer {
+        let samples = samples.max(1);
+        let shutter = shutter.clamp(0.0, 1.0);
+        let mut gpu = ctx.map(GpuRenderer::new);
+        if let Some(r) = gpu.as_mut() {
+            r.set_band_target(OFFLINE_BAND_TARGET);
+            // With motion blur the settings also change within a frame's exposure: the first,
+            // middle and last pass.
+            let scenes = frames.flat_map(|f| {
+                let passes = if shutter > 0.0 { vec![0, samples / 2, samples - 1] } else { vec![0] };
+                passes.into_iter().map(|k| pass_scene(frame_scene, f, k, samples, shutter)).collect::<Vec<_>>()
+            });
+            let (constants, words) = invariant_bakes(scenes, width, height);
+            r.set_baking(Some(constants));
+            r.set_uniform_baking(Some(words));
+        }
+        FrameRenderer { gpu, width, height, samples, shutter }
+    }
+
+    /// Renders frame `f` and returns it finished (denoised and post processed as its scene
+    /// says) as RGBA8. `progress` gets the frame's completed fraction.
+    pub fn render(&mut self, f: usize, frame_scene: &impl Fn(f64) -> Scene, cancel: &std::sync::atomic::AtomicBool, progress: &mut dyn FnMut(f32)) -> Result<Vec<u8>, String> {
+        use std::sync::atomic::Ordering;
+        let (width, height, samples, shutter) = (self.width, self.height, self.samples, self.shutter);
         if cancel.load(Ordering::Relaxed) {
             return Err("cancelled".into());
         }
         // The frame's own scene: models, post processing and flares.
         let scene = frame_scene(f as f64);
         rmb_core::compose::load_models(&scene);
-        let image = match gpu.as_mut() {
+        let image = match self.gpu.as_mut() {
             Some(r) => {
-                r.set_scene(&pass_scene(&frame_scene, f, 0, samples, shutter), width, height, false);
+                r.set_scene(&pass_scene(frame_scene, f, 0, samples, shutter), width, height, false);
                 r.wait_for_pipeline()?;
                 while r.samples() < samples {
                     if shutter > 0.0 && r.samples() > 0 {
-                        r.set_scene_keep(&pass_scene(&frame_scene, f, r.samples(), samples, shutter), width, height);
+                        r.set_scene_keep(&pass_scene(frame_scene, f, r.samples(), samples, shutter), width, height);
                         r.wait_for_pipeline()?;
                     }
                     // With motion blur one pass at a time (each pass is a slice of the exposure).
@@ -1913,34 +1961,29 @@ fn render_frames(
                         if cancel.load(Ordering::Relaxed) {
                             return Err("cancelled".into());
                         }
-                        progress((done as f32 + (r.samples() as f32 + r.pass_progress()) / samples as f32) / total);
+                        progress((r.samples() as f32 + r.pass_progress()) / samples as f32);
                     }
                 }
                 r.read_hdr().ok_or("reading the image back failed")?
             }
             None => {
-                let mut r = rmb_core::render::cpu::CpuRenderer::new(pass_scene(&frame_scene, f, 0, samples, shutter), width, height);
+                let mut r = rmb_core::render::cpu::CpuRenderer::new(pass_scene(frame_scene, f, 0, samples, shutter), width, height);
                 for i in 0..samples {
                     if cancel.load(Ordering::Relaxed) {
                         return Err("cancelled".into());
                     }
                     if shutter > 0.0 && i > 0 {
-                        r.set_scene_keep(pass_scene(&frame_scene, f, i, samples, shutter));
+                        r.set_scene_keep(pass_scene(frame_scene, f, i, samples, shutter));
                     }
                     r.render_pass();
-                    progress((done as f32 + (i + 1) as f32 / samples as f32) / total);
+                    progress((i + 1) as f32 / samples as f32);
                 }
                 r.hdr_image()
             }
         };
         let (rgba, _) = image.finish_scene(&scene);
-        if tx.send((f, rgba)).is_err() {
-            // The writer stopped with an error.
-            return Ok(());
-        }
-        progress((done + 1) as f32 / total);
+        Ok(rgba)
     }
-    Ok(())
 }
 
 

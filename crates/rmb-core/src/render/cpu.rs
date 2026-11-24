@@ -1314,13 +1314,24 @@ pub struct CpuRenderer {
     /// Summed albedo and normal per pixel.
     aux: Vec<[f64; 8]>,
     samples: u32,
+    /// Index of the first sample in the sums (network renders split the samples).
+    first: u32,
 }
 
 impl CpuRenderer {
     pub fn new(scene: Scene, width: u32, height: u32) -> Self {
         let prog = Program::for_scene(&scene);
         let n = (width * height) as usize;
-        CpuRenderer { scene, prog, width, height, accum: vec![[0.0; 3]; n], aux: vec![[0.0; 8]; n], samples: 0 }
+        CpuRenderer { scene, prog, width, height, accum: vec![[0.0; 3]; n], aux: vec![[0.0; 8]; n], samples: 0, first: 0 }
+    }
+
+    /// Starts again at sample `first` with empty sums: the next passes are samples `first`,
+    /// `first + 1` … of a whole render (same random numbers), averaged by themselves.
+    pub fn start_at_sample(&mut self, first: u32) {
+        self.accum.iter_mut().for_each(|a| *a = [0.0; 3]);
+        self.aux.iter_mut().for_each(|a| *a = [0.0; 8]);
+        self.samples = first;
+        self.first = first;
     }
 
     pub fn samples(&self) -> u32 {
@@ -1366,7 +1377,7 @@ impl CpuRenderer {
 
     /// The averaged image with the denoiser's helper images.
     pub fn hdr_image(&self) -> super::denoise::HdrImage {
-        let n = self.samples.max(1) as f64;
+        let n = (self.samples - self.first).max(1) as f64;
         let mut img = super::denoise::HdrImage { width: self.width, height: self.height, ..Default::default() };
         for (a, x) in self.accum.iter().zip(&self.aux) {
             img.color.extend(a.iter().map(|v| (v / n) as f32));
@@ -1381,7 +1392,7 @@ impl CpuRenderer {
 
     /// The image as 8-bit RGBA after post processing.
     pub fn rgba8(&self) -> Vec<u8> {
-        let n = self.samples.max(1) as f64;
+        let n = (self.samples - self.first).max(1) as f64;
         let (w, h) = (self.width as f64, self.height as f64);
         // Bloom works on the whole image (like the GPU preview, without lens flares here).
         let mut lin: Vec<f32> = self.accum.iter().flat_map(|a| a.map(|v| (v / n) as f32)).collect();
