@@ -2,6 +2,7 @@
 
 //! GPU renderer (wgpu compute): per-hybrid generated WGSL, progressive accumulation.
 
+pub mod batch;
 pub mod codegen;
 pub mod renderer;
 

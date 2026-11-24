@@ -188,8 +188,11 @@ Features the two programs have that RMandelbulb3D does not have yet, in the plan
       `rmb-cli render --tiles`. MB3D `Tiling`
   - [ ] Possible: tiles for the CPU renderer, writing PNG rows while tiles finish (less memory
         for 32K images), tiled animation frames
-- [ ] Batch rendering / render queue (several scenes and animations overnight). MB3D
-      `BatchForm`, Mandelbulber `render_queue`
+- [x] Batch rendering / render queue (several scenes and animations overnight): File › Render
+      queue… (jobs from "Add to queue" in the export window with a scene snapshot, or scene
+      files; saved in queue.json), `rmb-cli batch`. MB3D `BatchForm`, Mandelbulber
+      `render_queue`
+  - [ ] Possible: run queue jobs on the network clients, mesh/voxel jobs in the queue
 - [ ] Script expressions: parameters driven by formulas of time or other parameters (animations).
       Mandelbulber `scripts`
 - [ ] Kleinian DE and inside rendering (see Formula editing above)

@@ -30,6 +30,7 @@ enum Action {
     ExportMesh,
     ExportVoxels,
     NetRender,
+    Queue,
     Render,
     Undo,
     Redo,
@@ -48,6 +49,7 @@ pub struct App {
     export: Export,
     mesh: crate::mesh_dialog::MeshDialog,
     net: crate::net_window::NetWindow,
+    queue: crate::queue_window::QueueWindow,
     render: crate::render_view::RenderView,
     timeline: crate::timeline::Timeline,
     explorer: crate::explorer::Explorer,
@@ -96,6 +98,7 @@ impl App {
             export: Export::new(prefs.export_samples),
             mesh: crate::mesh_dialog::MeshDialog::new(),
             net: crate::net_window::NetWindow::new(prefs.export_samples),
+            queue: crate::queue_window::QueueWindow::new(),
             render: crate::render_view::RenderView::new(prefs.export_samples),
             timeline: crate::timeline::Timeline::default(),
             help: Help::default(),
@@ -217,6 +220,7 @@ impl App {
             Action::ExportMesh => self.mesh.open_for(&self.doc.scene, self.doc.path.as_ref(), false),
             Action::ExportVoxels => self.mesh.open_for(&self.doc.scene, self.doc.path.as_ref(), true),
             Action::NetRender => self.net.open_for(&self.doc.scene, self.doc.path.as_ref()),
+            Action::Queue => self.queue.open = true,
             Action::Undo => self.doc.undo(),
             Action::Redo => self.doc.redo(),
             Action::Copy => {
@@ -356,6 +360,12 @@ impl App {
                     ui.close();
                 }
                 ui.separator();
+                let waiting = self.queue.waiting();
+                let label = if waiting > 0 { format!("Render queue… ({waiting})") } else { "Render queue…".to_string() };
+                if ui.button(label).on_hover_text("Images and animations rendered one after the other (batch rendering)").clicked() {
+                    action = Some(Action::Queue);
+                    ui.close();
+                }
                 if ui.button("Network render…").on_hover_text("Render the animation or an image on other computers of the network (rmb-cli --network)").clicked() {
                     action = Some(Action::NetRender);
                     ui.close();
@@ -851,7 +861,7 @@ impl eframe::App for App {
             self.view.overlay = None;
         }
         egui::CentralPanel::default().frame(egui::Frame::new().fill(theme::CANVAS)).show(ui, |ui| {
-            let paused = self.export.busy() || self.render.busy() || self.mesh.busy() || self.net.local_busy();
+            let paused = self.export.busy() || self.render.busy() || self.mesh.busy() || self.net.local_busy() || self.queue.busy();
             self.view.paused = paused;
             self.view.show(ui, frame, &mut self.doc, &self.prefs);
         });
@@ -865,6 +875,17 @@ impl eframe::App for App {
                 self.notify(msg);
             }
         }
+        if let Some(job) = self.export.queued.take() {
+            self.queue.add(job);
+        }
+        if let Some(msg) = self.queue.poll(self.view.gpu_context(), self.prefs.ffmpeg.as_deref()) {
+            if msg.contains("failed") {
+                self.notify_err(msg);
+            } else {
+                self.notify(msg);
+            }
+        }
+        self.queue.show(&ctx);
         if let Some(msg) = self.net.show(&ctx, &self.doc.scene, self.prefs.ffmpeg.as_deref()) {
             if msg.contains("failed") {
                 self.notify_err(msg);

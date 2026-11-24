@@ -132,6 +132,29 @@ Chapter "Animation" explains the formats, sound and motion blur.
     The export window and the render window need the GPU renderer. Without a usable graphics
     card, render with `rmb-cli render --cpu`.
 
+## Render queue
+
+The render queue renders images and animations one after the other, for example overnight.
+Open it with **File › Render queue…** (the menu shows how many jobs are waiting).
+
+![The render queue](images/render-queue.png)
+
+- **Add to queue** in the export window adds a job with the window's settings (size,
+  samples, format, frames, output file) and a *copy* of the scene as it is at that moment:
+  you can go on editing the scene, or load another one, and add more jobs.
+- **Add scene files…** adds one job per file: its animation when it has keyframes (MP4),
+  otherwise an image (PNG), with 128 samples, saved next to the file.
+- **Start** renders the waiting jobs from the top; the preview pauses meanwhile. **Stop**
+  stops the current job (it becomes *paused*) and the queue.
+- Per job: move it up or down, **Pause** it (skipped until you click **Again**), **Again** to
+  render a finished or failed job once more, and the bin to remove it. **Remove finished**
+  clears the jobs that are done.
+- While a job runs, its progress bar shows the time so far and the time left.
+
+The queue is saved in the settings folder (`rmandelbulb3d/queue.json` in the user's
+configuration folder), so it survives closing the app. The command line can run the same file
+without the app: `rmb-cli batch ~/.config/rmandelbulb3d/queue.json` (see below).
+
 ## Network rendering
 
 Long animations and big stills render faster on several computers. There is nothing to set up
@@ -360,6 +383,22 @@ draws a progress bar for the whole job and one line per client.
 
 `net-clients` lists the clients it hears: name, address, hardware, and whether they are busy,
 need a key or run another version.
+
+### batch
+
+```
+rmb-cli batch <queue.json | scene…> [-o folder] [-s samples] [--cpu] [--ffmpeg path]
+```
+
+Renders a render queue without the app: the waiting jobs of a queue file (the app's
+`queue.json`, or one written by hand), marking each one done or failed in the file. Given scene
+files instead, it renders each of them: its animation (MP4) when it has keyframes, otherwise an
+image (PNG), with 128 samples (or `-s`), next to the scene or in the folder given with `-o`.
+It shows the progress of the current job and of the whole queue.
+
+```
+rmb-cli batch *.rmb -o renders -s 256
+```
 
 ### Other commands
 

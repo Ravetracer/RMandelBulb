@@ -26,6 +26,8 @@ modern egui interface and import of Mandelbulb3D parameters.
   fast ambient occlusion, sky/ground ambient, gradient coloring (iterations, orbit trap, radius,
   normal), glossy reflections and frosted glass, depth fog with light scattering (light beams
   through gaps, lit haze), glow, depth of field, cutting planes, filmic tone mapping, vignette.
+- **Render queue**: images and animations one after the other (File › Render queue…,
+  `rmb-cli batch`).
 - **Network rendering**: start `rmb-cli --network` on other computers; File › Network render…
   or `rmb-cli net-render` finds them by themselves, ships the scene with its files and shares
   out frames (or sample ranges of stills) fairly by speed, with progress per computer.

@@ -58,6 +58,10 @@ pub struct Export {
     /// Folder of the scene file (relative sound paths).
     doc_dir: Option<PathBuf>,
     job: Option<Job>,
+    /// A job for the render queue ("Add to queue"), taken by the app.
+    pub queued: Option<rmb_core::queue::QueueJob>,
+    /// Name of the scene file (job names).
+    doc_name: String,
     preview_tex: Option<egui::TextureHandle>,
     pub message: Option<String>,
 }
@@ -80,6 +84,8 @@ impl Export {
             frames: None,
             doc_dir: None,
             job: None,
+            queued: None,
+            doc_name: String::new(),
             preview_tex: None,
             message: None,
         }
@@ -92,6 +98,7 @@ impl Export {
     pub fn open_for(&mut self, scene: &Scene, doc_path: Option<&PathBuf>) {
         self.open = true;
         self.doc_dir = doc_path.and_then(|p| p.parent()).map(Path::to_path_buf);
+        self.doc_name = doc_path.and_then(|p| p.file_stem()).map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "Scene".into());
         self.width = scene.width;
         self.height = scene.height;
         if self.path.is_none() {
@@ -222,6 +229,9 @@ impl Export {
                             (Mode::Animation, Some(a)) => self.start_animation(scene, a, gpu.clone(), program.clone()),
                             _ => self.start(scene, gpu.clone()),
                         }
+                    }
+                    if ui.add_enabled(ready, egui::Button::new("Add to queue")).on_hover_text("Adds a job with these settings and a copy of the scene as it is now to the render queue (File › Render queue)").clicked() {
+                        self.queued = Some(self.queue_job(scene, anim.is_some()));
                     }
                     if gpu.is_none() {
                         ui.label(RichText::new("Needs a GPU; use rmb-cli render --cpu instead").color(theme::WARN));
@@ -377,6 +387,36 @@ impl Export {
             }
             ui.label(RichText::new(label).size(theme::fs(11.5)).color(theme::TEXT_MUTED));
         });
+    }
+
+    /// A render queue job with the current settings and a copy of `scene`.
+    fn queue_job(&self, scene: &Scene, has_anim: bool) -> rmb_core::queue::QueueJob {
+        use rmb_core::queue::{JobWhat, QueueJob};
+        let mut sc = scene.clone();
+        if self.mode == Mode::Image {
+            sc.animation = None;
+        }
+        let (what, output, kind) = if self.mode == Mode::Animation && has_anim {
+            (JobWhat::Animation { format: self.format, from: self.from, to: self.to }, self.movie_path.clone().unwrap_or_default(), "animation")
+        } else {
+            let tiles = match self.tiles {
+                TILES_AUTO => None,
+                t => Some(t),
+            };
+            (JobWhat::Image { kind: self.kind, tiles }, self.path.clone().unwrap_or_default(), "image")
+        };
+        QueueJob {
+            id: rmb_core::queue::new_id(),
+            name: format!("{} ({kind})", self.doc_name),
+            scene_file: self.doc_dir.as_ref().map(|d| d.join(format!("{}.rmb", self.doc_name))),
+            scene: Some(sc.to_json()),
+            what,
+            width: self.width,
+            height: self.height,
+            samples: self.samples,
+            output,
+            ..Default::default()
+        }
     }
 
     /// The tile size of the current settings (None: the whole image at once).

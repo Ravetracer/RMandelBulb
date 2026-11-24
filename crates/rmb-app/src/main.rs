@@ -11,6 +11,7 @@ mod explorer;
 mod export;
 mod mesh_dialog;
 mod net_window;
+mod queue_window;
 mod formula_editor;
 mod formulas_panel;
 mod gizmos;

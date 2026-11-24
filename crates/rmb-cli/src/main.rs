@@ -29,6 +29,9 @@ USAGE:
                  [--16bit] [--denoise | --no-denoise] [--ffmpeg path]
                                            Render on the clients of the network
   rmb-cli net-clients [--wait s]           List the clients on the network
+  rmb-cli batch <queue.json | scene…> [-o folder] [-s samples] [--cpu] [--ffmpeg path]
+                                           Render queue: the waiting jobs of a queue file (from
+                                           the app's render queue) or every scene given
   rmb-cli convert <scene> -o out.rmb       Import (e.g. a Mandelbulb3D .m3p) and save as .rmb
   rmb-cli info <scene>                     Formulas, camera and import notes
   rmb-cli formulas                         List all formulas
@@ -84,6 +87,7 @@ fn main() -> ExitCode {
         Some("--network" | "client") => net::client(&args[1..]),
         Some("net-render") => net::render(&args[1..]),
         Some("net-clients") => net::list(&args[1..]),
+        Some("batch") => batch(&args[1..]),
         Some("mesh") => mesh(&args[1..], false),
         Some("voxels") => mesh(&args[1..], true),
         Some("convert") => convert(&args[1..]),
@@ -255,6 +259,69 @@ fn mesh(args: &[String], voxels: bool) -> Result<(), String> {
     eprintln!();
     println!("{} ({summary}, {:.1} s)", output.display(), start.elapsed().as_secs_f64());
     Ok(())
+}
+
+/// `rmb-cli batch`: renders the waiting jobs of a queue file (and marks them done or failed in
+/// the file), or one job per scene file (its animation when it has keyframes, else an image;
+/// next to the scene or in the folder given with -o).
+fn batch(args: &[String]) -> Result<(), String> {
+    use rmb_core::queue::{JobState, Queue, QueueJob};
+    let o = parse(args)?;
+    let inputs: Vec<PathBuf> = args.iter().filter(|a| !a.starts_with('-')).map(PathBuf::from).filter(|p| p.is_file()).collect();
+    if inputs.is_empty() {
+        return Err("no queue file or scenes given".into());
+    }
+    let queue_file = (inputs.len() == 1 && inputs[0].extension().is_some_and(|e| e.eq_ignore_ascii_case("json"))).then(|| inputs[0].clone());
+    let mut queue = match &queue_file {
+        Some(f) => Queue::load(f)?,
+        None => {
+            let samples = if args.iter().any(|a| a == "-s") { o.samples } else { 128 };
+            Queue { jobs: inputs.iter().map(|p| QueueJob::for_file(p, o.output.as_deref(), samples)).collect::<Result<_, _>>()? }
+        }
+    };
+    let ctx = if o.cpu { None } else { Some(rmb_gpu::GpuContext::new_headless()?) };
+    let ffmpeg = rmb_core::video::ffmpeg_program(o.ffmpeg.as_deref());
+    let total = queue.jobs.iter().filter(|j| j.state == JobState::Waiting).count();
+    let (mut n, mut failed) = (0, 0);
+    let start = std::time::Instant::now();
+    while let Some(i) = queue.next_waiting() {
+        n += 1;
+        let job = queue.jobs[i].clone();
+        eprintln!("[{n}/{total}] {}: {}", job.name, job.summary());
+        queue.jobs[i].state = JobState::Running;
+        if let Some(f) = &queue_file {
+            queue.save(f)?;
+        }
+        let t0 = std::time::Instant::now();
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let mut last = u32::MAX;
+        let done_before = (n - 1) as f32;
+        let r = rmb_gpu::batch::run_job(&job, ctx.clone(), &ffmpeg, &cancel, |p| {
+            let pct = (p * 100.0) as u32;
+            if pct != last {
+                last = pct;
+                let all = (done_before + p) / total.max(1) as f32;
+                eprint!("\r  job {:3}%   queue {:3}%", pct, (all * 100.0) as u32);
+            }
+        });
+        eprintln!();
+        queue.jobs[i].state = match r {
+            Ok(summary) => {
+                eprintln!("  {summary}");
+                JobState::Done { seconds: t0.elapsed().as_secs_f64() }
+            }
+            Err(e) => {
+                eprintln!("  failed: {e}");
+                failed += 1;
+                JobState::Failed { error: e }
+            }
+        };
+        if let Some(f) = &queue_file {
+            queue.save(f)?;
+        }
+    }
+    eprintln!("{n} job{} in {}{}", if n == 1 { "" } else { "s" }, rmb_core::queue::duration(start.elapsed().as_secs_f64()), if failed > 0 { format!(", {failed} failed") } else { String::new() });
+    if failed > 0 { Err(format!("{failed} job(s) failed")) } else { Ok(()) }
 }
 
 fn load(o: &Opts) -> Result<rmb_core::Scene, String> {

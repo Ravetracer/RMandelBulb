@@ -211,6 +211,14 @@ cargo clippy -j 8 --workspace --all-targets
   empty 6-neighbor), colors only on shell voxels (the inside gets the layer's mean), PNG slices
   or MagicaVoxel (`write_vox`, median-cut `palette`; resolution limited by `limited`).
 
+## Render queue
+
+- `rmb_core::queue` (Queue, QueueJob with a scene snapshot or file, JobWhat image/animation,
+  JobState; JSON), `rmb_gpu::batch::run_job` (one job: tiles, CPU fallback, animation through
+  `render_animation`). App: `queue_window.rs` (file `prefs::config_dir()/queue.json`, one job
+  at a time on a thread, polled in `App::update`; export window "Add to queue" fills
+  `Export::queued`). CLI: `rmb-cli batch`.
+
 ## Network rendering
 
 - Clients (`rmb-cli --network`) broadcast an `Announce` (UDP 47810, also to 127.0.0.1) every
