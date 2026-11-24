@@ -40,7 +40,7 @@ The **+** button next to the SCENE title opens a menu:
 | Fractal | Another fractal with its own formulas, placement and colors. It starts as a small Amazing Box. |
 | Plane | A ground: everything below it is solid. Turn it for walls. It starts below the scene with a checker pattern. |
 | Box, Sphere, Cylinder, Capsule, Cone, Torus, Hexagonal prism, Triangular prism | Basic shapes. |
-| Water | An ocean surface: waves with foam that reflect the sky and the scene and move in animations. |
+| Water | An ocean surface: waves with foam that reflect the sky and the scene, break on the other objects with foam and spray, and move in animations. |
 | 3D model… | A model file: OBJ (with its MTL materials), STL, PLY, glTF/GLB or FBX. |
 
 New objects appear in front of the camera (the plane and the water below the scene). The
@@ -144,6 +144,8 @@ is not needed for it, and the rest of the scene keeps its own setting.
 | Detail | Number of waves (4–64), from long swells to small ripples: more give a richer sea and cost speed. | 32 |
 | Direction | Wind direction in degrees; the waves run mostly along it. | 0 |
 | Foam | White, broken foam on the highest crests, streaked along the wind. | 0.3 |
+| Shore waves | Waves running in toward the other objects and breaking on them, with foam along the coast (0 = none, 2 = strong surf). | 1 |
+| Spray | Drops splashing up where the waves break (0 = none, 2 = high splashes; needs shore waves). | 1 |
 | Reflection | How strongly the water reflects (1 = like water, 2 = twice as much). | 1 |
 | Speed | How fast the waves move in animations (per second; 0 = still). Long waves run faster than ripples. | 1 |
 | Time | The moment of the waves: another value shows another wave pattern in a still image. Animations add the speed per second to it. | 0 |
@@ -153,6 +155,23 @@ the crests, where the light shines through the waves. Dark blue-green colors loo
 sea; lighter, greener ones like shallow water. The sun shows as sharp glints on the waves.
 The water looks best under a bright sky: it reflects the background (chapter 12), so a blue
 sky gradient and a low light give the contrast of open sea.
+
+#### Waves on the shore
+
+The water knows how far every point of it is from the rest of the scene: fractals, other
+primitives and models. Near them, shore waves run in toward the coast, growing shorter,
+steeper and higher, and collapse into foam right at it; a belt of foam lines the coast. Each
+time a wave reaches the coast, drops splash up and fall back. Everything moves with the
+waves in animations. Objects just below the surface count as shallows: the waves break over
+them too.
+
+![Waves breaking on a fractal, with foam and spray](images/water-shore.jpg)
+
+!!! note
+    The water is the last object combined into the scene, whatever its place in the list,
+    so it sees all others. The surf reaches out about half a wave length; a fractal's
+    distance estimate is often smaller than the real distance, so around fractals it can
+    reach a bit farther. Shore waves and spray cost some speed near the coast.
 
 !!! tip
     For water you can see into, give its colors some transparency and turn on **Glass** in

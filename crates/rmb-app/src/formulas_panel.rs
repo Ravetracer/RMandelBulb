@@ -101,7 +101,7 @@ impl FormulasPanel {
                         for p in Primitive::defaults() {
                             let tip = match p {
                                 Primitive::Plane => "A ground: everything below it is solid",
-                                Primitive::Water { .. } => "An ocean surface: choppy waves with foam, reflecting the sky and the scene; the waves move in animations (see-through water: give its colors transparency and turn on Glass in the Color tab)",
+                                Primitive::Water { .. } => "An ocean surface: choppy waves with foam, reflecting the sky and the scene; waves break on the other objects with foam and spray; the waves move in animations (see-through water: give its colors transparency and turn on Glass in the Color tab)",
                                 _ => "A basic shape",
                             };
                             if ui.button(p.name()).on_hover_text(tip).clicked() {
@@ -629,13 +629,15 @@ fn primitive_params(ui: &mut Ui, p: &mut Primitive) {
             widgets::slider_log(ui, "Side", "Side length of the triangle", side, 0.001..=100.0, 0.8);
             widgets::slider_log(ui, "Height", "Height of the prism (along its z axis)", height, 0.001..=100.0, 1.0);
         }
-        Primitive::Water { amplitude, wavelength, phase, angle, choppy, detail, foam, reflect, speed } => {
+        Primitive::Water { amplitude, wavelength, phase, angle, choppy, detail, foam, reflect, speed, shore, spray } => {
             widgets::slider_log(ui, "Wave height", "Height of the largest waves", amplitude, 0.0..=10.0, 0.08);
             widgets::slider_log(ui, "Wave length", "Length of the largest waves (across the wind they are a bit shorter)", wavelength, 0.001..=100.0, 1.0);
             widgets::slider(ui, "Choppiness", "Shape of the crests: 0 = round swell, 1 = like the sea, 2 = very choppy", choppy, 0.0..=2.0, 1.0);
             widgets::slider(ui, "Detail", "Number of waves, from long swells to small ripples: more give a richer sea (and cost speed)", detail, 4.0..=64.0, 32.0);
             widgets::slider(ui, "Direction", "Wind direction in degrees: the waves are longer along it", angle, -180.0..=180.0, 0.0);
             widgets::slider(ui, "Foam", "White, broken foam on the highest crests, streaked along the wind", foam, 0.0..=1.0, 0.3);
+            widgets::slider(ui, "Shore waves", "Waves running in toward the other objects of the scene and breaking on them, with foam along the coast; objects just below the surface act as shallows (0 = none, 2 = strong surf)", shore, 0.0..=2.0, 1.0);
+            widgets::slider(ui, "Spray", "Drops splashing up where the waves break on the objects (0 = none, 2 = high splashes; needs shore waves)", spray, 0.0..=2.0, 1.0);
             widgets::slider(ui, "Reflection", "How strongly the water reflects the sky and the scene (1 = like water: weak looking straight down, a mirror at grazing angles). Works without the material's Reflection", reflect, 0.0..=2.0, 1.0);
             widgets::slider(ui, "Speed", "How fast the waves move in animations (per second; 0 = still); long waves run faster than ripples, like on the sea", speed, 0.0..=5.0, 1.0);
             widgets::slider(ui, "Time", "The moment of the waves: change it to pick another wave pattern in a still image (animations add Speed per second)", phase, -100.0..=100.0, 0.0);

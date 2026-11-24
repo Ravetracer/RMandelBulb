@@ -170,6 +170,7 @@ struct ObjGpu {
     pos: [f32; 4],
     prim: [f32; 4],
     prim2: [f32; 4],
+    prim3: [f32; 4],
     frac: [f32; 4],
     julia: [f32; 4],
     misc: [f32; 4],
@@ -367,6 +368,7 @@ fn objects_gpu(scene: &Scene, prog: &Program, lut: &mut Vec<[f32; 4]>) -> Vec<Ob
             ObjectShape::Primitive(_, a) => {
                 g.prim = [a[0], a[1], a[2], a[3]].map(|v| v as f32);
                 g.prim2 = [a[4], a[5], a[6], a[7]].map(|v| v as f32);
+                g.prim3 = [a[8], a[9], a[10], a[11]].map(|v| v as f32);
                 g.misc[3] = 1.0;
             }
             ObjectShape::Model(_) => g.misc[3] = 2.0,

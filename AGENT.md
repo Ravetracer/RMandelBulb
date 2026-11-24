@@ -340,6 +340,20 @@ cargo clippy -j 8 --workspace --all-targets
   loop (GPU `WATER`, `is_water(j)` from codegen, `REFLECT`). Glints: shininess at least
   `WATER_SHININESS`. Animations add `speed` per second to `phase` (`color_speeds` key
   `o{k}.water`).
+- Shore interaction: `Evaluator::orbit` (and codegen `compose_objects`) combines water
+  objects after all others and passes the distance so far (`dry`, divided by the object's
+  scale) as the shore distance `s`; the winning water orbit keeps it in `Orbit::shore` (GPU
+  `Orbit.shore`) for `water_look`. `water_shore`: waves exp(sin - 1) running in along `s`
+  (length `SHORE_LEN`, reach `SHORE_RANGE` wave lengths, crests bent by noise), steeper and
+  higher toward the coast, collapsing at it; foam belt and breaking foam in `water_look`.
+  The distance bound adds `water_shore_steepness` within reach and blends out beyond it
+  (`dz / steep + x (1 - open / steep)`, no min/max switch: a kink there tilts normals).
+  `water_spray`: one drop per cell (3 × 3 cells checked, margin inside the cell, so the
+  bound is ≥ a cell where no drop flies), flight after each crest reaches the coast
+  (`water_shore_phase`), radius falling with `s`; its zone bound is combined with `max`, never
+  returned alone near the zone (a bound that goes to 0 at a zone's edge renders as a
+  surface). Parameters `a[8]` shore, `a[9]` spray (`Obj.prim3`); test
+  `water_with_a_shore_stays_a_distance_bound` checks balls of the bound for sign changes.
 
 ## Light through glass
 

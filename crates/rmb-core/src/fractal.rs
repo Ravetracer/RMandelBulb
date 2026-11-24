@@ -175,7 +175,7 @@ pub enum ObjectShape {
     /// A fractal chain; its constants are part of the main program's.
     Fractal(Box<Program>),
     /// `Primitive::index` and parameters.
-    Primitive(u32, [f64; 8]),
+    Primitive(u32, [f64; 12]),
     /// A baked 3D model (None while it bakes or when it does not load: no surface).
     Model(Option<crate::mesh::Model>),
 }
@@ -196,6 +196,8 @@ pub struct Orbit {
     pub escaped: bool,
     /// The object that forms the surface here: 0 the main fractal, k the k-th object.
     pub object: u32,
+    /// Water: its distance to the rest of the scene (local units; its shore).
+    pub shore: f64,
 }
 
 /// Mandelbulb3D's 4D start rotation: Z(Y(X)) with X in the xw, Y in the yw, Z in the zw plane.
@@ -756,7 +758,7 @@ fn fractal_orbit(prog: &Program, regs: &mut [Vec<f64>], regs2: &mut [Vec<f64>], 
         let de = if prog.de_kind == DeKind::Linear && !prog.difs { d / a.dr.abs().max(1e-30) } else { d * prog.mix_pow.abs().max(1e-30).powf(-1.0 - a.n as f64) };
         let b_r2 = b.state.iter().map(|v| v * v).sum();
         let color2 = color2_value(prog.color2.0, prog.color2.1, b.state, b.c, b_r2, b.rold, b.trap);
-        return Orbit { de, iterations: b.n, r2: a.state.iter().map(|v| v * v).sum(), r2_old: a.rold, dr: a.dr, trap: b.trap, color2, escaped: true, object: 0 };
+        return Orbit { de, iterations: b.n, r2: a.state.iter().map(|v| v * v).sum(), r2_old: a.rold, dr: a.dr, trap: b.trap, color2, escaped: true, object: 0, shore: 0.0 };
     }
     let o = chain_orbit(prog, prog, regs, p, h);
     match prog.part2.as_deref() {
@@ -810,7 +812,7 @@ fn chain_orbit(top: &Program, prog: &Program, regs: &mut [Vec<f64>], p: V3, h: f
         de = if it.escaped { 1.0e-3 } else { 0.0 };
     }
     let color2 = color2_value(top.color2.0, top.color2.1, it.state, it.c, r2, it.rold, it.trap);
-    Orbit { de: de * prog.de_scale, iterations: it.n, r2, r2_old: it.rold, dr: it.dr, trap: it.trap, color2, escaped: it.escaped || prog.difs, object: 0 }
+    Orbit { de: de * prog.de_scale, iterations: it.n, r2, r2_old: it.rold, dr: it.dr, trap: it.trap, color2, escaped: it.escaped || prog.difs, object: 0, shore: 0.0 }
 }
 
 /// Combines the estimates of the two chains (Mandelbulb3D's DE combination).
@@ -883,8 +885,12 @@ impl Evaluator<'_> {
         let mut o = fractal_orbit(prog, &mut self.regs, &mut self.regs2, p, h);
         let mut de = (o.de * prog.scene_de_scale * t_scale).max(0.0);
         let (p, h) = (p_world, h_world);
-        // Scene composition: the objects in order, each in its own coordinates.
+        // Scene composition: the objects in order, each in its own coordinates; water last,
+        // so it knows its distance to the rest (shore waves, spray).
         for (k, ob) in prog.objects.iter().enumerate() {
+            if matches!(ob.shape, ObjectShape::Primitive(WATER_KIND, _)) {
+                continue;
+            }
             let q = ob.local(p);
             let (d, orbit) = match &ob.shape {
                 ObjectShape::Fractal(f) => {
@@ -904,6 +910,17 @@ impl Evaluator<'_> {
             de = nd;
             if wins {
                 o = Orbit { object: k as u32 + 1, ..orbit };
+            }
+        }
+        let dry = de;
+        for (k, ob) in prog.objects.iter().enumerate() {
+            let ObjectShape::Primitive(WATER_KIND, a) = &ob.shape else { continue };
+            let shore = dry / ob.scale;
+            let d = crate::compose::water_distance(a, ob.local(p), shore) * ob.scale;
+            let (nd, wins) = crate::compose::combine(ob.op, de, d, ob.smooth);
+            de = nd;
+            if wins {
+                o = Orbit { dr: 1.0, escaped: true, object: k as u32 + 1, shore, ..Orbit::default() };
             }
         }
         if prog.inside != self.flip {

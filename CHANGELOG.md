@@ -15,6 +15,10 @@ and the release workflow uses it as the release notes.
 - Water: no more even, repeating pattern in wide views. Waves from long swells down to
   small ripples with random phases, wave speeds like deep water, slowly bending crests and
   wave groups; rarer, higher foam; deeper default color.
+- Water breaks on the other objects of the scene: shore waves run in toward fractals,
+  primitives and models, steepen and collapse into foam, a foam belt lines the coast and
+  drops splash up with every wave (settings Shore waves and Spray; objects just below the
+  surface act as shallows).
 
 ## [1.0.0] - 2026-11-24
 

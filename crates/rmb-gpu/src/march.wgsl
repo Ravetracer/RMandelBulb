@@ -139,6 +139,8 @@ struct Orbit {
     escaped: bool,
     // The object that forms the surface: 0 the main fractal, k the k-th composed object.
     obj: u32,
+    // Water: its distance to the rest of the scene (local units).
+    shore: f32,
 }
 
 // A composed object (rmb-core compose.rs, filled by renderer.rs).
@@ -149,6 +151,7 @@ struct Obj {
     pos: vec4<f32>,   // w: material (0 main, k the k-th object's own)
     prim: vec4<f32>,  // primitive parameters
     prim2: vec4<f32>, // more primitive parameters (water: choppy, octaves, foam, reflection)
+    prim3: vec4<f32>, // water: shore waves, spray
     frac: vec4<f32>,  // fractal: w slice, julia, max iterations, repeat from
     julia: vec4<f32>,
     misc: vec4<f32>,  // bailout², formula DE scale, DE scale, kind (0 fractal, 1 primitive, 2 model)
@@ -745,12 +748,12 @@ fn prim_de(kind: u32, a: vec4<f32>, a2: vec4<f32>, q: vec3<f32>) -> f32 {
         let dz = abs(q.z) - a.y * 0.5;
         return min(max(dx, dz), 0.0) + length(max(vec2<f32>(dx, dz), vec2<f32>(0.0)));
     }
-    return water_distance(a, a2, q);
+    return water_distance(a, a2, vec4<f32>(0.0), q, 1.0e30);
 }
 
-// Mirrors compose::water_wave01: waves exp(sin - 1) from swells to ripples, dragging the
-// point; slow bends and wave groups over large distances.
-fn water_wave01(a: vec4<f32>, a2: vec4<f32>, x: f32, y: f32) -> f32 {
+// Mirrors compose::water_sea01: waves exp(sin - 1) from swells to ripples, dragging the
+// point; slow bends and wave groups over large distances (not clamped).
+fn water_sea01(a: vec4<f32>, a2: vec4<f32>, x: f32, y: f32) -> f32 {
     let len = max(a.y, 1.0e-6);
     let wind = radians(a.w);
     let drag = max(a2.x, 0.0) * 0.38;
@@ -782,28 +785,113 @@ fn water_wave01(a: vec4<f32>, a2: vec4<f32>, x: f32, y: f32) -> f32 {
     }
     let z = (sum - 0.4658 * weights) / (0.3025 * sqrt(squares));
     let group = 0.45 + 0.55 * water_noise(x / (len * 7.0) + 5.1, y / (len * 7.0) + 9.3);
-    return clamp(0.46 + 0.14 * z * group, 0.0, 1.0);
+    return 0.46 + 0.14 * z * group;
+}
+
+// Mirrors compose::water_shore_phase.
+fn water_shore_phase(a: vec4<f32>, x: f32, y: f32) -> f32 {
+    let len = max(a.y, 1.0e-6);
+    let bend = water_noise(x / len * 1.3 + 3.7, y / len * 1.3 + 1.9);
+    return a.z * sqrt(1.0 / 0.2) + bend * 6.283185307179586;
+}
+
+// Mirrors compose::water_shore: x the addition to the height, y how much the waves break.
+fn water_shore(a: vec4<f32>, a3: vec4<f32>, x: f32, y: f32, s_in: f32) -> vec2<f32> {
+    let len = max(a.y, 1.0e-6);
+    let strength = clamp(a3.x, 0.0, 2.0);
+    let range = len * 0.6;
+    if (strength <= 0.0 || s_in >= range) {
+        return vec2<f32>(0.0);
+    }
+    let s = max(s_in, 0.0);
+    let near = 1.0 - s / range;
+    let ph = s * 6.283185307179586 / (len * 0.2) + water_shore_phase(a, x, y);
+    let wave = exp((sin(ph) - 1.0) * (1.0 + 2.0 * near));
+    let collapse = min(s / (len * 0.15), 1.0);
+    let env = near * near * (3.0 - 2.0 * near) * collapse * (2.0 - collapse);
+    let height = 0.6 + 0.4 * water_noise(x / len * 1.3 + 8.1, y / len * 1.3 + 2.3);
+    return vec2<f32>(strength * 0.22 * env * height * (wave - 0.2), near * near * wave);
+}
+
+// Mirrors compose::water_wave01.
+fn water_wave01(a: vec4<f32>, a2: vec4<f32>, a3: vec4<f32>, x: f32, y: f32, s: f32) -> f32 {
+    return clamp(water_sea01(a, a2, x, y) + water_shore(a, a3, x, y, s).x, 0.0, 1.0);
 }
 
 // Mirrors compose::water_height.
-fn water_height(a: vec4<f32>, a2: vec4<f32>, x: f32, y: f32) -> f32 {
-    return (water_wave01(a, a2, x, y) * 2.0 - 1.0) * a.x;
+fn water_height(a: vec4<f32>, a2: vec4<f32>, a3: vec4<f32>, x: f32, y: f32, s: f32) -> f32 {
+    return (water_wave01(a, a2, a3, x, y, s) * 2.0 - 1.0) * a.x;
 }
 
 // Mirrors compose::water_distance.
-fn water_distance(a: vec4<f32>, a2: vec4<f32>, q: vec3<f32>) -> f32 {
+fn water_distance(a: vec4<f32>, a2: vec4<f32>, a3: vec4<f32>, q: vec3<f32>, s: f32) -> f32 {
     let amp = abs(a.x);
     let above = q.z - amp;
+    let spray = water_spray(a, a3, q, s);
     if (above > amp) {
-        return above;
+        return min(above, spray);
     }
+    let len = max(a.y, 1.0e-6);
+    let range = len * 0.6;
     let c = max(a2.x, 0.0);
-    let steep = amp * 6.283185307179586 / max(a.y, 1.0e-6) * (1.6 + c * c * f32(clamp(i32(round(a2.y)), 4, 64)) / 40.0);
-    let d = (q.z - water_height(a, a2, q.x, q.y)) / sqrt(1.0 + steep * steep);
-    if (above > 0.0) {
-        return max(d, above);
+    let steep = amp * 6.283185307179586 / len * (1.6 + c * c * f32(clamp(i32(round(a2.y)), 4, 64)) / 40.0);
+    let open = sqrt(1.0 + steep * steep);
+    let dz = q.z - water_height(a, a2, a3, q.x, q.y, s);
+    var d = dz / open;
+    let x = s - range;
+    if (a3.x > 0.0 && dz > x * open) {
+        let steep_s = open + amp * clamp(a3.x, 0.0, 2.0) / len * 16.0;
+        d = dz / steep_s + max(x, 0.0) * (1.0 - open / steep_s);
     }
-    return d;
+    if (above > 0.0) {
+        d = max(d, above);
+    }
+    return min(d, spray);
+}
+
+// Mirrors compose::water_spray.
+fn water_spray(a: vec4<f32>, a3: vec4<f32>, q: vec3<f32>, s: f32) -> f32 {
+    let amp = max(abs(a.x), 1.0e-9);
+    let len = max(a.y, 1.0e-6);
+    let amount = clamp(a3.y, 0.0, 2.0);
+    if (amount <= 0.0 || a3.x <= 0.0) {
+        return 1.0e30;
+    }
+    let range = len * 0.25;
+    let top = amp * 3.0 * amount;
+    let cell = amp * 0.6;
+    let r0 = amp * 0.07;
+    let outside = max(s - range, q.z - top - r0);
+    if (outside >= cell * 1.6) {
+        return outside;
+    }
+    let fc = floor(q.xy / cell);
+    let margin = cell * 0.1;
+    var d = cell * 1.5 - max(abs(q.x - (fc.x + 0.5) * cell), abs(q.y - (fc.y + 0.5) * cell)) + margin;
+    let fall0 = clamp(1.0 - s / range, 0.0, 1.0);
+    let fall = fall0 * fall0;
+    let lip = 1.0 + 2.0 * r0 / range;
+    for (var k = 0; k < 9; k++) {
+        let i = i32(fc.x) + k % 3 - 1;
+        let j = i32(fc.y) + k / 3 - 1;
+        if (hash3(i, j, 31) > 0.55 * min(amount, 1.0)) {
+            continue;
+        }
+        let cx = (f32(i) + 0.5) * cell;
+        let cy = (f32(j) + 0.5) * cell;
+        let cycle = (water_shore_phase(a, cx, cy) - 1.5707963267948966) / 6.283185307179586;
+        let u = (cycle - floor(cycle) - 0.15 * hash3(i, j, 32)) / 0.5;
+        if (u < 0.0 || u >= 1.0) {
+            continue;
+        }
+        let reach = cell * 0.5 - r0 - margin;
+        let c = vec3<f32>(cx + (hash3(i, j, 33) * 2.0 - 1.0) * reach, cy + (hash3(i, j, 34) * 2.0 - 1.0) * reach, top * (0.35 + 0.65 * hash3(i, j, 35)) * 4.0 * u * (1.0 - u));
+        let r = r0 * (0.5 + 0.5 * hash3(i, j, 36)) * (1.0 - 0.5 * u) * fall;
+        let stretch = 1.0 + 1.2 * abs(1.0 - 2.0 * u);
+        let e = q - c;
+        d = min(d, (length(vec3<f32>(e.x, e.y, e.z / stretch)) - r) / lip);
+    }
+    return max(d, outside);
 }
 
 // Mirrors compose::water_fresnel.
@@ -825,19 +913,33 @@ fn water_noise(x: f32, y: f32) -> f32 {
 }
 
 // Mirrors compose::water_look: x the height 0..1, y the foam share.
-fn water_look(a: vec4<f32>, a2: vec4<f32>, q: vec3<f32>) -> vec2<f32> {
-    let h = water_wave01(a, a2, q.x, q.y);
+fn water_look(a: vec4<f32>, a2: vec4<f32>, a3: vec4<f32>, q: vec3<f32>, s: f32) -> vec2<f32> {
+    let sh = water_shore(a, a3, q.x, q.y, s);
+    let h = clamp(water_sea01(a, a2, q.x, q.y) + sh.x, 0.0, 1.0);
+    let len = max(a.y, 1.0e-6);
+    if (water_spray(a, a3, q, s) < q.z - (h * 2.0 - 1.0) * a.x) {
+        return vec2<f32>(1.0, 0.6);
+    }
     let crest = clamp((h - 0.62) / 0.16, 0.0, 1.0);
-    if (crest <= 0.0 || a2.z <= 0.0) {
+    let crest_foam = crest * crest * max(a2.z, 0.0);
+    let strength = clamp(a3.x, 0.0, 1.0);
+    var shore_foam = 0.0;
+    if (strength > 0.0 && s < len * 0.6) {
+        let near = 1.0 - max(s, 0.0) / (len * 0.6);
+        let band = len * 0.08 * (0.4 + 1.2 * water_noise(q.x / len * 4.0, q.y / len * 4.0));
+        let line = 1.0 - max(s, 0.0) / band;
+        shore_foam = strength * clamp(max(max(line, (sh.y - 0.25) / 0.35), near * near * near * 0.7), 0.0, 1.0);
+    }
+    if (max(crest_foam, shore_foam) <= 0.0) {
         return vec2<f32>(h, 0.0);
     }
-    let f = 6.283185307179586 / max(a.y, 1.0e-6);
+    let f = 6.283185307179586 / len;
     let wind = radians(a.w);
     let u = (q.x * cos(wind) + q.y * sin(wind)) * f - a.z * 0.5;
     let v = (q.y * cos(wind) - q.x * sin(wind)) * f;
     let n = 0.6 * water_noise(u * 1.5, v * 4.0) + 0.4 * water_noise(u * 4.0, v * 11.0);
     let broken = clamp((n - 0.3) / 0.35, 0.0, 1.0);
-    return vec2<f32>(h, min(crest * crest * broken * a2.z, 1.0));
+    return vec2<f32>(h, min(max(crest_foam, shore_foam) * broken, 1.0));
 }
 
 // Mirrors compose::combine: x the combined distance, y 1 when the object forms the surface.
@@ -2774,7 +2876,7 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sx: f32, 
         var mirror = -1.0;
         if (WATER && h.orbit.obj > 0u && is_water(h.orbit.obj - 1u)) {
             let j = h.orbit.obj - 1u;
-            let look = water_look(objs[j].prim, objs[j].prim2, obj_local(j, pos));
+            let look = water_look(objs[j].prim, objs[j].prim2, objs[j].prim3, obj_local(j, pos), h.orbit.shore);
             let lifted = cols.base * (0.55 + 0.9 * look.x);
             cols.base = lifted + (WATER_FOAM - lifted) * look.y;
             mirror = water_fresnel(-dot(d, n), objs[j].prim2.w) * (1.0 - look.y);

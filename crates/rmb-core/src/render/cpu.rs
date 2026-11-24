@@ -204,7 +204,7 @@ impl<'a> Shader<'a> {
     fn water_at(&self, orbit: &Orbit, pos: V3, cos_i: f64, base: [f64; 3]) -> Option<([f64; 3], f64)> {
         let ob = self.prog.objects.get((orbit.object as usize).checked_sub(1)?)?;
         let crate::fractal::ObjectShape::Primitive(crate::fractal::WATER_KIND, a) = &ob.shape else { return None };
-        let (h, foam) = crate::compose::water_look(a, ob.local(pos));
+        let (h, foam) = crate::compose::water_look(a, ob.local(pos), orbit.shore);
         let lift = 0.55 + 0.9 * h;
         let color = [0, 1, 2].map(|k| base[k] * lift + (WATER_FOAM[k] - base[k] * lift) * foam);
         Some((color, crate::compose::water_fresnel(cos_i, a[7]) * (1.0 - foam)))

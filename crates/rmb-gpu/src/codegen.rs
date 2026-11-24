@@ -314,9 +314,21 @@ fn objects(prog: &Program) -> String {
         }
     }
     s.push_str("\nfn compose_objects(p: vec3<f32>, h: f32, o_in: Orbit) -> Orbit {\n    var o = o_in;\n");
-    for (j, o) in prog.objects.iter().enumerate() {
+    // Water last: it sees the distance to the rest of the scene (mirrors Evaluator::orbit).
+    let is_water = |o: &rmb_core::fractal::ObjectProgram| matches!(o.shape, ObjectShape::Primitive(rmb_core::fractal::WATER_KIND, _));
+    let order: Vec<usize> = (0..prog.objects.len()).filter(|&j| !is_water(&prog.objects[j])).chain((0..prog.objects.len()).filter(|&j| is_water(&prog.objects[j]))).collect();
+    let mut dry = false;
+    for j in order {
+        let o = &prog.objects[j];
+        if is_water(o) && !dry {
+            s.push_str("    let dry = o.de;\n");
+            dry = true;
+        }
         let _ = writeln!(s, "    {{\n        let ob = objs[{j}];\n        let q = obj_local({j}u, p);\n        let sc = ob.inv0.w;\n        let op = u32(ob.inv1.w);\n        var b: Orbit;");
         match &o.shape {
+            ObjectShape::Primitive(rmb_core::fractal::WATER_KIND, _) => {
+                let _ = writeln!(s, "        b.shore = dry / sc;\n        b.de = water_distance(ob.prim, ob.prim2, ob.prim3, q, b.shore) * sc;\n        b.escaped = true;");
+            }
             ObjectShape::Fractal(_) => {
                 let _ = writeln!(
                     s,

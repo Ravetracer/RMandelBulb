@@ -128,6 +128,13 @@ pub enum Primitive {
         /// Movement of the waves per second in animations.
         #[serde(default)]
         speed: f64,
+        /// Waves running in toward the other objects of the scene and breaking on them, with
+        /// foam along the coast (0 = none, 1 = normal, 2 = strong).
+        #[serde(default = "water_shore_default")]
+        shore: f64,
+        /// Drops splashing up where the waves break (0 = none, 1 = normal, 2 = high).
+        #[serde(default = "water_spray_default")]
+        spray: f64,
     },
     /// Upright pill: a cylinder with half-sphere ends, `height` from end to end.
     Capsule { radius: f64, height: f64 },
@@ -180,19 +187,19 @@ impl Primitive {
 
     /// Water with good start values (moving waves in animations).
     pub fn water() -> Primitive {
-        Primitive::Water { amplitude: 0.08, wavelength: 2.0, phase: 0.0, angle: 0.0, choppy: water_choppy(), detail: water_detail(), foam: 0.3, reflect: water_reflect(), speed: 1.0 }
+        Primitive::Water { amplitude: 0.08, wavelength: 2.0, phase: 0.0, angle: 0.0, choppy: water_choppy(), detail: water_detail(), foam: 0.3, reflect: water_reflect(), speed: 1.0, shore: water_shore_default(), spray: water_spray_default() }
     }
 
-    /// The parameters in a fixed order (GPU buffer: `prim`, `prim2`).
-    pub fn params(&self) -> [f64; 8] {
-        let p4 = |a: [f64; 4]| [a[0], a[1], a[2], a[3], 0.0, 0.0, 0.0, 0.0];
+    /// The parameters in a fixed order (GPU buffer: `prim`, `prim2`, `prim3`).
+    pub fn params(&self) -> [f64; 12] {
+        let p4 = |a: [f64; 4]| [a[0], a[1], a[2], a[3], 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
         match *self {
-            Primitive::Plane => [0.0; 8],
+            Primitive::Plane => [0.0; 12],
             Primitive::Box { size, rounding } => p4([size[0], size[1], size[2], rounding]),
             Primitive::Sphere { radius } => p4([radius, 0.0, 0.0, 0.0]),
             Primitive::Cylinder { radius, height, rounding } => p4([radius, height, rounding, 0.0]),
             Primitive::Torus { major, minor } => p4([major, minor, 0.0, 0.0]),
-            Primitive::Water { amplitude, wavelength, phase, angle, choppy, detail, foam, reflect, .. } => [amplitude, wavelength, phase, angle, choppy, detail, foam, reflect],
+            Primitive::Water { amplitude, wavelength, phase, angle, choppy, detail, foam, reflect, shore, spray, .. } => [amplitude, wavelength, phase, angle, choppy, detail, foam, reflect, shore, spray, 0.0, 0.0],
             Primitive::Capsule { radius, height } => p4([radius, height, 0.0, 0.0]),
             Primitive::Cone { bottom, top, height } => p4([bottom, top, height, 0.0]),
             Primitive::HexPrism { radius, height } => p4([radius, height, 0.0, 0.0]),
@@ -207,7 +214,7 @@ impl Primitive {
 }
 
 /// Signed distance of primitive `kind` with parameters `a` at the local point `q`.
-pub fn primitive_distance(kind: u32, a: [f64; 8], q: V3) -> f64 {
+pub fn primitive_distance(kind: u32, a: [f64; 12], q: V3) -> f64 {
     match kind {
         0 => q.z,
         1 => {
@@ -271,7 +278,7 @@ pub fn primitive_distance(kind: u32, a: [f64; 8], q: V3) -> f64 {
             let dz = q.z.abs() - a[1] * 0.5;
             dx.max(dz).min(0.0) + (dx.max(0.0) * dx.max(0.0) + dz.max(0.0) * dz.max(0.0)).sqrt()
         }
-        _ => water_distance(&a, q),
+        _ => water_distance(&a, q, NO_SHORE),
     }
 }
 
@@ -287,6 +294,14 @@ fn water_reflect() -> f64 {
     1.0
 }
 
+fn water_shore_default() -> f64 {
+    1.0
+}
+
+fn water_spray_default() -> f64 {
+    1.0
+}
+
 /// Waves of a water surface: their number grows with the detail.
 pub fn water_waves(detail: f64) -> i32 {
     (detail.round() as i32).clamp(4, 64)
@@ -296,14 +311,25 @@ pub fn water_waves(detail: f64) -> i32 {
 /// sea (ripples on swells).
 const WATER_FALLOFF: f64 = 1.0;
 
-/// Height of the waves at (`x`, `y`) in 0..1 (after "Very fast procedural ocean" by afl_ext;
-/// mirrors march.wgsl `water_wave01`): a sum of waves exp(sin - 1), from swells longer than
-/// the wave length down to small ripples, each with its own random phase, a direction around
-/// the wind (small waves spread wider) and the speed of deep water waves (longer ones run
-/// faster). Every wave drags the point along its slope, which sharpens the crests
-/// (`choppy`). Over large distances the crests bend (slow domain warping) and wave groups
-/// make the sea calmer and rougher in turns, so a wide view never repeats.
-fn water_wave01(a: &[f64; 8], x: f64, y: f64) -> f64 {
+/// Shore distance of water with no other object near it.
+pub const NO_SHORE: f64 = 1.0e30;
+
+/// How far out the shore waves reach, in wave lengths.
+const SHORE_RANGE: f64 = 0.6;
+/// Length of the shore waves, in wave lengths (waves grow shorter in shallow water).
+const SHORE_LEN: f64 = 0.2;
+/// How far out drops splash up, in wave lengths.
+const SPRAY_RANGE: f64 = 0.25;
+
+/// The open sea at (`x`, `y`) around 0.46 on a 0..1 scale (not clamped; after "Very fast
+/// procedural ocean" by afl_ext; mirrors march.wgsl `water_sea01`): a sum of waves
+/// exp(sin - 1), from swells longer than the wave length down to small ripples, each with
+/// its own random phase, a direction around the wind (small waves spread wider) and the speed
+/// of deep water waves (longer ones run faster). Every wave drags the point along its slope,
+/// which sharpens the crests (`choppy`). Over large distances the crests bend (slow domain
+/// warping) and wave groups make the sea calmer and rougher in turns, so a wide view never
+/// repeats.
+fn water_sea01(a: &[f64; 12], x: f64, y: f64) -> f64 {
     let (len, t, wind) = (a[1].max(1e-6), a[2], a[3].to_radians());
     let drag = a[4].max(0.0) * 0.38;
     // Slow bends: the points move by up to 0.8 wave lengths on a scale of 5.
@@ -336,36 +362,141 @@ fn water_wave01(a: &[f64; 8], x: f64, y: f64) -> f64 {
     // seven wave lengths.
     let z = (sum - 0.4658 * weights) / (0.3025 * squares.sqrt());
     let group = 0.45 + 0.55 * water_noise(x / (len * 7.0) + 5.1, y / (len * 7.0) + 9.3);
-    (0.46 + 0.14 * z * group).clamp(0.0, 1.0)
+    0.46 + 0.14 * z * group
+}
+
+/// Phase of the shore waves where they reach the coast at (`x`, `y`): they run in by the
+/// speed of their length, their crests bent along the coast by noise.
+fn water_shore_phase(a: &[f64; 12], x: f64, y: f64) -> f64 {
+    let len = a[1].max(1e-6);
+    let bend = water_noise(x / len * 1.3 + 3.7, y / len * 1.3 + 1.9);
+    a[2] * (1.0 / SHORE_LEN).sqrt() + bend * std::f64::consts::TAU
+}
+
+/// Waves running in toward the shore, `s` (local units) away from the rest of the scene
+/// (mirrors march.wgsl `water_shore`): their addition to the 0..1 height and how much they
+/// break there (0..1). They grow steeper and higher toward the coast and collapse right at
+/// it.
+fn water_shore(a: &[f64; 12], x: f64, y: f64, s: f64) -> (f64, f64) {
+    let (len, strength) = (a[1].max(1e-6), a[8].clamp(0.0, 2.0));
+    let range = len * SHORE_RANGE;
+    if strength <= 0.0 || s >= range {
+        return (0.0, 0.0);
+    }
+    let s = s.max(0.0);
+    let near = 1.0 - s / range;
+    let ph = s * std::f64::consts::TAU / (len * SHORE_LEN) + water_shore_phase(a, x, y);
+    let wave = ((ph.sin() - 1.0) * (1.0 + 2.0 * near)).exp();
+    let collapse = (s / (len * 0.15)).min(1.0);
+    let env = near * near * (3.0 - 2.0 * near) * collapse * (2.0 - collapse);
+    // Higher and lower stretches along the coast.
+    let height = 0.6 + 0.4 * water_noise(x / len * 1.3 + 8.1, y / len * 1.3 + 2.3);
+    (strength * 0.22 * env * height * (wave - 0.2), near * near * wave)
+}
+
+/// Height of the water at (`x`, `y`) in 0..1, `s` away from the shore (mirrors march.wgsl
+/// `water_wave01`).
+fn water_wave01(a: &[f64; 12], x: f64, y: f64, s: f64) -> f64 {
+    (water_sea01(a, x, y) + water_shore(a, x, y, s).0).clamp(0.0, 1.0)
 }
 
 /// Height of the waves at (`x`, `y`) (mirrors march.wgsl `water_height`): `a` = wave height,
-/// wave length, phase (time), wind direction (degrees), choppiness, detail. -1..1 times the
-/// wave height (crests up).
-pub fn water_height(a: &[f64; 8], x: f64, y: f64) -> f64 {
-    (water_wave01(a, x, y) * 2.0 - 1.0) * a[0]
+/// wave length, phase (time), wind direction (degrees), choppiness, detail, foam, reflection,
+/// shore waves, spray; `s` the distance to the rest of the scene (`NO_SHORE`: none). -1..1
+/// times the wave height (crests up).
+pub fn water_height(a: &[f64; 12], x: f64, y: f64, s: f64) -> f64 {
+    (water_wave01(a, x, y, s) * 2.0 - 1.0) * a[0]
 }
 
 /// The steepest slope the waves reach, times wave height × 2π / wave length. Measured: about
 /// 1.3 without choppiness at any detail; with choppiness 1 / 2: 1.4 / 2.2 at 32 waves,
 /// 2.2 / 5.2 at 64. Bound: 1.6 + choppy² × waves / 40 (checked by
 /// `water_slopes_stay_below_the_distance_bound`).
-fn water_steepness(a: &[f64; 8]) -> f64 {
+fn water_steepness(a: &[f64; 12]) -> f64 {
     let c = a[4].max(0.0);
     a[0].abs() * std::f64::consts::TAU / a[1].max(1e-6) * (1.6 + c * c * water_waves(a[5]) as f64 / 40.0)
 }
 
-/// Distance bound of the water surface: above every crest the distance to the highest one,
-/// near the waves the height difference scaled down by the steepest slope.
-fn water_distance(a: &[f64; 8], q: V3) -> f64 {
+/// Bound of how fast the shore waves change the height per unit of shore distance or
+/// position: wave height × strength / wave length × 16 (measured: 13.7; checked by
+/// `water_with_a_shore_stays_a_distance_bound`).
+fn water_shore_steepness(a: &[f64; 12]) -> f64 {
+    a[0].abs() * a[8].clamp(0.0, 2.0) / a[1].max(1e-6) * 16.0
+}
+
+/// Distance bound of the water surface, `s` away from the rest of the scene: above every
+/// crest the distance to the highest one, near the waves the height difference scaled down by
+/// the steepest slope (steeper near the coast, where the shore waves run), and the spray.
+pub fn water_distance(a: &[f64; 12], q: V3, s: f64) -> f64 {
     let amp = a[0].abs();
     let above = q.z - amp;
+    let spray = water_spray(a, q, s);
     if above > amp {
-        return above;
+        return above.min(spray);
     }
-    let steep = water_steepness(a);
-    let d = (q.z - water_height(a, q.x, q.y)) / (1.0 + steep * steep).sqrt();
-    if above > 0.0 { d.max(above) } else { d }
+    let range = a[1].max(1e-6) * SHORE_RANGE;
+    let open = (1.0 + water_steepness(a).powi(2)).sqrt();
+    let dz = q.z - water_height(a, q.x, q.y, s);
+    let mut d = dz / open;
+    let x = s - range;
+    if a[8] > 0.0 && dz > x * open {
+        // Within the shore waves' reach their slope (also along the shore distance, which
+        // changes by at most 1 per unit) adds to the open sea's. From x beyond the reach, the
+        // first x of the way to the waves there still has the open sea's slope, so they are at
+        // least dz / steep + x (1 - open / steep) away.
+        let steep = open + water_shore_steepness(a);
+        d = dz / steep + x.max(0.0) * (1.0 - open / steep);
+    }
+    let d = if above > 0.0 { d.max(above) } else { d };
+    d.min(spray)
+}
+
+/// Drops splashing up where the shore waves break (mirrors march.wgsl `water_spray`): one drop
+/// at most in every cell of a grid on the surface, flying up and back after each wave reaches
+/// the coast, smaller farther from it. The cell of `q` and its eight neighbors are checked;
+/// drops beyond them are at least the distance to that block's edge away (drops keep a margin
+/// inside their cell).
+fn water_spray(a: &[f64; 12], q: V3, s: f64) -> f64 {
+    let (amp, len, amount) = (a[0].abs().max(1e-9), a[1].max(1e-6), a[9].clamp(0.0, 2.0));
+    if amount <= 0.0 || a[8] <= 0.0 {
+        return NO_SHORE;
+    }
+    let range = len * SPRAY_RANGE;
+    let (top, cell, r0) = (amp * 3.0 * amount, amp * 0.6, amp * 0.07);
+    // Outside the zone of the drops: at least the distance to it, and never less than the
+    // bound from the cells (at most 1.6 cells), so the zone's edge never looks like a surface.
+    let outside = (s - range).max(q.z - top - r0);
+    if outside >= cell * 1.6 {
+        return outside;
+    }
+    let (fx, fy) = ((q.x / cell).floor(), (q.y / cell).floor());
+    let margin = cell * 0.1;
+    let mut d = cell * 1.5 - (q.x - (fx + 0.5) * cell).abs().max((q.y - (fy + 0.5) * cell).abs()) + margin;
+    // The radius shrinks with the shore distance (squared): at most 2 r0 / range per unit.
+    let fall = (1.0 - s / range).clamp(0.0, 1.0).powi(2);
+    let lip = 1.0 + 2.0 * r0 / range;
+    for k in 0..9 {
+        let (i, j) = (fx as i32 + k % 3 - 1, fy as i32 + k / 3 - 1);
+        let h = |n: i32| crate::render::hash3(i, j, n) as f64;
+        if h(31) > 0.55 * amount.min(1.0) {
+            continue;
+        }
+        let (cx, cy) = ((i as f64 + 0.5) * cell, (j as f64 + 0.5) * cell);
+        // The flight starts when a crest reaches the coast and lasts half a wave period.
+        let cycle = (water_shore_phase(a, cx, cy) - std::f64::consts::FRAC_PI_2) / std::f64::consts::TAU;
+        let u = (cycle - cycle.floor() - 0.15 * h(32)) / 0.5;
+        if !(0.0..1.0).contains(&u) {
+            continue;
+        }
+        let reach = cell * 0.5 - r0 - margin;
+        let c = v3(cx + (h(33) * 2.0 - 1.0) * reach, cy + (h(34) * 2.0 - 1.0) * reach, top * (0.35 + 0.65 * h(35)) * 4.0 * u * (1.0 - u));
+        let r = r0 * (0.5 + 0.5 * h(36)) * (1.0 - 0.5 * u) * fall;
+        // Stretched along the flight while fast (an ellipsoid's bound: z scaled down).
+        let stretch = 1.0 + 1.2 * (1.0 - 2.0 * u).abs();
+        let e = q - c;
+        d = d.min((v3(e.x, e.y, e.z / stretch).length() - r) / lip);
+    }
+    d.max(outside)
 }
 
 /// How water reflects light arriving at the cosine `cos_i` to its normal (Schlick, water's
@@ -385,23 +516,40 @@ fn water_noise(x: f64, y: f64) -> f64 {
     a + (b - a) * uy
 }
 
-/// The look of water at the local point `q`: its height 0..1 (crests brighten the water:
-/// light passing through them) and the foam share on the highest crests, by `a[6]`, broken
-/// up by noise that drifts with the wind.
-pub fn water_look(a: &[f64; 8], q: V3) -> (f64, f64) {
-    let h = water_wave01(a, q.x, q.y);
+/// The look of water at the local point `q`, `s` away from the rest of the scene (mirrors
+/// march.wgsl `water_look`): its height 0..1 (crests brighten the water: light passing
+/// through them) and the foam share. Foam: on the highest crests by `a[6]`, along the coast
+/// and where the shore waves break (by the shore strength), broken up by noise that drifts
+/// with the wind; drops are white water.
+pub fn water_look(a: &[f64; 12], q: V3, s: f64) -> (f64, f64) {
+    let (sea, (lift, breaking)) = (water_sea01(a, q.x, q.y), water_shore(a, q.x, q.y, s));
+    let h = (sea + lift).clamp(0.0, 1.0);
+    let len = a[1].max(1e-6);
+    // A drop: nearer to one than to the waves below.
+    if water_spray(a, q, s) < q.z - (h * 2.0 - 1.0) * a[0] {
+        return (1.0, 0.6);
+    }
     // The top ~5 % of the heights (90 % lie below 0.61, 98 % below 0.70).
     let crest = ((h - 0.62) / 0.16).clamp(0.0, 1.0);
-    if crest <= 0.0 || a[6] <= 0.0 {
+    let crest_foam = crest * crest * a[6].max(0.0);
+    let strength = a[8].clamp(0.0, 1.0);
+    let mut shore_foam = 0.0;
+    if strength > 0.0 && s < len * SHORE_RANGE {
+        let near = 1.0 - s.max(0.0) / (len * SHORE_RANGE);
+        let band = len * 0.08 * (0.4 + 1.2 * water_noise(q.x / len * 4.0, q.y / len * 4.0));
+        let line = 1.0 - s.max(0.0) / band;
+        shore_foam = strength * line.max((breaking - 0.25) / 0.35).max(near.powi(3) * 0.7).clamp(0.0, 1.0);
+    }
+    if crest_foam.max(shore_foam) <= 0.0 {
         return (h, 0.0);
     }
-    let f = std::f64::consts::TAU / a[1].max(1e-6);
+    let f = std::f64::consts::TAU / len;
     let wind = a[3].to_radians();
     let (u, v) = ((q.x * wind.cos() + q.y * wind.sin()) * f - a[2] * 0.5, (q.y * wind.cos() - q.x * wind.sin()) * f);
     // Streaks along the wind: the noise is stretched along it.
     let n = 0.6 * water_noise(u * 1.5, v * 4.0) + 0.4 * water_noise(u * 4.0, v * 11.0);
     let broken = ((n - 0.3) / 0.35).clamp(0.0, 1.0);
-    (h, (crest * crest * broken * a[6]).min(1.0))
+    (h, (crest_foam.max(shore_foam) * broken).min(1.0))
 }
 
 /// Position, rotation (degrees about x, then y, then z), uniform scale and stretch along the
@@ -716,11 +864,11 @@ mod tests {
             }
         }
         // Water: never more than the vertical distance to the surface.
-        let w = Primitive::Water { amplitude: 0.05, wavelength: 0.3, phase: 0.4, angle: 20.0, choppy: 1.0, detail: 16.0, foam: 0.3, reflect: 1.0, speed: 0.0 };
+        let w = Primitive::Water { amplitude: 0.05, wavelength: 0.3, phase: 0.4, angle: 20.0, choppy: 1.0, detail: 16.0, foam: 0.3, reflect: 1.0, speed: 0.0, shore: 1.0, spray: 1.0 };
         let a = w.params();
         for i in 0..200 {
             let (x, y) = (i as f64 * 0.013, i as f64 * 0.007);
-            let h = water_height(&a, x, y);
+            let h = water_height(&a, x, y, NO_SHORE);
             let d = w.distance(v3(x, y, 0.5));
             assert!(d <= 0.5 - h + 1e-12 && d > 0.0);
         }
@@ -730,22 +878,77 @@ mod tests {
     fn water_slopes_stay_below_the_distance_bound() {
         // The bound divides by the steepest slope: measure the real slopes.
         for (amp, len, choppy, detail) in [(0.05, 0.3, 1.0, 24.0), (0.2, 1.0, 0.0, 8.0), (0.02, 0.5, 2.0, 64.0), (0.1, 2.0, 1.5, 32.0)] {
-            let a = [amp, len, 0.7, 25.0, choppy, detail, 0.0, 1.0];
+            let a = [amp, len, 0.7, 25.0, choppy, detail, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0];
             let steep = water_steepness(&a);
             let e = len * 1e-5;
             let mut worst: f64 = 0.0;
             for i in 0..20000 {
                 let (x, y) = ((i as f64 * 0.6180339) % 1.0 * len * 30.0, (i as f64 * 0.7548776) % 1.0 * len * 30.0);
-                let gx = (water_height(&a, x + e, y) - water_height(&a, x - e, y)) / (2.0 * e);
-                let gy = (water_height(&a, x, y + e) - water_height(&a, x, y - e)) / (2.0 * e);
+                let gx = (water_height(&a, x + e, y, NO_SHORE) - water_height(&a, x - e, y, NO_SHORE)) / (2.0 * e);
+                let gy = (water_height(&a, x, y + e, NO_SHORE) - water_height(&a, x, y - e, NO_SHORE)) / (2.0 * e);
                 worst = worst.max((gx * gx + gy * gy).sqrt());
             }
             assert!(worst < steep, "slope {worst} above the bound {steep} (ratio {:.2}; amp {amp}, len {len}, choppy {choppy})", worst / (amp * std::f64::consts::TAU / len));
-            let range = (0..2000).map(|i| water_height(&a, i as f64 * 0.0137, i as f64 * 0.0071) / amp).fold((f64::MAX, f64::MIN), |r, h| (r.0.min(h), r.1.max(h)));
+            let range = (0..2000).map(|i| water_height(&a, i as f64 * 0.0137, i as f64 * 0.0071, NO_SHORE) / amp).fold((f64::MAX, f64::MIN), |r, h| (r.0.min(h), r.1.max(h)));
             assert!(range.0 >= -1.0 - 1e-9 && range.1 <= 1.0 + 1e-9, "{range:?}");
         }
     }
 
+
+    #[test]
+    fn water_with_a_shore_stays_a_distance_bound() {
+        // A sphere in the water as the rest of the scene. No point within the distance bound
+        // of a point lies below the surface or inside a drop (the sign of the distance tells).
+        let shore = |q: V3| q.length() - 0.4;
+        let mut worst_slope: f64 = 0.0;
+        for (amp, len, strength, spray, t) in [(0.08, 1.0, 1.0, 1.0, 0.3), (0.05, 0.5, 2.0, 2.0, 1.7), (0.1, 2.0, 2.0, 1.0, 4.1), (0.03, 0.4, 0.5, 2.0, 2.6)] {
+            let a = [amp, len, t, 25.0, 1.0, 24.0, 0.3, 1.0, strength, spray, 0.0, 0.0];
+            let d_at = |q: V3| water_distance(&a, q, shore(q));
+            let mut drops = 0;
+            for i in 0..6000 {
+                let r = 0.4 + (i as f64 * 0.6180339) % 1.0 * len * 1.8;
+                let ang = (i as f64 * 0.7548776) % 1.0 * std::f64::consts::TAU;
+                let z = -amp + (i as f64 * 0.5698403) % 1.0 * amp * 7.0;
+                let p = v3(r * ang.cos(), r * ang.sin(), z);
+                let d = d_at(p);
+                // Drops: dense samples in the spray zone.
+                let zone = v3(ang.cos(), ang.sin(), 0.0) * (0.4 + (i as f64 * 0.3819660) % 1.0 * len * SPRAY_RANGE) + v3(0.0, 0.0, z.max(0.0) * 0.5);
+                for k in 0..32 {
+                    let q = zone + v3(crate::render::hash3(i, k, 6) as f64 - 0.5, crate::render::hash3(i, k, 7) as f64 - 0.5, 0.0) * (amp * 0.9);
+                    // Without a drop in the 3 × 3 cells the bound is above a cell.
+                    if water_spray(&a, q, shore(q)) < amp * 0.3 {
+                        drops += 1;
+                    }
+                }
+                if d <= 0.0 {
+                    continue;
+                }
+                for k in 0..24 {
+                    let u = crate::render::hash3(i, k, 3) as f64;
+                    let (th, ph) = (crate::render::hash3(i, k, 4) as f64 * std::f64::consts::TAU, (crate::render::hash3(i, k, 5) as f64 * 2.0 - 1.0).acos());
+                    let v = v3(ph.sin() * th.cos(), ph.sin() * th.sin(), ph.cos()) * (d * 0.999 * u.cbrt());
+                    let e = d_at(p + v);
+                    assert!(e > 0.0, "amp {amp} len {len}: {p:?} bound {d}, {:?} at {} has {e}", p + v, v.length());
+                }
+                // Straight down: the surface's own slope bound.
+                let below = d_at(p - v3(0.0, 0.0, d * 0.999));
+                assert!(below > 0.0, "{p:?} bound {d}: below {below}");
+            }
+            assert!(drops > 0, "no drops at amp {amp} len {len}");
+            // Shore waves change the height at most by water_shore_steepness per unit.
+            let steep = water_shore_steepness(&a);
+            let e = len * 1e-5;
+            for i in 0..20000 {
+                let (x, y, s) = ((i as f64 * 0.6180339) % 1.0 * len * 10.0, (i as f64 * 0.7548776) % 1.0 * len * 10.0, (i as f64 * 0.5698403) % 1.0 * len * SHORE_RANGE);
+                let shore_h = |x: f64, y: f64, s: f64| water_shore(&a, x, y, s).0 * 2.0 * amp;
+                let gs = (shore_h(x, y, s + e) - shore_h(x, y, (s - e).max(0.0))) / (s + e - (s - e).max(0.0));
+                let gx = (shore_h(x + e, y, s) - shore_h(x - e, y, s)) / (2.0 * e);
+                let gy = (shore_h(x, y + e, s) - shore_h(x, y - e, s)) / (2.0 * e);
+                worst_slope = worst_slope.max((gs.abs() + (gx * gx + gy * gy).sqrt()) / steep);
+            }
+        }
+        assert!(worst_slope < 1.0, "shore slope {worst_slope} of the bound");
+    }
 
     #[test]
     fn rotation_matrix_round_trip() {
