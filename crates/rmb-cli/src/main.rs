@@ -15,6 +15,8 @@ USAGE:
                  [--fps n] [--from frame] [--to frame] [--denoise [blend] | --no-denoise]
                  [--ffmpeg path] [--audio file [--audio-offset s] | --no-audio]
                  [--shutter fraction]
+  rmb-cli mesh <scene> [-o out.ply|.obj|.stl] [-r resolution] [--box x0,y0,z0,x1,y1,z1]
+                 [--thickness cells] [--no-colors] [--no-refine] [--y-up] [--cpu]
   rmb-cli convert <scene> -o out.rmb       Import (e.g. a Mandelbulb3D .m3p) and save as .rmb
   rmb-cli info <scene>                     Formulas, camera and import notes
   rmb-cli formulas                         List all formulas
@@ -34,13 +36,22 @@ movies need ffmpeg (on the search path, or --ffmpeg). --from/--to limit the fram
 The scene's sound track (Animation › Sound) goes under movies (not GIF); --audio replaces it,
 --audio-offset sets where in the sound frame 0 starts (seconds), --no-audio leaves it out.
 --shutter sets the motion blur (exposure as a fraction of the frame time, 0 = off, 0.5 = 180°
-shutter) instead of the scene's.";
+shutter) instead of the scene's.
+
+mesh exports the scene's surface as a closed triangle mesh (surface nets on a grid of distance
+estimates). The extension picks the format: .ply (binary, normals and vertex colors), .obj
+(normals, vertex colors as `v x y z r g b`), .stl (binary, no colors). -r sets the grid cells
+along the longest side of the box (default 256); --box the sampled box (default: fitted to the
+surface); --thickness how many cells outside the fractal the surface lies (default 0.5; more
+thickens thin parts); --y-up writes y up instead of z up. The distances come from the GPU
+unless --cpu is given.";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = match args.first().map(String::as_str) {
         Some("render") => render(&args[1..]),
         Some("animate") => animate(&args[1..]),
+        Some("mesh") => mesh(&args[1..]),
         Some("convert") => convert(&args[1..]),
         Some("info") => info(&args[1..]),
         Some("m3f") => m3f(&args[1..]),
@@ -116,6 +127,71 @@ fn parse(args: &[String]) -> Result<Opts, String> {
         }
     }
     Ok(o)
+}
+
+fn mesh(args: &[String]) -> Result<(), String> {
+    use rmb_core::mesh_export::{MeshFormat, MeshSettings};
+    let mut s = MeshSettings::default();
+    let (mut input, mut output, mut bounds, mut cpu) = (None, None, None, false);
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        let mut val = |name: &str| it.next().cloned().ok_or_else(|| format!("{name} needs a value"));
+        match a.as_str() {
+            "-o" => output = Some(PathBuf::from(val("-o")?)),
+            "-r" => s.resolution = val("-r")?.parse().map_err(|_| "bad resolution")?,
+            "--thickness" => s.thickness = val("--thickness")?.parse().map_err(|_| "bad thickness")?,
+            "--box" => {
+                let v: Vec<f64> = val("--box")?.split(',').map(|x| x.trim().parse::<f64>()).collect::<Result<_, _>>().map_err(|_| "bad box")?;
+                let [x0, y0, z0, x1, y1, z1] = v[..] else { return Err("--box needs six numbers".into()) };
+                bounds = Some((rmb_core::math::v3(x0, y0, z0), rmb_core::math::v3(x1, y1, z1)));
+            }
+            "--no-colors" => s.colors = false,
+            "--no-refine" => s.refine = false,
+            "--y-up" => s.y_up = true,
+            "--cpu" => cpu = true,
+            o if o.starts_with('-') => return Err(format!("unknown option '{o}'")),
+            o => input = Some(PathBuf::from(o)),
+        }
+    }
+    let input = input.ok_or("no scene file given")?;
+    let scene = rmb_core::io::load(&input)?;
+    for e in rmb_core::compose::load_models(&scene) {
+        eprintln!("warning: 3D model not loaded: {e}");
+    }
+    let output = output.unwrap_or_else(|| input.with_extension("ply"));
+    s.format = MeshFormat::of_path(&output).ok_or("the output must end in .ply, .obj or .stl")?;
+    let (lo, hi) = match bounds {
+        Some(b) => b,
+        None => rmb_core::mesh_export::fit_bounds(&scene).ok_or("no surface found within ±64; give --box")?,
+    };
+    (s.min, s.max) = (lo, hi);
+    let g = rmb_core::mesh_export::Grid::new(&s);
+    eprintln!("box ({:.4}, {:.4}, {:.4}) .. ({:.4}, {:.4}, {:.4}), grid {} × {} × {}", lo.x, lo.y, lo.z, hi.x, hi.y, hi.z, g.n[0], g.n[1], g.n[2]);
+    let start = std::time::Instant::now();
+    let mut gpu = if cpu {
+        None
+    } else {
+        match rmb_gpu::GpuContext::new_headless().and_then(|ctx| rmb_gpu::GridField::new(ctx, &scene, g)) {
+            Ok(f) => Some(f),
+            Err(e) => {
+                eprintln!("GPU not available ({e}), using the CPU");
+                None
+            }
+        }
+    };
+    let mut last = -1i32;
+    let field = gpu.as_mut().map(|f| f as &mut dyn rmb_core::mesh_export::Field);
+    let (v, t) = rmb_core::mesh_export::export(&scene, &s, field, &output, &mut |f| {
+        let pc = (f * 100.0) as i32;
+        if pc != last {
+            last = pc;
+            eprint!("\r{pc:3} %");
+        }
+        true
+    })?;
+    eprintln!();
+    println!("{} ({v} vertices, {t} triangles, {:.1} s)", output.display(), start.elapsed().as_secs_f64());
+    Ok(())
 }
 
 fn load(o: &Opts) -> Result<rmb_core::Scene, String> {

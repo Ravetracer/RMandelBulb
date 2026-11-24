@@ -94,6 +94,8 @@ struct U {
     cfac: vec4<f32>,       // constant factor xyz, w: minimum iterations
     view: vec4<f32>,       // projection (Projection::index), fisheye half angle, stereo mode, swap eyes
     view2: vec4<f32>,      // half eye distance, convergence distance, anaglyph in color, images per sample
+    grid: vec4<f32>,       // mesh export (grid_main): grid origin, step
+    grid2: vec4<f32>,      // mesh export: slice index
 }
 
 @group(0) @binding(0) var<uniform> u: U;
@@ -3195,4 +3197,20 @@ fn march_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         aux[2u * idx] += vec4<f32>(aux_albedo, 0.0);
         aux[2u * idx + 1u] += vec4<f32>(aux_normal, 0.0);
     }
+}
+
+// Mesh export (rmb-core mesh_export): the distance estimates of one grid slice, packed four per
+// accum entry. Size and band rows as for march_main; its own pipeline, compiled only for
+// exports.
+@compute @workgroup_size(8, 8)
+fn grid_main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    dd_one = u.deep_hi.w;
+    let x = gid.x;
+    let y = gid.y + u.band.x;
+    if (x >= u.size.x || gid.y >= u.band.y || y >= u.size.y) {
+        return;
+    }
+    let p = u.grid.xyz + vec3<f32>(f32(x), f32(y), u.grid2.x) * u.grid.w;
+    let i = y * u.size.x + x;
+    accum[i >> 2u][i & 3u] = de_at(p, u.grid.w * 0.5);
 }

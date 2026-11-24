@@ -374,6 +374,31 @@ impl<'a> Shader<'a> {
         (applied, crate::texture::bump(layers, &c, &to_world))
     }
 
+    /// Surface color at the surface point `p` with normal `n` without lighting (mesh export
+    /// vertex colors): gradient, interior colors, 3D model colors, texture layers and color
+    /// maps, as the shading's base color.
+    pub fn surface_base(&self, ev: &mut Evaluator, p: V3, n: V3) -> [f64; 3] {
+        let sc = self.scene;
+        let t = (p - sc.camera.position).length();
+        let eps = (sc.march.detail * self.frame.pixel_angle * t).max(1e-12);
+        let orbit = ev.orbit(p, eps * 0.5);
+        let h0 = Hit { t, pos: p, eps, orbit, steps: 0 };
+        let recolored = ev.color_orbit(p, &h0.orbit).map(|orbit| Hit { orbit, ..h0 });
+        let h = recolored.as_ref().unwrap_or(&h0);
+        let cv = self.color_value(h, n);
+        let main = h.orbit.object == 0;
+        let mat = self.material_of(&h.orbit);
+        let base = match self.interior_colors(h, n, t).filter(|_| main) {
+            Some((b, _)) => b,
+            None => {
+                let (b, ..) = self.gradient(mat, cv, t);
+                self.model_surface(h, mat, b, n).0
+            }
+        };
+        let (lay, _) = self.apply_layers(mat, h, n, cv, base, 0.0);
+        if main { self.map_color(h, n, cv, lay.base, 0.0).0 } else { lay.base }
+    }
+
     /// Material index of the surface an orbit belongs to.
     pub fn material_of(&self, orbit: &Orbit) -> usize {
         match orbit.object {

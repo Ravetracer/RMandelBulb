@@ -9,6 +9,7 @@ mod app;
 mod doc;
 mod explorer;
 mod export;
+mod mesh_dialog;
 mod formula_editor;
 mod formulas_panel;
 mod gizmos;

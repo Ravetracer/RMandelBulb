@@ -27,6 +27,7 @@ enum Action {
     SaveAs,
     Export,
     ExportAnimation,
+    ExportMesh,
     Render,
     Undo,
     Redo,
@@ -43,6 +44,7 @@ pub struct App {
     formulas: FormulasPanel,
     inspector: Inspector,
     export: Export,
+    mesh: crate::mesh_dialog::MeshDialog,
     render: crate::render_view::RenderView,
     timeline: crate::timeline::Timeline,
     explorer: crate::explorer::Explorer,
@@ -89,6 +91,7 @@ impl App {
             pending_scale: None,
             inspector: Inspector::default(),
             export: Export::new(prefs.export_samples),
+            mesh: crate::mesh_dialog::MeshDialog::new(),
             render: crate::render_view::RenderView::new(prefs.export_samples),
             timeline: crate::timeline::Timeline::default(),
             help: Help::default(),
@@ -207,6 +210,7 @@ impl App {
             Action::Export => self.export.open_for(&self.doc.scene, self.doc.path.as_ref()),
             Action::Render => self.render.open_and_render(&self.doc.scene, self.view.gpu_context()),
             Action::ExportAnimation => self.export.open_animation(&self.doc.scene, self.doc.path.as_ref()),
+            Action::ExportMesh => self.mesh.open_for(&self.doc.scene, self.doc.path.as_ref()),
             Action::Undo => self.doc.undo(),
             Action::Redo => self.doc.redo(),
             Action::Copy => {
@@ -335,6 +339,10 @@ impl App {
                 let has_anim = self.doc.scene.animation.as_ref().is_some_and(|a| !a.keyframes.is_empty());
                 if ui.add_enabled(has_anim, egui::Button::new("Export animation…")).on_disabled_hover_text("Add keyframes in the timeline first").clicked() {
                     action = Some(Action::ExportAnimation);
+                    ui.close();
+                }
+                if ui.button("Export mesh…").on_hover_text("Save the surface as a 3D mesh (PLY, OBJ, STL) for 3D printing and 3D programs").clicked() {
+                    action = Some(Action::ExportMesh);
                     ui.close();
                 }
                 ui.separator();
@@ -828,7 +836,7 @@ impl eframe::App for App {
             self.view.overlay = None;
         }
         egui::CentralPanel::default().frame(egui::Frame::new().fill(theme::CANVAS)).show(ui, |ui| {
-            let paused = self.export.busy() || self.render.busy();
+            let paused = self.export.busy() || self.render.busy() || self.mesh.busy();
             self.view.paused = paused;
             self.view.show(ui, frame, &mut self.doc, &self.prefs);
         });
@@ -837,6 +845,13 @@ impl eframe::App for App {
         self.prefs_window(&ctx);
         if let Some(msg) = self.render.show(&ctx, &self.doc.scene, self.view.gpu_context()) {
             if msg.starts_with("Saving failed") {
+                self.notify_err(msg);
+            } else {
+                self.notify(msg);
+            }
+        }
+        if let Some(msg) = self.mesh.show(&ctx, &self.doc.scene, self.view.gpu_context()) {
+            if msg.starts_with("Mesh export failed") {
                 self.notify_err(msg);
             } else {
                 self.notify(msg);

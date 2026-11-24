@@ -23,7 +23,7 @@ Open work and wished features: `TODO.md`.
 
 | Path | Content |
 |------|---------|
-| `crates/rmb-core` | `compose.rs` (scene composition: objects, primitives, boolean ops, transforms; mirrored in march.wgsl), `mesh.rs` (3D model import and distance grid bake), `texture.rs` (texture layers), `palette.rs` (palette generator and edits), `flare.rs` (lens flares: model, presets, screen-space layer added before post processing), `animation.rs` (keyframes, camera path, timing, cameraman smoothing, flight → keyframes), `video.rs` (PNG sequences, movies through ffmpeg), `scene.rs` (model), `formula/` (language `lang.rs`, `cpu.rs` closure compiler, `wgsl.rs` emitter, `lib/*.mbf` built-ins, `m3f/` MB3D machine-code translator, `lib/mb3d.mbf` its generated output), `fractal.rs` (hybrid `Program`, CPU evaluator), `render/` (`cpu.rs` reference renderer, `mod.rs` frame setup and post processing), `io/` (`.rmb` JSON, `m3p.rs` MB3D import, PNG with scene) |
+| `crates/rmb-core` | `mesh_export.rs` (mesh export: grid, surface nets, PLY/OBJ/STL), `compose.rs` (scene composition: objects, primitives, boolean ops, transforms; mirrored in march.wgsl), `mesh.rs` (3D model import and distance grid bake), `texture.rs` (texture layers), `palette.rs` (palette generator and edits), `flare.rs` (lens flares: model, presets, screen-space layer added before post processing), `animation.rs` (keyframes, camera path, timing, cameraman smoothing, flight → keyframes), `video.rs` (PNG sequences, movies through ffmpeg), `scene.rs` (model), `formula/` (language `lang.rs`, `cpu.rs` closure compiler, `wgsl.rs` emitter, `lib/*.mbf` built-ins, `m3f/` MB3D machine-code translator, `lib/mb3d.mbf` its generated output), `fractal.rs` (hybrid `Program`, CPU evaluator), `render/` (`cpu.rs` reference renderer, `mod.rs` frame setup and post processing), `io/` (`.rmb` JSON, `m3p.rs` MB3D import, PNG with scene) |
 | `crates/rmb-gpu` | `march.wgsl` (kernel, mirrors `render/cpu.rs`), `codegen.rs` (hybrid `iterate` function), `display.wgsl` (post), `renderer.rs` (progressive bands, async shader compile) |
 | `crates/rmb-app` | egui app: `app.rs`, `viewport.rs` (preview and navigation), `formulas_panel.rs` (scene list, object editors), `inspector.rs`, `layers.rs` (texture layer editor), `palette_editor.rs` (gradient editor: stops on the strip, generator, tools, saved palettes in `palettes.json`), `export.rs` (image and animation export), `render_view.rs` (test render window: `render_progressive`, keeps the raw image and develops it again when the post processing changes), `timeline.rs` (animation panel: keyframes, recording, playback), `gizmos.rs` (light gizmos; object gizmos: move, rotate rings, scale/stretch handles), `doc.rs` (undo), `prefs.rs`, `theme.rs` (from RWildFire) |
 | `crates/rmb-cli` | Command line |
@@ -195,6 +195,17 @@ cargo clippy -j 8 --workspace --all-targets
 - Screen-space overlays (lens flares, gizmos, guides, path overlay) assume the plain
   perspective; they are skipped unless `View::is_plain()`. `cpu::pick` / `pick_object` take
   the projection into account; `cpu::pick_center` marches along the camera's forward axis.
+
+## Mesh export
+
+- `rmb-core/src/mesh_export.rs`: `Grid` (samples of the box), `Field` (one slice of distance
+  estimates; `CpuField`, or `rmb_gpu::GridField` with march.wgsl's `grid_main` entry, a
+  pipeline of its own that only mesh exports compile; four values per accum entry),
+  `surface_nets` (streams two planes at a time; the grid is padded with empty samples so the
+  mesh is closed and caps the box faces; quads oriented outward), `refine` (Newton steps
+  along the vertex normal, at most half a cell), `vertex_colors` (`Shader::surface_base`: the
+  shading's base color without lighting), writers for PLY/OBJ/STL, `fit_bounds` (coarse search
+  over growing boxes). App: `mesh_dialog.rs`; CLI: `rmb-cli mesh`.
 
 ## Glossy reflections
 

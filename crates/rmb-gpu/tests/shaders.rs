@@ -1222,3 +1222,26 @@ fn gpu_matches_cpu_with_projections_and_stereo() {
         parity(scene);
     }
 }
+
+#[test]
+fn mesh_export_distances_match_on_gpu_and_cpu() {
+    use rmb_core::mesh_export::{CpuField, Field, Grid, MeshSettings};
+    let Ok(ctx) = rmb_gpu::GpuContext::new_headless() else {
+        eprintln!("no GPU, skipped");
+        return;
+    };
+    let scene = Scene::default();
+    let grid = Grid::new(&MeshSettings { resolution: 48, ..MeshSettings::default() });
+    let mut gpu = rmb_gpu::GridField::new(ctx, &scene, grid).expect("grid shader");
+    let prog = rmb_core::Program::for_scene(&scene);
+    let mut cpu = CpuField { prog: &prog };
+    let n = grid.n[0] * grid.n[1];
+    let (mut a, mut b) = (vec![0f32; n], vec![0f32; n]);
+    for z in [0, grid.n[2] / 3, grid.n[2] / 2] {
+        gpu.slice(&grid, z, &mut a).unwrap();
+        cpu.slice(&grid, z, &mut b).unwrap();
+        // Within a few percent of a cell near the surface, a little relative error farther out.
+        let off = a.iter().zip(&b).filter(|(g, c)| (*g - *c).abs() > 0.05 * grid.step as f32 + 1e-3 * c.abs()).count();
+        assert!(off * 100 <= n, "slice {z}: {off} of {n} distances differ");
+    }
+}

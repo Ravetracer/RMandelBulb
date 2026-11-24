@@ -149,6 +149,8 @@ struct Uniforms {
     cfac: [f32; 4],
     view: [f32; 4],
     view2: [f32; 4],
+    grid: [f32; 4],
+    grid2: [f32; 4],
 }
 
 /// Splits an f64 into the high and low f32 of a double-float.
@@ -658,6 +660,8 @@ fn uniforms(scene: &Scene, prog: &Program, w: u32, h: u32, fast: bool) -> Unifor
         cfac,
         view: [fr.view.projection.index() as f32, fr.view.fisheye_half as f32, fr.view.stereo.index() as f32, if fr.view.swap { 1.0 } else { 0.0 }],
         view2: [fr.view.half_eye as f32, fr.view.convergence as f32, if fr.view.anaglyph_color { 1.0 } else { 0.0 }, fr.view.eye_count() as f32],
+        grid: [0.0; 4],
+        grid2: [0.0; 4],
         haze2: [if scene.fog.haze_shape == rmb_core::scene::HazeShape::Iterations { 1.0 } else { 0.0 }, scene.fog.haze_size as f32, 0.0, 0.0],
     }
 }
@@ -836,6 +840,8 @@ pub struct GpuRenderer {
     key_time: Instant,
     /// The program of the current scene (for the resting view's shader).
     prog: Option<Program>,
+    /// Mesh export only: no march shader is compiled (see `GridField`).
+    grid_only: bool,
     /// The resting view's shader: its signature, the one wanted for the current scene (`None`:
     /// not requested yet), and the compile in flight.
     rest: Option<(String, wgpu::ComputePipeline)>,
@@ -953,6 +959,7 @@ impl GpuRenderer {
             rest_delay: None,
             key_time: Instant::now(),
             prog: None,
+            grid_only: false,
             rest: None,
             rest_wanted: None,
             rest_pending: None,
@@ -1075,7 +1082,9 @@ impl GpuRenderer {
         }
         self.ctx.queue.write_buffer(&self.lut, 0, bytemuck::cast_slice(&lut));
         self.uniforms = Some(uniforms(&shade, &prog, width, height, fast));
-        self.request_pipeline(&prog);
+        if !self.grid_only {
+            self.request_pipeline(&prog);
+        }
         self.prog = Some(prog);
         self.key = Some(key);
         self.key_time = Instant::now();
@@ -1420,20 +1429,7 @@ impl GpuRenderer {
         // A resting view renders with everything baked in (the same image, faster).
         let pipeline = self.rest_pipeline().cloned().unwrap_or(pipeline);
         let device = self.ctx.device.clone();
-        let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("march"),
-            layout: &self.march_layout,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: self.uniform_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: self.prm.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: self.lut.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: accum.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 4, resource: aux.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 5, resource: self.maps.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 6, resource: self.objs.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 7, resource: self.vols.as_entire_binding() },
-            ],
-        });
+        let bind = self.march_bind(&accum, &aux);
         let start = Instant::now();
         let mut worked = false;
         while self.samples < max_samples {
@@ -1471,6 +1467,24 @@ impl GpuRenderer {
             self.dirty_display = true;
         }
         worked
+    }
+
+    /// The march bind group with the accumulation buffers `accum` and `aux`.
+    fn march_bind(&self, accum: &wgpu::Buffer, aux: &wgpu::Buffer) -> wgpu::BindGroup {
+        self.ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("march"),
+            layout: &self.march_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: self.uniform_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: self.prm.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.lut.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: accum.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 4, resource: aux.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 5, resource: self.maps.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 6, resource: self.objs.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 7, resource: self.vols.as_entire_binding() },
+            ],
+        })
     }
 
     /// Sets the lens flare layer added to the image before the post processing (`None`: no
@@ -1648,13 +1662,17 @@ impl GpuRenderer {
 }
 
 fn compile(device: &wgpu::Device, layout: &wgpu::PipelineLayout, src: &str) -> Compiled {
+    compile_entry(device, layout, src, "march_main")
+}
+
+fn compile_entry(device: &wgpu::Device, layout: &wgpu::PipelineLayout, src: &str, entry: &str) -> Compiled {
     let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("march"), source: wgpu::ShaderSource::Wgsl(Cow::Owned(src.to_string())) });
     let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
         label: Some("march"),
         layout: Some(layout),
         module: &module,
-        entry_point: Some("march_main"),
+        entry_point: Some(entry),
         compilation_options: Default::default(),
         cache: None,
     });
@@ -1963,4 +1981,80 @@ fn render_to(ctx: GpuContext, scene: &Scene, width: u32, height: u32, samples: u
         }
     }
     Ok(r)
+}
+
+/// Distance estimates for the mesh export, computed on the GPU (rmb-core `mesh_export::Field`).
+pub struct GridField {
+    r: GpuRenderer,
+    pipeline: wgpu::ComputePipeline,
+    grid: rmb_core::mesh_export::Grid,
+}
+
+impl GridField {
+    /// Prepares the scene's distance estimate on `grid` (compiles its shader; blocking).
+    pub fn new(ctx: GpuContext, scene: &Scene, grid: rmb_core::mesh_export::Grid) -> Result<GridField, String> {
+        let mut r = GpuRenderer::new(ctx);
+        r.grid_only = true;
+        r.set_band_target(Duration::from_millis(50));
+        // World coordinates in single precision (no camera-relative deep zoom shift).
+        let mut s = scene.clone();
+        s.march.precision = rmb_core::scene::Precision::Single;
+        let [nx, ny, _] = grid.n;
+        // Four values per accumulation entry: a target of nx × ny / 4 holds a slice.
+        let (w, h) = (nx as u32, (ny as u32).div_ceil(4));
+        r.set_scene(&s, w, h, false);
+        if let Some(e) = r.prm_error.clone() {
+            return Err(e);
+        }
+        let prog = r.prog.as_ref().ok_or("no program")?;
+        let src = GpuRenderer::shader_source(prog, &[], None);
+        let pipeline = compile_entry(&r.ctx.device, &r.march_pipeline_layout, &src, "grid_main")?;
+        Ok(GridField { r, pipeline, grid })
+    }
+}
+
+impl rmb_core::mesh_export::Field for GridField {
+    fn slice(&mut self, grid: &rmb_core::mesh_export::Grid, z: usize, out: &mut [f32]) -> Result<(), String> {
+        let g = grid;
+        let [nx, ny, _] = g.n;
+        if g.n != self.grid.n {
+            return Err("grid changed".into());
+        }
+        let r = &mut self.r;
+        let (Some(t), Some(mut un)) = (r.target.as_ref(), r.uniforms) else { return Err("no render target".into()) };
+        let (accum, aux) = (t.accum.clone(), t.aux.clone());
+        let bind = r.march_bind(&accum, &aux);
+        let device = r.ctx.device.clone();
+        un.size[0] = nx as u32;
+        un.size[1] = ny as u32;
+        un.grid = [g.origin.x as f32, g.origin.y as f32, g.origin.z as f32, g.step as f32];
+        un.grid2 = [z as f32, 0.0, 0.0, 0.0];
+        let (width, height) = (nx as u32, ny as u32);
+        let mut row = 0;
+        while row < height {
+            let rows = r.band_rows.min(height - row);
+            un.band[0] = row;
+            un.band[1] = rows;
+            r.ctx.queue.write_buffer(&r.uniform_buf, 0, bytemuck::bytes_of(&un));
+            let mut enc = device.create_command_encoder(&Default::default());
+            {
+                let mut pass = enc.begin_compute_pass(&Default::default());
+                pass.set_pipeline(&self.pipeline);
+                pass.set_bind_group(0, &bind, &[]);
+                pass.dispatch_workgroups(width.div_ceil(8), rows.div_ceil(8), 1);
+            }
+            let t0 = Instant::now();
+            r.ctx.queue.submit(Some(enc.finish()));
+            let _ = device.poll(wgpu::PollType::wait_indefinitely());
+            let ratio = r.band_target.as_secs_f64() / t0.elapsed().as_secs_f64().max(1e-5);
+            r.band_rows = ((rows as f64 * ratio.clamp(0.5, 2.0)).round() as u32).clamp(8, height.max(8)).next_multiple_of(8);
+            row += rows;
+        }
+        if let Some(e) = r.device_error.lock().ok().and_then(|mut g| g.take()) {
+            return Err(e);
+        }
+        let v = read_buffer_f32(&r.ctx, &accum, nx * ny).ok_or("reading the distances back failed")?;
+        out.copy_from_slice(&v);
+        Ok(())
+    }
 }

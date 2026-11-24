@@ -170,8 +170,11 @@ Features the two programs have that RMandelbulb3D does not have yet, in the plan
       distance fades out toward the poles). Mandelbulber `stereo`, MB3D stereo
   - [ ] Possible: lens flares, gizmos and guides in the other projections / per eye (now only
         in the plain perspective), VR video metadata in exported movies
-- [ ] Mesh export: distance field sampled on a grid, marching cubes, OBJ/PLY with vertex colors
-      (3D printing, Blender). Mandelbulber `mesh_export`, MB3D BulbTracer2
+- [x] Mesh export: distance field sampled on a grid (GPU `grid_main`, or CPU), surface nets
+      (closed, caps on the box faces), vertex refinement, vertex colors, PLY/OBJ/STL; File ›
+      Export mesh…, `rmb-cli mesh`. Mandelbulber `mesh_export`, MB3D BulbTracer2
+  - [ ] Possible: show the box in the view, remove small loose pieces, mesh decimation,
+        sparse sampling (skip empty blocks; 2048³ grids), texture-baked colors
 - [ ] Voxel slice export (image stack per Z layer). MB3D `VoxelExport`, Mandelbulber
       `voxel_export`
 - [ ] 16-bit PNG / EXR output, Z-buffer and render passes (depth, normal, albedo, emission) for

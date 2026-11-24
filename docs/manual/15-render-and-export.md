@@ -102,6 +102,40 @@ Chapter "Animation" explains the formats, sound and motion blur.
     The export window and the render window need the GPU renderer. Without a usable graphics
     card, render with `rmb-cli render --cpu`.
 
+## Mesh export
+
+**File › Export mesh…** saves the surface as a closed triangle mesh: for 3D printing, or to
+use the fractal in Blender and other 3D programs. The distance estimate is sampled on a grid in
+a box (on the GPU when there is one), and the surface between the samples becomes the mesh.
+The export runs in the background; the preview pauses meanwhile.
+
+![The mesh export window](images/mesh-export.png){: .half}
+
+| Setting | What it does | Default |
+|---------|--------------|---------|
+| Box X, Y, Z | The sampled box (from, to; world units). Opening the window fits it to the scene's surfaces; **Fit box to surface** does that again. Where the surface reaches the box, the mesh is closed by a flat cap, so cutting the box smaller exports a slice. | fitted |
+| Resolution | Grid cells along the longest side of the box. The triangle count grows with its square: about 0.8 million at 256, 4 million at 512, 23 million at 1024 for the Mandelbulb. | 256 |
+| Thickness | How far outside the fractal the surface lies, in grid cells. 0.5 keeps the shape; larger values thicken thin parts so they survive printing. | 0.5 |
+| Refine | Moves every vertex onto the surface after the grid placed it: sharper edges, a little slower. | On |
+| Vertex colors | The scene's colors at every vertex (gradient, color maps, texture layers, model colors; no lighting). PLY and OBJ only. | On |
+| Y up | Writes y as the up axis. RMandelbulb3D uses z up, like Blender's PLY import; Blender's OBJ import and many other programs expect y up. | Off |
+| Format | **PLY**: binary, small, with normals and colors (Blender, MeshLab). **OBJ**: text, colors as the `v x y z r g b` extension many programs read. **STL**: binary, for the slicers of 3D printers, no colors. | PLY |
+
+The line below the settings shows the grid size and whether the GPU or the CPU computes it.
+On an RTX A2000 laptop GPU the Mandelbulb takes about 1 s at 256 and 17 s at 1024 (most of it
+writing the 600 MB file).
+
+!!! tip
+    Fine fractal detail smaller than a grid cell becomes a smooth skin. Export a smaller box
+    at the same resolution for close-ups, and use **Thickness** above 1 for prints: thin
+    filaments break otherwise.
+
+!!! note
+    The mesh is closed and every triangle faces outward, but a fractal's mesh can have very
+    many small separate pieces (dust around the surface). Slicers and Blender's *Select linked*
+    / *Delete loose* remove those. Inside rendering and deep zooms beyond about 10⁵ are not
+    supported (the grid uses single precision on the GPU).
+
 ## Command line: rmb-cli
 
 `rmb-cli` renders and converts scenes without the user interface. A *scene* is an `.rmb` file, a
@@ -152,6 +186,25 @@ output: the scene's name with `.mp4`.
 
 `-W`, `-H`, `-s`, `--cpu` and the denoise options work as for `render`.
 
+### mesh
+
+```
+rmb-cli mesh <scene> [-o out.ply|.obj|.stl] [-r resolution] [--box x0,y0,z0,x1,y1,z1]
+             [--thickness cells] [--no-colors] [--no-refine] [--y-up] [--cpu]
+```
+
+Exports the surface as a mesh, like **File › Export mesh…**. The extension of `-o` picks the
+format (default: the scene's name with `.ply`).
+
+| Option | What it does |
+|--------|--------------|
+| `-r resolution` | Grid cells along the longest side of the box (default 256). |
+| `--box x0,y0,z0,x1,y1,z1` | The sampled box. Default: fitted to the surface. |
+| `--thickness cells` | How far outside the fractal the surface lies (default 0.5). |
+| `--no-colors`, `--no-refine` | Without vertex colors / without moving the vertices onto the surface. |
+| `--y-up` | Writes y as the up axis. |
+| `--cpu` | Computes the distances on the CPU instead of the GPU. |
+
 ### Other commands
 
 | Command | What it does |
@@ -166,5 +219,6 @@ Examples:
 ```
 rmb-cli render scene.rmb -o scene.png -W 3840 -s 32 --denoise
 rmb-cli animate flight.rmb -o flight.mp4 -s 64 --shutter 0.5
+rmb-cli mesh scene.rmb -o scene.stl -r 512 --thickness 1.5
 rmb-cli convert old.m3p -o old.rmb
 ```
