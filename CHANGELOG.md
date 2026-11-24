@@ -12,6 +12,8 @@ and the release workflow uses it as the release notes.
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-11-24
+
 - Water spray: drops fly in arcs, sideways with a direction shared by nearby drops; new
   settings Drop size and Drop size variation.
 
