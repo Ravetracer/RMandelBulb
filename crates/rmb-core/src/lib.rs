@@ -6,6 +6,7 @@
 pub mod animation;
 pub mod compose;
 pub mod explore;
+pub mod expr;
 pub mod files;
 pub mod flare;
 pub mod formula;

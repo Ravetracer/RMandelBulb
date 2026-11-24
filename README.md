@@ -26,6 +26,8 @@ modern egui interface and import of Mandelbulb3D parameters.
   fast ambient occlusion, sky/ground ambient, gradient coloring (iterations, orbit trap, radius,
   normal), glossy reflections and frosted glass, depth fog with light scattering (light beams
   through gaps, lit haze), glow, depth of field, cutting planes, filmic tone mapping, vignette.
+- **Drivers**: any scene value driven by an expression of time in animations
+  (`value + 0.6 * sin(t * 3)`, `noise`, other values with `@path`).
 - **Render queue**: images and animations one after the other (File › Render queue…,
   `rmb-cli batch`).
 - **Network rendering**: start `rmb-cli --network` on other computers; File › Network render…

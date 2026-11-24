@@ -34,11 +34,13 @@ pub struct Timeline {
     previewing: bool,
     selected: Option<usize>,
     plan: Option<(Animation, Result<AnimationPlan, String>)>,
+    /// Search text of the driver value picker.
+    driver_filter: String,
 }
 
 impl Default for Timeline {
     fn default() -> Self {
-        Timeline { open: false, frame: 0, playing: false, play_pos: 0.0, last_tick: None, previewing: false, selected: None, plan: None }
+        Timeline { open: false, frame: 0, playing: false, play_pos: 0.0, last_tick: None, previewing: false, selected: None, plan: None, driver_filter: String::new() }
     }
 }
 
@@ -188,6 +190,9 @@ impl Timeline {
 
         // ---- settings
         ui.add_space(4.0);
+        // The driven scene at the current frame (for the drivers' values).
+        let cur = self.frame;
+        let driven = if anim.drivers.is_empty() { None } else { self.plan(&anim).and_then(|p| serde_json::to_value(p.scene_at(cur)).ok()) };
         let mut a = anim.clone();
         egui::ScrollArea::horizontal().show(ui, |ui| {
             ui.horizontal_top(|ui| {
@@ -217,6 +222,11 @@ impl Timeline {
                         action = Some(m);
                     }
                 });
+                ui.separator();
+                ui.vertical(|ui| {
+                    ui.set_width(520.0);
+                    self.drivers_ui(ui, &doc.scene, &mut a, driven.as_ref());
+                });
             });
         });
         if a != anim && doc.scene.animation.as_ref() != Some(&a) {
@@ -240,6 +250,66 @@ impl Timeline {
             current: plan.map(|p| p.1).filter(|_| self.previewing),
         });
         action
+    }
+
+    /// Scene values computed by expressions in every frame.
+    fn drivers_ui(&mut self, ui: &mut Ui, scene: &Scene, a: &mut Animation, driven: Option<&serde_json::Value>) {
+        use rmb_core::animation::{Driver, compile_drivers, value_at};
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("DRIVERS").size(theme::fs(11.0)).color(theme::TEXT_MUTED)).on_hover_text(
+                "Values computed by an expression in every frame, after the keyframes: for example a power that breathes with 8 + 0.5 * sin(t), or a slow wobble with value + 0.1 * noise(t). Variables: t (seconds), frame, frames, u (0 at the start, 1 at the end), key (keyframe position), fps, value (the value from the keyframes). Functions: sin cos tan asin acos atan atan2 sqrt abs exp ln log10 pow min max clamp mix step smoothstep floor ceil round fract sign noise if deg rad. @path reads another value of the scene (@camera.fov).",
+            );
+            if ui.small_button(format!("{}  Driver", ph::PLUS)).on_hover_text("Adds a driver; choose the value with … and write its expression").clicked() {
+                a.drivers.push(Driver::default());
+            }
+        });
+        if a.drivers.is_empty() {
+            ui.label(RichText::new("No drivers: values follow the keyframes.").size(theme::fs(11.5)).color(theme::TEXT_MUTED));
+            return;
+        }
+        let (_, compile_errors) = compile_drivers(&a.drivers);
+        let mut remove = None;
+        egui::ScrollArea::vertical().id_salt("drivers").max_height(150.0).show(ui, |ui| {
+            for (i, d) in a.drivers.iter_mut().enumerate() {
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut d.enabled, "").on_hover_text("Driver on or off");
+                    ui.add(egui::TextEdit::singleline(&mut d.path).hint_text("value").desired_width(170.0).font(egui::TextStyle::Monospace)).on_hover_text("The value to drive: a path into the scene; choose it with …");
+                    ui.menu_button("…", |ui| {
+                        ui.set_min_width(320.0);
+                        // Typing goes straight into the search.
+                        ui.add(egui::TextEdit::singleline(&mut self.driver_filter).hint_text("search (power, fov, fog…)").desired_width(300.0)).request_focus();
+                        let filter = self.driver_filter.to_lowercase();
+                        egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+                            for (p, v) in rmb_core::animation::drivable_values(scene).into_iter().filter(|(p, _)| filter.is_empty() || p.to_lowercase().contains(&filter)).take(300) {
+                                if ui.button(format!("{p}  ({v:.4})")).clicked() {
+                                    d.path = p;
+                                    ui.close();
+                                }
+                            }
+                        });
+                    });
+                    ui.add(egui::TextEdit::singleline(&mut d.expression).desired_width(250.0).font(egui::TextStyle::Monospace)).on_hover_text("Expression (see the hover text of DRIVERS)");
+                    if ui.small_button(ph::TRASH).on_hover_text("Remove the driver").clicked() {
+                        remove = Some(i);
+                    }
+                });
+                // The parse error, or the value at the current frame.
+                let error = compile_errors.iter().find(|e| e.starts_with(&format!("{}:", d.path.trim())));
+                let (text, color) = match (error, driven) {
+                    (Some(e), _) if d.enabled => (e.clone(), theme::WARN),
+                    _ if !d.enabled => ("off".to_string(), theme::TEXT_MUTED),
+                    (_, Some(v)) => match value_at(v, d.path.trim()) {
+                        Some(x) => (format!("= {x:.5} at frame {}", self.frame), theme::TEXT_MUTED),
+                        None => ("no such value in the scene".to_string(), theme::WARN),
+                    },
+                    _ => (String::new(), theme::TEXT_MUTED),
+                };
+                ui.label(RichText::new(text).size(theme::fs(11.0)).color(color));
+            }
+        });
+        if let Some(i) = remove {
+            a.drivers.remove(i);
+        }
     }
 
     /// Loads keyframe `k` into the document for editing.

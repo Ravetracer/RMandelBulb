@@ -127,6 +127,54 @@ Some settings are speeds. They act only in animations, adding up over the frames
 These speeds can themselves differ between keyframes; the program blends them and sums them up
 over time, so the movement stays smooth.
 
+## Drivers
+
+A driver computes one value of the scene in every frame from an expression: a power that
+breathes, a field of view that wobbles, a fog that pulses with the beat. Drivers act after the
+keyframes, in the preview, the export, the render queue and network renders.
+
+![Two drivers in the timeline](images/drivers.png)
+
+Click **+ Driver** in the **DRIVERS** column of the timeline (scroll the settings to the
+right), choose the value with **…** (type to search: *power*, *fov*, *fog* …) and write the
+expression. Below each driver its value at the current frame shows, or what is wrong with the
+expression.
+
+| In an expression | Meaning |
+|------------------|---------|
+| `t` | Time in seconds since the first frame. |
+| `frame`, `frames` | The frame number (from 0) and the number of frames. |
+| `u` | Progress through the animation: 0 at the first frame, 1 at the last. |
+| `key` | Position between the keyframes (0 at the first, 1 at the second …). |
+| `fps` | Frames per second. |
+| `value` | The value the keyframes give at this moment (or the formula's default). |
+| `@path` | Another value of the scene, for example `@camera.fov`. |
+| `pi`, `e` | The constants. |
+| `+ - * / % ^` | Arithmetic; `^` is the power, `%` the remainder. |
+| `< <= > >= == !=` | Comparisons: 1 when true, else 0. |
+| `sin cos tan asin acos atan atan2` | Angles in radians; `deg(x)` and `rad(x)` convert. |
+| `sqrt abs exp ln log10 pow` | |
+| `min max clamp(x, lo, hi) mix(a, b, t)` | |
+| `step(edge, x) smoothstep(a, b, x)` | Hard and soft steps from 0 to 1. |
+| `floor ceil round fract sign` | |
+| `noise(x)` | A smooth random wobble between −1 and 1 (the same every time). |
+| `if(c, a, b)` | `a` when `c` is above 0, else `b`. |
+
+Examples:
+
+| Value | Expression | Effect |
+|-------|------------|--------|
+| `fractal.slots.0.params.power` | `value + 0.6 * sin(t * 3)` | The bulb breathes around the keyframed power. |
+| `camera.fov` | `value + 3 * noise(t * 2)` | A slightly unsteady zoom, like a hand-held camera. |
+| `fog.density` | `value * (1 + 0.5 * step(0.5, fract(t * 2)))` | The fog jumps twice a second. |
+| `material.color_offset` | `u` | The colors run through the gradient once over the animation. |
+| `fractal.max_iterations` | `mix(10, 30, smoothstep(0, 1, u))` | More detail toward the end (whole numbers stay whole). |
+
+Paths name the scene's settings as they are stored in the scene file (`.rmb`, JSON):
+sections and names separated by dots, list entries by number from 0 (the first slot is
+`fractal.slots.0`). The picker lists all of them with their current values. On/off settings
+take values above 0.5 as on.
+
 ## Movie settings
 
 The **MOVIE** column holds settings that apply to the exported movie.

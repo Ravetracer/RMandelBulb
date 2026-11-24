@@ -52,6 +52,215 @@ pub struct Animation {
     /// Motion blur: how long each frame is exposed, as a fraction of the frame time (0: off,
     /// 0.5: a film camera's 180° shutter).
     pub shutter: f64,
+    /// Scene values computed by expressions in every frame (after the keyframes).
+    pub drivers: Vec<Driver>,
+}
+
+/// A scene value driven by an expression of time (and other values) in an animation.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Driver {
+    pub enabled: bool,
+    /// The value: a path into the scene ("camera.fov", "fractal.slots.0.params.power").
+    pub path: String,
+    /// The expression (see `expr`): variables `t` (seconds), `frame`, `frames`, `u` (0..1 over
+    /// the animation), `key` (keyframe position), `fps`, `value` (the keyframed value).
+    pub expression: String,
+}
+
+impl Default for Driver {
+    fn default() -> Self {
+        Driver { enabled: true, path: String::new(), expression: "value".into() }
+    }
+}
+
+/// Variables of a driver expression at one moment of the animation.
+#[derive(Clone, Copy, Debug)]
+pub struct DriverTime {
+    /// Time in frames (fractional between frames).
+    pub frame: f64,
+    pub frames: usize,
+    pub fps: f64,
+    /// Keyframe position (0 at the first keyframe, 1 at the second …).
+    pub key: f64,
+}
+
+/// A value at a path of a scene's JSON (`a.b.0.c`), or None.
+pub fn value_at(v: &Value, path: &str) -> Option<f64> {
+    let mut cur = v;
+    for part in path.split('.') {
+        cur = match cur {
+            Value::Object(m) => m.get(part)?,
+            Value::Array(a) => a.get(part.parse::<usize>().ok()?)?,
+            _ => return None,
+        };
+    }
+    match cur {
+        Value::Number(n) => n.as_f64(),
+        Value::Bool(b) => Some(if *b { 1.0 } else { 0.0 }),
+        _ => None,
+    }
+}
+
+/// Sets the number at a path (objects get missing keys; booleans take values above 0.5 as
+/// true). False when the path does not exist.
+fn set_value_at(v: &mut Value, path: &str, x: f64) -> bool {
+    let parts: Vec<&str> = path.split('.').collect();
+    let mut cur = v;
+    for (k, part) in parts.iter().enumerate() {
+        let last = k + 1 == parts.len();
+        cur = match cur {
+            Value::Object(m) => {
+                if last && !m.contains_key(*part) {
+                    m.insert((*part).to_string(), Value::Null);
+                }
+                match m.get_mut(*part) {
+                    Some(c) => c,
+                    None => return false,
+                }
+            }
+            Value::Array(a) => match part.parse::<usize>().ok().and_then(|i| a.get_mut(i)) {
+                Some(c) => c,
+                None => return false,
+            },
+            _ => return false,
+        };
+    }
+    *cur = match cur {
+        Value::Bool(_) => Value::Bool(x > 0.5),
+        // Integers (iteration counts) stay integers.
+        Value::Number(n) if n.is_u64() || n.is_i64() => serde_json::json!(x.round() as i64),
+        _ => serde_json::json!(x),
+    };
+    true
+}
+
+/// The default of a formula parameter that the scene does not list (it is at its default):
+/// `fractal.slots.N.params.IDENT` and the same below `objects.K.shape.Fractal`.
+fn param_default(v: &Value, path: &str) -> Option<f64> {
+    let (slot_path, ident) = path.rsplit_once(".params.")?;
+    let formula = match slot_path.rsplit_once('.') {
+        Some(_) => {
+            let mut cur = v;
+            for part in slot_path.split('.') {
+                cur = match cur {
+                    Value::Object(m) => m.get(part)?,
+                    Value::Array(a) => a.get(part.parse::<usize>().ok()?)?,
+                    _ => return None,
+                };
+            }
+            cur.get("formula")?.as_str()?.to_string()
+        }
+        None => return None,
+    };
+    let f = crate::formula::find(&formula)?;
+    f.def.params.iter().find(|p| p.ident == ident).map(|p| p.default)
+}
+
+/// A driver with its parsed expression.
+#[derive(Clone, Debug)]
+pub struct CompiledDriver {
+    pub path: String,
+    pub expr: crate::expr::Expr,
+}
+
+/// Parses the enabled drivers; the errors name the driver (`path: message`).
+pub fn compile_drivers(drivers: &[Driver]) -> (Vec<CompiledDriver>, Vec<String>) {
+    let mut out = Vec::new();
+    let mut errors = Vec::new();
+    for d in drivers.iter().filter(|d| d.enabled && !d.path.trim().is_empty()) {
+        match crate::expr::Expr::parse(&d.expression) {
+            Ok(expr) => out.push(CompiledDriver { path: d.path.trim().to_string(), expr }),
+            Err(e) => errors.push(format!("{}: {e}", d.path)),
+        }
+    }
+    (out, errors)
+}
+
+/// Applies drivers to a scene at time `tm`; returns the errors (`path: message`). Values a
+/// driver cannot set (missing path, not finite) stay as they are.
+pub fn apply_drivers(scene: &mut Scene, drivers: &[CompiledDriver], tm: DriverTime) -> Vec<String> {
+    if drivers.is_empty() {
+        return Vec::new();
+    }
+    let Ok(mut v) = serde_json::to_value(&*scene) else { return vec!["the scene could not be read".into()] };
+    let mut errors = Vec::new();
+    let fps = tm.fps.max(1e-9);
+    for d in drivers {
+        let current = value_at(&v, &d.path).or_else(|| param_default(&v, &d.path));
+        let vars = |name: &str| match name {
+            "t" => Some(tm.frame / fps),
+            "frame" => Some(tm.frame),
+            "frames" => Some(tm.frames as f64),
+            "u" => Some(if tm.frames > 1 { tm.frame / (tm.frames - 1) as f64 } else { 0.0 }),
+            "key" => Some(tm.key),
+            "fps" => Some(fps),
+            "value" => current,
+            _ => None,
+        };
+        let paths = |p: &str| value_at(&v, p).or_else(|| param_default(&v, p));
+        match d.expr.eval(&vars, &paths) {
+            Ok(x) if x.is_finite() => {
+                if !set_value_at(&mut v, &d.path, x) {
+                    errors.push(format!("{}: no such value in the scene", d.path));
+                }
+            }
+            Ok(_) => errors.push(format!("{}: the result is not a number", d.path)),
+            Err(e) => errors.push(format!("{}: {e}", d.path)),
+        }
+    }
+    match serde_json::from_value::<Scene>(v) {
+        Ok(mut s) => {
+            // Not part of the JSON.
+            s.motion_end = scene.motion_end.take();
+            *scene = s;
+        }
+        Err(e) => errors.push(format!("a driven value does not fit: {e}")),
+    }
+    errors
+}
+
+/// Numeric values of a scene a driver can drive (paths), with their current values; formula
+/// parameters at their defaults included.
+pub fn drivable_values(scene: &Scene) -> Vec<(String, f64)> {
+    let mut s = scene.clone();
+    s.animation = None;
+    let Ok(v) = serde_json::to_value(&s) else { return Vec::new() };
+    let mut out = Vec::new();
+    fn walk(v: &Value, path: &str, out: &mut Vec<(String, f64)>) {
+        match v {
+            Value::Number(n) => out.push((path.to_string(), n.as_f64().unwrap_or(0.0))),
+            Value::Bool(b) => out.push((path.to_string(), if *b { 1.0 } else { 0.0 })),
+            Value::Object(m) => {
+                for (k, c) in m {
+                    if path.is_empty() && matches!(k.as_str(), "version" | "formulas" | "notes") {
+                        continue;
+                    }
+                    walk(c, &if path.is_empty() { k.clone() } else { format!("{path}.{k}") }, out);
+                }
+            }
+            Value::Array(a) => {
+                for (i, c) in a.iter().enumerate() {
+                    walk(c, &format!("{path}.{i}"), out);
+                }
+            }
+            _ => {}
+        }
+    }
+    walk(&v, "", &mut out);
+    // Formula parameters at their defaults (not in the JSON).
+    for (i, slot) in scene.fractal.slots.iter().enumerate() {
+        if let Some(f) = crate::formula::find(&slot.formula) {
+            for p in &f.def.params {
+                let path = format!("fractal.slots.{i}.params.{}", p.ident);
+                if !out.iter().any(|(q, _)| *q == path) {
+                    out.push((path, slot.params.get(&p.ident).copied().unwrap_or(p.default)));
+                }
+            }
+        }
+    }
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
 }
 
 impl Default for Animation {
@@ -71,6 +280,7 @@ impl Default for Animation {
             audio: None,
             audio_offset_s: 0.0,
             shutter: 0.0,
+            drivers: Vec::new(),
         }
     }
 }
@@ -449,6 +659,7 @@ pub struct AnimationPlan {
     fps: f64,
     /// Per frame: how far each palette and glow band has turned (see `color_speeds`).
     phases: Vec<BTreeMap<String, f64>>,
+    drivers: Vec<CompiledDriver>,
 }
 
 /// The palette rotations, glow band speeds, texture drifts, the steam drift and the shimmer
@@ -543,7 +754,7 @@ impl AnimationPlan {
             cameraman(&mut frames, &anim.camera, fps, &keys);
         }
         let phases = color_phases(&keys, &us, fps);
-        Ok(AnimationPlan { values, keys, frames, fps, phases })
+        Ok(AnimationPlan { values, keys, frames, fps, phases, drivers: compile_drivers(&anim.drivers).0 })
     }
 
     pub fn frame_count(&self) -> usize {
@@ -580,7 +791,7 @@ impl AnimationPlan {
     /// The scene of frame `frame`.
     pub fn scene_at(&self, frame: usize) -> Scene {
         let f = frame.min(self.frames.len() - 1);
-        self.scene_of(self.frames[f], self.phases.get(f))
+        self.scene_of(self.frames[f], self.phases.get(f), f as f64)
     }
 
     /// The scene at time `t` in frames, between whole frames (motion blur): camera and
@@ -599,11 +810,11 @@ impl AnimationPlan {
             (Some(p0), Some(p1)) => Some(p0.iter().map(|(k, v0)| (k.clone(), v0 + (p1.get(k).copied().unwrap_or(*v0) - v0) * a)).collect()),
             (p0, _) => p0.cloned(),
         };
-        self.scene_of(fc, phase.as_ref())
+        self.scene_of(fc, phase.as_ref(), t)
     }
 
     /// The scene for a camera on the path and the color phases at that time.
-    fn scene_of(&self, fc: FrameCam, phase: Option<&BTreeMap<String, f64>>) -> Scene {
+    fn scene_of(&self, fc: FrameCam, phase: Option<&BTreeMap<String, f64>>, t: f64) -> Scene {
         let n = self.keys.len();
         let mut scene = if n == 1 {
             self.keys[0].clone()
@@ -628,6 +839,7 @@ impl AnimationPlan {
         if let Some(p) = phase {
             apply_phases(&mut scene, p);
         }
+        apply_drivers(&mut scene, &self.drivers, DriverTime { frame: t, frames: self.frames.len(), fps: self.fps, key: fc.u });
         scene
     }
 }
@@ -911,6 +1123,36 @@ pub fn keyframes_from_flight(samples: &[CamSample], tolerance: f64, base: &Scene
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn drivers_change_values_per_frame() {
+        let mut anim = Animation::default();
+        for _ in 0..2 {
+            anim.keyframes.push(Keyframe { scene: Scene::default(), frames: 10, ..Default::default() });
+        }
+        anim.drivers = vec![
+            Driver { path: "camera.fov".into(), expression: "value + frame".into(), ..Default::default() },
+            // A formula parameter at its default (not in the scene's JSON).
+            Driver { path: "fractal.slots.0.params.power".into(), expression: "value + 0.5 * u".into(), ..Default::default() },
+            // Reads another driven value; integers stay integers.
+            Driver { path: "fractal.max_iterations".into(), expression: "@camera.fov / 4".into(), ..Default::default() },
+            Driver { path: "camera.fov".into(), expression: "1 +".into(), enabled: false },
+        ];
+        let plan = AnimationPlan::new(&anim).unwrap();
+        let (a, b) = (plan.scene_at(0), plan.scene_at(4));
+        let fov0 = Scene::default().camera.fov;
+        assert!((a.camera.fov - fov0).abs() < 1e-9 && (b.camera.fov - fov0 - 4.0).abs() < 1e-9, "{} {}", a.camera.fov, b.camera.fov);
+        let last = plan.frame_count() - 1;
+        let power = plan.scene_at(last).fractal.slots[0].params["power"];
+        assert!((power - 8.5).abs() < 1e-9, "{power}");
+        assert_eq!(b.fractal.max_iterations, ((fov0 + 4.0) / 4.0).round() as u32);
+        let (_, errors) = compile_drivers(&[Driver { path: "x".into(), expression: "1 +".into(), ..Default::default() }]);
+        assert_eq!(errors.len(), 1);
+        let mut s = Scene::default();
+        let e = apply_drivers(&mut s, &compile_drivers(&[Driver { path: "no.such".into(), expression: "1".into(), ..Default::default() }]).0, DriverTime { frame: 0.0, frames: 1, fps: 30.0, key: 0.0 });
+        assert!(e[0].contains("no such value"), "{e:?}");
+        assert!(drivable_values(&Scene::default()).iter().any(|(p, _)| p == "fractal.slots.0.params.power"));
+    }
     use crate::math::v3;
 
     fn key(pos: V3, target: V3) -> Keyframe {

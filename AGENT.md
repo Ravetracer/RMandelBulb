@@ -211,6 +211,14 @@ cargo clippy -j 8 --workspace --all-targets
   empty 6-neighbor), colors only on shell voxels (the inside gets the layer's mean), PNG slices
   or MagicaVoxel (`write_vox`, median-cut `palette`; resolution limited by `limited`).
 
+## Animation drivers
+
+- `rmb_core::expr` (parser and evaluator, `noise`), `animation::Driver` (path, expression) in
+  `Animation::drivers`; `AnimationPlan::scene_of` applies them last (`apply_drivers`: scene →
+  JSON, `value_at` / `set_value_at`, back; formula parameters at their default come from the
+  formula library, `param_default`). `drivable_values` lists the paths for the timeline's
+  picker (`timeline.rs` › `drivers_ui`).
+
 ## Render queue
 
 - `rmb_core::queue` (Queue, QueueJob with a scene snapshot or file, JobWhat image/animation,
