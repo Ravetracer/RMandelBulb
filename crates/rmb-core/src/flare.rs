@@ -501,7 +501,7 @@ pub fn layer(scene: &Scene, width: u32, height: u32) -> Option<Vec<[f32; 3]>> {
     let eye_scene = |eye: f64| {
         let mut s = scene.clone();
         s.view.stereo = StereoMode::Off;
-        s.camera.position = s.camera.position + s.camera.right * (eye * v.half_eye);
+        s.camera.position += s.camera.right * (eye * v.half_eye);
         s
     };
     let (wi, hi) = (width.max(1) as usize, height.max(1) as usize);
