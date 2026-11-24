@@ -197,7 +197,13 @@ impl Timeline {
         ui.add_space(4.0);
         // The driven scene at the current frame (for the drivers' values).
         let cur = self.frame;
-        let driven = if anim.drivers.is_empty() { None } else { self.plan(&anim).and_then(|p| serde_json::to_value(p.scene_at(cur)).ok()) };
+        let driven = if anim.drivers.is_empty() {
+            None
+        } else {
+            self.plan(&anim)
+                .and_then(|p| serde_json::to_value(p.scene_at(cur)).ok())
+                .or_else(|| rmb_core::animation::still_scene(&doc.scene).and_then(|s| serde_json::to_value(s).ok()))
+        };
         // The driven values over the whole animation (only when the animation changed).
         if !anim.drivers.is_empty() && self.driver_curves.as_ref().is_none_or(|(a, _)| *a != anim) {
             let paths: Vec<String> = anim.drivers.iter().map(|d| d.path.trim().to_string()).collect();
@@ -254,7 +260,7 @@ impl Timeline {
             });
         });
         if a != anim && doc.scene.animation.as_ref() != Some(&a) {
-            doc.scene.animation = if a.keyframes.is_empty() && a.recording.is_empty() && doc.scene.animation.is_none() { None } else { Some(a) };
+            doc.scene.animation = if a.keyframes.is_empty() && a.recording.is_empty() && a.drivers.is_empty() && doc.scene.animation.is_none() { None } else { Some(a) };
         }
 
         // ---- view: preview frame and path overlay
@@ -286,6 +292,9 @@ impl Timeline {
             if ui.small_button(format!("{}  Driver", ph::PLUS)).on_hover_text("Adds a driver; choose the value with … and write its expression").clicked() {
                 a.drivers.push(Driver::default());
             }
+            ui.checkbox(&mut a.still_drivers, "Also in stills").on_hover_text(
+                "The drivers also act on still images and on the view outside the animation preview: at frame 0 (t = 0), with value = the scene's own value. Useful to tie values together, e.g. a parameter that follows another with @path",
+            );
         });
         if a.drivers.is_empty() {
             ui.label(RichText::new("No drivers: values follow the keyframes.").size(theme::fs(11.5)).color(theme::TEXT_MUTED));

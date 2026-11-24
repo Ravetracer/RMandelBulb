@@ -467,6 +467,8 @@ pub fn fit_bounds(scene: &Scene) -> Option<(V3, V3)> {
 /// done and returns false to cancel. Returns the vertex and triangle counts and the number of
 /// loose pieces removed.
 pub fn export(scene: &Scene, settings: &MeshSettings, field: Option<&mut dyn Field>, path: &std::path::Path, progress: &mut dyn FnMut(f32) -> bool) -> Result<(usize, usize, usize), String> {
+    let driven = crate::animation::still_scene(scene);
+    let scene = driven.as_ref().unwrap_or(scene);
     let prog = Program::for_scene(scene);
     let grid = Grid::new(settings);
     let iso = (settings.thickness.max(0.0) * grid.step) as f32;

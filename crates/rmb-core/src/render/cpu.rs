@@ -1369,6 +1369,7 @@ pub struct CpuRenderer {
 
 impl CpuRenderer {
     pub fn new(scene: Scene, width: u32, height: u32) -> Self {
+        let scene = crate::animation::still_scene(&scene).unwrap_or(scene);
         let prog = Program::for_scene(&scene);
         let n = (width * height) as usize;
         CpuRenderer { scene, prog, width, height, accum: vec![[0.0; 3]; n], aux: vec![[0.0; 8]; n], samples: 0, first: 0 }
@@ -1390,6 +1391,7 @@ impl CpuRenderer {
     /// Renders the next passes with `scene` but keeps the samples so far (motion blur: the scene
     /// moves within one frame; the size stays).
     pub fn set_scene_keep(&mut self, scene: Scene) {
+        let scene = crate::animation::still_scene(&scene).unwrap_or(scene);
         self.prog = Program::for_scene(&scene);
         self.scene = scene;
     }

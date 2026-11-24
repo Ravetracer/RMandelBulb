@@ -186,6 +186,13 @@ sections and names separated by dots, list entries by number from 0 (the first s
 `fractal.slots.0`). The picker lists all of them with their current values. On/off settings
 take values above 0.5 as on.
 
+**Still images.** With **Also in stills** the drivers also act outside the animation: on the
+view (unless the animation preview shows a frame), saved images, mesh and voxel exports, and
+the render queue's and network's still images. They are computed at frame 0 (`t` = 0) and
+`value` is the scene's own value. This ties values together, for example
+`fractal.slots.1.params.scale` = `@fractal.slots.0.params.scale * 0.5`. Drivers work without
+keyframes too.
+
 ## Movie settings
 
 The **MOVIE** column holds settings that apply to the exported movie.

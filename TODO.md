@@ -205,7 +205,8 @@ Features the two programs have that RMandelbulb3D does not have yet, in the plan
   - [x] Audio-reactive variables: audio, bass, mid, treble (levels 0..1 from the sound track,
         analysed once with ffmpeg and stored in the animation; `audio.rs`)
   - [x] Curve view of each driver's value over the animation (timeline)
-  - [ ] Possible: drivers outside animations (stills)
+  - [x] Drivers on stills (DRIVERS › Also in stills, `Animation::still_drivers`,
+        `animation::still_scene`, applied in the renderers, image saving and mesh/voxel export)
 - [x] Kleinian DE and inside rendering (see Formula editing above)
 - [x] Compared with MB3D's own Monte Carlo renderer (`mb3d/CalcMonteCarlo.pas`, 2026-11-24):
       it branches at every hit (direct light, mirror, refraction and one cosine ambient ray),

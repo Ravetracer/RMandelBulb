@@ -516,7 +516,7 @@ impl Viewport {
             && let Some(img) = gpu.read_hdr()
         {
             let (tx, rx) = mpsc::channel();
-            let mut sc = scene.clone();
+            let mut sc = rmb_core::animation::still_scene(scene).unwrap_or_else(|| scene.clone());
             sc.post.denoise = true;
             if sc.post.denoise_blend <= 0.0 {
                 sc.post.denoise_blend = 1.0;

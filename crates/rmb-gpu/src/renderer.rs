@@ -1044,6 +1044,8 @@ impl GpuRenderer {
     /// changed. `fast` renders a quicker preview (no shadows, fast AO) for navigation.
     pub fn set_scene(&mut self, scene: &Scene, width: u32, height: u32, fast: bool) {
         let (width, height) = (width.max(1), height.max(1));
+        let driven = rmb_core::animation::still_scene(scene);
+        let scene = driven.as_ref().unwrap_or(scene);
         let mut render_scene = scene.clone();
         // Only the color space of the post settings changes the shading.
         render_scene.post = Post { display_space: scene.post.display_space, ..Default::default() };
@@ -2152,6 +2154,8 @@ pub struct GridField {
 impl GridField {
     /// Prepares the scene's distance estimate on `grid` (compiles its shader; blocking).
     pub fn new(ctx: GpuContext, scene: &Scene, grid: rmb_core::mesh_export::Grid) -> Result<GridField, String> {
+        let driven = rmb_core::animation::still_scene(scene);
+        let scene = driven.as_ref().unwrap_or(scene);
         let mut r = GpuRenderer::new(ctx);
         r.grid_only = true;
         r.set_band_target(Duration::from_millis(50));

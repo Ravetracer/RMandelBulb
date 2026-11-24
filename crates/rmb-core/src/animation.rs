@@ -54,6 +54,9 @@ pub struct Animation {
     pub shutter: f64,
     /// Scene values computed by expressions in every frame (after the keyframes).
     pub drivers: Vec<Driver>,
+    /// The drivers also act on still images and the view outside the animation preview: at
+    /// frame 0, with `value` = the scene's own value (`still_scene`).
+    pub still_drivers: bool,
     /// Levels of the sound track for audio-reactive drivers (`audio::analyse`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub audio_levels: Option<crate::audio::AudioLevels>,
@@ -212,6 +215,21 @@ pub fn compile_drivers(drivers: &[Driver]) -> (Vec<CompiledDriver>, Vec<String>)
     (out, errors)
 }
 
+/// A still image's scene with its drivers applied (`Animation::still_drivers`): at frame 0 of
+/// one frame, `value` = the scene's own value, the sound levels at its start. The result has
+/// `still_drivers` off, so it is never driven twice. `None` when nothing applies.
+pub fn still_scene(scene: &Scene) -> Option<Scene> {
+    let a = scene.animation.as_ref().filter(|a| a.still_drivers && a.drivers.iter().any(|d| d.enabled))?;
+    let drivers = compile_drivers(&a.drivers).0;
+    let audio = a.audio_levels.as_ref().map_or([0.0; 4], |l| l.at(a.audio_offset_s.max(0.0)));
+    let mut s = scene.clone();
+    if let Some(an) = s.animation.as_mut() {
+        an.still_drivers = false;
+    }
+    apply_drivers(&mut s, &drivers, DriverTime { frame: 0.0, frames: 1, fps: a.fps, key: 0.0, audio });
+    Some(s)
+}
+
 /// Applies drivers to a scene at time `tm`; returns the errors (`path: message`). Values a
 /// driver cannot set (missing path, not finite) stay as they are.
 pub fn apply_drivers(scene: &mut Scene, drivers: &[CompiledDriver], tm: DriverTime) -> Vec<String> {
@@ -320,6 +338,7 @@ impl Default for Animation {
             audio_offset_s: 0.0,
             shutter: 0.0,
             drivers: Vec::new(),
+            still_drivers: false,
             audio_levels: None,
         }
     }
@@ -1216,6 +1235,20 @@ mod tests {
         let e = apply_drivers(&mut s, &compile_drivers(&[Driver { path: "no.such".into(), expression: "1".into(), ..Default::default() }]).0, DriverTime { frame: 0.0, frames: 1, fps: 30.0, key: 0.0, audio: [0.0; 4] });
         assert!(e[0].contains("no such value"), "{e:?}");
         assert!(drivable_values(&Scene::default()).iter().any(|(p, _)| p == "fractal.slots.0.params.power"));
+    }
+
+    #[test]
+    fn still_drivers_apply_once_and_only_when_switched_on() {
+        let mut s = Scene::default();
+        let fov0 = s.camera.fov;
+        let mut a = Animation { drivers: vec![Driver { path: "camera.fov".into(), expression: "value + 5".into(), ..Default::default() }], ..Default::default() };
+        s.animation = Some(a.clone());
+        assert!(still_scene(&s).is_none(), "off by default");
+        a.still_drivers = true;
+        s.animation = Some(a);
+        let d = still_scene(&s).expect("driven");
+        assert!((d.camera.fov - fov0 - 5.0).abs() < 1e-9);
+        assert!(still_scene(&d).is_none(), "driven twice");
     }
     use crate::math::v3;
 

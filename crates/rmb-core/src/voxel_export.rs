@@ -78,6 +78,8 @@ struct Layer {
 /// written and the files.
 pub fn export(scene: &Scene, mesh: &MeshSettings, vox: &VoxelSettings, field: Option<&mut dyn Field>, path: &Path, progress: &mut dyn FnMut(f32) -> bool) -> Result<(usize, Vec<PathBuf>), String> {
     let mesh = limited(mesh, vox);
+    let driven = crate::animation::still_scene(scene);
+    let scene = driven.as_ref().unwrap_or(scene);
     let prog = Program::for_scene(scene);
     let grid = Grid::new(&mesh);
     let iso = (mesh.thickness.max(0.0) * grid.step) as f32;

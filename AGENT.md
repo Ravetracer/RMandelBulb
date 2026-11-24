@@ -231,6 +231,10 @@ cargo clippy -j 8 --workspace --all-targets
   in the scene); `AnimationPlan` feeds `audio/bass/mid/treble` (with the sound offset).
   `Animation::ensure_audio_levels` runs before CLI animate, queue jobs, network jobs and the
   export window; the timeline analyses a newly chosen sound in the background.
+- Stills: `Animation::still_drivers` → `animation::still_scene` (frame 0, `value` = the scene's
+  own value; the result has the flag off, so it is never applied twice). Called in
+  `GpuRenderer::set_scene`, `CpuRenderer::new` / `set_scene_keep`, `save_render_ex`, the
+  mesh/voxel exports and `GridField::new`.
 
 ## Render queue
 

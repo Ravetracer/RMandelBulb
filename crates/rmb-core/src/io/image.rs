@@ -126,6 +126,9 @@ pub fn save_render(path: &Path, img: crate::render::denoise::HdrImage, scene: &S
 /// [`save_render`] for an image that is `denoised` already (tiled renders denoise every
 /// tile): the denoiser is skipped, the scene inside the file stays as it is.
 pub fn save_render_ex(path: &Path, img: crate::render::denoise::HdrImage, scene: &Scene, kind: ImageKind, denoised: bool) -> Result<crate::render::denoise::Outcome, String> {
+    // Post processing and flares with the still image's driven values.
+    let driven = crate::animation::still_scene(scene);
+    let scene = driven.as_ref().unwrap_or(scene);
     let (w, h) = (img.width, img.height);
     let finish_scene;
     let fs = if denoised {
