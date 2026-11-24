@@ -20,6 +20,11 @@ const THUMB_H: u32 = 108;
 const THUMB_SAMPLES: u32 = 6;
 /// Most thumbnails a strip keeps.
 const MAX_THUMBS: usize = 96;
+/// Random scenes and mutations noisier than this (`explore::thumb_quality`) are made again
+/// with another seed (dust and grain; measured on random batches).
+const MAX_NOISE: f64 = 0.22;
+/// Tries per thumbnail with the filter on.
+const FILTER_TRIES: u64 = 4;
 
 /// The presets: (name, scene).
 const PRESETS: &[(&str, &str)] = &[
@@ -38,6 +43,7 @@ pub enum Mode {
     Presets,
     Random,
     Mutations,
+    Snapshots,
 }
 
 impl Mode {
@@ -46,6 +52,7 @@ impl Mode {
             Mode::Presets => 0,
             Mode::Random => 1,
             Mode::Mutations => 2,
+            Mode::Snapshots => 3,
         }
     }
 }
@@ -60,6 +67,8 @@ enum Source {
 
 struct Job {
     key: u64,
+    /// Remakes noisy random scenes and mutations (`MAX_NOISE`).
+    filter: bool,
     /// The strip's batch number when the job was made (stale jobs are skipped).
     batch: u64,
     strip: usize,
@@ -77,14 +86,18 @@ pub struct Explorer {
     mode: Mode,
     kind: RandomKind,
     pub batch_size: usize,
+    /// Quality filter: noisy random scenes and mutations are made again.
+    pub filter: bool,
     mutation: Mutation,
     strength: f64,
-    strips: [Vec<Thumb>; 3],
-    batches: Arc<[AtomicU64; 3]>,
+    strips: [Vec<Thumb>; 4],
+    batches: Arc<[AtomicU64; 4]>,
     next_key: u64,
     seed: u64,
     jobs: Option<Sender<Job>>,
     results: Option<Receiver<(u64, Scene, Vec<u8>)>>,
+    /// Height of the header row(s) in the last frame (it wraps in narrow windows).
+    header_h: f32,
 }
 
 impl Default for Explorer {
@@ -94,6 +107,7 @@ impl Default for Explorer {
             mode: Mode::Presets,
             kind: RandomKind::Any,
             batch_size: 12,
+            filter: true,
             mutation: Mutation::All,
             strength: 0.5,
             strips: Default::default(),
@@ -102,21 +116,24 @@ impl Default for Explorer {
             seed: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_nanos() as u64),
             jobs: None,
             results: None,
+            header_h: 24.0,
         }
     }
 }
 
-/// The scene of a thumbnail job (random scenes are framed on the way).
-fn scene_of(source: &Source) -> Scene {
+/// The scene of a thumbnail job (random scenes are framed on the way); `attempt` > 0 varies
+/// the seed (quality filter).
+fn scene_of(source: &Source, attempt: u64) -> Scene {
+    let vary = |seed: u64| seed ^ attempt.wrapping_mul(0x9e37_79b9_7f4a_7c15);
     match source {
         Source::Scene(s) => (**s).clone(),
-        Source::Random(kind, seed) => rmb_core::explore::random_framed(*kind, *seed, 6),
-        Source::Mutation(base, what, strength, seed) => rmb_core::explore::mutate(base, *what, *strength, *seed),
+        Source::Random(kind, seed) => rmb_core::explore::random_framed(*kind, vary(*seed), 6),
+        Source::Mutation(base, what, strength, seed) => rmb_core::explore::mutate(base, *what, *strength, vary(*seed)),
     }
 }
 
-/// Renders a thumbnail (RGBA8).
-fn render(r: &mut Option<GpuRenderer>, scene: &Scene) -> Vec<u8> {
+/// Renders a thumbnail (RGBA8) and its noise (`explore::thumb_quality`; 0 on the CPU).
+fn render(r: &mut Option<GpuRenderer>, scene: &Scene) -> (Vec<u8>, f64) {
     let mut s = scene.clone();
     // Thumbnails: no denoiser, no flares. The surface threshold is in pixels: scaled to the
     // scene's image height, the rays stop where they do in the full image (the iteration
@@ -128,19 +145,27 @@ fn render(r: &mut Option<GpuRenderer>, scene: &Scene) -> Vec<u8> {
     if let Some(r) = r.as_mut() {
         r.set_scene(&s, THUMB_W, THUMB_H, false);
         if r.wait_for_pipeline().is_ok() {
-            while r.samples() < THUMB_SAMPLES {
-                if !r.work(std::time::Duration::from_millis(200), THUMB_SAMPLES) && r.last_error().is_some() {
-                    break;
+            // Read back at half the samples too: the change shows dust and grain.
+            let mut half = None;
+            for target in [THUMB_SAMPLES / 2, THUMB_SAMPLES] {
+                while r.samples() < target {
+                    if !r.work(std::time::Duration::from_millis(200), target) && r.last_error().is_some() {
+                        break;
+                    }
+                }
+                if target < THUMB_SAMPLES {
+                    half = r.read_rgba8();
                 }
             }
             if let Some(img) = r.read_rgba8() {
-                return img;
+                let noise = half.map_or(0.0, |h| rmb_core::explore::thumb_quality(&h, &img).1);
+                return (img, noise);
             }
         }
     }
     let mut cpu = rmb_core::render::cpu::CpuRenderer::new(s, THUMB_W, THUMB_H);
     cpu.render_pass();
-    cpu.rgba8()
+    (cpu.rgba8(), 0.0)
 }
 
 impl Explorer {
@@ -160,8 +185,24 @@ impl Explorer {
                 if batches[job.strip].load(Ordering::Relaxed) != job.batch {
                     continue;
                 }
-                let scene = scene_of(&job.source);
-                let img = render(&mut r, &scene);
+                // The quality filter remakes noisy random scenes and mutations; the least noisy
+                // try stays.
+                let tries = if job.filter && !matches!(job.source, Source::Scene(_)) { FILTER_TRIES } else { 1 };
+                let mut best: Option<(Scene, Vec<u8>, f64)> = None;
+                for attempt in 0..tries {
+                    if batches[job.strip].load(Ordering::Relaxed) != job.batch {
+                        break;
+                    }
+                    let scene = scene_of(&job.source, attempt);
+                    let (img, noise) = render(&mut r, &scene);
+                    if best.as_ref().is_none_or(|b| noise < b.2) {
+                        best = Some((scene, img, noise));
+                    }
+                    if noise <= MAX_NOISE {
+                        break;
+                    }
+                }
+                let Some((scene, img, _)) = best else { continue };
                 if rtx.send((job.key, scene, img)).is_err() {
                     return;
                 }
@@ -182,9 +223,21 @@ impl Explorer {
             let key = self.next_key;
             self.next_key += 1;
             list.push(Thumb { key, name, done: None });
-            let _ = tx.send(Job { key, batch, strip, source });
+            let _ = tx.send(Job { key, filter: self.filter, batch, strip, source });
         }
         self.strips[strip] = list;
+    }
+
+    /// Adds the current scene to the snapshots (rendered like the other thumbnails).
+    fn snapshot(&mut self, ctx: &egui::Context, gpu: Option<GpuContext>, current: &Scene) {
+        let tx = self.worker(ctx, gpu);
+        let strip = Mode::Snapshots.index();
+        let batch = self.batches[strip].load(Ordering::Relaxed);
+        let key = self.next_key;
+        self.next_key += 1;
+        let n = self.strips[strip].len() + 1;
+        self.strips[strip].push(Thumb { key, name: format!("Snapshot {n}"), done: None });
+        let _ = tx.send(Job { key, filter: false, batch, strip, source: Source::Scene(Arc::new(current.clone())) });
     }
 
     fn next_seed(&mut self) -> u64 {
@@ -200,6 +253,7 @@ impl Explorer {
                 let base = Arc::new(current.clone());
                 (0..self.batch_size).map(|_| ("Mutation".to_string(), Source::Mutation(base.clone(), self.mutation, self.strength, self.next_seed()))).collect()
             }
+            Mode::Snapshots => return,
         };
         self.start(ctx, gpu, self.mode.index(), items);
     }
@@ -223,6 +277,11 @@ impl Explorer {
         }
     }
 
+    /// Height the lane needs (thumbnails, scroll bar, margins and the header as last laid out).
+    pub fn lane_height(&self) -> f32 {
+        self.header_h.max(20.0) + THUMB_H as f32 * 0.85 + 34.0
+    }
+
     /// Shows the lane; returns a scene the user picked.
     pub fn show(&mut self, ui: &mut egui::Ui, current: &Scene, gpu: Option<GpuContext>) -> Option<Scene> {
         let ctx = ui.ctx().clone();
@@ -232,22 +291,36 @@ impl Explorer {
             self.fill(&ctx, gpu.clone(), current);
         }
         let mut picked = None;
-        ui.horizontal_wrapped(|ui| {
+        let header = ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new("EXPLORE").size(theme::fs(10.5)).color(theme::TEXT_MUTED).strong());
             ui.add_space(8.0);
             ui.selectable_value(&mut self.mode, Mode::Presets, "Presets").on_hover_text("Scenes to start from");
             ui.selectable_value(&mut self.mode, Mode::Random, "Random").on_hover_text("Batches of random fractals with random colors");
             ui.selectable_value(&mut self.mode, Mode::Mutations, "Mutations").on_hover_text("Variants of the current scene");
+            let n = self.strips[Mode::Snapshots.index()].len();
+            let label = if n > 0 { format!("Snapshots ({n})") } else { "Snapshots".to_string() };
+            ui.selectable_value(&mut self.mode, Mode::Snapshots, label).on_hover_text("Scenes you kept with Snapshot (for this session): go back to one by clicking it");
+            if ui.button(icons::CAMERA).on_hover_text("Snapshot: keeps the current scene in the Snapshots strip, to come back to it after trying mutations or edits (for this session)").clicked() {
+                self.snapshot(&ctx, gpu.clone(), current);
+            }
             ui.separator();
             let busy = self.busy(self.mode.index());
             let start = match self.mode {
                 Mode::Presets => false,
+                Mode::Snapshots => {
+                    if n > 0 && ui.button(format!("{}  Clear", icons::TRASH)).on_hover_text("Removes all snapshots").clicked() {
+                        self.cancel(Mode::Snapshots.index());
+                        self.strips[Mode::Snapshots.index()].clear();
+                    }
+                    false
+                }
                 Mode::Random => {
                     egui::ComboBox::from_id_salt("explore-kind").selected_text(self.kind.label()).show_ui(ui, |ui| {
                         for k in RandomKind::ALL {
                             ui.selectable_value(&mut self.kind, k, k.label());
                         }
                     });
+                    ui.checkbox(&mut self.filter, "Filter").on_hover_text("Makes dusty, grainy or washed-out scenes again with another seed (up to four tries each; slower batches)");
                     ui.label(RichText::new("Count").color(theme::TEXT_MUTED));
                     ui.add(egui::DragValue::new(&mut self.batch_size).range(1..=48)).on_hover_text("Random scenes per batch");
                     batch_button(ui, busy, &format!("{}  New batch", icons::REFRESH), "Random fractals of the chosen kind, framed by the camera; click one to take it")
@@ -262,6 +335,7 @@ impl Explorer {
                     ui.add(egui::DragValue::new(&mut self.batch_size).range(1..=48)).on_hover_text("Variants per click");
                     ui.label(RichText::new("Strength").color(theme::TEXT_MUTED));
                     ui.add(egui::DragValue::new(&mut self.strength).speed(0.01).range(0.0..=1.0)).on_hover_text("How far the variants go from the current scene");
+                    ui.checkbox(&mut self.filter, "Filter").on_hover_text("Makes dusty, grainy or washed-out variants again with another seed (up to four tries each; slower batches)");
                     batch_button(ui, busy, &format!("{}  Mutate", icons::REFRESH), "Variants of the current scene; click one to take it")
                 }
             };
@@ -274,6 +348,7 @@ impl Explorer {
                 ui.spinner();
             }
         });
+        self.header_h = header.response.rect.height();
         ui.add_space(4.0);
         let size = vec2(THUMB_W as f32, THUMB_H as f32) * 0.85;
         let list = &self.strips[strip];
@@ -283,6 +358,7 @@ impl Explorer {
                 Mode::Presets => "Loading presets…",
                 Mode::Random => "Empty: start a new batch of random fractals.",
                 Mode::Mutations => "Mutate makes variants of the current scene.",
+                Mode::Snapshots => "Snapshot keeps the current scene here.",
             };
             ui.painter().text(rect.left_center() + vec2(8.0, 0.0), egui::Align2::LEFT_CENTER, text, egui::FontId::proportional(theme::fs(13.0)), theme::TEXT_MUTED);
             return None;
@@ -302,7 +378,7 @@ impl Explorer {
                             p.text(rect.center(), egui::Align2::CENTER_CENTER, "…", egui::FontId::proportional(theme::fs(18.0)), theme::TEXT_MUTED);
                         }
                     }
-                    if self.mode == Mode::Presets {
+                    if matches!(self.mode, Mode::Presets | Mode::Snapshots) {
                         let bar = egui::Rect::from_min_max(egui::pos2(rect.left(), rect.bottom() - 18.0), rect.max);
                         p.rect_filled(bar, CornerRadius::same(4), Color32::from_black_alpha(150));
                         p.text(bar.left_center() + vec2(6.0, 0.0), egui::Align2::LEFT_CENTER, &t.name, egui::FontId::proportional(theme::fs(11.0)), theme::TEXT);

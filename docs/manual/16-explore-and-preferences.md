@@ -5,14 +5,15 @@ This chapter covers the **explore lane**, a strip of thumbnails for finding new 
 
 ## The explore lane
 
-Click **Explore** in the top bar to open the lane at the bottom of the window. It has three
+Click **Explore** in the top bar to open the lane at the bottom of the window. It has four
 pages, chosen with the buttons next to *EXPLORE*:
 
 - **Presets**: scenes to start from.
 - **Random**: batches of random fractals with random colors.
 - **Mutations**: variants of the current scene.
+- **Snapshots**: scenes you kept with **Snapshot**.
 
-![The explore lane with the presets](images/explore-lane.png)
+![The explore lane with a batch of random fractals](images/explore-lane.png)
 
 The thumbnails render one after another in the background (on the graphics card, or on the CPU
 without one), with a few samples each and without the denoiser and lens flares. A spinner shows
@@ -46,6 +47,11 @@ and click **New batch**.
 Every random scene uses formulas with parameter ranges that give good results, gets a random
 palette, and the camera is placed so that the fractal fills the view.
 
+**Filter** (on by default) sorts out dusty, grainy and washed-out scenes: a thumbnail whose
+image still changes a lot between half and all of its samples is made again with another
+random seed, up to four times, and the cleanest try stays. Batches take a little longer with
+it. The same switch is on the Mutations page.
+
 ![A kaleidoscopic IFS](images/preset-kifs.jpg)
 
 ### Mutations
@@ -68,6 +74,13 @@ ones stay.
 !!! tip
     Mutations build on each other: take a variant you like, then mutate again from there. Lower
     the **Strength** as you get closer to what you want.
+
+### Snapshots
+
+The camera button next to the page buttons (**Snapshot**) keeps the current scene as a thumbnail on the
+**Snapshots** page, for example before trying mutations or bigger edits. Click a snapshot to
+go back to it (one undo step, like the other thumbnails); **Clear** removes them all. The
+snapshots last until the program closes; save a scene to keep it.
 
 ## Preferences
 

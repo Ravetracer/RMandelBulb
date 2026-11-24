@@ -151,8 +151,10 @@
         formulas, per-slot settings and 4D rotation for object fractals, language helpers
         (functions, vectors, enum parameters)
 - [x] Explore lane: own presets (thumbnails), random batches, mutations (like RWildFire)
-  - [ ] Possible: more presets, quality filter against noisy random scenes, snapshot of the
-        current scene into the strip
+  - [x] Quality filter (`explore::thumb_quality`: brightness change between half and all
+        samples, relative to the contrast; above 0.22 the scene is made again, up to four
+        tries; tuned with `rmb-gpu --example explore_quality`), Snapshots strip
+  - [ ] Possible: more presets, snapshots kept across sessions
 - [x] User manual: docs/manual (18 chapters, screenshots, how-tos with example scenes), shown
       in the app (Help › Manual), offline PDF (tools/build_manual.py)
 - [x] Preferences like RWildFire: UI scale, font size, preview time limit, always denoise,

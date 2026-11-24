@@ -425,7 +425,10 @@ cargo clippy -j 8 --workspace --all-targets
   mutations (`mutate`). `rmb-app/src/explorer.rs`: the bottom lane (Presets, Random,
   Mutations); thumbnails render one after another on a worker thread with one unbaked
   `GpuRenderer` (shaders reused), with `march.detail` scaled to the scene's image height so
-  the colors match the full image. Presets are `crates/rmb-app/presets/*.rmb`, written by
+  the colors match the full image. Quality filter: `explore::thumb_quality` compares the
+  thumbnail at half and all samples (dust and grain change, detail stays; `MAX_NOISE` in
+  explorer.rs, tuned with `cargo run --release -p rmb-gpu --example explore_quality -- dir`).
+  Snapshots: a fourth strip, session only. Presets are `crates/rmb-app/presets/*.rmb`, written by
   `cargo run --release -p rmb-core --example make_presets -- crates/rmb-app/presets`.
 
 ## User manual

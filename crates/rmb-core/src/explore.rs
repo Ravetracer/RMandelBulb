@@ -255,6 +255,24 @@ pub fn frame(scene: &mut Scene, rnd: &mut Rand) -> bool {
     (0.25..=0.97).contains(&c)
 }
 
+/// How a thumbnail looks, from two renders of it (RGBA8): `half` after half the samples and
+/// `full` after all. Returns `contrast` (standard deviation of the brightness, 0..0.5) and
+/// `noise` (mean brightness change between the two, relative to the contrast). Real detail
+/// stays when more samples come in; sub-pixel dust and grain change, so dusty and grainy
+/// scenes have much noise, empty or flat ones little contrast.
+pub fn thumb_quality(half: &[u8], full: &[u8]) -> (f64, f64) {
+    let lum = |p: &[u8]| (0.2126 * p[0] as f64 + 0.7152 * p[1] as f64 + 0.0722 * p[2] as f64) / 255.0;
+    let n = (full.len() / 4).min(half.len() / 4);
+    if n == 0 {
+        return (0.0, 0.0);
+    }
+    let l: Vec<f64> = full.as_chunks::<4>().0.iter().take(n).map(|p| lum(p)).collect();
+    let mean = l.iter().sum::<f64>() / n as f64;
+    let contrast = (l.iter().map(|v| (v - mean) * (v - mean)).sum::<f64>() / n as f64).sqrt();
+    let change = half.as_chunks::<4>().0.iter().zip(&l).map(|(p, v)| (lum(p) - v).abs()).sum::<f64>() / n as f64;
+    (contrast, change / (contrast + 0.02))
+}
+
 /// A random scene that frames well (up to `tries` attempts; the last attempt otherwise).
 pub fn random_framed(kind: RandomKind, seed: u64, tries: usize) -> Scene {
     let mut rnd = Rand::new(seed);

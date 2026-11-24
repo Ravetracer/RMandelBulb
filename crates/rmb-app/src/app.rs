@@ -836,7 +836,7 @@ impl eframe::App for App {
         if self.explorer.open {
             let mut picked = None;
             let gpu = self.view.gpu_context();
-            egui::Panel::bottom("explore").resizable(false).exact_size(150.0).frame(egui::Frame::new().fill(theme::PANEL).inner_margin(egui::Margin::symmetric(12, 8))).show(ui, |ui| {
+            egui::Panel::bottom("explore").resizable(false).exact_size(self.explorer.lane_height()).frame(egui::Frame::new().fill(theme::PANEL).inner_margin(egui::Margin::symmetric(12, 8))).show(ui, |ui| {
                 picked = self.explorer.show(ui, &self.doc.scene, gpu);
             });
             if let Some(scene) = picked {
