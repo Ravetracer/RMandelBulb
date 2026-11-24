@@ -72,11 +72,14 @@ pub struct MeshSettings {
     /// Writes y up instead of z up (x, z, -y).
     pub y_up: bool,
     pub format: MeshFormat,
+    /// Removes loose pieces with fewer triangles than this share of the whole mesh (percent;
+    /// 0 keeps everything): the dust around fractal surfaces.
+    pub min_piece: f64,
 }
 
 impl Default for MeshSettings {
     fn default() -> Self {
-        MeshSettings { min: v3(-1.5, -1.5, -1.5), max: v3(1.5, 1.5, 1.5), resolution: 256, thickness: 0.5, colors: true, refine: true, y_up: false, format: MeshFormat::Ply }
+        MeshSettings { min: v3(-1.5, -1.5, -1.5), max: v3(1.5, 1.5, 1.5), resolution: 256, thickness: 0.5, colors: true, refine: true, y_up: false, format: MeshFormat::Ply, min_piece: 0.0 }
     }
 }
 
@@ -278,6 +281,72 @@ pub fn surface_nets(field: &mut dyn Field, grid: &Grid, iso: f32, progress: &mut
     Ok(mesh)
 }
 
+/// Removes the connected pieces with fewer than `min_share` (0..1) of the triangles; returns
+/// how many pieces and triangles went.
+pub fn remove_small_pieces(mesh: &mut Mesh, min_share: f64) -> (usize, usize) {
+    if min_share <= 0.0 || mesh.triangles.is_empty() {
+        return (0, 0);
+    }
+    // Union-find over the vertices.
+    let mut parent: Vec<u32> = (0..mesh.positions.len() as u32).collect();
+    fn root(p: &mut [u32], mut i: u32) -> u32 {
+        while p[i as usize] != i {
+            p[i as usize] = p[p[i as usize] as usize];
+            i = p[i as usize];
+        }
+        i
+    }
+    for t in &mesh.triangles {
+        let a = root(&mut parent, t[0]);
+        for &v in &t[1..] {
+            let b = root(&mut parent, v);
+            if a != b {
+                parent[b as usize] = a;
+            }
+        }
+    }
+    let mut count: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
+    let roots: Vec<u32> = mesh.triangles.iter().map(|t| root(&mut parent, t[0])).collect();
+    for r in &roots {
+        *count.entry(*r).or_insert(0) += 1;
+    }
+    let min = (mesh.triangles.len() as f64 * min_share).ceil() as usize;
+    let removed_pieces = count.values().filter(|n| **n < min).count();
+    if removed_pieces == 0 {
+        return (0, 0);
+    }
+    let before = mesh.triangles.len();
+    let keep: Vec<[u32; 3]> = mesh.triangles.iter().zip(&roots).filter(|(_, r)| count[r] >= min).map(|(t, _)| *t).collect();
+    // Only the vertices still used, renumbered.
+    let mut map = vec![u32::MAX; mesh.positions.len()];
+    let mut positions = Vec::new();
+    let mut normals = Vec::new();
+    let mut colors = Vec::new();
+    let mut tris = Vec::with_capacity(keep.len());
+    for t in keep {
+        let mut nt = [0u32; 3];
+        for (k, &v) in t.iter().enumerate() {
+            if map[v as usize] == u32::MAX {
+                map[v as usize] = positions.len() as u32;
+                positions.push(mesh.positions[v as usize]);
+                if let Some(n) = mesh.normals.get(v as usize) {
+                    normals.push(*n);
+                }
+                if let Some(c) = mesh.colors.get(v as usize) {
+                    colors.push(*c);
+                }
+            }
+            nt[k] = map[v as usize];
+        }
+        tris.push(nt);
+    }
+    mesh.positions = positions;
+    mesh.normals = normals;
+    mesh.colors = colors;
+    mesh.triangles = tris;
+    (removed_pieces, before - mesh.triangles.len())
+}
+
 /// Area-weighted vertex normals.
 pub fn vertex_normals(mesh: &Mesh) -> Vec<[f32; 3]> {
     let mut acc = vec![V3::ZERO; mesh.positions.len()];
@@ -395,8 +464,9 @@ pub fn fit_bounds(scene: &Scene) -> Option<(V3, V3)> {
 }
 
 /// Exports the scene's surface to `path` (format from the settings). `progress` gets the share
-/// done and returns false to cancel. Returns the vertex and triangle counts.
-pub fn export(scene: &Scene, settings: &MeshSettings, field: Option<&mut dyn Field>, path: &std::path::Path, progress: &mut dyn FnMut(f32) -> bool) -> Result<(usize, usize), String> {
+/// done and returns false to cancel. Returns the vertex and triangle counts and the number of
+/// loose pieces removed.
+pub fn export(scene: &Scene, settings: &MeshSettings, field: Option<&mut dyn Field>, path: &std::path::Path, progress: &mut dyn FnMut(f32) -> bool) -> Result<(usize, usize, usize), String> {
     let prog = Program::for_scene(scene);
     let grid = Grid::new(settings);
     let iso = (settings.thickness.max(0.0) * grid.step) as f32;
@@ -409,6 +479,7 @@ pub fn export(scene: &Scene, settings: &MeshSettings, field: Option<&mut dyn Fie
     let extra = (settings.refine as u32 + (settings.colors && settings.format != MeshFormat::Stl) as u32) as f32 * 0.1;
     let share = 1.0 / (1.0 + extra);
     let mut mesh = surface_nets(field, &grid, iso, &mut |f| progress(f * share))?;
+    let (pieces, _) = remove_small_pieces(&mut mesh, settings.min_piece.max(0.0) / 100.0);
     if mesh.triangles.is_empty() {
         return Err("no surface in the box".into());
     }
@@ -429,7 +500,7 @@ pub fn export(scene: &Scene, settings: &MeshSettings, field: Option<&mut dyn Fie
     }
     write(&mesh, settings.format, path).map_err(|e| format!("{}: {e}", path.display()))?;
     progress(1.0);
-    Ok((mesh.positions.len(), mesh.triangles.len()))
+    Ok((mesh.positions.len(), mesh.triangles.len(), pieces))
 }
 
 /// Writes the mesh in `format`.
@@ -561,6 +632,32 @@ mod tests {
     }
 
     #[test]
+    fn small_loose_pieces_are_removed() {
+        // A big sphere and a small one beside it.
+        struct Two;
+        impl Field for Two {
+            fn slice(&mut self, g: &Grid, z: usize, out: &mut [f32]) -> Result<(), String> {
+                for (i, v) in out.iter_mut().enumerate() {
+                    let p = g.origin + v3((i % g.n[0]) as f64, (i / g.n[0]) as f64, z as f64) * g.step;
+                    let big = p.length() - 0.6;
+                    let small = (p - v3(0.85, 0.0, 0.0)).length() - 0.1;
+                    *v = big.min(small) as f32;
+                }
+                Ok(())
+            }
+        }
+        let s = MeshSettings { min: v3(-1.0, -1.0, -1.0), max: v3(1.0, 1.0, 1.0), resolution: 48, ..MeshSettings::default() };
+        let mut m = surface_nets(&mut Two, &Grid::new(&s), 0.0, &mut |_| true).unwrap();
+        let before = m.triangles.len();
+        let (pieces, tris) = remove_small_pieces(&mut m, 0.1);
+        assert_eq!(pieces, 1);
+        assert!(tris > 0 && m.triangles.len() == before - tris);
+        assert!(closed(&m));
+        assert!(m.positions.iter().all(|p| (p[0] as f64) < 0.7), "the small sphere is gone");
+        assert_eq!(m.normals.len(), m.positions.len());
+    }
+
+    #[test]
     fn surfaces_cut_by_the_box_are_closed() {
         // The sphere is larger than the box: the box faces close it.
         let s = MeshSettings { min: v3(-0.5, -0.5, -0.5), max: v3(0.5, 0.5, 0.5), resolution: 16, ..MeshSettings::default() };
@@ -576,7 +673,7 @@ mod tests {
         for format in MeshFormat::ALL {
             let s = MeshSettings { resolution: 40, format, ..MeshSettings::default() };
             let path = dir.join(format!("bulb.{}", format.extension()));
-            let (v, t) = export(&scene, &s, None, &path, &mut |_| true).unwrap();
+            let (v, t, _) = export(&scene, &s, None, &path, &mut |_| true).unwrap();
             assert!(v > 1000 && t > 2000, "{v} vertices, {t} triangles");
             let len = std::fs::metadata(&path).unwrap().len();
             assert!(len > 50_000, "{format:?}: {len} bytes");

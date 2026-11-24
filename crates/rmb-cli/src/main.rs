@@ -18,7 +18,8 @@ USAGE:
                  [--ffmpeg path] [--audio file [--audio-offset s] | --no-audio]
                  [--shutter fraction]
   rmb-cli mesh <scene> [-o out.ply|.obj|.stl] [-r resolution] [--box x0,y0,z0,x1,y1,z1]
-                 [--thickness cells] [--no-colors] [--no-refine] [--y-up] [--cpu]
+                 [--thickness cells] [--no-colors] [--no-refine] [--y-up] [--min-piece percent]
+                 [--cpu]
   rmb-cli voxels <scene> [-o folder|out.vox] [-r resolution] [--box …] [--thickness cells]
                  [--no-colors] [--hollow] [--cpu]
   rmb-cli --network [--name name] [--key key] [--port n] [--cpu]
@@ -62,7 +63,8 @@ estimates). The extension picks the format: .ply (binary, normals and vertex col
 (normals, vertex colors as `v x y z r g b`), .stl (binary, no colors). -r sets the grid cells
 along the longest side of the box (default 256); --box the sampled box (default: fitted to the
 surface); --thickness how many cells outside the fractal the surface lies (default 0.5; more
-thickens thin parts); --y-up writes y up instead of z up. The distances come from the GPU
+thickens thin parts); --y-up writes y up instead of z up; --min-piece removes loose pieces
+with fewer triangles than that percentage of the mesh. The distances come from the GPU
 unless --cpu is given.
 
 voxels writes the same grid as voxels: a folder of PNG images, one per z layer from the bottom
@@ -199,6 +201,7 @@ fn mesh(args: &[String], voxels: bool) -> Result<(), String> {
             }
             "--hollow" if voxels => vs.hollow = true,
             "--no-refine" => s.refine = false,
+            "--min-piece" => s.min_piece = val("--min-piece")?.parse().map_err(|_| "bad piece size")?,
             "--y-up" => s.y_up = true,
             "--cpu" => cpu = true,
             o if o.starts_with('-') => return Err(format!("unknown option '{o}'")),
@@ -253,8 +256,9 @@ fn mesh(args: &[String], voxels: bool) -> Result<(), String> {
         let (n, files) = rmb_core::voxel_export::export(&scene, &s, &vs, field, &output, &mut report)?;
         format!("{n} voxels in {} file{}", files.len(), if files.len() == 1 { "" } else { "s" })
     } else {
-        let (v, t) = rmb_core::mesh_export::export(&scene, &s, field, &output, &mut report)?;
-        format!("{v} vertices, {t} triangles")
+        let (v, t, pieces) = rmb_core::mesh_export::export(&scene, &s, field, &output, &mut report)?;
+        let removed = if pieces > 0 { format!(", {pieces} loose pieces removed") } else { String::new() };
+        format!("{v} vertices, {t} triangles{removed}")
     };
     eprintln!();
     println!("{} ({summary}, {:.1} s)", output.display(), start.elapsed().as_secs_f64());

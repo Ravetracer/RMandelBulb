@@ -213,6 +213,8 @@ How it works:
 
 ## Mesh and voxel export
 
+While the window is open, the view shows the box as an orange wire frame.
+
 **File › Export mesh…** saves the surface as a closed triangle mesh: for 3D printing, or to
 use the fractal in Blender and other 3D programs. The distance estimate is sampled on a grid in
 a box (on the GPU when there is one), and the surface between the samples becomes the mesh.
@@ -225,6 +227,7 @@ The export runs in the background; the preview pauses meanwhile.
 | Box X, Y, Z | The sampled box (from, to; world units). Opening the window fits it to the scene's surfaces; **Fit box to surface** does that again. Where the surface reaches the box, the mesh is closed by a flat cap, so cutting the box smaller exports a slice. | fitted |
 | Resolution | Grid cells along the longest side of the box. The triangle count grows with its square: about 0.8 million at 256, 4 million at 512, 23 million at 1024 for the Mandelbulb. | 256 |
 | Thickness | How far outside the fractal the surface lies, in grid cells. 0.5 keeps the shape; larger values thicken thin parts so they survive printing. | 0.5 |
+| Remove pieces under | Removes loose pieces with fewer triangles than this share of the mesh, in percent: the dust of small separate bits around fractal surfaces, which printers cannot print. 0 keeps everything; 0.1 removes the dust and keeps the real parts. The status message tells how many pieces went. | 0 |
 | Refine | Moves every vertex onto the surface after the grid placed it: sharper edges, a little slower. | On |
 | Vertex colors | The scene's colors at every vertex (gradient, color maps, texture layers, model colors; no lighting). PLY and OBJ only. | On |
 | Y up | Writes y as the up axis. RMandelbulb3D uses z up, like Blender's PLY import; Blender's OBJ import and many other programs expect y up. | Off |
@@ -254,9 +257,9 @@ resolution and thickness work as for meshes; the grid's samples are the voxels.
 | Format | **PNG slices**: a folder with one image per z layer (`slice_0000.png` is the bottom), seen from above with x to the right; colored voxels on transparency, or white on black. For 3D printers that print from slices, image tools and volume programs. **MagicaVoxel**: one `.vox` model (z up, like the scene). A model holds at most 256 voxels per side, so the resolution is limited to that, and the colors are reduced to a palette of 255. | PNG slices |
 
 !!! note
-    The mesh is closed and every triangle faces outward, but a fractal's mesh can have very
-    many small separate pieces (dust around the surface). Slicers and Blender's *Select linked*
-    / *Delete loose* remove those. Inside rendering and deep zooms beyond about 10⁵ are not
+    The mesh is closed and every triangle faces outward. A fractal's mesh can have many small
+    separate pieces (dust around the surface); **Remove pieces under** takes them out. Inside
+    rendering and deep zooms beyond about 10⁵ are not
     supported (the grid uses single precision on the GPU).
 
 ## Command line: rmb-cli
@@ -316,7 +319,7 @@ output: the scene's name with `.mp4`.
 
 ```
 rmb-cli mesh <scene> [-o out.ply|.obj|.stl] [-r resolution] [--box x0,y0,z0,x1,y1,z1]
-             [--thickness cells] [--no-colors] [--no-refine] [--y-up] [--cpu]
+             [--thickness cells] [--no-colors] [--no-refine] [--y-up] [--min-piece percent] [--cpu]
 ```
 
 Exports the surface as a mesh, like **File › Export mesh…**. The extension of `-o` picks the
@@ -328,6 +331,7 @@ format (default: the scene's name with `.ply`).
 | `--box x0,y0,z0,x1,y1,z1` | The sampled box. Default: fitted to the surface. |
 | `--thickness cells` | How far outside the fractal the surface lies (default 0.5). |
 | `--no-colors`, `--no-refine` | Without vertex colors / without moving the vertices onto the surface. |
+| `--min-piece percent` | Removes loose pieces with fewer triangles than this share of the mesh. |
 | `--y-up` | Writes y as the up axis. |
 | `--cpu` | Computes the distances on the CPU instead of the GPU. |
 

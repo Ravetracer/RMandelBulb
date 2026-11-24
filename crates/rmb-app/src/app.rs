@@ -893,6 +893,7 @@ impl eframe::App for App {
                 self.notify(msg);
             }
         }
+        self.view.export_box = self.mesh.shown_box();
         if let Some(msg) = self.mesh.show(&ctx, &self.doc.scene, self.view.gpu_context()) {
             if msg.starts_with("Mesh export failed") {
                 self.notify_err(msg);

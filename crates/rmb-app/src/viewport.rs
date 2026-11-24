@@ -85,6 +85,8 @@ pub struct Viewport {
     pub preview: Option<(Scene, bool, String)>,
     /// Camera path drawn over the image.
     pub overlay: Option<PathOverlay>,
+    /// The mesh / voxel export box, drawn while its window is open.
+    pub export_box: Option<(V3, V3)>,
     /// Flight being recorded.
     pub recording: Option<Recording>,
     /// Draw the lights with their gizmos.
@@ -163,6 +165,7 @@ impl Viewport {
             paused: false,
             preview: None,
             overlay: None,
+            export_box: None,
             recording: None,
             show_lights: true,
             gizmo_mode: Default::default(),
@@ -357,6 +360,9 @@ impl Viewport {
         }
         if self.show_guides && shown_plain {
             crate::gizmos::draw_grid(ui.painter(), &crate::gizmos::Proj::new(&camera, aspect, rect), rect);
+        }
+        if let Some((lo, hi)) = self.export_box.filter(|_| shown_plain) {
+            crate::gizmos::draw_box(ui.painter(), &crate::gizmos::Proj::new(&camera, aspect, rect), rect, lo, hi);
         }
         if shown_plain {
             self.draw_overlay(ui, rect, &camera, aspect);

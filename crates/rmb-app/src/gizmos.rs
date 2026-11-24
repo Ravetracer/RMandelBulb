@@ -699,6 +699,18 @@ pub fn position_text(h: Handle, scene: &Scene) -> Option<String> {
 
 /// Draws the ground grid (plane z = 0) around the camera's spot on it, the x and y axes on
 /// it and the z axis through the origin.
+/// The box of the mesh and voxel export (corners `lo`, `hi`) as a wire frame.
+pub fn draw_box(painter: &Painter, proj: &Proj, rect: Rect, lo: V3, hi: V3) {
+    let painter = painter.with_clip_rect(rect);
+    let c = |i: usize| V3 { x: if i & 1 == 0 { lo.x } else { hi.x }, y: if i & 2 == 0 { lo.y } else { hi.y }, z: if i & 4 == 0 { lo.z } else { hi.z } };
+    let stroke = Stroke::new(1.5, Color32::from_rgba_unmultiplied(255, 200, 80, 220));
+    for (a, b) in [(0, 1), (2, 3), (4, 5), (6, 7), (0, 2), (1, 3), (4, 6), (5, 7), (0, 4), (1, 5), (2, 6), (3, 7)] {
+        if let Some((p, q)) = proj.segment(c(a), c(b)) {
+            painter.line_segment([p, q], stroke);
+        }
+    }
+}
+
 pub fn draw_grid(painter: &Painter, proj: &Proj, rect: Rect) {
     let painter = painter.with_clip_rect(rect);
     let cam = &proj.cam;

@@ -51,6 +51,11 @@ impl MeshDialog {
         MeshDialog { open: false, settings: MeshSettings::default(), path: None, voxels: false, vox: VoxelSettings::default(), vox_path: None, job: None, fitting: None, fitted: None, message: None }
     }
 
+    /// The box to show in the view while the window is open.
+    pub fn shown_box(&self) -> Option<(V3, V3)> {
+        self.open.then_some((self.settings.min, self.settings.max))
+    }
+
     pub fn busy(&self) -> bool {
         self.job.is_some()
     }
@@ -175,6 +180,7 @@ impl MeshDialog {
                         return;
                     }
                     let s = &mut self.settings;
+                    widgets::slider(ui, "Remove pieces under", "Removes loose pieces with fewer triangles than this share of the mesh, in percent (the dust around fractal surfaces, which 3D printers cannot print; 0 keeps everything)", &mut s.min_piece, 0.0..=5.0, d.min_piece);
                     widgets::checkbox(ui, "Refine", "Moves every vertex onto the surface after the grid placed it: sharper edges, a little slower", &mut s.refine);
                     widgets::checkbox(ui, "Vertex colors", "The scene's colors at every vertex (PLY and OBJ; STL has none)", &mut s.colors);
                     widgets::checkbox(ui, "Y up", "Write y as the up axis (many 3D programs; RMandelbulb3D uses z up)", &mut s.y_up);
@@ -299,8 +305,9 @@ impl MeshDialog {
                     let (n, files) = rmb_core::voxel_export::export(&sc, &used, &vox, field, &path, &mut report)?;
                     return Ok(format!("Saved {} ({n} voxels, {} file{})", path.display(), files.len(), if files.len() == 1 { "" } else { "s" }));
                 }
-                let (v, t) = rmb_core::mesh_export::export(&sc, &used, field, &path, &mut report)?;
-                Ok(format!("Saved {} ({v} vertices, {t} triangles)", path.display()))
+                let (v, t, pieces) = rmb_core::mesh_export::export(&sc, &used, field, &path, &mut report)?;
+                let removed = if pieces > 0 { format!(", {pieces} loose pieces removed") } else { String::new() };
+                Ok(format!("Saved {} ({v} vertices, {t} triangles{removed})", path.display()))
             })();
             let _ = tx.send(res);
         });
