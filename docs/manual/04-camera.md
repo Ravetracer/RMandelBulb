@@ -101,6 +101,40 @@ Below them:
 
 Below the values, "Looking along (…)" shows the viewing direction.
 
+### Projection and stereo
+
+How the camera maps directions onto the image, and stereo images for 3D glasses and VR
+headsets.
+
+![Projections and stereo layouts: perspective, fisheye, fisheye circle, 360° panorama, 180° panorama, anaglyph, side by side, 360° over / under](images/projections.jpg)
+
+| Setting | What it does | Default |
+|---------|--------------|---------|
+| Projection | **Perspective**: a normal camera with the field of view above. **Fisheye**: an equidistant fisheye that fills the image; the fisheye angle spans the image height. **Fisheye circle**: the same in a circle as high as the image, black outside (planetarium dome masters; use a square image). **Panorama 360°**: every direction in an equirectangular image (VR video, environment maps; 2:1 per eye). **Panorama 180°**: the front half (VR180; 1:1 per eye). | Perspective |
+| Fisheye angle | The fisheye's field of view across the image height in degrees. 180° shows a half sphere; up to 360°. | 180° |
+| Stereo | **Anaglyph**: both eyes in one image for red/cyan glasses (twice the render time). **Side by side**: left eye in the left half. **Over / under**: left eye in the top half (the usual layout of 360° VR video). Side by side and over / under split the image size between the eyes. | Off |
+| Convergence | The distance at which both eyes see the same image point. Things at this distance appear on the screen plane, nearer ones in front of it, farther ones behind. When stereo is switched on, it starts at the surface in the view center. Double-click: the surface in the view center again. | |
+| Eye distance | The distance between the eyes, relative to the convergence distance. About 1/30 (0.033) is comfortable; strong values strain the eyes. | 0.033 |
+| Swap eyes | Right eye first: for cross-eyed viewing of side-by-side pairs, or glasses worn the other way round. | Off |
+| Color anaglyph | The red channel shows the left eye's colors. Off: its brightness, which flickers less between the eyes on strongly colored surfaces. | On |
+
+**Converge on center** sets the convergence to the surface in the view center. **Fit image
+size** appears when the image does not match the projection (2:1 per eye for the 360°
+panorama, 1:1 for the 180° panorama and the fisheye circle) and sets the height accordingly.
+
+In the panoramas, the eyes turn with every viewing direction (omnidirectional stereo), so the
+depth is right in all directions. Toward the poles (above 60° up or down) the eye distance
+fades out, so the image does not twist when you look straight up or down in a headset.
+
+Depth of field works with every projection: the sharp distance lies on a sphere around the
+camera instead of a plane, except for the perspective.
+
+!!! note
+    Lens flares, the light and object gizmos, the guides and the animation path overlay are
+    drawn in screen space for the perspective camera, so they only show in the perspective
+    projection without stereo. Clicks into the image (focus, picking objects) work in every
+    projection; in a side-by-side or over/under image they use the eye you click on.
+
 ### Image size
 
 The size and aspect of saved images. The preview keeps the same aspect ratio.

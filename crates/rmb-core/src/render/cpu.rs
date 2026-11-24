@@ -727,8 +727,20 @@ impl<'a> Shader<'a> {
         self.sample_aux(ev, px, py, sample).color
     }
 
-    /// One sample of pixel (`px`, `py`) with the denoiser's helper values.
+    /// One sample of pixel (`px`, `py`) with the denoiser's helper values. Anaglyphs render
+    /// both eyes and mix them.
     pub fn sample_aux(&self, ev: &mut Evaluator, px: u32, py: u32, sample: u32) -> Sample {
+        let v = &self.frame.view;
+        if v.eye_count() == 1 {
+            return self.sample_eye(ev, px, py, sample, 0);
+        }
+        let l = self.sample_eye(ev, px, py, sample, 0);
+        let r = self.sample_eye(ev, px, py, sample, 1);
+        Sample { color: v.anaglyph(l.color, r.color), albedo: v.anaglyph(l.albedo, r.albedo), normal: (l.normal + r.normal) * 0.5 }
+    }
+
+    /// One sample of pixel (`px`, `py`) for image `k` (the eye of an anaglyph).
+    fn sample_eye(&self, ev: &mut Evaluator, px: u32, py: u32, sample: u32, k: u32) -> Sample {
         let sc = self.scene;
         let fr = &self.frame;
         let mut rng = Rng::new(px, py, sample);
@@ -742,14 +754,18 @@ impl<'a> Shader<'a> {
             }
             None => &sc.camera,
         };
-        let sx = ((px as f64 + jx) / fr.width as f64) * 2.0 - 1.0;
-        let sy = 1.0 - ((py as f64 + jy) / fr.height as f64) * 2.0;
-        let mut o = cam.position;
-        let mut d = cam.ray_dir(sx, sy, fr.aspect);
+        let (sx, sy, eye) = fr.view.eye_screen(px as f64 + jx, py as f64 + jy, fr.width, fr.height, k);
+        let Some((mut o, mut d)) = fr.view.ray(cam, sx, sy, fr.aspect, eye) else {
+            return Sample { color: [0.0; 3], albedo: [0.0; 3], normal: V3::ZERO };
+        };
         if sc.dof.enabled && sample > 0 {
-            let focus = o + d * (sc.dof.focus_distance / d.dot(cam.forward));
+            // Perspective: focus on a plane; other projections: on a sphere, with the lens
+            // across the ray.
+            let plane = fr.view.projection == crate::scene::Projection::Perspective;
+            let focus = o + d * if plane { sc.dof.focus_distance / d.dot(cam.forward) } else { sc.dof.focus_distance };
+            let (lr, lu) = if plane { (cam.right, cam.up) } else { lens_axes(d, cam) };
             let (r, a) = (rng.next_f64().sqrt() * sc.dof.aperture * sc.dof.focus_distance * 0.1, rng.next_f64() * std::f64::consts::TAU);
-            o = o + cam.right * (r * a.cos()) + cam.up * (r * a.sin());
+            o = o + lr * (r * a.cos()) + lu * (r * a.sin());
             d = (focus - o).normalize();
         }
         let t0 = super::start_distance(sc);
@@ -1345,15 +1361,31 @@ impl CpuRenderer {
     }
 }
 
+/// Two unit axes across the direction `d` (the lens of depth of field for projections other
+/// than the perspective).
+pub fn lens_axes(d: V3, cam: &crate::scene::Camera) -> (V3, V3) {
+    let r = d.cross(cam.up);
+    let r = if r.length() > 1e-6 { r.normalize() } else { cam.right };
+    (r, r.cross(d).normalize())
+}
+
+/// Screen point (`sx`, `sy` in -1..1 over the whole image) to the camera ray with the scene's
+/// projection and stereo layout.
+fn screen_ray(scene: &Scene, sx: f64, sy: f64, width: u32, height: u32) -> Option<(V3, V3)> {
+    let fx = (sx + 1.0) * 0.5 * width as f64;
+    let fy = (1.0 - sy) * 0.5 * height as f64;
+    super::view_ray(scene, fx, fy, width, height)
+}
+
 /// Distance along the ray through screen point (`sx`, `sy` in -1..1) to the surface, if any
 /// (picking, focus distance, navigation speed).
 pub fn pick(scene: &Scene, sx: f64, sy: f64, width: u32, height: u32) -> Option<(f64, V3)> {
     let prog = Program::for_scene(scene);
     let shader = Shader::new(scene, &prog, width, height);
     let mut ev = prog.evaluator();
-    let d = scene.camera.ray_dir(sx, sy, shader.frame.aspect);
-    let (hit, _, _) = shader.march(&mut ev, scene.camera.position, d, super::start_distance(scene), scene.march.max_distance, scene.march.max_steps);
-    hit.map(|h| (h.t, h.pos))
+    let (o, d) = screen_ray(scene, sx, sy, width, height)?;
+    let (hit, _, _) = shader.march(&mut ev, o, d, super::start_distance(scene), scene.march.max_distance, scene.march.max_steps);
+    hit.map(|h| ((h.pos - scene.camera.position).length(), h.pos))
 }
 
 /// Share (0..1) of a small disc around a light that the camera sees past the fractal: rays to
@@ -1391,14 +1423,25 @@ pub fn light_visibility(scene: &Scene, p: V3, directional: bool, radius: f64) ->
     seen as f64 / N as f64
 }
 
+/// Distance along the camera's forward axis to the surface, if any (the view center of every
+/// projection and stereo layout: pivots, focus distance).
+pub fn pick_center(scene: &Scene) -> Option<(f64, V3)> {
+    let prog = Program::for_scene(scene);
+    let shader = Shader::new(scene, &prog, 256, 256);
+    let mut ev = prog.evaluator();
+    let cam = &scene.camera;
+    let (hit, _, _) = shader.march(&mut ev, cam.position, cam.forward, super::start_distance(scene), scene.march.max_distance, scene.march.max_steps);
+    hit.map(|h| (h.t, h.pos))
+}
+
 /// The object at screen position (`sx`, `sy`): 0 the main fractal, k the k-th composed object;
 /// None where the ray hits nothing.
 pub fn pick_object(scene: &Scene, sx: f64, sy: f64, width: u32, height: u32) -> Option<u32> {
     let prog = Program::for_scene(scene);
     let shader = Shader::new(scene, &prog, width, height);
     let mut ev = prog.evaluator();
-    let d = scene.camera.ray_dir(sx, sy, shader.frame.aspect);
-    let (hit, _, _) = shader.march(&mut ev, scene.camera.position, d, super::start_distance(scene), scene.march.max_distance, scene.march.max_steps);
+    let (o, d) = screen_ray(scene, sx, sy, width, height)?;
+    let (hit, _, _) = shader.march(&mut ev, o, d, super::start_distance(scene), scene.march.max_distance, scene.march.max_steps);
     hit.map(|h| h.orbit.object)
 }
 

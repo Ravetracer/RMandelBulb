@@ -158,6 +158,34 @@
   - [x] The top bar no longer overlaps: icons only when the labels do not fit, the document
         name only where there is room
 
+## Gaps to Mandelbulb3D and Mandelbulber 2 (analysis 2026-11-24)
+
+Features the two programs have that RMandelbulb3D does not have yet, in the planned order.
+
+- [x] Camera projections: fisheye (equidistant, full frame or circle, up to 360°),
+      equirectangular 360° panorama, 180° half panorama (dome / VR video). Mandelbulber
+      `projection_3d`
+- [x] Stereo rendering: anaglyph (red/cyan, color or half color), side-by-side and over-under
+      pairs, eye distance and convergence; omnidirectional stereo in the panoramas (eye
+      distance fades out toward the poles). Mandelbulber `stereo`, MB3D stereo
+  - [ ] Possible: lens flares, gizmos and guides in the other projections / per eye (now only
+        in the plain perspective), VR video metadata in exported movies
+- [ ] Mesh export: distance field sampled on a grid, marching cubes, OBJ/PLY with vertex colors
+      (3D printing, Blender). Mandelbulber `mesh_export`, MB3D BulbTracer2
+- [ ] Voxel slice export (image stack per Z layer). MB3D `VoxelExport`, Mandelbulber
+      `voxel_export`
+- [ ] 16-bit PNG / EXR output, Z-buffer and render passes (depth, normal, albedo, emission) for
+      compositing. MB3D `zbuf16bit`, Mandelbulber
+- [ ] Big renders in tiles (sizes beyond the GPU memory, for prints). MB3D `Tiling`
+- [ ] Batch rendering / render queue (several scenes and animations overnight). MB3D
+      `BatchForm`, Mandelbulber `render_queue`
+- [ ] Script expressions: parameters driven by formulas of time or other parameters (animations).
+      Mandelbulber `scripts`
+- [ ] Kleinian DE and inside rendering (see Formula editing above)
+- [ ] Compare with MB3D's own Monte Carlo renderer (`mb3d/CalcMonteCarlo.pas`)
+- Low value (covered by raytraced AO and bloom): SSAO, HDR blur post effects; netrender
+  (several machines)
+
 ## Performance
 
 A 1920 × 1080 GPU render (64 samples, the CLI default) took about 2 minutes on the RTX A2000

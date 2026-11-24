@@ -216,3 +216,24 @@ Example scene: `deep-zoom.rmb` (100 000 times closer than the Mandelbulb preset)
 5. Play it back, then **Export animation…** as a movie (needs ffmpeg) or as PNG frames.
 
 The chapter "Animation" explains timing, easing, motion blur and sound tracks.
+
+## A 360° stereo panorama for VR
+
+Example scene: `vr-panorama.rmb` (inside the Amazing Box).
+
+1. Fly into the structure: a panorama shows every direction, so the camera should be
+   surrounded by detail rather than look at the fractal from outside.
+2. In the **Camera** tab, set **Projection** to *Panorama 360°* and **Stereo** to
+   *Over / under* (the layout VR players expect for 360° video).
+3. Click **Fit image size**: over / under needs a square image (2:1 per eye), for example
+   4096 × 4096 for a sharp headset image.
+4. The convergence starts at the surface in the view center. Things at that distance appear
+   at a comfortable depth; nearer parts come toward the viewer. Keep **Eye distance** near
+   0.033; strong values look like a miniature and strain the eyes.
+5. Export the image, or an animation as a movie. Many players and platforms need metadata to
+   play a file as stereo 360° video (for example Google's Spatial Media Metadata Injector).
+
+![A 360° over / under panorama: left eye on top, right eye below](images/howto-vr-panorama.jpg)
+
+For planetarium domes, use *Fisheye circle* with a fisheye angle of 180° and a square image;
+for VR180, *Panorama 180°* with *Side by side*.

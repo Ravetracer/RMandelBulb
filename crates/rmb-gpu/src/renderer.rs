@@ -147,6 +147,8 @@ struct Uniforms {
     haze2: [f32; 4],
     slotw: [[f32; 4]; 4],
     cfac: [f32; 4],
+    view: [f32; 4],
+    view2: [f32; 4],
 }
 
 /// Splits an f64 into the high and low f32 of a double-float.
@@ -654,6 +656,8 @@ fn uniforms(scene: &Scene, prog: &Program, w: u32, h: u32, fast: bool) -> Unifor
         haze_col: c4(scene.fog.haze_color, scene.fog.haze_end),
         slotw,
         cfac,
+        view: [fr.view.projection.index() as f32, fr.view.fisheye_half as f32, fr.view.stereo.index() as f32, if fr.view.swap { 1.0 } else { 0.0 }],
+        view2: [fr.view.half_eye as f32, fr.view.convergence as f32, if fr.view.anaglyph_color { 1.0 } else { 0.0 }, fr.view.eye_count() as f32],
         haze2: [if scene.fog.haze_shape == rmb_core::scene::HazeShape::Iterations { 1.0 } else { 0.0 }, scene.fog.haze_size as f32, 0.0, 0.0],
     }
 }

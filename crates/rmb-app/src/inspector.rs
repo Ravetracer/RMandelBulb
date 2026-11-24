@@ -274,7 +274,7 @@ impl Inspector {
             if let Some(p) = place {
                 let cam = scene.camera.clone();
                 // The surface point in the middle of the view (else a point ahead).
-                let center = || rmb_core::render::cpu::pick(scene, 0.0, 0.0, 256, 256).map(|(_, h)| h).unwrap_or(cam.position + cam.forward * rmb_core::render::cpu::distance_at_camera(scene).max(0.1) * 2.0);
+                let center = || rmb_core::render::cpu::pick_center(scene).map(|(_, h)| h).unwrap_or(cam.position + cam.forward * rmb_core::render::cpu::distance_at_camera(scene).max(0.1) * 2.0);
                 let aim = center();
                 if let Some(li) = scene.lighting.lights.get_mut(self.light) {
                     match p {
@@ -448,6 +448,8 @@ fn camera(ui: &mut Ui, scene: &mut Scene, view: &mut Viewport) {
         ui.label(RichText::new(format!("Looking along ({:.3}, {:.3}, {:.3})", f.x, f.y, f.z)).size(theme::fs(11.0)).color(theme::TEXT_MUTED));
     }
 
+    projection(ui, scene);
+
     if widgets::section(ui, "Image size", false).open {
         ui.label(RichText::new("Size and aspect of saved images; the preview keeps the aspect.").size(theme::fs(11.0)).color(theme::TEXT_MUTED));
         widgets::grid(ui, "size", |ui| {
@@ -500,6 +502,88 @@ fn render(ui: &mut Ui, scene: &mut Scene) {
     }
 }
 
+/// Camera tab: projection (fisheye, panoramas) and stereo rendering.
+fn projection(ui: &mut Ui, scene: &mut Scene) {
+    use rmb_core::scene::{Projection, StereoMode, View};
+    let dv = View::default();
+    let sec = widgets::section(ui, "Projection and stereo", true);
+    if sec.reset {
+        scene.view = dv.clone();
+    }
+    if !sec.open {
+        return;
+    }
+    // Distance to the surface in the view center (a CPU march; only on demand).
+    let probe = scene.clone();
+    let center = move || rmb_core::render::cpu::pick_center(&probe).map_or(probe.dof.focus_distance, |(t, _)| t);
+    let v = &mut scene.view;
+    widgets::grid(ui, "view", |ui| {
+        widgets::label(
+            ui,
+            "Projection",
+            "How directions map onto the image. Perspective: a normal camera (field of view above). Fisheye: equidistant, the fisheye field of view spans the image height. Fisheye circle: the same in a circle as high as the image, black outside (planetarium dome masters, square image). Panorama 360°: every direction, equirectangular (VR video, environment maps; 2:1 per eye). Panorama 180°: the front half (VR180; 1:1 per eye).",
+        );
+        egui::ComboBox::from_id_salt("projection").selected_text(v.projection.label()).show_ui(ui, |ui| {
+            for p in Projection::ALL {
+                ui.selectable_value(&mut v.projection, p, p.label());
+            }
+        });
+        ui.end_row();
+        if matches!(v.projection, Projection::Fisheye | Projection::FisheyeCircle) {
+            widgets::slider(ui, "Fisheye angle", "Field of view of the fisheye across the image height, in degrees (180: a half sphere; up to 360)", &mut v.fisheye_fov, 10.0..=360.0, dv.fisheye_fov);
+        }
+        widgets::label(
+            ui,
+            "Stereo",
+            "Renders an image for each eye. Anaglyph: both in one image for red/cyan glasses (twice the render time). Side by side: left eye in the left half (VR180, cross-eyed or parallel viewing). Over / under: left eye on top (360° VR video). Side by side and over / under split the image size between the eyes.",
+        );
+        egui::ComboBox::from_id_salt("stereo").selected_text(v.stereo.label()).show_ui(ui, |ui| {
+            for m in StereoMode::ALL {
+                ui.selectable_value(&mut v.stereo, m, m.label());
+            }
+        });
+        ui.end_row();
+        if v.stereo != StereoMode::Off {
+            if v.convergence <= 0.0 {
+                // Start at the distance to the surface in the view center.
+                v.convergence = center();
+            }
+            let c0 = v.convergence;
+            widgets::slider_log(ui, "Convergence", "Distance at which both eyes see the same image point: it appears on the screen plane, nearer things in front of it, farther ones behind (world units; double-click: the surface in the view center)", &mut v.convergence, 1e-6..=100.0, 0.0);
+            if v.convergence <= 0.0 {
+                v.convergence = if c0 > 0.0 { center() } else { c0 };
+            }
+            widgets::slider_log(ui, "Eye distance", "Distance between the eyes relative to the convergence distance: more depth. About 1/30 (0.033) is comfortable; strong values strain the eyes", &mut v.eye_ratio, 0.001..=0.3, dv.eye_ratio);
+            widgets::checkbox(ui, "Swap eyes", "Right eye first (cross-eyed viewing of side-by-side pairs, or glasses the other way round)", &mut v.swap_eyes);
+            if v.stereo == StereoMode::Anaglyph {
+                widgets::checkbox(ui, "Color anaglyph", "The red channel shows the left eye's colors. Off: its brightness (less flicker between the eyes on strongly colored surfaces)", &mut v.anaglyph_color);
+            }
+        }
+    });
+    ui.horizontal_wrapped(|ui| {
+        if v.stereo != StereoMode::Off && ui.button("Converge on center").on_hover_text("Set the convergence to the surface in the view center (it then lies on the screen plane)").clicked() {
+            v.convergence = center();
+        }
+        // Image size for the projection's natural aspect (per eye).
+        if let Some(a) = v.projection.natural_aspect() {
+            let (ex, ey) = match v.stereo {
+                StereoMode::SideBySide => (2.0, 1.0),
+                StereoMode::OverUnder => (1.0, 2.0),
+                _ => (1.0, 1.0),
+            };
+            let total = a * ex / ey;
+            let w = scene.width;
+            let h = ((w as f64 / total).round() as u32).max(16);
+            if h != scene.height && ui.button("Fit image size").on_hover_text(format!("Set the image to {w} × {h}: {a}:1 per eye, as the projection needs")).clicked() {
+                scene.height = h;
+            }
+        }
+    });
+    if !scene.view.is_plain() {
+        ui.label(RichText::new("Lens flares, gizmos and guides only show in the perspective projection without stereo.").size(theme::fs(11.0)).color(theme::TEXT_MUTED));
+    }
+}
+
 fn color(ui: &mut Ui, scene: &mut Scene) {
     let d = rmb_core::scene::Material::default();
     let m = &mut scene.material;
@@ -519,7 +603,7 @@ fn color(ui: &mut Ui, scene: &mut Scene) {
             Some(PositionRequest::CenterFromView) => {
                 // The surface point in the middle of the view (else a point ahead).
                 let cam = scene.camera.clone();
-                let p = rmb_core::render::cpu::pick(scene, 0.0, 0.0, 256, 256).map(|(_, h)| h).unwrap_or(cam.position + cam.forward * rmb_core::render::cpu::distance_at_camera(scene).max(0.1) * 2.0);
+                let p = rmb_core::render::cpu::pick_center(scene).map(|(_, h)| h).unwrap_or(cam.position + cam.forward * rmb_core::render::cpu::distance_at_camera(scene).max(0.1) * 2.0);
                 scene.material.color_center = [p.x, p.y, p.z];
             }
             Some(PositionRequest::DirectionFromCamera) => {

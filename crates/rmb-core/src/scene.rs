@@ -27,6 +27,8 @@ pub struct Scene {
     pub background: Background,
     pub fog: Fog,
     pub dof: Dof,
+    /// Camera projection (perspective, fisheye, panoramas) and stereo rendering.
+    pub view: View,
     pub post: Post,
     pub cut: Cutting,
     /// Free text (author, notes, where it was imported from).
@@ -61,6 +63,7 @@ impl Default for Scene {
             background: Background::default(),
             fog: Fog::default(),
             dof: Dof::default(),
+            view: View::default(),
             post: Post::default(),
             cut: Cutting::default(),
             notes: String::new(),
@@ -1387,6 +1390,117 @@ pub struct Dof {
 impl Default for Dof {
     fn default() -> Self {
         Dof { enabled: false, aperture: 0.02, focus_distance: 2.5 }
+    }
+}
+
+/// How the camera maps directions onto the image.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Projection {
+    /// Pinhole camera with the camera's field of view.
+    #[default]
+    Perspective,
+    /// Equidistant fisheye filling the whole image; `View::fisheye_fov` spans the image height.
+    Fisheye,
+    /// Equidistant fisheye in a circle as high as the image, black outside (dome masters).
+    FisheyeCircle,
+    /// Equirectangular 360° × 180° panorama (VR video, environment maps; image 2:1 per eye).
+    Panorama,
+    /// Equirectangular 180° × 180° half panorama (VR180; image 1:1 per eye).
+    HalfPanorama,
+}
+
+impl Projection {
+    pub const ALL: [Projection; 5] = [Projection::Perspective, Projection::Fisheye, Projection::FisheyeCircle, Projection::Panorama, Projection::HalfPanorama];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Projection::Perspective => "Perspective",
+            Projection::Fisheye => "Fisheye",
+            Projection::FisheyeCircle => "Fisheye circle",
+            Projection::Panorama => "Panorama 360°",
+            Projection::HalfPanorama => "Panorama 180°",
+        }
+    }
+
+    pub fn index(self) -> u32 {
+        Projection::ALL.iter().position(|&p| p == self).unwrap_or(0) as u32
+    }
+
+    /// Width / height of one eye's image that shows the projection without distortion
+    /// (None: any).
+    pub fn natural_aspect(self) -> Option<f64> {
+        match self {
+            Projection::Panorama => Some(2.0),
+            Projection::HalfPanorama | Projection::FisheyeCircle => Some(1.0),
+            _ => None,
+        }
+    }
+}
+
+/// Stereo rendering: two eyes side by side, one above the other, or mixed as a red/cyan
+/// anaglyph.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum StereoMode {
+    #[default]
+    Off,
+    /// Red / cyan glasses: the red channel from the left eye, green and blue from the right.
+    Anaglyph,
+    /// Left eye in the left half of the image, right eye in the right half.
+    SideBySide,
+    /// Left eye in the top half, right eye in the bottom half (360° VR video).
+    OverUnder,
+}
+
+impl StereoMode {
+    pub const ALL: [StereoMode; 4] = [StereoMode::Off, StereoMode::Anaglyph, StereoMode::SideBySide, StereoMode::OverUnder];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            StereoMode::Off => "Off",
+            StereoMode::Anaglyph => "Anaglyph (red/cyan)",
+            StereoMode::SideBySide => "Side by side",
+            StereoMode::OverUnder => "Over / under",
+        }
+    }
+
+    pub fn index(self) -> u32 {
+        StereoMode::ALL.iter().position(|&p| p == self).unwrap_or(0) as u32
+    }
+}
+
+/// Camera projection and stereo settings.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct View {
+    pub projection: Projection,
+    /// Field of view of the fisheye projections across the image height, in degrees (up to
+    /// 360: the circle then shows every direction).
+    pub fisheye_fov: f64,
+    pub stereo: StereoMode,
+    /// Distance at which both eyes see the same image point (the screen plane), in world
+    /// units; 0: the depth of field's focus distance.
+    pub convergence: f64,
+    /// Distance between the eyes relative to the convergence distance (about 1/30 is
+    /// comfortable).
+    pub eye_ratio: f64,
+    /// Swap the eyes (cross-eyed viewing of side-by-side pairs).
+    pub swap_eyes: bool,
+    /// Anaglyph with the left eye's colors in the red channel; off: its brightness (less
+    /// rivalry between the eyes on saturated colors).
+    pub anaglyph_color: bool,
+}
+
+impl Default for View {
+    fn default() -> Self {
+        View { projection: Projection::Perspective, fisheye_fov: 180.0, stereo: StereoMode::Off, convergence: 0.0, eye_ratio: 1.0 / 30.0, swap_eyes: false, anaglyph_color: true }
+    }
+}
+
+impl View {
+    /// Plain perspective without stereo (screen-space overlays such as gizmos and lens flares
+    /// line up with the image).
+    pub fn is_plain(&self) -> bool {
+        self.projection == Projection::Perspective && self.stereo == StereoMode::Off
     }
 }
 

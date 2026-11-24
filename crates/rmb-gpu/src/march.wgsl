@@ -92,6 +92,8 @@ struct U {
     haze2: vec4<f32>,      // haze shape (0 distance, 1 iterations), size
     slotw: array<vec4<f32>, 4>, // weight per slot (Mandelbulber per-slot settings)
     cfac: vec4<f32>,       // constant factor xyz, w: minimum iterations
+    view: vec4<f32>,       // projection (Projection::index), fisheye half angle, stereo mode, swap eyes
+    view2: vec4<f32>,      // half eye distance, convergence distance, anaglyph in color, images per sample
 }
 
 @group(0) @binding(0) var<uniform> u: U;
@@ -2796,7 +2798,95 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sx: f32, 
     return tr;
 }
 
-fn sample_pixel(px: u32, py: u32, sample: u32) -> vec3<f32> {
+// Mirrors ViewFrame::eye_screen: screen coordinates within one eye's image and the eye
+// (-1 left, 1 right, 0 without stereo) for the image position (fx, fy) and image k.
+fn eye_screen(fx: f32, fy: f32, k: u32) -> vec3<f32> {
+    let mode = u32(u.view.z);
+    var ew = f32(u.size.x);
+    var eh = f32(u.size.y);
+    var x = fx;
+    var y = fy;
+    var eye = 0.0;
+    if (mode == 1u) {
+        eye = select(1.0, -1.0, k == 0u);
+    } else if (mode == 2u) {
+        ew = f32(max(u.size.x / 2u, 1u));
+        eye = select(1.0, -1.0, fx < ew);
+        x = select(fx - ew, fx, fx < ew);
+    } else if (mode == 3u) {
+        eh = f32(max(u.size.y / 2u, 1u));
+        eye = select(1.0, -1.0, fy < eh);
+        y = select(fy - eh, fy, fy < eh);
+    }
+    if (u.view.w > 0.5) {
+        eye = -eye;
+    }
+    return vec3<f32>(x / ew * 2.0 - 1.0, 1.0 - y / eh * 2.0, eye);
+}
+
+// Mirrors ViewFrame::ray: the projection's direction in camera coordinates (xyz) and the
+// eyes' axis (w: 0 outside a fisheye circle, else 1); `side` gets the axis.
+var<private> view_side: vec3<f32>;
+fn view_dir(sx: f32, sy: f32, th: f32) -> vec4<f32> {
+    let proj = u32(u.view.x);
+    let aspect = u.cam_right.w;
+    view_side = vec3<f32>(1.0, 0.0, 0.0);
+    if (proj == 0u) {
+        return vec4<f32>(normalize(vec3<f32>(sx * th * aspect, sy * th, 1.0)), 1.0);
+    }
+    if (proj <= 2u) {
+        let x = sx * aspect;
+        let y = sy;
+        let r = sqrt(x * x + y * y);
+        let theta = r * u.view.y;
+        if ((proj == 2u && r > 1.0) || theta > 3.141592653589793) {
+            return vec4<f32>(0.0, 0.0, 1.0, 0.0);
+        }
+        var s = u.view.y;
+        if (r > 1.0e-12) {
+            s = sin(theta) / r;
+        }
+        return vec4<f32>(x * s, y * s, cos(theta), 1.0);
+    }
+    var lon = sx * 1.5707963267948966;
+    if (proj == 3u) {
+        lon = sx * 3.141592653589793;
+    }
+    let lat = sy * 1.5707963267948966;
+    let c80 = 0.17364817766693041;
+    let fade = clamp((cos(lat) - c80) / (0.5 - c80), 0.0, 1.0);
+    view_side = vec3<f32>(cos(lon), 0.0, -sin(lon)) * fade;
+    return vec4<f32>(cos(lat) * sin(lon), sin(lat), cos(lat) * cos(lon), 1.0);
+}
+
+// Mirrors Shader::sample_aux: anaglyphs render both eyes per sample and mix them.
+fn sample_image(px: u32, py: u32, sample: u32) -> vec3<f32> {
+    let n = u32(u.view2.w);
+    var cs: array<vec3<f32>, 2>;
+    var albs: array<vec3<f32>, 2>;
+    var nrm = vec3<f32>(0.0);
+    for (var k = 0u; k < n; k++) {
+        cs[k] = sample_pixel(px, py, sample, k);
+        albs[k] = aux_albedo;
+        nrm += aux_normal;
+    }
+    if (n < 2u) {
+        return cs[0];
+    }
+    aux_normal = nrm * 0.5;
+    aux_albedo = anaglyph(albs[0], albs[1]);
+    return anaglyph(cs[0], cs[1]);
+}
+
+fn anaglyph(l: vec3<f32>, r: vec3<f32>) -> vec3<f32> {
+    var red = l.x;
+    if (u.view2.z < 0.5) {
+        red = 0.299 * l.x + 0.587 * l.y + 0.114 * l.z;
+    }
+    return vec3<f32>(red, r.y, r.z);
+}
+
+fn sample_pixel(px: u32, py: u32, sample: u32, k: u32) -> vec3<f32> {
     rng_state = pcg(px ^ pcg(py ^ pcg(sample)));
     var jx = 0.5;
     var jy = 0.5;
@@ -2804,8 +2894,9 @@ fn sample_pixel(px: u32, py: u32, sample: u32) -> vec3<f32> {
         jx = rnd();
         jy = rnd();
     }
-    let sx = ((f32(px) + jx) / f32(u.size.x)) * 2.0 - 1.0;
-    let sy = 1.0 - ((f32(py) + jy) / f32(u.size.y)) * 2.0;
+    let es = eye_screen(f32(px) + jx, f32(py) + jy, k);
+    let sx = es.x;
+    let sy = es.y;
     var th = u.cam_pos.w;
     var o = u.cam_pos.xyz;
     var cf = u.cam_fwd.xyz;
@@ -2820,12 +2911,41 @@ fn sample_pixel(px: u32, py: u32, sample: u32) -> vec3<f32> {
         cu = normalize(mix(cu, u.mot_up.xyz, tm));
         th = tan(mix(atan(th), atan(u.mot_fwd.w), tm));
     }
-    var d = normalize(cf + cr * (sx * th * u.cam_right.w) + cu * (sy * th));
+    let vd = view_dir(sx, sy, th);
+    if (vd.w < 0.5) {
+        aux_albedo = vec3<f32>(0.0);
+        aux_normal = vec3<f32>(0.0);
+        return vec3<f32>(0.0);
+    }
+    var d = normalize(cr * vd.x + cu * vd.y + cf * vd.z);
+    if (es.z != 0.0 && u.view2.x > 0.0) {
+        // Both eyes look at the point the center ray meets at the convergence distance.
+        var reach = u.view2.y;
+        if (u32(u.view.x) == 0u) {
+            reach = u.view2.y / vd.z;
+        }
+        let target_p = o + d * reach;
+        o = o + (cr * view_side.x + cu * view_side.y + cf * view_side.z) * (es.z * u.view2.x);
+        d = normalize(target_p - o);
+    }
     if (u.dof.x > 0.5 && sample > 0u) {
-        let focus = o + d * (u.dof.z / dot(d, cf));
+        let plane = u32(u.view.x) == 0u;
+        var lr = cr;
+        var lu = cu;
+        var focus = o + d * u.dof.z;
+        if (plane) {
+            focus = o + d * (u.dof.z / dot(d, cf));
+        } else {
+            // Mirrors lens_axes.
+            let r0 = cross(d, cu);
+            if (length(r0) > 1.0e-6) {
+                lr = normalize(r0);
+            }
+            lu = normalize(cross(lr, d));
+        }
         let r = sqrt(rnd()) * u.dof.y * u.dof.z * 0.1;
         let a = rnd() * 6.283185307179586;
-        o = o + cr * (r * cos(a)) + cu * (r * sin(a));
+        o = o + lr * (r * cos(a)) + lu * (r * sin(a));
         d = normalize(focus - o);
     }
     // Without reflections (most scenes) a single trace: compiles much faster.
@@ -3061,7 +3181,7 @@ fn march_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (px >= u.size.x || gid.y >= u.band.y || py >= u.size.y) {
         return;
     }
-    var c = sample_pixel(px, py, u.size.z);
+    var c = sample_image(px, py, u.size.z);
     if (!(is_finite(c.x) && is_finite(c.y) && is_finite(c.z))) {
         c = vec3<f32>(0.0);
     }

@@ -158,9 +158,48 @@ def deep_zoom():
     render(out, "howto-deep-zoom.jpg")
 
 
+def projections():
+    """The projections and stereo layouts of the Camera tab side by side (images/projections.jpg)."""
+    base = load("mandelbulb")
+    modes = [
+        ("Perspective", {}, 320, 180),
+        ("Fisheye", {"projection": "Fisheye"}, 320, 180),
+        ("Fisheye circle", {"projection": "FisheyeCircle", "fisheye_fov": 220}, 180, 180),
+        ("Panorama 360°", {"projection": "Panorama"}, 360, 180),
+        ("Panorama 180°", {"projection": "HalfPanorama"}, 180, 180),
+        ("Anaglyph", {"stereo": "Anaglyph", "convergence": 2.5, "eye_ratio": 0.05}, 320, 180),
+        ("Side by side", {"stereo": "SideBySide", "convergence": 2.5}, 360, 180),
+        ("360° over / under", {"projection": "Panorama", "stereo": "OverUnder", "convergence": 2.5}, 180, 180),
+    ]
+    with tempfile.TemporaryDirectory() as tmp:
+        tiles = []
+        for i, (label, view, w, h) in enumerate(modes):
+            s = copy.deepcopy(base)
+            s["view"] = view
+            scene = Path(tmp) / f"m{i}.rmb"
+            scene.write_text(json.dumps(s))
+            png = Path(tmp) / f"m{i}.png"
+            subprocess.run([str(CLI), "render", str(scene), "-o", str(png), "-W", str(w), "-H", str(h), "-s", "32", "--denoise"], check=True, capture_output=True)
+            tiles += ["-label", label, str(png)]
+        subprocess.run(["montage", *tiles, "-tile", "4x2", "-geometry", "220x124>+6+6", "-background", "#202124", "-fill", "#e8eaed", "-pointsize", "13", "-quality", "88", str(IMAGES / "projections.jpg")], check=True)
+    print("projections.jpg")
+
+
+def vr_panorama():
+    """A 360° stereo panorama from inside the Amazing Box (over / under)."""
+    s = load("amazing-box")
+    # Inside the structure, level, so it surrounds the camera.
+    s["camera"]["position"] = {"x": 0.0, "y": -1.5, "z": 0.2}
+    look_at(s, [0.0, 0.0, 0.2])
+    s["view"] = {"projection": "Panorama", "stereo": "OverUnder", "convergence": 1.0, "eye_ratio": 1.0 / 30.0}
+    s["width"], s["height"] = 2048, 2048
+    path = save(s, "vr-panorama")
+    render(path, "howto-vr-panorama.jpg", 480, 480)
+
+
 if __name__ == "__main__":
     only = sys.argv[1:]
-    for f in (neon_steps, hybrid_ranges, own_formula, glass, composition, deep_zoom):
+    for f in (neon_steps, hybrid_ranges, own_formula, glass, composition, deep_zoom, projections, vr_panorama):
         if only and f.__name__ not in only:
             continue
         f()

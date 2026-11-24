@@ -26,6 +26,9 @@ modern egui interface and import of Mandelbulb3D parameters.
   fast ambient occlusion, sky/ground ambient, gradient coloring (iterations, orbit trap, radius,
   normal), glossy reflections and frosted glass, depth fog with light scattering (light beams
   through gaps, lit haze), glow, depth of field, cutting planes, filmic tone mapping, vignette.
+- **Projections and stereo**: fisheye (full frame or dome-master circle, up to 360°),
+  equirectangular 360° and 180° panoramas; stereo as red/cyan anaglyph, side by side or
+  over / under (omnidirectional stereo in the panoramas, for VR video).
 - **Navigation**:
   - Orbit around the point under the cursor; the wheel zooms toward the cursor.
   - Fly mode with WASD, at a speed that adapts to the distance from the surface; Space

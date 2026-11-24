@@ -488,6 +488,10 @@ fn screen_pos(scene: &Scene, p: V3, directional: bool, w: f64, h: f64) -> Option
 /// The lens flares of all lights of `scene` at `width` × `height` (RGB per pixel, top row
 /// first), or None when no light has a flare in view.
 pub fn layer(scene: &Scene, width: u32, height: u32) -> Option<Vec<[f32; 3]>> {
+    // Screen-space flares follow the perspective; other projections and stereo pairs get none.
+    if !scene.view.is_plain() {
+        return None;
+    }
     let (w, h) = (width.max(1) as f64, height.max(1) as f64);
     let mut flares = Vec::new();
     for l in &scene.lighting.lights {

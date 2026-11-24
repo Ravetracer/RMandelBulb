@@ -264,9 +264,11 @@ impl Viewport {
         }
         // Light gizmos take the drags that start on one of their handles.
         let editing = !previewing && self.recording.is_none();
-        let gizmos_on = self.show_lights && editing;
+        // Gizmos and guides follow the perspective image (not fisheyes, panoramas, stereo).
+        let plain = doc.scene.view.is_plain();
+        let gizmos_on = self.show_lights && editing && plain;
         // The selected composed object has its move gizmo whatever the light gizmos do.
-        let object_on = self.selected_object.is_some_and(|k| k < doc.scene.objects.len()) && editing;
+        let object_on = self.selected_object.is_some_and(|k| k < doc.scene.objects.len()) && editing && plain;
         let mut hover_handle = None;
         // Ctrl+click selects the object under the cursor (the main fractal or a composed one).
         if editing
@@ -345,6 +347,7 @@ impl Viewport {
         }
         let camera = shown.camera.clone();
         let aspect = shown.aspect();
+        let shown_plain = shown.view.is_plain();
         self.preview = preview;
         if let Some(tex) = texture {
             ui.painter().image(tex, rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
@@ -352,10 +355,12 @@ impl Viewport {
         if prefs.keep_aspect {
             ui.painter().rect_stroke(rect, 0.0, egui::Stroke::new(1.0, theme::BORDER), egui::StrokeKind::Outside);
         }
-        if self.show_guides {
+        if self.show_guides && shown_plain {
             crate::gizmos::draw_grid(ui.painter(), &crate::gizmos::Proj::new(&camera, aspect, rect), rect);
         }
-        self.draw_overlay(ui, rect, &camera, aspect);
+        if shown_plain {
+            self.draw_overlay(ui, rect, &camera, aspect);
+        }
         if gizmos_on || object_on {
             let proj = crate::gizmos::Proj::new(&doc.scene.camera, doc.scene.aspect(), rect);
             let active = self.gizmo.or(hover_handle);
@@ -574,7 +579,7 @@ impl Viewport {
     fn nav_distance(&mut self, scene: &Scene) -> f64 {
         // Inside rendering: the estimate at the camera is a step size, not a distance; use the
         // distance to the surface ahead.
-        let d = if scene.fractal.inside { pick(scene, 0.0, 0.0, 256, 256).map(|(t, _)| t * 0.5).unwrap_or(0.0) } else { distance_at_camera(scene) };
+        let d = if scene.fractal.inside { rmb_core::render::cpu::pick_center(scene).map(|(t, _)| t * 0.5).unwrap_or(0.0) } else { distance_at_camera(scene) };
         if d.is_finite() && d > 1e-14 {
             self.nav_scale = d;
             d

@@ -181,6 +181,139 @@ pub struct Frame {
     pub lights: Vec<FrameLight>,
     /// Axis toward the sky color of the ambient light.
     pub ambient_up: V3,
+    /// Projection and stereo (`aspect` is the aspect of one eye's image).
+    pub view: ViewFrame,
+}
+
+/// Projection and stereo values of a frame (identical on CPU and GPU).
+#[derive(Clone, Copy, Debug)]
+pub struct ViewFrame {
+    pub projection: crate::scene::Projection,
+    /// Fisheye: half the field of view across the image height (radians).
+    pub fisheye_half: f64,
+    pub stereo: crate::scene::StereoMode,
+    /// Half the distance between the eyes (world units).
+    pub half_eye: f64,
+    /// Distance where both eyes see the same point (world units).
+    pub convergence: f64,
+    pub swap: bool,
+    pub anaglyph_color: bool,
+}
+
+impl ViewFrame {
+    pub fn new(scene: &Scene) -> ViewFrame {
+        let v = &scene.view;
+        let convergence = if v.convergence > 0.0 { v.convergence } else { scene.dof.focus_distance.max(1e-30) };
+        let stereo = v.stereo != crate::scene::StereoMode::Off;
+        ViewFrame {
+            projection: v.projection,
+            fisheye_half: (v.fisheye_fov.clamp(1.0, 360.0) * 0.5).to_radians(),
+            stereo: v.stereo,
+            half_eye: if stereo { 0.5 * v.eye_ratio.max(0.0) * convergence } else { 0.0 },
+            convergence,
+            swap: v.swap_eyes,
+            anaglyph_color: v.anaglyph_color,
+        }
+    }
+
+    /// Images rendered per sample: 2 for anaglyphs (both eyes mixed in every pixel).
+    pub fn eye_count(&self) -> u32 {
+        if self.stereo == crate::scene::StereoMode::Anaglyph { 2 } else { 1 }
+    }
+
+    /// Width and height of one eye's image.
+    pub fn eye_size(&self, width: u32, height: u32) -> (u32, u32) {
+        use crate::scene::StereoMode;
+        match self.stereo {
+            StereoMode::SideBySide => ((width / 2).max(1), height.max(1)),
+            StereoMode::OverUnder => (width.max(1), (height / 2).max(1)),
+            _ => (width.max(1), height.max(1)),
+        }
+    }
+
+    /// Image position (`fx`, `fy` in pixels from the top left, `k` the anaglyph image) to
+    /// the screen coordinates within that eye's image (-1..1, y up) and the eye (-1 left,
+    /// 1 right, 0 without stereo).
+    pub fn eye_screen(&self, fx: f64, fy: f64, width: u32, height: u32, k: u32) -> (f64, f64, f64) {
+        use crate::scene::StereoMode;
+        let (ew, eh) = self.eye_size(width, height);
+        let (ew, eh) = (ew as f64, eh as f64);
+        let (mut x, mut y, mut eye) = (fx, fy, 0.0);
+        match self.stereo {
+            StereoMode::Off => {}
+            StereoMode::Anaglyph => eye = if k == 0 { -1.0 } else { 1.0 },
+            StereoMode::SideBySide => {
+                eye = if fx < ew { -1.0 } else { 1.0 };
+                x = if fx < ew { fx } else { fx - ew };
+            }
+            StereoMode::OverUnder => {
+                eye = if fy < eh { -1.0 } else { 1.0 };
+                y = if fy < eh { fy } else { fy - eh };
+            }
+        }
+        if self.swap {
+            eye = -eye;
+        }
+        (x / ew * 2.0 - 1.0, 1.0 - y / eh * 2.0, eye)
+    }
+
+    /// Ray origin and unit direction through the screen point (`sx`, `sy`) of one eye's image
+    /// (`aspect`: width / height of that image); None outside the image of a fisheye circle.
+    pub fn ray(&self, cam: &crate::scene::Camera, sx: f64, sy: f64, aspect: f64, eye: f64) -> Option<(V3, V3)> {
+        use crate::scene::Projection;
+        use std::f64::consts::{FRAC_PI_2, PI};
+        // Direction in camera coordinates (right, up, forward) and the eyes' axis.
+        let (l, side) = match self.projection {
+            Projection::Perspective => {
+                let t = cam.tan_half_fov();
+                (v3(sx * t * aspect, sy * t, 1.0).normalize(), v3(1.0, 0.0, 0.0))
+            }
+            Projection::Fisheye | Projection::FisheyeCircle => {
+                let (x, y) = (sx * aspect, sy);
+                let r = (x * x + y * y).sqrt();
+                let theta = r * self.fisheye_half;
+                if (self.projection == Projection::FisheyeCircle && r > 1.0) || theta > PI {
+                    return None;
+                }
+                let s = if r > 1e-12 { theta.sin() / r } else { self.fisheye_half };
+                (v3(x * s, y * s, theta.cos()), v3(1.0, 0.0, 0.0))
+            }
+            Projection::Panorama | Projection::HalfPanorama => {
+                let lon = sx * if self.projection == Projection::Panorama { PI } else { FRAC_PI_2 };
+                let lat = sy * FRAC_PI_2;
+                // The eyes turn with the view direction; their distance fades out toward the
+                // poles (from 60° to 80°), where the turning eyes would twist the image.
+                let fade = ((lat.cos() - 80f64.to_radians().cos()) / (60f64.to_radians().cos() - 80f64.to_radians().cos())).clamp(0.0, 1.0);
+                (v3(lat.cos() * lon.sin(), lat.sin(), lat.cos() * lon.cos()), v3(lon.cos(), 0.0, -lon.sin()) * fade)
+            }
+        };
+        let world = |a: V3| cam.right * a.x + cam.up * a.y + cam.forward * a.z;
+        let d = world(l).normalize();
+        if eye == 0.0 || self.half_eye <= 0.0 {
+            return Some((cam.position, d));
+        }
+        // Both eyes look at the point the center ray meets at the convergence distance (on a
+        // plane for the perspective, a sphere otherwise): no vertical parallax.
+        let reach = if self.projection == Projection::Perspective { self.convergence / l.z } else { self.convergence };
+        let target = cam.position + d * reach;
+        let o = cam.position + world(side) * (eye * self.half_eye);
+        Some((o, (target - o).normalize()))
+    }
+
+    /// Combines the two anaglyph images of a sample (linear colors).
+    pub fn anaglyph(&self, left: [f64; 3], right: [f64; 3]) -> [f64; 3] {
+        let r = if self.anaglyph_color { left[0] } else { 0.299 * left[0] + 0.587 * left[1] + 0.114 * left[2] };
+        [r, right[1], right[2]]
+    }
+}
+
+/// Ray through the image position (`fx`, `fy` in pixels from the top left) of the scene's
+/// camera with its projection and stereo (picking, navigation); the left eye of an anaglyph.
+pub fn view_ray(scene: &Scene, fx: f64, fy: f64, width: u32, height: u32) -> Option<(V3, V3)> {
+    let v = ViewFrame::new(scene);
+    let (sx, sy, eye) = v.eye_screen(fx, fy, width, height, 0);
+    let (ew, eh) = v.eye_size(width, height);
+    v.ray(&scene.camera, sx, sy, ew as f64 / eh as f64, eye)
 }
 
 impl Frame {
@@ -215,14 +348,26 @@ impl Frame {
                 }),
             })
             .collect();
+        let view = ViewFrame::new(scene);
+        let (ew, eh) = view.eye_size(width, height);
+        let (ew, eh) = (ew as f64, eh as f64);
+        use crate::scene::Projection;
+        // Angle of one pixel at the image center (the finer one of the two axes for panoramas).
+        let pixel_angle = match view.projection {
+            Projection::Perspective => 2.0 * tan_half / eh,
+            Projection::Fisheye | Projection::FisheyeCircle => 2.0 * view.fisheye_half / eh,
+            Projection::Panorama => (std::f64::consts::TAU / ew).min(std::f64::consts::PI / eh),
+            Projection::HalfPanorama => (std::f64::consts::PI / ew).min(std::f64::consts::PI / eh),
+        };
         Frame {
             width,
             height,
-            aspect: width.max(1) as f64 / height.max(1) as f64,
+            aspect: ew / eh,
             tan_half,
-            pixel_angle: 2.0 * tan_half / height.max(1) as f64,
+            pixel_angle,
             lights,
             ambient_up: if scene.lighting.ambient_camera_relative { scene.camera.up } else { v3(0.0, 0.0, 1.0) },
+            view,
         }
     }
 }
@@ -617,6 +762,42 @@ pub fn post_process(c: [f64; 3], post: &crate::scene::Post, u: f64, v: f64) -> [
 mod tests {
     use super::*;
     use crate::scene::{Fog, GlowShape};
+
+    #[test]
+    fn view_rays_follow_projection_and_stereo() {
+        use crate::scene::{Projection, StereoMode};
+        let mut s = Scene::default();
+        let cam = s.camera.clone();
+        // Plain perspective: the camera's own rays.
+        let v = ViewFrame::new(&s);
+        let (o, d) = v.ray(&cam, 0.3, -0.2, 1.6, 0.0).unwrap();
+        assert!((o - cam.position).length() < 1e-12 && (d - cam.ray_dir(0.3, -0.2, 1.6)).length() < 1e-12);
+        // Panorama: the image center looks forward, the left edge backward, the top up.
+        s.view.projection = Projection::Panorama;
+        let v = ViewFrame::new(&s);
+        assert!((v.ray(&cam, 0.0, 0.0, 2.0, 0.0).unwrap().1 - cam.forward).length() < 1e-9);
+        assert!((v.ray(&cam, -1.0, 0.0, 2.0, 0.0).unwrap().1 + cam.forward).length() < 1e-9);
+        assert!((v.ray(&cam, 0.3, 1.0, 2.0, 0.0).unwrap().1 - cam.up).length() < 1e-9);
+        // Fisheye circle at 180°: the circle's edge looks sideways, outside is empty.
+        s.view.projection = Projection::FisheyeCircle;
+        let v = ViewFrame::new(&s);
+        assert!((v.ray(&cam, 1.0, 0.0, 1.0, 0.0).unwrap().1 - cam.right).length() < 1e-9);
+        assert!(v.ray(&cam, 0.8, 0.8, 1.0, 0.0).is_none());
+        // Side by side: the halves are the eyes; both eyes meet at the convergence distance.
+        s.view.projection = Projection::Perspective;
+        s.view.stereo = StereoMode::SideBySide;
+        s.view.convergence = 3.0;
+        let v = ViewFrame::new(&s);
+        let (sx, sy, eye) = v.eye_screen(150.0, 50.0, 200, 100, 0);
+        assert!((sx - 0.0).abs() < 1e-12 && (sy - 0.0).abs() < 1e-12 && eye == 1.0);
+        assert_eq!(v.eye_screen(10.0, 50.0, 200, 100, 0).2, -1.0);
+        let (ol, dl) = v.ray(&cam, 0.0, 0.0, 1.0, -1.0).unwrap();
+        let (or, dr) = v.ray(&cam, 0.0, 0.0, 1.0, 1.0).unwrap();
+        let target = cam.position + cam.forward * 3.0;
+        assert!((ol + dl * (target - ol).length() - target).length() < 1e-9);
+        assert!((or + dr * (target - or).length() - target).length() < 1e-9);
+        assert!(((or - ol).length() - 3.0 / 30.0).abs() < 1e-9);
+    }
 
     fn frame_light(kind: crate::scene::LightKind, edit: impl Fn(&mut crate::scene::Light)) -> FrameLight {
         let mut s = Scene::default();

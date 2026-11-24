@@ -181,6 +181,21 @@ cargo clippy -j 8 --workspace --all-targets
   `sample_pixel`) only when `motion_end` is set. `GpuRenderer::set_scene_keep` /
   `CpuRenderer::set_scene_keep` change the scene between passes without restarting.
 
+## Projections and stereo
+
+- `Scene::view` (`View`: `Projection`, `StereoMode`). `render::ViewFrame` (in `Frame::view`)
+  does the work for CPU and GPU: `eye_screen` maps an image position to the eye's
+  sub-image (side by side / over-under split the image; `Frame::aspect` is one eye's aspect),
+  `ray` gives origin and direction (perspective, equidistant fisheye, equirectangular; eyes
+  offset along the camera's right or, in panoramas, the ray's horizontal right, both aimed at
+  the point at the convergence distance). Anaglyphs render both eyes per sample
+  (`Shader::sample_aux` → `sample_eye`; GPU `sample_image` loops over `sample_pixel` with one
+  call site) and mix them (`ViewFrame::anaglyph`). GPU: uniforms `view`, `view2`,
+  `eye_screen`, `view_dir` in march.wgsl. Pixel angle per projection in `Frame::new`.
+- Screen-space overlays (lens flares, gizmos, guides, path overlay) assume the plain
+  perspective; they are skipped unless `View::is_plain()`. `cpu::pick` / `pick_object` take
+  the projection into account; `cpu::pick_center` marches along the camera's forward axis.
+
 ## Glossy reflections
 
 - `Material::gloss`: `bounce()` (cpu.rs, march.wgsl) draws two random numbers for a GGX micro

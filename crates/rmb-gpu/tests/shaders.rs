@@ -1199,3 +1199,26 @@ fn switching_scenes_leaves_nothing_behind() {
         assert!(mean < 0.5, "seed {seed}: {mean}");
     }
 }
+
+#[test]
+fn gpu_matches_cpu_with_projections_and_stereo() {
+    use rmb_core::scene::{Projection, StereoMode};
+    let cases = [
+        (Projection::Fisheye, StereoMode::Off),
+        (Projection::FisheyeCircle, StereoMode::SideBySide),
+        (Projection::Panorama, StereoMode::OverUnder),
+        (Projection::HalfPanorama, StereoMode::Off),
+        (Projection::Perspective, StereoMode::Anaglyph),
+    ];
+    for (projection, stereo) in cases {
+        let mut scene = Scene::default();
+        scene.lighting.ao_mode = rmb_core::scene::AoMode::Fast;
+        scene.view.projection = projection;
+        scene.view.fisheye_fov = 220.0;
+        scene.view.stereo = stereo;
+        scene.view.convergence = 2.5;
+        scene.view.eye_ratio = 0.05;
+        eprintln!("{projection:?} {stereo:?}");
+        parity(scene);
+    }
+}
