@@ -12,12 +12,6 @@ and the release workflow uses it as the release notes.
 
 ## [Unreleased]
 
-- Water reworked into an ocean surface: many waves around the wind direction with crests
-  sharpened by drag, Fresnel reflection of the sky and the scene (also without the
-  material's reflection), sun glints, brighter crests and broken foam; new settings
-  Choppiness, Detail, Foam, Reflection, Speed. The waves move in animations by their speed.
-  Scenes with the old water show different waves.
-
 ## [1.0.0] - 2026-11-24
 
 First release.
@@ -39,6 +33,8 @@ First release.
   MagicaVoxel).
 - Render queue, network rendering with automatic discovery and fair load balancing (frames,
   sample ranges or tiles of stills), Intel Open Image Denoise.
+- Water as an ocean surface: waves around the wind direction with sharp crests, Fresnel
+  reflection of the sky and the scene, sun glints, foam; the waves move in animations.
 - Explore lane with presets, random scenes (quality filter), mutations and snapshots.
 - User manual in the program and as PDF.
 - Packages for Linux (tar.gz, AppImage), Windows (zip) and macOS (arm64, x86_64; unsigned).
