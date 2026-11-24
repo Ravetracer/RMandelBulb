@@ -761,7 +761,7 @@ impl<'a> Shader<'a> {
         }
         let l = self.sample_eye(ev, px, py, sample, 0);
         let r = self.sample_eye(ev, px, py, sample, 1);
-        Sample { color: v.anaglyph(l.color, r.color), albedo: v.anaglyph(l.albedo, r.albedo), normal: (l.normal + r.normal) * 0.5 }
+        Sample { color: v.anaglyph(l.color, r.color), albedo: v.anaglyph(l.albedo, r.albedo), normal: (l.normal + r.normal) * 0.5, depth: (l.depth + r.depth) * 0.5, hit: (l.hit + r.hit) * 0.5 }
     }
 
     /// One sample of pixel (`px`, `py`) for image `k` (the eye of an anaglyph).
@@ -781,7 +781,7 @@ impl<'a> Shader<'a> {
         };
         let (sx, sy, eye) = fr.view.eye_screen(px as f64 + jx, py as f64 + jy, fr.width, fr.height, k);
         let Some((mut o, mut d)) = fr.view.ray(cam, sx, sy, fr.aspect, eye) else {
-            return Sample { color: [0.0; 3], albedo: [0.0; 3], normal: V3::ZERO };
+            return Sample { color: [0.0; 3], albedo: [0.0; 3], normal: V3::ZERO, depth: 0.0, hit: 0.0 };
         };
         if sc.dof.enabled && sample > 0 {
             // Perspective: focus on a plane; other projections: on a sphere, with the lens
@@ -894,7 +894,8 @@ impl<'a> Shader<'a> {
             }
             ev.flip = false;
         }
-        Sample { color: c, albedo: first.albedo, normal: first.normal }
+        let (depth, hit) = first.surface.map_or((0.0, 0.0), |s| (s.t, 1.0));
+        Sample { color: c, albedo: first.albedo, normal: first.normal, depth, hit }
     }
 
     /// Direction of the path after surface `s` (`inside`: the ray travels inside glass), the
@@ -1264,6 +1265,10 @@ pub struct Sample {
     pub color: [f64; 3],
     pub albedo: [f64; 3],
     pub normal: V3,
+    /// Distance of the first hit from the camera (0 for misses) and whether there is one (0..1;
+    /// anaglyphs average both eyes).
+    pub depth: f64,
+    pub hit: f64,
 }
 
 /// Light left by the occlusion `occ` (0..1) at `strength`: linear up to 1, above 1 it bends
@@ -1307,7 +1312,7 @@ pub struct CpuRenderer {
     height: u32,
     accum: Vec<[f64; 3]>,
     /// Summed albedo and normal per pixel.
-    aux: Vec<[f64; 6]>,
+    aux: Vec<[f64; 8]>,
     samples: u32,
 }
 
@@ -1315,7 +1320,7 @@ impl CpuRenderer {
     pub fn new(scene: Scene, width: u32, height: u32) -> Self {
         let prog = Program::for_scene(&scene);
         let n = (width * height) as usize;
-        CpuRenderer { scene, prog, width, height, accum: vec![[0.0; 3]; n], aux: vec![[0.0; 6]; n], samples: 0 }
+        CpuRenderer { scene, prog, width, height, accum: vec![[0.0; 3]; n], aux: vec![[0.0; 8]; n], samples: 0 }
     }
 
     pub fn samples(&self) -> u32 {
@@ -1349,6 +1354,10 @@ impl CpuRenderer {
                         aux[k] += s.albedo[k];
                         aux[k + 3] += n[k];
                     }
+                    {
+                        aux[6] += s.depth * s.hit;
+                        aux[7] += s.hit;
+                    }
                 }
             },
         );
@@ -1358,12 +1367,14 @@ impl CpuRenderer {
     /// The averaged image with the denoiser's helper images.
     pub fn hdr_image(&self) -> super::denoise::HdrImage {
         let n = self.samples.max(1) as f64;
-        let mut img = super::denoise::HdrImage { width: self.width, height: self.height, color: Vec::new(), albedo: Vec::new(), normal: Vec::new() };
+        let mut img = super::denoise::HdrImage { width: self.width, height: self.height, ..Default::default() };
         for (a, x) in self.accum.iter().zip(&self.aux) {
             img.color.extend(a.iter().map(|v| (v / n) as f32));
             img.albedo.extend(x[..3].iter().map(|v| (v / n) as f32));
             // Averaged, not renormalized: OIDN takes shorter normals where hits and misses mix.
-            img.normal.extend(x[3..].iter().map(|v| (v / n) as f32));
+            img.normal.extend(x[3..6].iter().map(|v| (v / n) as f32));
+            img.alpha.push((x[7] / n) as f32);
+            img.depth.push(if x[7] > 0.0 { (x[6] / x[7]) as f32 } else { f32::INFINITY });
         }
         img
     }

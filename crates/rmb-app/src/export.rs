@@ -41,6 +41,8 @@ pub struct Export {
     height: u32,
     pub samples: u32,
     path: Option<PathBuf>,
+    /// Image file kind (PNG 8/16 bit, EXR).
+    kind: rmb_core::io::image::ImageKind,
     /// Animation: output file (movies) or folder (images), format and frame range.
     movie_path: Option<PathBuf>,
     format: VideoFormat,
@@ -64,6 +66,7 @@ impl Export {
             height: 0,
             samples,
             path: None,
+            kind: Default::default(),
             movie_path: None,
             format: VideoFormat::Mp4,
             from: 0,
@@ -86,7 +89,7 @@ impl Export {
         self.width = scene.width;
         self.height = scene.height;
         if self.path.is_none() {
-            self.path = doc_path.map(|p| p.with_extension("png"));
+            self.path = doc_path.map(|p| p.with_extension(self.kind.extension()));
         }
         if self.movie_path.is_none() {
             self.movie_path = doc_path.map(|p| movie_path(p, self.format));
@@ -230,15 +233,37 @@ impl Export {
     }
 
     fn image_settings(&mut self, ui: &mut egui::Ui) {
+        use rmb_core::io::image::ImageKind;
+        widgets::grid(ui, "export-kind", |ui| {
+            widgets::label(
+                ui,
+                "Format",
+                "PNG 8-bit: the image as shown, with the scene inside (open it to get the scene back). PNG 16-bit: the same with 16 bits per channel, for smooth gradients in further editing. EXR: linear light before the Image settings (denoised as set; no lens flares, bloom or color grading), 32-bit float, with the passes coverage, Z (distance from the camera), albedo and normal for compositing",
+            );
+            let before = self.kind;
+            egui::ComboBox::from_id_salt("export-kind").selected_text(self.kind.label()).show_ui(ui, |ui| {
+                for k in ImageKind::ALL {
+                    ui.selectable_value(&mut self.kind, k, k.label());
+                }
+            });
+            if self.kind != before
+                && let Some(p) = &mut self.path
+            {
+                *p = p.with_extension(self.kind.extension());
+            }
+            ui.end_row();
+        });
         ui.horizontal(|ui| {
             let label = self.path.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "No file chosen".into());
-            if ui.button("File…").on_hover_text("Where to save the PNG").clicked() {
-                let mut dlg = crate::prefs::dialog(crate::prefs::Folder::Images).add_filter("PNG image", &["png"]).set_file_name("render.png");
+            let ext = self.kind.extension();
+            if ui.button("File…").on_hover_text("Where to save the image").clicked() {
+                let filter = if self.kind == ImageKind::Exr { "OpenEXR image" } else { "PNG image" };
+                let mut dlg = crate::prefs::dialog(crate::prefs::Folder::Images).add_filter(filter, &[ext]).set_file_name(format!("render.{ext}"));
                 if let Some(d) = self.path.as_ref().and_then(|p| p.parent()) {
                     dlg = dlg.set_directory(d);
                 }
                 if let Some(p) = dlg.save_file() {
-                    self.path = Some(if p.extension().is_none() { p.with_extension("png") } else { p });
+                    self.path = Some(p.with_extension(ext));
                 }
             }
             ui.label(RichText::new(label).size(theme::fs(11.5)).color(theme::TEXT_MUTED));
@@ -330,6 +355,7 @@ impl Export {
         let cancel = Arc::new(AtomicBool::new(false));
         let (tx, rx) = mpsc::channel();
         let (w, h, n) = (self.width, self.height, self.samples);
+        let kind = self.kind;
         let mut sc = scene.clone();
         sc.width = w;
         sc.height = h;
@@ -341,9 +367,9 @@ impl Export {
                 !ca.load(Ordering::Relaxed)
             })
             .and_then(|img| {
-                let (rgba, outcome) = img.finish_scene(&sc);
+                let outcome = rmb_core::io::image::save_render(&path, img, &sc, kind)?;
                 let note = if sc.post.denoise { format!(", {}", outcome.describe()) } else { String::new() };
-                rmb_core::io::image::write_png(&path, w, h, &rgba, Some(&sc)).map(|_| (path.clone(), note))
+                Ok((path.clone(), note))
             });
             let _ = tx.send(res);
         });

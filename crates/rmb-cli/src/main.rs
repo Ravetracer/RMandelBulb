@@ -9,14 +9,16 @@ const USAGE: &str = "\
 RMandelbulb3D command line
 
 USAGE:
-  rmb-cli render <scene> [-o out.png] [-W width] [-H height] [-s samples] [--cpu] [-t threads]
-                 [--denoise [blend] | --no-denoise]
+  rmb-cli render <scene> [-o out.png|out.exr] [-W width] [-H height] [-s samples] [--cpu]
+                 [-t threads] [--denoise [blend] | --no-denoise] [--16bit]
   rmb-cli animate <scene> [-o out.mp4|folder] [-W width] [-H height] [-s samples] [--cpu]
                  [--fps n] [--from frame] [--to frame] [--denoise [blend] | --no-denoise]
                  [--ffmpeg path] [--audio file [--audio-offset s] | --no-audio]
                  [--shutter fraction]
   rmb-cli mesh <scene> [-o out.ply|.obj|.stl] [-r resolution] [--box x0,y0,z0,x1,y1,z1]
                  [--thickness cells] [--no-colors] [--no-refine] [--y-up] [--cpu]
+  rmb-cli voxels <scene> [-o folder|out.vox] [-r resolution] [--box …] [--thickness cells]
+                 [--no-colors] [--hollow] [--cpu]
   rmb-cli convert <scene> -o out.rmb       Import (e.g. a Mandelbulb3D .m3p) and save as .rmb
   rmb-cli info <scene>                     Formulas, camera and import notes
   rmb-cli formulas                         List all formulas
@@ -27,7 +29,9 @@ USAGE:
 parameters, or a PNG rendered by RMandelbulb3D. Width and height default to the scene's;
 giving only one keeps the aspect ratio. Rendering uses the GPU unless --cpu is given.
 --denoise runs the AI denoiser (Intel Open Image Denoise; blend 0..1, default 1) whatever the
-scene says, --no-denoise skips it. The library is loaded at runtime: RMB_OIDN_DIR, next to the
+scene says, --no-denoise skips it. --16bit writes a 16-bit PNG. An .exr output gets the linear
+image before the post processing (denoised as the scene says) with the passes coverage, Z
+(distance from the camera), albedo and normal. The library is loaded at runtime: RMB_OIDN_DIR, next to the
 executable (lib/ on Linux), ./oidn (python3 tools/fetch_oidn.py) or the system.
 
 animate renders the scene's keyframe animation. The output's extension picks the format
@@ -44,14 +48,20 @@ estimates). The extension picks the format: .ply (binary, normals and vertex col
 along the longest side of the box (default 256); --box the sampled box (default: fitted to the
 surface); --thickness how many cells outside the fractal the surface lies (default 0.5; more
 thickens thin parts); --y-up writes y up instead of z up. The distances come from the GPU
-unless --cpu is given.";
+unless --cpu is given.
+
+voxels writes the same grid as voxels: a folder of PNG images, one per z layer from the bottom
+(colors with transparency, or white on black with --no-colors), or a MagicaVoxel model when -o
+ends in .vox (at most 256 voxels per side, colors in a 255-color palette). --hollow keeps only
+the voxels next to empty space.";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = match args.first().map(String::as_str) {
         Some("render") => render(&args[1..]),
         Some("animate") => animate(&args[1..]),
-        Some("mesh") => mesh(&args[1..]),
+        Some("mesh") => mesh(&args[1..], false),
+        Some("voxels") => mesh(&args[1..], true),
         Some("convert") => convert(&args[1..]),
         Some("info") => info(&args[1..]),
         Some("m3f") => m3f(&args[1..]),
@@ -92,10 +102,11 @@ struct Opts {
     audio: Option<Option<PathBuf>>,
     audio_offset: Option<f64>,
     shutter: Option<f64>,
+    sixteen: bool,
 }
 
 fn parse(args: &[String]) -> Result<Opts, String> {
-    let mut o = Opts { input: None, output: None, width: None, height: None, samples: 64, cpu: false, threads: None, denoise: None, fps: None, from: None, to: None, ffmpeg: None, audio: None, audio_offset: None, shutter: None };
+    let mut o = Opts { input: None, output: None, width: None, height: None, samples: 64, cpu: false, threads: None, denoise: None, fps: None, from: None, to: None, ffmpeg: None, audio: None, audio_offset: None, shutter: None, sixteen: false };
     let mut it = args.iter().peekable();
     while let Some(a) = it.next() {
         let mut val = |name: &str| it.next().cloned().ok_or_else(|| format!("{name} needs a value"));
@@ -106,6 +117,7 @@ fn parse(args: &[String]) -> Result<Opts, String> {
             "-s" => o.samples = val("-s")?.parse().map_err(|_| "bad sample count")?,
             "-t" => o.threads = Some(val("-t")?.parse().map_err(|_| "bad thread count")?),
             "--cpu" => o.cpu = true,
+            "--16bit" => o.sixteen = true,
             "--fps" => o.fps = Some(val("--fps")?.parse().map_err(|_| "bad frame rate")?),
             "--from" => o.from = Some(val("--from")?.parse().map_err(|_| "bad frame number")?),
             "--to" => o.to = Some(val("--to")?.parse().map_err(|_| "bad frame number")?),
@@ -129,9 +141,11 @@ fn parse(args: &[String]) -> Result<Opts, String> {
     Ok(o)
 }
 
-fn mesh(args: &[String]) -> Result<(), String> {
+fn mesh(args: &[String], voxels: bool) -> Result<(), String> {
     use rmb_core::mesh_export::{MeshFormat, MeshSettings};
+    use rmb_core::voxel_export::{VoxelFormat, VoxelSettings};
     let mut s = MeshSettings::default();
+    let mut vs = VoxelSettings::default();
     let (mut input, mut output, mut bounds, mut cpu) = (None, None, None, false);
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -145,7 +159,11 @@ fn mesh(args: &[String]) -> Result<(), String> {
                 let [x0, y0, z0, x1, y1, z1] = v[..] else { return Err("--box needs six numbers".into()) };
                 bounds = Some((rmb_core::math::v3(x0, y0, z0), rmb_core::math::v3(x1, y1, z1)));
             }
-            "--no-colors" => s.colors = false,
+            "--no-colors" => {
+                s.colors = false;
+                vs.colors = false;
+            }
+            "--hollow" if voxels => vs.hollow = true,
             "--no-refine" => s.refine = false,
             "--y-up" => s.y_up = true,
             "--cpu" => cpu = true,
@@ -158,13 +176,21 @@ fn mesh(args: &[String]) -> Result<(), String> {
     for e in rmb_core::compose::load_models(&scene) {
         eprintln!("warning: 3D model not loaded: {e}");
     }
-    let output = output.unwrap_or_else(|| input.with_extension("ply"));
-    s.format = MeshFormat::of_path(&output).ok_or("the output must end in .ply, .obj or .stl")?;
+    let output = output.unwrap_or_else(|| if voxels { input.with_extension("") } else { input.with_extension("ply") });
+    if voxels {
+        let vox = output.extension().is_some_and(|e| e.eq_ignore_ascii_case("vox"));
+        vs.format = if vox { VoxelFormat::MagicaVoxel } else { VoxelFormat::PngStack };
+    } else {
+        s.format = MeshFormat::of_path(&output).ok_or("the output must end in .ply, .obj or .stl")?;
+    }
     let (lo, hi) = match bounds {
         Some(b) => b,
         None => rmb_core::mesh_export::fit_bounds(&scene).ok_or("no surface found within ±64; give --box")?,
     };
     (s.min, s.max) = (lo, hi);
+    if voxels {
+        s = rmb_core::voxel_export::limited(&s, &vs);
+    }
     let g = rmb_core::mesh_export::Grid::new(&s);
     eprintln!("box ({:.4}, {:.4}, {:.4}) .. ({:.4}, {:.4}, {:.4}), grid {} × {} × {}", lo.x, lo.y, lo.z, hi.x, hi.y, hi.z, g.n[0], g.n[1], g.n[2]);
     let start = std::time::Instant::now();
@@ -181,16 +207,23 @@ fn mesh(args: &[String]) -> Result<(), String> {
     };
     let mut last = -1i32;
     let field = gpu.as_mut().map(|f| f as &mut dyn rmb_core::mesh_export::Field);
-    let (v, t) = rmb_core::mesh_export::export(&scene, &s, field, &output, &mut |f| {
+    let mut report = |f: f32| {
         let pc = (f * 100.0) as i32;
         if pc != last {
             last = pc;
             eprint!("\r{pc:3} %");
         }
         true
-    })?;
+    };
+    let summary = if voxels {
+        let (n, files) = rmb_core::voxel_export::export(&scene, &s, &vs, field, &output, &mut report)?;
+        format!("{n} voxels in {} file{}", files.len(), if files.len() == 1 { "" } else { "s" })
+    } else {
+        let (v, t) = rmb_core::mesh_export::export(&scene, &s, field, &output, &mut report)?;
+        format!("{v} vertices, {t} triangles")
+    };
     eprintln!();
-    println!("{} ({v} vertices, {t} triangles, {:.1} s)", output.display(), start.elapsed().as_secs_f64());
+    println!("{} ({summary}, {:.1} s)", output.display(), start.elapsed().as_secs_f64());
     Ok(())
 }
 
@@ -337,11 +370,11 @@ fn render(args: &[String]) -> Result<(), String> {
         eprintln!();
         r
     };
-    let (rgba, denoised) = image.finish_scene(&scene);
+    let kind = rmb_core::io::image::ImageKind::of_path(&out, o.sixteen);
+    let denoised = rmb_core::io::image::save_render(&out, image, &scene, kind)?;
     if scene.post.denoise {
         eprintln!("{}", denoised.describe());
     }
-    rmb_core::io::image::write_png(&out, w, h, &rgba, Some(&scene))?;
     eprintln!("{} ({w} x {h}, {} samples, {:.1} s)", out.display(), o.samples, start.elapsed().as_secs_f64());
     Ok(())
 }

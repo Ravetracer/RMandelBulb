@@ -74,12 +74,32 @@ export window. When the scene has keyframes, two buttons at the top choose betwe
 | **Width**, **Height** | Size in pixels (16–16384). Changing one changes the other with the scene's aspect. |
 | **Scale** | ½×, 1×, 2×, 4× of the scene's image size. |
 | **Samples** | Samples per pixel (1–1024). The default comes from **Preferences › Interface › Export samples** (128). |
-| **File…** | Where to save the PNG. It defaults to the scene file's name. |
+| **Format** | **PNG 8-bit**, **PNG 16-bit** or **EXR (linear, passes)**, see below. |
+| **File…** | Where to save the image. It defaults to the scene file's name. |
 | **Render and save** | Renders in the background and saves. A progress bar shows the remaining time; **Cancel** stops it. |
 
-Images are saved as PNG with the scene stored inside. Opening such a PNG in RMandelbulb3D (or
+PNG images are saved with the scene stored inside. Opening such a PNG in RMandelbulb3D (or
 dropping it onto the window) restores the scene. When **Denoise** is on, the status message says
 whether and where the image was denoised.
+
+| Format | Content |
+|--------|---------|
+| PNG 8-bit | The image as shown, with lens flares, bloom and all **Image** settings. |
+| PNG 16-bit | The same with 16 bits per channel: no banding in dark gradients and fog when you edit the image further. |
+| EXR (linear, passes) | OpenEXR, 32-bit float, lossless compression: the linear light *before* the **Image** settings (denoised when **Denoise** is on; no lens flares, bloom, exposure, tone mapping or color grading), for compositing and grading in other programs. Scenes in display space (Mandelbulb3D imports) are converted to linear light. |
+
+An EXR file holds these channels:
+
+| Channel | Content |
+|---------|---------|
+| `R`, `G`, `B` | Linear color, including the background. |
+| `coverage` | Share of the samples per pixel that hit a surface (1 on the fractal, 0 on the background, in between at edges): a matte for compositing. It is not a premultiplied alpha, since the color includes the background. |
+| `Z` | Distance of the hits from the camera along the ray, in world units; infinite on the background. |
+| `albedo.R/G/B` | The surface colors without lighting. |
+| `normal.X/Y/Z` | World-space normals (z up). |
+
+The scene is stored in the EXR header as the text attribute `rmandelbulb3d`; opening EXR files in
+RMandelbulb3D is not supported.
 
 ### Animation
 
@@ -102,7 +122,7 @@ Chapter "Animation" explains the formats, sound and motion blur.
     The export window and the render window need the GPU renderer. Without a usable graphics
     card, render with `rmb-cli render --cpu`.
 
-## Mesh export
+## Mesh and voxel export
 
 **File › Export mesh…** saves the surface as a closed triangle mesh: for 3D printing, or to
 use the fractal in Blender and other 3D programs. The distance estimate is sampled on a grid in
@@ -130,6 +150,20 @@ writing the 600 MB file).
     at the same resolution for close-ups, and use **Thickness** above 1 for prints: thin
     filaments break otherwise.
 
+### Voxels
+
+**File › Export voxels…** (or **Voxels** at the top of the same window) writes the grid as
+voxels: a voxel is filled where the surface of the mesh export would enclose its center. Box,
+resolution and thickness work as for meshes; the grid's samples are the voxels.
+
+![The voxel export window](images/voxel-export.png){: .half}
+
+| Setting | What it does | Default |
+|---------|--------------|---------|
+| Colors | The scene's colors on the voxels next to empty space; the hidden inside of each layer gets that layer's mean color. Off: white voxels on black. | On |
+| Hollow | Only the voxels next to empty space: the visible shell. Far fewer voxels, faster in MagicaVoxel. | Off |
+| Format | **PNG slices**: a folder with one image per z layer (`slice_0000.png` is the bottom), seen from above with x to the right; colored voxels on transparency, or white on black. For 3D printers that print from slices, image tools and volume programs. **MagicaVoxel**: one `.vox` model (z up, like the scene). A model holds at most 256 voxels per side, so the resolution is limited to that, and the colors are reduced to a palette of 255. | PNG slices |
+
 !!! note
     The mesh is closed and every triangle faces outward, but a fractal's mesh can have very
     many small separate pieces (dust around the surface). Slicers and Blender's *Select linked*
@@ -145,11 +179,12 @@ RMandelbulb3D. Run `rmb-cli --help` for a summary.
 ### render
 
 ```
-rmb-cli render <scene> [-o out.png] [-W width] [-H height] [-s samples] [--cpu] [-t threads]
-               [--denoise [blend] | --no-denoise]
+rmb-cli render <scene> [-o out.png|out.exr] [-W width] [-H height] [-s samples] [--cpu]
+               [-t threads] [--denoise [blend] | --no-denoise] [--16bit]
 ```
 
-Renders one image and saves it as PNG with the scene inside.
+Renders one image and saves it as PNG with the scene inside, or as EXR with passes when the
+output ends in `.exr` (see "Export window" above).
 
 | Option | What it does |
 |--------|--------------|
@@ -160,6 +195,7 @@ Renders one image and saves it as PNG with the scene inside.
 | `-t threads` | Threads of the CPU renderer. |
 | `--denoise [blend]` | Runs the denoiser whatever the scene says; blend 0–1, default 1. |
 | `--no-denoise` | Skips the denoiser. |
+| `--16bit` | Writes a 16-bit PNG. |
 
 ### animate
 
@@ -205,6 +241,17 @@ format (default: the scene's name with `.ply`).
 | `--y-up` | Writes y as the up axis. |
 | `--cpu` | Computes the distances on the CPU instead of the GPU. |
 
+### voxels
+
+```
+rmb-cli voxels <scene> [-o folder|out.vox] [-r resolution] [--box x0,y0,z0,x1,y1,z1]
+               [--thickness cells] [--no-colors] [--hollow] [--cpu]
+```
+
+Exports voxels like **File › Export voxels…**: a folder of PNG slices, or a MagicaVoxel model
+when `-o` ends in `.vox`. The options work as for `mesh`; `--hollow` keeps only the voxels next
+to empty space.
+
 ### Other commands
 
 | Command | What it does |
@@ -219,6 +266,8 @@ Examples:
 ```
 rmb-cli render scene.rmb -o scene.png -W 3840 -s 32 --denoise
 rmb-cli animate flight.rmb -o flight.mp4 -s 64 --shutter 0.5
+rmb-cli render scene.rmb -o scene.exr -s 64
 rmb-cli mesh scene.rmb -o scene.stl -r 512 --thickness 1.5
+rmb-cli voxels scene.rmb -o scene.vox --hollow
 rmb-cli convert old.m3p -o old.rmb
 ```

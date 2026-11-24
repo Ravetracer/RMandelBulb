@@ -122,6 +122,9 @@ fn inside_now() -> bool {
     return (u.scales.z > 0.5) != flip;
 }
 var<private> aux_normal: vec3<f32>;
+// Distance of the first hit and whether there is one (EXR depth and alpha; aux w components).
+var<private> aux_depth: f32;
+var<private> aux_hit: f32;
 
 struct Orbit {
     de: f32,
@@ -2867,15 +2870,21 @@ fn sample_image(px: u32, py: u32, sample: u32) -> vec3<f32> {
     var cs: array<vec3<f32>, 2>;
     var albs: array<vec3<f32>, 2>;
     var nrm = vec3<f32>(0.0);
+    var dep = 0.0;
+    var hit = 0.0;
     for (var k = 0u; k < n; k++) {
         cs[k] = sample_pixel(px, py, sample, k);
         albs[k] = aux_albedo;
         nrm += aux_normal;
+        dep += aux_depth;
+        hit += aux_hit;
     }
     if (n < 2u) {
         return cs[0];
     }
     aux_normal = nrm * 0.5;
+    aux_depth = dep * 0.5;
+    aux_hit = hit * 0.5;
     aux_albedo = anaglyph(albs[0], albs[1]);
     return anaglyph(cs[0], cs[1]);
 }
@@ -2917,6 +2926,8 @@ fn sample_pixel(px: u32, py: u32, sample: u32, k: u32) -> vec3<f32> {
     if (vd.w < 0.5) {
         aux_albedo = vec3<f32>(0.0);
         aux_normal = vec3<f32>(0.0);
+        aux_depth = 0.0;
+        aux_hit = 0.0;
         return vec3<f32>(0.0);
     }
     var d = normalize(cr * vd.x + cu * vd.y + cf * vd.z);
@@ -2955,6 +2966,8 @@ fn sample_pixel(px: u32, py: u32, sample: u32, k: u32) -> vec3<f32> {
         let tr = trace(o, d, u.scales.w, u.cam_fwd.w, 0.0, sx, sy, false, 0.0, false);
         aux_albedo = tr.albedo;
         aux_normal = tr.normal;
+        aux_depth = select(0.0, tr.t, tr.hit);
+        aux_hit = select(0.0, 1.0, tr.hit);
         return tr.c;
     }
     // Primary ray, reflections and transmission (mirrors Shader::sample_aux) in one loop with
@@ -2994,6 +3007,8 @@ fn sample_pixel(px: u32, py: u32, sample: u32, k: u32) -> vec3<f32> {
         if (b == 0u) {
             aux_albedo = tr.albedo;
             aux_normal = tr.normal;
+            aux_depth = select(0.0, tr.t, tr.hit);
+            aux_hit = select(0.0, 1.0, tr.hit);
             c = tr.c;
         } else {
             if (inside) {
@@ -3188,14 +3203,15 @@ fn march_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         c = vec3<f32>(0.0);
     }
     let idx = py * u.size.x + px;
+    let dh = aux_depth * aux_hit;
     if (u.size.z == 0u) {
         accum[idx] = vec4<f32>(c, 1.0);
-        aux[2u * idx] = vec4<f32>(aux_albedo, 0.0);
-        aux[2u * idx + 1u] = vec4<f32>(aux_normal, 0.0);
+        aux[2u * idx] = vec4<f32>(aux_albedo, dh);
+        aux[2u * idx + 1u] = vec4<f32>(aux_normal, aux_hit);
     } else {
         accum[idx] += vec4<f32>(c, 1.0);
-        aux[2u * idx] += vec4<f32>(aux_albedo, 0.0);
-        aux[2u * idx + 1u] += vec4<f32>(aux_normal, 0.0);
+        aux[2u * idx] += vec4<f32>(aux_albedo, dh);
+        aux[2u * idx + 1u] += vec4<f32>(aux_normal, aux_hit);
     }
 }
 

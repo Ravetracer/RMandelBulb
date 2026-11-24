@@ -26,8 +26,11 @@ modern egui interface and import of Mandelbulb3D parameters.
   fast ambient occlusion, sky/ground ambient, gradient coloring (iterations, orbit trap, radius,
   normal), glossy reflections and frosted glass, depth fog with light scattering (light beams
   through gaps, lit haze), glow, depth of field, cutting planes, filmic tone mapping, vignette.
-- **Mesh export**: the surface as a closed triangle mesh (PLY with vertex colors, OBJ, STL) for
-  3D printing and 3D programs, sampled on the GPU (File › Export mesh…, `rmb-cli mesh`).
+- **Mesh and voxel export**: the surface as a closed triangle mesh (PLY with vertex colors, OBJ,
+  STL) for 3D printing and 3D programs, or as voxels (PNG slices, MagicaVoxel `.vox`), sampled
+  on the GPU (File › Export mesh… / Export voxels…, `rmb-cli mesh` / `voxels`).
+- **Image formats**: PNG 8 or 16 bit with the scene inside; OpenEXR with the linear image and
+  coverage, depth, albedo and normal passes for compositing.
 - **Projections and stereo**: fisheye (full frame or dome-master circle, up to 360°),
   equirectangular 360° and 180° panoramas; stereo as red/cyan anaglyph, side by side or
   over / under (omnidirectional stereo in the panoramas, for VR video).

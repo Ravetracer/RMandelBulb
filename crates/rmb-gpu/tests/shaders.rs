@@ -334,6 +334,14 @@ fn hdr_readback_matches_display_and_cpu_helper_images() {
         eprintln!("{name}: mean difference {mean:.4}");
         assert!(mean < 0.01, "{name} differs by {mean}");
     }
+    // Coverage and depth (EXR passes): same hits, same distances.
+    let cov = img.alpha.iter().zip(&c.alpha).filter(|(a, b)| (*a - *b).abs() > 0.5).count();
+    assert!(cov * 100 <= img.alpha.len(), "{cov} pixels differ in coverage");
+    let both: Vec<(f32, f32)> = img.depth.iter().zip(&c.depth).filter(|(a, b)| a.is_finite() && b.is_finite()).map(|(a, b)| (*a, *b)).collect();
+    assert!(both.len() > img.depth.len() / 4);
+    let rel = both.iter().map(|(a, b)| (a - b).abs() / b).sum::<f32>() / both.len() as f32;
+    eprintln!("depth: mean relative difference {rel:.5}");
+    assert!(rel < 0.002, "depth differs by {rel}");
 }
 
 #[test]

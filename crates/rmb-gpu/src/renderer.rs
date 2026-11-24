@@ -1641,13 +1641,17 @@ impl GpuRenderer {
         let n = (t.width * t.height) as usize;
         let accum = read_buffer_f32(&self.ctx, &t.accum, n * 4)?;
         let aux = read_buffer_f32(&self.ctx, &t.aux, n * 8)?;
-        let mut img = HdrImage { width: t.width, height: t.height, color: Vec::with_capacity(n * 3), albedo: Vec::with_capacity(n * 3), normal: Vec::with_capacity(n * 3) };
+        let mut img = HdrImage { width: t.width, height: t.height, color: Vec::with_capacity(n * 3), albedo: Vec::with_capacity(n * 3), normal: Vec::with_capacity(n * 3), alpha: Vec::with_capacity(n), depth: Vec::with_capacity(n) };
         for i in 0..n {
             let a = &accum[i * 4..i * 4 + 4];
             let k = 1.0 / a[3].max(1.0);
             img.color.extend(a[..3].iter().map(|v| v * k));
             img.albedo.extend(aux[i * 8..i * 8 + 3].iter().map(|v| v * k));
             img.normal.extend(aux[i * 8 + 4..i * 8 + 7].iter().map(|v| v * k));
+            // w: summed hit distances and hit count (march.wgsl aux_depth, aux_hit).
+            let hits = aux[i * 8 + 7];
+            img.alpha.push(hits * k);
+            img.depth.push(if hits > 0.0 { aux[i * 8 + 3] / hits } else { f32::INFINITY });
         }
         Some(img)
     }

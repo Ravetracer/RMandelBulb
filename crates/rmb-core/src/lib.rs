@@ -20,6 +20,7 @@ pub mod render;
 pub mod scene;
 pub mod texture;
 pub mod video;
+pub mod voxel_export;
 
 pub use fractal::Program;
 pub use math::{Quat, V3, v3};

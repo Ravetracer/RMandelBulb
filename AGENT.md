@@ -205,7 +205,18 @@ cargo clippy -j 8 --workspace --all-targets
   mesh is closed and caps the box faces; quads oriented outward), `refine` (Newton steps
   along the vertex normal, at most half a cell), `vertex_colors` (`Shader::surface_base`: the
   shading's base color without lighting), writers for PLY/OBJ/STL, `fit_bounds` (coarse search
-  over growing boxes). App: `mesh_dialog.rs`; CLI: `rmb-cli mesh`.
+  over growing boxes). App: `mesh_dialog.rs` (also the voxel mode); CLI: `rmb-cli mesh`.
+- `voxel_export.rs`: the same `Grid`/`Field`, three rolling layers (shell = filled with an
+  empty 6-neighbor), colors only on shell voxels (the inside gets the layer's mean), PNG slices
+  or MagicaVoxel (`write_vox`, median-cut `palette`; resolution limited by `limited`).
+
+## Image formats
+
+- `io::image::save_render` with `ImageKind` (PNG 8 / 16 bit, EXR). EXR (`write_exr`, `exr`
+  crate) takes `HdrImage::finish_linear` (denoised, display space decoded, no post). The GPU
+  `aux` buffer's w components carry the summed hit distance (`aux_depth * aux_hit`) and hit
+  count (`aux_hit`); `read_hdr` / `CpuRenderer::hdr_image` turn them into `HdrImage::depth`
+  and `alpha`.
 
 ## Glossy reflections
 

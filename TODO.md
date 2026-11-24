@@ -175,10 +175,13 @@ Features the two programs have that RMandelbulb3D does not have yet, in the plan
       Export mesh…, `rmb-cli mesh`. Mandelbulber `mesh_export`, MB3D BulbTracer2
   - [ ] Possible: show the box in the view, remove small loose pieces, mesh decimation,
         sparse sampling (skip empty blocks; 2048³ grids), texture-baked colors
-- [ ] Voxel slice export (image stack per Z layer). MB3D `VoxelExport`, Mandelbulber
-      `voxel_export`
-- [ ] 16-bit PNG / EXR output, Z-buffer and render passes (depth, normal, albedo, emission) for
-      compositing. MB3D `zbuf16bit`, Mandelbulber
+- [x] Voxel export: PNG slices per z layer (colors with transparency or white on black, hollow
+      option) and MagicaVoxel `.vox` (≤256³, median-cut palette); File › Export voxels…,
+      `rmb-cli voxels`. MB3D `VoxelExport`, Mandelbulber `voxel_export`
+- [x] 16-bit PNG and EXR output (linear, denoised, with coverage, Z, albedo and normal passes;
+      depth and coverage in the w components of the aux buffer). MB3D `zbuf16bit`, Mandelbulber
+  - [ ] Possible: EXR / 16-bit PNG for animations (frame sequences), an emission pass, larger
+        MagicaVoxel scenes (several 256³ models)
 - [ ] Big renders in tiles (sizes beyond the GPU memory, for prints). MB3D `Tiling`
 - [ ] Batch rendering / render queue (several scenes and animations overnight). MB3D
       `BatchForm`, Mandelbulber `render_queue`
@@ -186,8 +189,20 @@ Features the two programs have that RMandelbulb3D does not have yet, in the plan
       Mandelbulber `scripts`
 - [ ] Kleinian DE and inside rendering (see Formula editing above)
 - [ ] Compare with MB3D's own Monte Carlo renderer (`mb3d/CalcMonteCarlo.pas`)
-- Low value (covered by raytraced AO and bloom): SSAO, HDR blur post effects; netrender
-  (several machines)
+- [ ] Network rendering for long, high-quality animations (owner's wish 2026-11-24). Easy to
+      set up, no configuration files:
+  - In the CLI: render clients just run `rmb-cli` with one option (e.g. `rmb-cli --network`)
+  - The server starts a job from the CLI (faster) or from the GUI
+  - Automatic discovery: clients announce themselves on the local network (broadcast /
+    multicast), the server finds them without entering addresses
+  - The server shows the number of active clients; render on all of them or on selected ones
+  - Clients render frames and send them back; the server stores them. A client deletes its
+    copy only after the transfer to the server succeeded
+  - Fair load balancing: slower machines get less work than faster ones. Clients send hardware
+    specs only (CPU, RAM, GPU; no user data); the measured frame times refine the share
+  - CLI shows progress bars for the current image and the whole job
+  - Mandelbulber has a netrender (reference only)
+- Low value (covered by raytraced AO and bloom): SSAO, HDR blur post effects
 
 ## Performance
 

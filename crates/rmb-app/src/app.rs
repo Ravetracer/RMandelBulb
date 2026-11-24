@@ -28,6 +28,7 @@ enum Action {
     Export,
     ExportAnimation,
     ExportMesh,
+    ExportVoxels,
     Render,
     Undo,
     Redo,
@@ -210,7 +211,8 @@ impl App {
             Action::Export => self.export.open_for(&self.doc.scene, self.doc.path.as_ref()),
             Action::Render => self.render.open_and_render(&self.doc.scene, self.view.gpu_context()),
             Action::ExportAnimation => self.export.open_animation(&self.doc.scene, self.doc.path.as_ref()),
-            Action::ExportMesh => self.mesh.open_for(&self.doc.scene, self.doc.path.as_ref()),
+            Action::ExportMesh => self.mesh.open_for(&self.doc.scene, self.doc.path.as_ref(), false),
+            Action::ExportVoxels => self.mesh.open_for(&self.doc.scene, self.doc.path.as_ref(), true),
             Action::Undo => self.doc.undo(),
             Action::Redo => self.doc.redo(),
             Action::Copy => {
@@ -343,6 +345,10 @@ impl App {
                 }
                 if ui.button("Export mesh…").on_hover_text("Save the surface as a 3D mesh (PLY, OBJ, STL) for 3D printing and 3D programs").clicked() {
                     action = Some(Action::ExportMesh);
+                    ui.close();
+                }
+                if ui.button("Export voxels…").on_hover_text("Save the scene as voxels: PNG images per layer, or a MagicaVoxel model").clicked() {
+                    action = Some(Action::ExportVoxels);
                     ui.close();
                 }
                 ui.separator();

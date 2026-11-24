@@ -11,7 +11,7 @@ use super::post_process;
 use crate::scene::Post;
 
 /// Averaged render result before post processing; RGB triples, top row first.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct HdrImage {
     pub width: u32,
     pub height: u32,
@@ -21,6 +21,10 @@ pub struct HdrImage {
     pub albedo: Vec<f32>,
     /// World normal of the first hit (zero for misses).
     pub normal: Vec<f32>,
+    /// Share of the samples that hit a surface (0..1, one value per pixel; empty if unknown).
+    pub alpha: Vec<f32>,
+    /// Mean distance of the hits from the camera (infinity without hits; empty if unknown).
+    pub depth: Vec<f32>,
 }
 
 /// What happened to the denoiser when finishing an image.
@@ -61,6 +65,22 @@ impl HdrImage {
         Ok(used)
     }
 
+    /// Post processing into tightly packed 16-bit RGBA.
+    pub fn to_rgba16(&self, post: &Post) -> Vec<u16> {
+        let (w, h) = (self.width as usize, self.height as usize);
+        let mut out = vec![0u16; w * h * 4];
+        out.par_chunks_mut(w * 4).enumerate().for_each(|(y, row)| {
+            for x in 0..w {
+                let i = (y * w + x) * 3;
+                let c = [self.color[i] as f64, self.color[i + 1] as f64, self.color[i + 2] as f64].map(|v| if v.is_finite() { v } else { 0.0 });
+                let c = post_process(c, post, (x as f64 + 0.5) / w as f64, (y as f64 + 0.5) / h as f64);
+                let q = |v: f64| (v.clamp(0.0, 1.0) * 65535.0 + 0.5) as u16;
+                row[x * 4..x * 4 + 4].copy_from_slice(&[q(c[0]), q(c[1]), q(c[2]), 65535]);
+            }
+        });
+        out
+    }
+
     /// Post processing into tightly packed RGBA8 (same as the GPU display pass).
     pub fn to_rgba8(&self, post: &Post) -> Vec<u8> {
         let (w, h) = (self.width as usize, self.height as usize);
@@ -90,20 +110,52 @@ impl HdrImage {
     }
 
     /// Like [`HdrImage::finish`] with the scene's post processing and its lens flares.
-    pub fn finish_scene(mut self, scene: &crate::Scene) -> (Vec<u8>, Outcome) {
+    pub fn finish_scene(self, scene: &crate::Scene) -> (Vec<u8>, Outcome) {
+        let (img, outcome) = self.finish_scene_hdr(scene);
+        (img.to_rgba8(&scene.post), outcome)
+    }
+
+    /// [`finish_scene`](Self::finish_scene) into 16-bit RGBA (16-bit PNG).
+    pub fn finish_scene16(self, scene: &crate::Scene) -> (Vec<u16>, Outcome) {
+        let (img, outcome) = self.finish_scene_hdr(scene);
+        (img.to_rgba16(&scene.post), outcome)
+    }
+
+    /// Denoising (as the scene says), lens flares, bloom and chromatic aberration: the image
+    /// before the per-pixel post processing.
+    pub fn finish_scene_hdr(mut self, scene: &crate::Scene) -> (HdrImage, Outcome) {
         let post = &scene.post;
-        let outcome = if !post.denoise || post.denoise_blend <= 0.0 {
+        let outcome = self.denoise_as(post);
+        self.add_flares(scene);
+        super::bloom::apply(&mut self.color, self.width, self.height, post);
+        super::chromatic_aberration(&mut self.color, self.width, self.height, post.chromatic);
+        (self, outcome)
+    }
+
+    /// The image for an EXR file: denoised as the scene says, in linear light (display values
+    /// of `Post::display_space` scenes decoded), without lens flares and post processing.
+    pub fn finish_linear(mut self, scene: &crate::Scene) -> (HdrImage, Outcome) {
+        let outcome = self.denoise_as(&scene.post);
+        if scene.post.display_space {
+            for c in self.color.iter_mut() {
+                *c = super::srgb_decode(c.max(0.0) as f64) as f32;
+            }
+            for c in self.albedo.iter_mut() {
+                *c = super::srgb_decode(c.max(0.0) as f64) as f32;
+            }
+        }
+        (self, outcome)
+    }
+
+    fn denoise_as(&mut self, post: &Post) -> Outcome {
+        if !post.denoise || post.denoise_blend <= 0.0 {
             Outcome::Off
         } else {
             match self.denoise(post.denoise_blend) {
                 Ok(d) => Outcome::Denoised(d),
                 Err(e) => Outcome::Failed(e),
             }
-        };
-        self.add_flares(scene);
-        super::bloom::apply(&mut self.color, self.width, self.height, post);
-        super::chromatic_aberration(&mut self.color, self.width, self.height, post.chromatic);
-        (self.to_rgba8(post), outcome)
+        }
     }
 
     pub fn finish(mut self, post: &Post) -> (Vec<u8>, Outcome) {

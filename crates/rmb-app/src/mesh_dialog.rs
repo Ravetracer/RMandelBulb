@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
-//! Mesh export window: samples the scene's distance estimate in a box (GPU when available) and
-//! saves a closed triangle mesh (PLY, OBJ, STL) in the background.
+//! Mesh and voxel export window: samples the scene's distance estimate in a box (GPU when
+//! available) and saves a closed triangle mesh (PLY, OBJ, STL) or voxels (PNG slices,
+//! MagicaVoxel) in the background.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -12,6 +13,7 @@ use egui::RichText;
 use rmb_core::Scene;
 use rmb_core::math::V3;
 use rmb_core::mesh_export::{Grid, MeshFormat, MeshSettings};
+use rmb_core::voxel_export::{VoxelFormat, VoxelSettings};
 use rmb_gpu::GpuContext;
 
 use crate::{theme, widgets};
@@ -32,6 +34,10 @@ pub struct MeshDialog {
     pub open: bool,
     settings: MeshSettings,
     path: Option<PathBuf>,
+    /// Voxel mode, its settings and output (folder for PNG slices, file for MagicaVoxel).
+    voxels: bool,
+    vox: VoxelSettings,
+    vox_path: Option<PathBuf>,
     job: Option<Job>,
     /// Box fitting running in the background.
     fitting: Option<mpsc::Receiver<Option<(V3, V3)>>>,
@@ -42,20 +48,33 @@ pub struct MeshDialog {
 
 impl MeshDialog {
     pub fn new() -> Self {
-        MeshDialog { open: false, settings: MeshSettings::default(), path: None, job: None, fitting: None, fitted: None, message: None }
+        MeshDialog { open: false, settings: MeshSettings::default(), path: None, voxels: false, vox: VoxelSettings::default(), vox_path: None, job: None, fitting: None, fitted: None, message: None }
     }
 
     pub fn busy(&self) -> bool {
         self.job.is_some()
     }
 
-    pub fn open_for(&mut self, scene: &Scene, doc_path: Option<&PathBuf>) {
+    /// Opens the window for a mesh (`voxels` false) or voxel export.
+    pub fn open_for(&mut self, scene: &Scene, doc_path: Option<&PathBuf>, voxels: bool) {
         self.open = true;
+        self.voxels = voxels;
         if self.path.is_none() {
             self.path = doc_path.map(|p| p.with_extension(self.settings.format.extension()));
         }
+        if self.vox_path.is_none() {
+            self.vox_path = doc_path.map(|p| self.vox_target(p));
+        }
         if self.fitted.as_deref() != Some(shapes(scene).as_str()) {
             self.fit(scene);
+        }
+    }
+
+    /// The voxel output next to `p`: a folder for PNG slices, a .vox file.
+    fn vox_target(&self, p: &std::path::Path) -> PathBuf {
+        match self.vox.format {
+            VoxelFormat::PngStack => p.with_extension(""),
+            VoxelFormat::MagicaVoxel => p.with_extension("vox"),
         }
     }
 
@@ -106,8 +125,20 @@ impl MeshDialog {
         }
         let mut open = self.open;
         let idle = self.job.is_none();
-        egui::Window::new("Export mesh").id(egui::Id::new("mesh-export")).open(&mut open).resizable(false).collapsible(false).default_width(400.0).show(ctx, |ui| {
-            ui.label(RichText::new("Saves the surface as a closed triangle mesh for 3D printing and 3D programs.").size(theme::fs(11.5)).color(theme::TEXT_MUTED));
+        let title = if self.voxels { "Export voxels" } else { "Export mesh" };
+        egui::Window::new(title).id(egui::Id::new("mesh-export")).open(&mut open).resizable(false).collapsible(false).default_width(400.0).show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.add_enabled_ui(idle, |ui| {
+                    ui.selectable_value(&mut self.voxels, false, "Mesh").on_hover_text("A closed triangle mesh for 3D printing and 3D programs");
+                    ui.selectable_value(&mut self.voxels, true, "Voxels").on_hover_text("Voxels: PNG images per layer, or a MagicaVoxel model");
+                });
+            });
+            let text = if self.voxels {
+                "Saves the grid as voxels: one PNG image per z layer (bottom first), or a MagicaVoxel model."
+            } else {
+                "Saves the surface as a closed triangle mesh for 3D printing and 3D programs."
+            };
+            ui.label(RichText::new(text).size(theme::fs(11.5)).color(theme::TEXT_MUTED));
             ui.add_space(4.0);
             let d = MeshSettings::default();
             ui.add_enabled_ui(idle, |ui| {
@@ -124,6 +155,26 @@ impl MeshDialog {
                     }
                     widgets::slider_u32(ui, "Resolution", "Grid cells along the longest side of the box: finer detail, more triangles (they grow with the square), longer export", &mut s.resolution, 32..=2048, d.resolution);
                     widgets::slider(ui, "Thickness", "How far outside the fractal the surface lies, in grid cells: 0.5 keeps the shape; more thickens thin parts so they survive 3D printing", &mut s.thickness, 0.0..=4.0, d.thickness);
+                    if self.voxels {
+                        let v = &mut self.vox;
+                        widgets::checkbox(ui, "Colors", "The scene's colors (gradient, color maps, texture layers, model colors; no lighting) on the voxels next to empty space; the hidden inside gets each layer's mean color. Off: white on black", &mut v.colors);
+                        widgets::checkbox(ui, "Hollow", "Only the voxels next to empty space (the visible shell): far fewer voxels, faster in MagicaVoxel", &mut v.hollow);
+                        widgets::label(ui, "Format", "PNG slices: a folder with one image per z layer, bottom first, seen from above (3D printing, image tools, volume programs). MagicaVoxel: one .vox model, at most 256 voxels per side, colors in a palette of 255");
+                        let before = v.format;
+                        egui::ComboBox::from_id_salt("vox-format").selected_text(v.format.label()).show_ui(ui, |ui| {
+                            for f in VoxelFormat::ALL {
+                                ui.selectable_value(&mut v.format, f, f.label());
+                            }
+                        });
+                        ui.end_row();
+                        if v.format != before
+                            && let Some(p) = self.vox_path.clone()
+                        {
+                            self.vox_path = Some(self.vox_target(&p));
+                        }
+                        return;
+                    }
+                    let s = &mut self.settings;
                     widgets::checkbox(ui, "Refine", "Moves every vertex onto the surface after the grid placed it: sharper edges, a little slower", &mut s.refine);
                     widgets::checkbox(ui, "Vertex colors", "The scene's colors at every vertex (PLY and OBJ; STL has none)", &mut s.colors);
                     widgets::checkbox(ui, "Y up", "Write y as the up axis (many 3D programs; RMandelbulb3D uses z up)", &mut s.y_up);
@@ -146,8 +197,21 @@ impl MeshDialog {
                     if ui.add_enabled(!fitting, egui::Button::new(if fitting { "Fitting…" } else { "Fit box to surface" })).on_hover_text("Finds the box around the scene's surfaces (a coarse search)").clicked() {
                         self.fit(scene);
                     }
-                    let label = self.path.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "No file chosen".into());
-                    if ui.button("File…").on_hover_text("Where to save the mesh").clicked() {
+                    let shown = if self.voxels { &self.vox_path } else { &self.path };
+                    let label = shown.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "No file chosen".into());
+                    if self.voxels {
+                        let folder = self.vox.format == VoxelFormat::PngStack;
+                        if ui.button(if folder { "Folder…" } else { "File…" }).on_hover_text(if folder { "The folder for the PNG images (created if needed)" } else { "Where to save the .vox file" }).clicked() {
+                            let mut dlg = crate::prefs::dialog(crate::prefs::Folder::Models);
+                            if let Some(dir) = self.vox_path.as_ref().and_then(|p| p.parent()) {
+                                dlg = dlg.set_directory(dir);
+                            }
+                            let picked = if folder { dlg.pick_folder() } else { dlg.add_filter("MagicaVoxel", &["vox"]).set_file_name("fractal.vox").save_file() };
+                            if let Some(p) = picked {
+                                self.vox_path = Some(if folder { p } else { p.with_extension("vox") });
+                            }
+                        }
+                    } else if ui.button("File…").on_hover_text("Where to save the mesh").clicked() {
                         let f = self.settings.format;
                         let mut dlg = crate::prefs::dialog(crate::prefs::Folder::Models).add_filter(f.label(), &[f.extension()]).set_file_name(format!("fractal.{}", f.extension()));
                         if let Some(dir) = self.path.as_ref().and_then(|p| p.parent()) {
@@ -166,10 +230,15 @@ impl MeshDialog {
                     ui.label(RichText::new(label).size(theme::fs(11.5)).color(theme::TEXT_MUTED));
                 });
             });
-            let g = Grid::new(&self.settings);
+            let used = if self.voxels { rmb_core::voxel_export::limited(&self.settings, &self.vox) } else { self.settings.clone() };
+            let g = Grid::new(&used);
             let samples = g.samples() as f64;
             let device = if gpu.is_some() { "GPU" } else { "CPU" };
-            ui.label(RichText::new(format!("Grid {} × {} × {} ({:.1} million samples, on the {device})", g.n[0], g.n[1], g.n[2], samples / 1e6)).size(theme::fs(11.5)).color(theme::TEXT_MUTED));
+            let what = if self.voxels { "voxels" } else { "samples" };
+            ui.label(RichText::new(format!("Grid {} × {} × {} ({:.1} million {what}, on the {device})", g.n[0], g.n[1], g.n[2], samples / 1e6)).size(theme::fs(11.5)).color(theme::TEXT_MUTED));
+            if used.resolution < self.settings.resolution {
+                ui.label(RichText::new("MagicaVoxel models hold at most 256 voxels per side: the resolution is limited.").size(theme::fs(11.5)).color(theme::WARN));
+            }
             ui.add_space(6.0);
             if let Some(job) = &self.job {
                 let p = f32::from_bits(job.progress.load(Ordering::Relaxed));
@@ -181,12 +250,14 @@ impl MeshDialog {
                     job.cancel.store(true, Ordering::Relaxed);
                 }
             } else {
-                let ready = self.path.is_some() && self.fitting.is_none();
+                let has_target = if self.voxels { self.vox_path.is_some() } else { self.path.is_some() };
+                let ready = has_target && self.fitting.is_none();
+                let label = if self.voxels { "Export voxels" } else { "Export mesh" };
                 ui.horizontal(|ui| {
-                    if ui.add_enabled(ready, egui::Button::new(RichText::new(format!("{}  Export mesh", crate::icons::EXPORT)).strong()).fill(theme::ACCENT_DIM)).clicked() {
+                    if ui.add_enabled(ready, egui::Button::new(RichText::new(format!("{}  {label}", crate::icons::EXPORT)).strong()).fill(theme::ACCENT_DIM)).clicked() {
                         self.start(scene, gpu.clone());
                     }
-                    if self.path.is_none() {
+                    if !has_target {
                         ui.label(RichText::new("Choose where to save first").color(theme::TEXT_MUTED));
                     }
                 });
@@ -200,7 +271,9 @@ impl MeshDialog {
     }
 
     fn start(&mut self, scene: &Scene, gpu: Option<GpuContext>) {
-        let Some(path) = self.path.clone() else { return };
+        let voxels = self.voxels;
+        let Some(path) = (if voxels { self.vox_path.clone() } else { self.path.clone() }) else { return };
+        let vox = self.vox.clone();
         let progress = Arc::new(AtomicU32::new(0));
         let cancel = Arc::new(AtomicBool::new(false));
         let (tx, rx) = mpsc::channel();
@@ -212,15 +285,21 @@ impl MeshDialog {
                     eprintln!("3D model not loaded: {e}");
                 }
                 // The GPU computes the distances when there is one; the CPU otherwise.
+                let used = if voxels { rmb_core::voxel_export::limited(&settings, &vox) } else { settings.clone() };
                 let mut gpu_field = match gpu {
-                    Some(ctx) => Some(rmb_gpu::GridField::new(ctx, &sc, Grid::new(&settings))?),
+                    Some(ctx) => Some(rmb_gpu::GridField::new(ctx, &sc, Grid::new(&used))?),
                     None => None,
                 };
                 let field = gpu_field.as_mut().map(|f| f as &mut dyn rmb_core::mesh_export::Field);
-                let (v, t) = rmb_core::mesh_export::export(&sc, &settings, field, &path, &mut |p| {
+                let mut report = |p: f32| {
                     pr.store(p.to_bits(), Ordering::Relaxed);
                     !ca.load(Ordering::Relaxed)
-                })?;
+                };
+                if voxels {
+                    let (n, files) = rmb_core::voxel_export::export(&sc, &used, &vox, field, &path, &mut report)?;
+                    return Ok(format!("Saved {} ({n} voxels, {} file{})", path.display(), files.len(), if files.len() == 1 { "" } else { "s" }));
+                }
+                let (v, t) = rmb_core::mesh_export::export(&sc, &used, field, &path, &mut report)?;
                 Ok(format!("Saved {} ({v} vertices, {t} triangles)", path.display()))
             })();
             let _ = tx.send(res);

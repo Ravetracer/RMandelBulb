@@ -17,3 +17,4 @@ stl_io = "0.11.0"
 ply-rs-bw = "4.0.1"
 gltf = { version = "1.4.1", default-features = false, features = ["import", "utils", "names"] }
 ufbx = "0.11.5"
+exr = { version = "1.74.3", default-features = false }
