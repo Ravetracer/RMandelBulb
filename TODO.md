@@ -246,8 +246,17 @@ Curvichrome 1052 -> 254 ms, AboxShapes-Misty 44 -> 17 ms, temple 71 -> 35 ms, Ho
       (2-4x faster). In animations the per-frame denoiser shimmers on fine detail: flicker 2x
       (16 samples) and 1.4x (32) of 64 raw; 64 + OIDN equals 64 raw. Raw noise does not
       flicker since the random seeds do not depend on the frame. Recommendation in README
-  - [ ] Possible: temporal denoising (OIDN has none; e.g. blend with the reprojected previous
-        frame), sample defaults per output kind (stills vs. animations)
+  - [x] ~~Temporal denoising~~ (tried, dropped): each frame blended with the previous one,
+        reprojected through the depth pass and both cameras (rejected where depth or normal
+        differ, clamped to the 3 x 3 neighbourhood), before or after OIDN. On a 12-frame dolly
+        of the Mandelbulb (640 x 360, 16 samples; `examples/flicker_bench`, levels of 255
+        against 512 samples) it was always worse: denoised alone error 0.78 / flicker 1.14,
+        blended 0.5 with bilinear history 1.15 / 1.61, after OIDN 1.18 / 1.66, Catmull-Rom
+        history 1.03 / 1.44 (64 raw samples: 0.40 / 0.58). Every pixel of a fractal is fine
+        detail, so the resampled history blurs more than it removes noise; in moving shots the
+        flicker comes mostly from the noise itself (raw 1.17 vs denoised 1.14), which only more
+        samples lower
+  - [ ] Possible: sample defaults per output kind (stills vs. animations)
 - [x] ~~Adaptive sampling~~ (estimated, dropped): stopping pixels whose noise (standard error
       of the luminance) is below 0.2-1 % after at least 8 of 32 samples. A GPU warp (8 x 4
       pixels) only saves time when all its pixels stop: that leaves 99-100 % of the work on
