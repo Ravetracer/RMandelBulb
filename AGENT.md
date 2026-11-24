@@ -327,15 +327,19 @@ cargo clippy -j 8 --workspace --all-targets
 ## Water
 
 - `Primitive::Water` (`compose.rs` `water_wave01` / `water_height` / `water_distance` /
-  `water_look`, mirrored in march.wgsl): a sum of `detail` waves exp(sin - 1) around the wind
-  (directions from `hash3`), each dragging the point along its slope (`choppy` × 0.38). The
-  distance divides by `water_steepness` (measured bound; test
-  `water_slopes_stay_below_the_distance_bound`). Parameters on the GPU in `Obj.prim` /
-  `prim2`. Water reflects by itself: `Surface::mirror` / `Traced.mirror` = Fresnel
-  (`water_fresnel`), used instead of the material's reflection amount in the bounce loop;
-  `Program::has_water` turns on the bounce loop (GPU `WATER`, `is_water(j)` from codegen,
-  `REFLECT`). Glints: shininess at least `WATER_SHININESS`. Animations add `speed` per second
-  to `phase` (`color_speeds` key `o{k}.water`).
+  `water_look`, mirrored in march.wgsl): `detail` waves exp(sin - 1) from 2.5 × the wave
+  length down to 1/80 (height ∝ wave length, `WATER_FALLOFF`), random phases and directions
+  around the wind from `hash3`, deep-water speeds (√frequency), drag along the slope
+  (`choppy` × 0.38); the sum is standardized (mean 0.4658, spread 0.3025 of exp(sin - 1)),
+  so the height range does not depend on the number of waves. Slow domain warping (scale
+  5 wave lengths) and wave groups (scale 7) keep wide views from repeating. The distance
+  divides by `water_steepness` (measured; test `water_slopes_stay_below_the_distance_bound`).
+  Parameters on the GPU in `Obj.prim` / `prim2`. Water reflects by itself:
+  `Surface::mirror` / `Traced.mirror` = Fresnel (`water_fresnel`), used instead of the
+  material's reflection amount in the bounce loop; `Program::has_water` turns on the bounce
+  loop (GPU `WATER`, `is_water(j)` from codegen, `REFLECT`). Glints: shininess at least
+  `WATER_SHININESS`. Animations add `speed` per second to `phase` (`color_speeds` key
+  `o{k}.water`).
 
 ## Light through glass
 

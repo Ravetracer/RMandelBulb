@@ -116,7 +116,7 @@ pub enum Primitive {
         /// Sharpness of the crests (0 = round swell, 1 = like the sea, 2 = very choppy).
         #[serde(default = "water_choppy")]
         choppy: f64,
-        /// Number of waves (2-48): more give finer ripples on the swell.
+        /// Number of waves (4-64): more give a richer sea with finer ripples.
         #[serde(default = "water_detail")]
         detail: f64,
         /// Foam on the crests (0-1).
@@ -180,7 +180,7 @@ impl Primitive {
 
     /// Water with good start values (moving waves in animations).
     pub fn water() -> Primitive {
-        Primitive::Water { amplitude: 0.06, wavelength: 2.0, phase: 0.0, angle: 0.0, choppy: water_choppy(), detail: water_detail(), foam: 0.4, reflect: water_reflect(), speed: 1.0 }
+        Primitive::Water { amplitude: 0.08, wavelength: 2.0, phase: 0.0, angle: 0.0, choppy: water_choppy(), detail: water_detail(), foam: 0.3, reflect: water_reflect(), speed: 1.0 }
     }
 
     /// The parameters in a fixed order (GPU buffer: `prim`, `prim2`).
@@ -280,7 +280,7 @@ fn water_choppy() -> f64 {
 }
 
 fn water_detail() -> f64 {
-    16.0
+    32.0
 }
 
 fn water_reflect() -> f64 {
@@ -289,36 +289,54 @@ fn water_reflect() -> f64 {
 
 /// Waves of a water surface: their number grows with the detail.
 pub fn water_waves(detail: f64) -> i32 {
-    (detail.round() as i32).clamp(2, 48)
+    (detail.round() as i32).clamp(4, 64)
 }
 
+/// Wave height ∝ wave length ^ this: 1 gives every size band about the same slope, as on the
+/// sea (ripples on swells).
+const WATER_FALLOFF: f64 = 1.0;
+
 /// Height of the waves at (`x`, `y`) in 0..1 (after "Very fast procedural ocean" by afl_ext;
-/// mirrors march.wgsl `water_wave01`): a sum of waves exp(sin - 1) in directions around the
-/// wind, each a little shorter, weaker and faster than the one before; every wave drags the
-/// point along its slope, which sharpens the crests (`choppy`).
+/// mirrors march.wgsl `water_wave01`): a sum of waves exp(sin - 1), from swells longer than
+/// the wave length down to small ripples, each with its own random phase, a direction around
+/// the wind (small waves spread wider) and the speed of deep water waves (longer ones run
+/// faster). Every wave drags the point along its slope, which sharpens the crests
+/// (`choppy`). Over large distances the crests bend (slow domain warping) and wave groups
+/// make the sea calmer and rougher in turns, so a wide view never repeats.
 fn water_wave01(a: &[f64; 8], x: f64, y: f64) -> f64 {
     let (len, t, wind) = (a[1].max(1e-6), a[2], a[3].to_radians());
     let drag = a[4].max(0.0) * 0.38;
+    // Slow bends: the points move by up to 0.8 wave lengths on a scale of 5.
+    let (gx, gy) = (x / (len * 5.0), y / (len * 5.0));
+    let wx = (water_noise(gx, gy) * 2.0 - 1.0) * len * 0.8;
+    let wy = (water_noise(gx + 31.7, gy + 17.3) * 2.0 - 1.0) * len * 0.8;
     let freq0 = std::f64::consts::TAU / len;
-    let (mut px, mut py) = (x * freq0, y * freq0);
-    // Far apart, the waves fall out of step.
-    let shift = (px * px + py * py).sqrt() * 0.1;
-    let (mut f, mut speed, mut w, mut sum, mut weights) = (1.0, 1.0, 1.0, 0.0, 0.0);
-    for i in 0..water_waves(a[5]) {
-        let ang = wind + 1.2 * (crate::render::hash3(i, 0, 11) as f64 * 2.0 - 1.0);
+    let (mut px, mut py) = ((x + wx) * freq0, (y + wy) * freq0);
+    let n = water_waves(a[5]);
+    // From 2.5 times the wave length down to about an eightieth of it.
+    let ratio = (200f64).powf(1.0 / (n - 1).max(1) as f64);
+    let (mut f, mut w, mut sum, mut weights, mut squares) = (0.4, 1.0, 0.0, 0.0, 0.0);
+    for i in 0..n {
+        let spread = 0.5 + 1.5 * i as f64 / n as f64;
+        let ang = wind + spread * (crate::render::hash3(i, 0, 11) as f64 * 2.0 - 1.0);
         let (dx, dy) = (ang.cos(), ang.sin());
-        let ph = (px * dx + py * dy) * f + t * speed + shift;
+        let ph = (px * dx + py * dy) * f + t * f.sqrt() + crate::render::hash3(i, 1, 11) as f64 * std::f64::consts::TAU;
         let wave = (ph.sin() - 1.0).exp();
         let slope = -wave * ph.cos();
         px += dx * slope * w * drag;
         py += dy * slope * w * drag;
         sum += wave * w;
         weights += w;
-        w *= 0.8;
-        f *= 1.18;
-        speed *= 1.07;
+        squares += w * w;
+        w *= ratio.powf(-WATER_FALLOFF);
+        f *= ratio;
     }
-    sum / weights
+    // Standardized by the mean and spread of exp(sin - 1) (0.4658, 0.3025), so the height
+    // keeps its range for any number of waves; wave groups grow and calm the waves over about
+    // seven wave lengths.
+    let z = (sum - 0.4658 * weights) / (0.3025 * squares.sqrt());
+    let group = 0.45 + 0.55 * water_noise(x / (len * 7.0) + 5.1, y / (len * 7.0) + 9.3);
+    (0.46 + 0.14 * z * group).clamp(0.0, 1.0)
 }
 
 /// Height of the waves at (`x`, `y`) (mirrors march.wgsl `water_height`): `a` = wave height,
@@ -328,10 +346,13 @@ pub fn water_height(a: &[f64; 8], x: f64, y: f64) -> f64 {
     (water_wave01(a, x, y) * 2.0 - 1.0) * a[0]
 }
 
-/// The steepest slope the waves reach, times wave height × 2π / wave length (measured
-/// with `water_slopes_stay_below_the_distance_bound`).
+/// The steepest slope the waves reach, times wave height × 2π / wave length. Measured: about
+/// 1.3 without choppiness at any detail; with choppiness 1 / 2: 1.4 / 2.2 at 32 waves,
+/// 2.2 / 5.2 at 64. Bound: 1.6 + choppy² × waves / 40 (checked by
+/// `water_slopes_stay_below_the_distance_bound`).
 fn water_steepness(a: &[f64; 8]) -> f64 {
-    a[0].abs() * std::f64::consts::TAU / a[1].max(1e-6) * (2.0 + 2.5 * a[4].max(0.0))
+    let c = a[4].max(0.0);
+    a[0].abs() * std::f64::consts::TAU / a[1].max(1e-6) * (1.6 + c * c * water_waves(a[5]) as f64 / 40.0)
 }
 
 /// Distance bound of the water surface: above every crest the distance to the highest one,
@@ -369,8 +390,8 @@ fn water_noise(x: f64, y: f64) -> f64 {
 /// up by noise that drifts with the wind.
 pub fn water_look(a: &[f64; 8], q: V3) -> (f64, f64) {
     let h = water_wave01(a, q.x, q.y);
-    // The top ~15 % of the heights (90 % lie below 0.6, the highest crests reach about 0.88).
-    let crest = ((h - 0.56) / 0.16).clamp(0.0, 1.0);
+    // The top ~5 % of the heights (90 % lie below 0.61, 98 % below 0.70).
+    let crest = ((h - 0.62) / 0.16).clamp(0.0, 1.0);
     if crest <= 0.0 || a[6] <= 0.0 {
         return (h, 0.0);
     }
@@ -708,13 +729,13 @@ mod tests {
     #[test]
     fn water_slopes_stay_below_the_distance_bound() {
         // The bound divides by the steepest slope: measure the real slopes.
-        for (amp, len, choppy, detail) in [(0.05, 0.3, 1.0, 16.0), (0.2, 1.0, 0.0, 8.0), (0.02, 0.5, 2.0, 48.0), (0.1, 2.0, 1.5, 32.0)] {
+        for (amp, len, choppy, detail) in [(0.05, 0.3, 1.0, 24.0), (0.2, 1.0, 0.0, 8.0), (0.02, 0.5, 2.0, 64.0), (0.1, 2.0, 1.5, 32.0)] {
             let a = [amp, len, 0.7, 25.0, choppy, detail, 0.0, 1.0];
             let steep = water_steepness(&a);
             let e = len * 1e-5;
             let mut worst: f64 = 0.0;
             for i in 0..20000 {
-                let (x, y) = ((i as f64 * 0.6180339) % 1.0 * len * 9.0, (i as f64 * 0.7548776) % 1.0 * len * 9.0);
+                let (x, y) = ((i as f64 * 0.6180339) % 1.0 * len * 30.0, (i as f64 * 0.7548776) % 1.0 * len * 30.0);
                 let gx = (water_height(&a, x + e, y) - water_height(&a, x - e, y)) / (2.0 * e);
                 let gy = (water_height(&a, x, y + e) - water_height(&a, x, y - e)) / (2.0 * e);
                 worst = worst.max((gx * gx + gy * gy).sqrt());
@@ -845,3 +866,5 @@ mod scene_tests {
         assert!(c[0] > 60 && c[1] < c[0] / 3 && c[2] < c[0] / 3, "{c:?}");
     }
 }
+
+

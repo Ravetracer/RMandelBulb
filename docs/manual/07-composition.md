@@ -127,29 +127,32 @@ stand upright along their own z axis.
 
 ### Water
 
-The water is an ocean surface made of many waves that run around the wind direction, each a
-little shorter and faster than the one before; their crests are pulled sharp like those of
-the sea. It reflects the sky and the scene by itself, like real water: little when you look
+The water is an ocean surface made of many waves, from long swells down to small ripples.
+They run around the wind direction (small ones spread wider), long waves faster than short
+ones as on the sea, and their crests are pulled sharp. Over large distances the crests bend
+and the sea gets calmer and rougher in turns, so a wide view does not repeat. It reflects the sky and the scene by itself, like real water: little when you look
 straight down, almost a mirror at grazing angles. The material's **Reflection** (Color tab)
 is not needed for it, and the rest of the scene keeps its own setting.
 
-![Calm water (left) and a rough sea with foam (right)](images/water.jpg)
+![The sea from above and close to the surface](images/water.jpg)
 
 | Setting | What it does | Start value |
 |---------|--------------|-------------|
-| Wave height | Height of the largest waves. | 0.06 |
+| Wave height | Height of the largest waves. | 0.08 |
 | Wave length | Length of the largest waves (across the wind a bit shorter). | 2 |
 | Choppiness | Shape of the crests: 0 = round swell, 1 = like the sea, 2 = very choppy. | 1 |
-| Detail | Number of waves: more give finer ripples on the swell (and cost a little speed). | 16 |
+| Detail | Number of waves (4–64), from long swells to small ripples: more give a richer sea and cost speed. | 32 |
 | Direction | Wind direction in degrees; the waves run mostly along it. | 0 |
-| Foam | White, broken foam on the highest crests, streaked along the wind. | 0.4 |
+| Foam | White, broken foam on the highest crests, streaked along the wind. | 0.3 |
 | Reflection | How strongly the water reflects (1 = like water, 2 = twice as much). | 1 |
-| Speed | How fast the waves move in animations (per second; 0 = still). | 1 |
+| Speed | How fast the waves move in animations (per second; 0 = still). Long waves run faster than ripples. | 1 |
 | Time | The moment of the waves: another value shows another wave pattern in a still image. Animations add the speed per second to it. | 0 |
 
 The water's own colors (its material) are the color of the water body: it gets brighter on
 the crests, where the light shines through the waves. Dark blue-green colors look like deep
 sea; lighter, greener ones like shallow water. The sun shows as sharp glints on the waves.
+The water looks best under a bright sky: it reflects the background (chapter 12), so a blue
+sky gradient and a low light give the contrast of open sea.
 
 !!! tip
     For water you can see into, give its colors some transparency and turn on **Glass** in

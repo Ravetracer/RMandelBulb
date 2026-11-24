@@ -579,7 +579,7 @@ fn primitive_object(p: Primitive, at: rmb_core::V3) -> SceneObject {
         }
         Primitive::Water { .. } => {
             pos = rmb_core::v3(0.0, 0.0, -1.0);
-            material.gradient = vec![rmb_core::scene::ColorStop::new(0.0, [0.01, 0.06, 0.09]), rmb_core::scene::ColorStop::new(1.0, [0.03, 0.14, 0.17])];
+            material.gradient = vec![rmb_core::scene::ColorStop::new(0.0, [0.0, 0.04, 0.09]), rmb_core::scene::ColorStop::new(1.0, [0.02, 0.1, 0.16])];
         }
         _ => {}
     }
@@ -630,14 +630,14 @@ fn primitive_params(ui: &mut Ui, p: &mut Primitive) {
             widgets::slider_log(ui, "Height", "Height of the prism (along its z axis)", height, 0.001..=100.0, 1.0);
         }
         Primitive::Water { amplitude, wavelength, phase, angle, choppy, detail, foam, reflect, speed } => {
-            widgets::slider_log(ui, "Wave height", "Height of the largest waves", amplitude, 0.0..=10.0, 0.04);
+            widgets::slider_log(ui, "Wave height", "Height of the largest waves", amplitude, 0.0..=10.0, 0.08);
             widgets::slider_log(ui, "Wave length", "Length of the largest waves (across the wind they are a bit shorter)", wavelength, 0.001..=100.0, 1.0);
-            widgets::slider(ui, "Choppiness", "Shape of the crests: 1 = round swell, higher = sharp, choppy crests", choppy, 1.0..=10.0, 4.0);
-            widgets::slider(ui, "Detail", "Wave octaves: each adds smaller, faster ripples on top (more costs a little speed)", detail, 1.0..=8.0, 5.0);
+            widgets::slider(ui, "Choppiness", "Shape of the crests: 0 = round swell, 1 = like the sea, 2 = very choppy", choppy, 0.0..=2.0, 1.0);
+            widgets::slider(ui, "Detail", "Number of waves, from long swells to small ripples: more give a richer sea (and cost speed)", detail, 4.0..=64.0, 32.0);
             widgets::slider(ui, "Direction", "Wind direction in degrees: the waves are longer along it", angle, -180.0..=180.0, 0.0);
-            widgets::slider(ui, "Foam", "White foam on the highest crests", foam, 0.0..=1.0, 0.3);
+            widgets::slider(ui, "Foam", "White, broken foam on the highest crests, streaked along the wind", foam, 0.0..=1.0, 0.3);
             widgets::slider(ui, "Reflection", "How strongly the water reflects the sky and the scene (1 = like water: weak looking straight down, a mirror at grazing angles). Works without the material's Reflection", reflect, 0.0..=2.0, 1.0);
-            widgets::slider(ui, "Speed", "How fast the waves move in animations (per second; 0 = still)", speed, 0.0..=5.0, 0.6);
+            widgets::slider(ui, "Speed", "How fast the waves move in animations (per second; 0 = still); long waves run faster than ripples, like on the sea", speed, 0.0..=5.0, 1.0);
             widgets::slider(ui, "Time", "The moment of the waves: change it to pick another wave pattern in a still image (animations add Speed per second)", phase, -100.0..=100.0, 0.0);
         }
     });

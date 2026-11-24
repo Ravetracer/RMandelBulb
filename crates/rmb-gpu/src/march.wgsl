@@ -748,33 +748,41 @@ fn prim_de(kind: u32, a: vec4<f32>, a2: vec4<f32>, q: vec3<f32>) -> f32 {
     return water_distance(a, a2, q);
 }
 
-// Mirrors compose::water_wave01: waves exp(sin - 1) around the wind, dragging the point.
+// Mirrors compose::water_wave01: waves exp(sin - 1) from swells to ripples, dragging the
+// point; slow bends and wave groups over large distances.
 fn water_wave01(a: vec4<f32>, a2: vec4<f32>, x: f32, y: f32) -> f32 {
+    let len = max(a.y, 1.0e-6);
     let wind = radians(a.w);
     let drag = max(a2.x, 0.0) * 0.38;
-    let freq0 = 6.283185307179586 / max(a.y, 1.0e-6);
-    var p = vec2<f32>(x, y) * freq0;
-    let shift = length(p) * 0.1;
-    var f = 1.0;
-    var speed = 1.0;
+    let g = vec2<f32>(x, y) / (len * 5.0);
+    let warp = vec2<f32>(water_noise(g.x, g.y), water_noise(g.x + 31.7, g.y + 17.3)) * 2.0 - 1.0;
+    let freq0 = 6.283185307179586 / len;
+    var p = (vec2<f32>(x, y) + warp * len * 0.8) * freq0;
+    let n = clamp(i32(round(a2.y)), 4, 64);
+    let ratio = pow(200.0, 1.0 / f32(max(n - 1, 1)));
+    let decay = 1.0 / ratio;
+    var f = 0.4;
     var w = 1.0;
     var sum = 0.0;
     var weights = 0.0;
-    let waves = clamp(i32(round(a2.y)), 2, 48);
-    for (var i = 0; i < waves; i++) {
-        let ang = wind + 1.2 * (hash3(i, 0, 11) * 2.0 - 1.0);
+    var squares = 0.0;
+    for (var i = 0; i < n; i++) {
+        let spread = 0.5 + 1.5 * f32(i) / f32(n);
+        let ang = wind + spread * (hash3(i, 0, 11) * 2.0 - 1.0);
         let dir = vec2<f32>(cos(ang), sin(ang));
-        let ph = dot(p, dir) * f + a.z * speed + shift;
+        let ph = dot(p, dir) * f + a.z * sqrt(f) + hash3(i, 1, 11) * 6.283185307179586;
         let wave = exp(sin(ph) - 1.0);
         let slope = -wave * cos(ph);
         p += dir * slope * w * drag;
         sum += wave * w;
         weights += w;
-        w *= 0.8;
-        f *= 1.18;
-        speed *= 1.07;
+        squares += w * w;
+        w *= decay;
+        f *= ratio;
     }
-    return sum / weights;
+    let z = (sum - 0.4658 * weights) / (0.3025 * sqrt(squares));
+    let group = 0.45 + 0.55 * water_noise(x / (len * 7.0) + 5.1, y / (len * 7.0) + 9.3);
+    return clamp(0.46 + 0.14 * z * group, 0.0, 1.0);
 }
 
 // Mirrors compose::water_height.
@@ -789,7 +797,8 @@ fn water_distance(a: vec4<f32>, a2: vec4<f32>, q: vec3<f32>) -> f32 {
     if (above > amp) {
         return above;
     }
-    let steep = amp * 6.283185307179586 / max(a.y, 1.0e-6) * (2.0 + 2.5 * max(a2.x, 0.0));
+    let c = max(a2.x, 0.0);
+    let steep = amp * 6.283185307179586 / max(a.y, 1.0e-6) * (1.6 + c * c * f32(clamp(i32(round(a2.y)), 4, 64)) / 40.0);
     let d = (q.z - water_height(a, a2, q.x, q.y)) / sqrt(1.0 + steep * steep);
     if (above > 0.0) {
         return max(d, above);
@@ -818,7 +827,7 @@ fn water_noise(x: f32, y: f32) -> f32 {
 // Mirrors compose::water_look: x the height 0..1, y the foam share.
 fn water_look(a: vec4<f32>, a2: vec4<f32>, q: vec3<f32>) -> vec2<f32> {
     let h = water_wave01(a, a2, q.x, q.y);
-    let crest = clamp((h - 0.56) / 0.16, 0.0, 1.0);
+    let crest = clamp((h - 0.62) / 0.16, 0.0, 1.0);
     if (crest <= 0.0 || a2.z <= 0.0) {
         return vec2<f32>(h, 0.0);
     }
