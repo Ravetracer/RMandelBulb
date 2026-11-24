@@ -3,6 +3,7 @@
 //! Fractal formulas: the formula language, its compilers and the built-in library.
 
 pub mod cpu;
+pub mod jit;
 pub mod lang;
 pub mod m3f;
 pub mod wgsl;

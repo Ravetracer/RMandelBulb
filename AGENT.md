@@ -23,7 +23,7 @@ Open work and wished features: `TODO.md`.
 
 | Path | Content |
 |------|---------|
-| `crates/rmb-core` | `mesh_export.rs` (mesh export: grid, surface nets, PLY/OBJ/STL), `compose.rs` (scene composition: objects, primitives, boolean ops, transforms; mirrored in march.wgsl), `mesh.rs` (3D model import and distance grid bake), `texture.rs` (texture layers), `palette.rs` (palette generator and edits), `flare.rs` (lens flares: model, presets, screen-space layer added before post processing), `animation.rs` (keyframes, camera path, timing, cameraman smoothing, flight → keyframes), `video.rs` (PNG sequences, movies through ffmpeg), `scene.rs` (model), `formula/` (language `lang.rs`, `cpu.rs` closure compiler, `wgsl.rs` emitter, `lib/*.mbf` built-ins, `m3f/` MB3D machine-code translator, `lib/mb3d.mbf` its generated output), `fractal.rs` (hybrid `Program`, CPU evaluator), `render/` (`cpu.rs` reference renderer, `mod.rs` frame setup and post processing), `io/` (`.rmb` JSON, `m3p.rs` MB3D import, PNG with scene) |
+| `crates/rmb-core` | `mesh_export.rs` (mesh export: grid, surface nets, PLY/OBJ/STL), `compose.rs` (scene composition: objects, primitives, boolean ops, transforms; mirrored in march.wgsl), `mesh.rs` (3D model import and distance grid bake), `texture.rs` (texture layers), `palette.rs` (palette generator and edits), `flare.rs` (lens flares: model, presets, screen-space layer added before post processing), `animation.rs` (keyframes, camera path, timing, cameraman smoothing, flight → keyframes), `video.rs` (PNG sequences, movies through ffmpeg), `scene.rs` (model), `formula/` (language `lang.rs`, `cpu.rs` closure compiler, `jit.rs` Cranelift JIT of it, `wgsl.rs` emitter, `lib/*.mbf` built-ins, `m3f/` MB3D machine-code translator, `lib/mb3d.mbf` its generated output), `fractal.rs` (hybrid `Program`, CPU evaluator), `render/` (`cpu.rs` reference renderer, `mod.rs` frame setup and post processing), `io/` (`.rmb` JSON, `m3p.rs` MB3D import, PNG with scene) |
 | `crates/rmb-gpu` | `march.wgsl` (kernel, mirrors `render/cpu.rs`), `codegen.rs` (hybrid `iterate` function), `display.wgsl` (post), `renderer.rs` (progressive bands, async shader compile) |
 | `crates/rmb-app` | egui app: `app.rs`, `viewport.rs` (preview and navigation), `formulas_panel.rs` (scene list, object editors), `inspector.rs`, `layers.rs` (texture layer editor), `palette_editor.rs` (gradient editor: stops on the strip, generator, tools, saved palettes in `palettes.json`), `export.rs` (image and animation export), `render_view.rs` (test render window: `render_progressive`, keeps the raw image and develops it again when the post processing changes), `timeline.rs` (animation panel: keyframes, recording, playback), `gizmos.rs` (light gizmos; object gizmos: move, rotate rings, scale/stretch handles), `doc.rs` (undo), `prefs.rs`, `theme.rs` (from RWildFire) |
 | `crates/rmb-cli` | Command line (`net.rs`: network render commands) |
@@ -80,6 +80,21 @@ cargo clippy -j 8 --workspace --all-targets
 - MB3D's spec notes (parameter format, render math, .m3f analysis) came from studying the source.
   MB3D's camera starts rays on a plane; the import converts it to a pinhole camera at the
   point where those rays converge.
+
+## CPU JIT
+
+- `formula/jit.rs` compiles a formula's `iter` block with Cranelift into
+  `extern "C" fn(*mut f64) -> u8` over the same register file as the closures of
+  `formula/cpu.rs`. `CpuFormula::iter` compiles on first use (`OnceLock`) and falls back to the
+  closures when the host is not supported or compilation fails; `RMB_NO_JIT=1` forces the
+  closures (`iter_closure` always uses them). Compiled code is cached per AST + layout for the
+  process (never freed); all ~480 library formulas compile in well under a second together.
+- Registers live in SSA variables (loaded at entry, written ones stored at exit; faster than
+  load/store per access). Arithmetic, comparisons, sqrt/abs/floor/ceil/round, min/max (with
+  `f64::min`/`max` NaN rules), `single`, `sel` are native; transcendentals, `pow` (`gpu_pow`),
+  `%` (Rust remainder), smoothstep and map lookups call Rust helpers, so results are
+  bit-identical. `jit::tests` compares every library formula with the closures on random
+  points. A change to the language (`lang.rs` functions or statements) needs both compilers.
 
 ## Denoiser
 

@@ -18,3 +18,8 @@ ply-rs-bw = "4.0.1"
 gltf = { version = "1.4.1", default-features = false, features = ["import", "utils", "names"] }
 ufbx = "0.11.5"
 exr = { version = "1.74.3", default-features = false }
+cranelift-codegen = "0.138"
+cranelift-frontend = "0.138"
+cranelift-jit = "0.138"
+cranelift-module = "0.138"
+cranelift-native = "0.138"

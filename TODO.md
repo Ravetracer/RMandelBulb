@@ -326,13 +326,25 @@ Curvichrome 1052 -> 254 ms, AboxShapes-Misty 44 -> 17 ms, temple 71 -> 35 ms, Ho
         (noisier surface, slower)
   - [ ] Possible: fewer inlined copies of the fractal (compile time), composed fractal objects
         in df64, zooms beyond ~1e11 (needs perturbation or more precision)
-- [ ] CPU renderer: replace the `Box<dyn Fn>` closure tree in `formula/cpu.rs` with a JIT
-      (Cranelift) that compiles `.mbf` formulas to native code, plus SIMD ray packets
-      (AVX2, 4 × f64 via `core::arch`); plausibly 5-20× on the CPU. Hand-written assembly is
-      not worth it (478 formulas; LLVM matches it)
-- [x] ~~Split rows between CPU and GPU~~ (measured, dropped): the CPU renderer is 700-1900x
+- [x] CPU renderer JIT: `formula/jit.rs` compiles each formula's `iter` with Cranelift
+      (registers in SSA variables, libm helpers for transcendentals; bit-identical to the
+      closures, which stay as fallback and behind `RMB_NO_JIT=1`). All 512 library formulas
+      compile in 0.24 s together (worst 12 ms), only on first use. `rmb-cli render --cpu
+      -W 320 -H 180 -t 8`, closures → JIT: presets (32 samples) mandelbulb 7.7 → 5.5 s
+      (1.4x, libm-bound), amazing-box 18.8 → 4.4 s (4.3x), hybrid 13.7 → 3.5 s (3.9x),
+      kifs 4.6 → 1.1 s, menger 1.9 → 0.8 s, quaternion-julia 3.9 → 1.3 s,
+      pseudo-kleinian 17.8 → 3.9 s (4.6x); MB3D imports (4 samples) Aexion 10bulbs
+      25.2 → 2.5 s (10x), Torii temple 181 → 32 s (5.6x), ABoxScale2Start 4.4 → 1.1 s (4x),
+      ApolloBalloons dIFS 515 → 54 s (9.5x). Load/store per register access instead of
+      SSA variables was 5-50 % slower.
+  - [ ] Possible: SIMD ray packets (AVX2, 4 × f64 via `core::arch`; needs a vectorized
+        formula variant, masks for branches and vector libm); compiling the whole hybrid
+        iteration loop (state copies, slot switching) into one function; native
+        polynomial sin/cos/atan2 would help the bulbs but break bit-identity with the closures
+- [x] ~~Split rows between CPU and GPU~~ (measured, dropped): the CPU renderer was 700-1900x
       slower than the GPU per pass (8 threads, MB3D test scenes), so it would add 0.1-0.3 %.
-      Only worth another look after a CPU JIT
+      With the JIT (4-10x on MB3D scenes) it is still about 100-400x slower: below 1 %, still
+      not worth it
 
 ## Windows and macOS (after the features above)
 

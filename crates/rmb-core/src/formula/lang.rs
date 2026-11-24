@@ -956,7 +956,7 @@ mod tests {
         let def = &parse_library(src).unwrap()[0];
         let cpu = crate::formula::cpu::CpuFormula::compile(def);
         let mut regs = vec![0.0; cpu.iter_regs];
-        let _ = (cpu.iter)(&mut regs);
+        let _ = cpu.iter(&mut regs);
         // x = 3 + 4 + 5
         assert_eq!(regs[0], 12.0);
         assert!(parse_library(r#"formula "B" { iter { break } }"#).is_err());

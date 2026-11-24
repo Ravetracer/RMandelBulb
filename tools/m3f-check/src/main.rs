@@ -239,7 +239,7 @@ fn check(path: &Path, verbose: bool) -> Outcome {
             let Ok(out) = emu.mem_read_as_vec(REC - 0x100, 0x400) else { return Outcome::Emulator("record read".into()) };
             rec = out;
             // Translated iteration.
-            (cpu.iter)(&mut regs);
+            cpu.iter(&mut regs);
             if std::env::var_os("M3F_DEBUG").is_some() {
                 let f = |off: i64| f64::from_le_bytes(rec[(off + 0x100) as usize..(off + 0x108) as usize].try_into().unwrap_or([0; 8]));
                 eprintln!("p{point} it{it}: emu x {:.6e} y {:.6e} z {:.6e} w {:.6e} J4 {:.6e} | ours x {:.6e} y {:.6e} z {:.6e} w {:.6e} cw {:.6e}", f(-32), f(-24), f(-16), f(-8), f(-56), regs[state_index("x")], regs[state_index("y")], regs[state_index("z")], regs[state_index("w")], regs[state_index("cw")]);

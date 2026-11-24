@@ -283,7 +283,7 @@ output ends in `.exr` (see "Export window" above).
 | `-o out.png` | Output file. Default: the scene's name with `.png`. |
 | `-W`, `-H` | Width and height. Default: the scene's size; giving only one keeps the aspect ratio. |
 | `-s samples` | Samples per pixel (default 64). |
-| `--cpu` | Renders on the CPU instead of the GPU: much slower, but always in double precision. |
+| `--cpu` | Renders on the CPU instead of the GPU: much slower, but always in double precision. The formulas run as native machine code (compiled in a fraction of a second when the render starts), 2-10 times faster than interpreted, most for long Mandelbulb3D formulas. |
 | `-t threads` | Threads of the CPU renderer. |
 | `--denoise [blend]` | Runs the denoiser whatever the scene says; blend 0–1, default 1. |
 | `--no-denoise` | Skips the denoiser. |
@@ -361,7 +361,7 @@ progress bar for the current frame and one for the whole job.
 | `--name name` | Name shown on the server (default: the computer's name). |
 | `--key key` | Only servers that know this key may use the client. |
 | `--port n` | TCP port (default 47811). |
-| `--cpu` | Renders on the processor even when there is a graphics card. |
+| `--cpu` | Renders on the processor even when there is a graphics card. Computers without a graphics card render on the processor anyway; the formulas run as native machine code there, but a graphics card is still far faster. |
 | `--cache folder` | Where received files and unconfirmed frames are kept (default: the user's cache folder, `rmandelbulb/net`). |
 
 ```
