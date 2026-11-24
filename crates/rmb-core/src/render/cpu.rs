@@ -789,8 +789,10 @@ impl<'a> Shader<'a> {
             let plane = fr.view.projection == crate::scene::Projection::Perspective;
             let focus = o + d * if plane { sc.dof.focus_distance / d.dot(cam.forward) } else { sc.dof.focus_distance };
             let (lr, lu) = if plane { (cam.right, cam.up) } else { lens_axes(d, cam) };
-            let (r, a) = (rng.next_f64().sqrt() * sc.dof.aperture * sc.dof.focus_distance * 0.1, rng.next_f64() * std::f64::consts::TAU);
-            o = o + lr * (r * a.cos()) + lu * (r * a.sin());
+            let (u1, u2) = (rng.next_f64(), rng.next_f64());
+            let (lx, ly) = sc.dof.lens_point(u1, u2);
+            let r = sc.dof.aperture * sc.dof.focus_distance * 0.1;
+            o = o + lr * (r * lx) + lu * (r * ly);
             d = (focus - o).normalize();
         }
         let t0 = super::start_distance(sc);
@@ -819,28 +821,28 @@ impl<'a> Shader<'a> {
             for b in 0..max_b {
                 let Some(s) = surf else { break };
                 let vis = (1.0 - s.fog).clamp(0.0, 1.0);
-                let (dir, refract) = if path {
+                let (dir, refract, diffuse) = if path {
                     let ps = path_specular_share(amount, s.spec, s.trans, glass);
                     if ps > 0.0 && rng.next_f64() < ps {
                         let (dir, f, refract) = self.bounce(&s, inside, &mut rng);
                         for (w, fk) in weight.iter_mut().zip(f) {
                             *w *= fk * amount / ps * vis;
                         }
-                        (dir, refract)
+                        (dir, refract, false)
                     } else {
                         let (u1, u2) = (rng.next_f64(), rng.next_f64());
                         let keep = (1.0 - s.trans * glass).max(0.0);
                         for (w, bk) in weight.iter_mut().zip(s.base) {
                             *w *= bk * keep / (1.0 - ps) * vis;
                         }
-                        (cosine_dir(s.n, u1, u2), false)
+                        (cosine_dir(s.n, u1, u2), false, true)
                     }
                 } else {
                     let (dir, f, refract) = self.bounce(&s, inside, &mut rng);
                     for (w, fk) in weight.iter_mut().zip(f) {
                         *w *= fk * amount * vis;
                     }
-                    (dir, refract)
+                    (dir, refract, false)
                 };
                 if path && b >= 2 {
                     let q = weight[0].max(weight[1]).max(weight[2]).clamp(0.05, 1.0);
@@ -863,7 +865,9 @@ impl<'a> Shader<'a> {
                 let c0 = &sc.camera;
                 let syr = (2.0 * dir.dot(c0.up).clamp(-1.0, 1.0).asin() / c0.fov.to_radians()).clamp(-1.0, 1.0);
                 let sxr = (dir.dot(c0.right).atan2(dir.dot(c0.forward)) / (fr.tan_half * fr.aspect).atan()).clamp(-1.0, 1.0);
-                let seg = Seg { o: start - dir * s.t, d: dir, t0: s.t, max_t: s.t + sc.march.max_distance, t_base: s.t, sx: sxr, sy: syr, inside, glass: if b + 1 < max_b { glass } else { 0.0 }, env: path };
+                // Sky reach: diffuse rays beyond it see the open sky (path_reach).
+                let reach = if diffuse && sc.lighting.path_reach > 0.0 { (sc.lighting.path_reach * s.t).min(sc.march.max_distance) } else { sc.march.max_distance };
+                let seg = Seg { o: start - dir * s.t, d: dir, t0: s.t, max_t: s.t + reach, t_base: s.t, sx: sxr, sy: syr, inside, glass: if b + 1 < max_b { glass } else { 0.0 }, env: path };
                 let tr = self.trace(ev, seg, &mut rng);
                 if inside {
                     // Absorbed by the color where the ray entered; light scattered on the way.

@@ -172,6 +172,7 @@ Path tracing has two settings:
 |---------|--------------|-----------------|
 | **Bounces** | How often light bounces at most. More bounces give brighter, softer indirect light and cost more per sample. | 1–16, default 4 |
 | **Firefly clamp** | Limits the light a single bounce adds. Removes lone bright pixels at the cost of a little light (0 = off). | 0–100, default 10 |
+| **Sky reach** | Diffuse bounces that travel farther than this, relative to the surface's distance from the camera, count as open sky. Like Mandelbulb3D's Monte Carlo renderer with its short ambient rays: brighter crevices and halls, less realistic. 0 lets light bounce as far as it goes (physically correct). | 0–0.5, default 0 |
 
 In path tracing, ambient occlusion and the emission light rays are not used: the bounces bring
 that light. While you move the view, the preview is shaded classically.

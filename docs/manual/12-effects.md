@@ -114,6 +114,8 @@ Depth of field blurs everything outside the focus distance, like a camera lens.
 | **On** | Switches the blur on. | off |
 | **Aperture** | Lens size: more blur. | 0.0005–1, default 0.02 |
 | **Focus distance** | Distance from the camera that is sharp. | default 2.5 |
+| **Blades** | The shape of the lens opening, which out-of-focus highlights take on (bokeh): 0 is round, 3 to 9 give a polygon with that many corners (5 or 6 look like a real camera lens). | 0 |
+| **Blade rotation** | Turns the polygon (degrees; with 3 or more blades). | 0° |
 
 **Double-click** into the view to look at a point and set the focus distance there. The blur is
 sampled, so it refines with the samples.

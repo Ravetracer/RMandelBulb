@@ -729,6 +729,10 @@ pub struct Lighting {
     /// Path tracing: the light one bounce adds is limited to this luminance (0 = no limit);
     /// removes single bright pixels ("fireflies") at the cost of a little energy.
     pub path_clamp: f64,
+    /// Path tracing: diffuse bounce rays that travel farther than this (times the distance of
+    /// the surface from the camera) count as open sky, like Mandelbulb3D's short ambient rays:
+    /// brighter crevices. 0: no limit (physically correct).
+    pub path_reach: f64,
 }
 
 /// How the renderers compute the light.
@@ -783,6 +787,7 @@ impl Default for Lighting {
             render_mode: RenderMode::Classic,
             path_bounces: 4,
             path_clamp: 10.0,
+            path_reach: 0.0,
         }
     }
 }
@@ -1385,11 +1390,35 @@ pub struct Dof {
     /// Lens radius relative to the focus distance.
     pub aperture: f64,
     pub focus_distance: f64,
+    /// Aperture blades: 0 a round lens, 3..=9 a polygon (the shape of out-of-focus highlights).
+    pub blades: u32,
+    /// Rotation of the polygon in degrees.
+    pub blade_rotation: f64,
 }
 
 impl Default for Dof {
     fn default() -> Self {
-        Dof { enabled: false, aperture: 0.02, focus_distance: 2.5 }
+        Dof { enabled: false, aperture: 0.02, focus_distance: 2.5, blades: 0, blade_rotation: 0.0 }
+    }
+}
+
+impl Dof {
+    /// A point on the lens (unit radius) for the random numbers `u1`, `u2`: uniform on a disc,
+    /// or on the polygon of the blades (march.wgsl `lens_point`).
+    pub fn lens_point(&self, u1: f64, u2: f64) -> (f64, f64) {
+        if self.blades < 3 {
+            let (r, a) = (u1.sqrt(), u2 * std::f64::consts::TAU);
+            return (r * a.cos(), r * a.sin());
+        }
+        // A triangle of the polygon (center and two corners), then a point in it.
+        let n = self.blades.min(9) as f64;
+        let k = (u1 * n).floor().min(n - 1.0);
+        let v = u1 * n - k;
+        let rot = self.blade_rotation.to_radians();
+        let (a0, a1) = (rot + std::f64::consts::TAU * k / n, rot + std::f64::consts::TAU * (k + 1.0) / n);
+        let s = v.sqrt();
+        let (p, q) = (s * (1.0 - u2), s * u2);
+        (p * a0.cos() + q * a1.cos(), p * a0.sin() + q * a1.sin())
     }
 }
 
@@ -1603,5 +1632,25 @@ pub struct Cutting {
 impl Cutting {
     pub fn planes(&self) -> [&CutPlane; 3] {
         [&self.x, &self.y, &self.z]
+    }
+}
+
+#[cfg(test)]
+mod lens_tests {
+    use super::*;
+
+    #[test]
+    fn lens_points_fill_the_aperture_evenly() {
+        for blades in [0u32, 5, 6] {
+            let dof = Dof { blades, blade_rotation: 10.0, ..Default::default() };
+            let n = 200;
+            let pts: Vec<(f64, f64)> = (0..n * n).map(|i| dof.lens_point((i % n) as f64 / n as f64 + 0.5 / n as f64, (i / n) as f64 / n as f64 + 0.5 / n as f64)).collect();
+            // Inside the unit circle; the polygon's corners lie on it.
+            assert!(pts.iter().all(|(x, y)| x * x + y * y <= 1.0 + 1e-9));
+            // Even: the inner and outer halves of the area (by radius 1/sqrt 2) get about the same share.
+            let inner = pts.iter().filter(|(x, y)| x * x + y * y < 0.5).count() as f64 / pts.len() as f64;
+            let expect = if blades < 3 { 0.5 } else { 0.5 * std::f64::consts::PI / (blades as f64 / 2.0 * (std::f64::consts::TAU / blades as f64).sin()) };
+            assert!((inner - expect.min(1.0)).abs() < 0.03, "{blades} blades: inner share {inner}, expected {expect}");
+        }
     }
 }

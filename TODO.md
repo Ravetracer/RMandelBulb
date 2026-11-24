@@ -202,7 +202,15 @@ Features the two programs have that RMandelbulb3D does not have yet, in the plan
         analysed once with ffmpeg and stored in the animation; `audio.rs`)
   - [ ] Possible: drivers outside animations (stills), a curve view of a driver over time
 - [x] Kleinian DE and inside rendering (see Formula editing above)
-- [ ] Compare with MB3D's own Monte Carlo renderer (`mb3d/CalcMonteCarlo.pas`)
+- [x] Compared with MB3D's own Monte Carlo renderer (`mb3d/CalcMonteCarlo.pas`, 2026-11-24):
+      it branches at every hit (direct light, mirror, refraction and one cosine ambient ray),
+      caps ambient rays at the AO length (capped = open sky), uses light maps as image-based
+      light, Halton sampling, variance-adaptive passes, 6 bokeh shapes. Taken over: Sky reach
+      (Lighting › Global illumination), aperture blades (Depth of field › Blades), import of the
+      ambient depth as path bounces (+ notes; every file carries MC defaults, so no switch to
+      path tracing)
+  - [ ] Possible: shadows tinted through glass, light maps as image-based light (needs the
+        light map import), low-discrepancy sampling
 - [x] Network rendering for long, high-quality animations (owner's wish 2026-11-24). Easy to
       set up, no configuration files (done: crate `rmb-net`, `rmb-cli --network`,
       `net-render`, `net-clients`, File › Network render…):

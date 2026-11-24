@@ -798,6 +798,20 @@ pub fn import_binary(b: &[u8]) -> Result<Import, String> {
     }
     let version = r.f32(424 + shift);
     s.notes = format!("{}\nImported from Mandelbulb3D (parameter version {mand_id}, program {version:.2})", s.notes).trim().to_string();
+    // Monte Carlo settings (every file has them; MB3D's defaults: depth 3, diffusity 0, soft
+    // shadow radius 1): the bounces for path tracing, the rest as a note when changed.
+    // Older parameter versions have other data there.
+    let (mc_depth, mc_diff, mc_soft) = (r.u8(186), r.u8(125) as f64 / 100.0, r.short_float(224));
+    let mc_valid = mand_id >= 44 && (2..=31).contains(&mc_depth) && mc_diff <= 2.5 && (0.0..=20.0).contains(&mc_soft);
+    if mc_valid {
+        s.lighting.path_bounces = (mc_depth as u32 - 1).clamp(1, 16);
+    }
+    if mc_valid && (mc_depth != 3 || mc_diff != 0.0 || (mc_soft - 1.0).abs() > 1e-6) {
+        s.notes.push_str(&format!(
+            "\nMonte Carlo settings: ambient rays depth {}, reflection diffusity {mc_diff:.2}, soft shadow radius {mc_soft:.2} (path tracing uses the depth as its bounces; Lighting › Global illumination › Sky reach comes close to Mandelbulb3D's short ambient rays)",
+            mc_depth.saturating_sub(1)
+        ));
+    }
     if !warnings.is_empty() {
         s.notes.push_str("\nImport notes:\n- ");
         s.notes.push_str(&warnings.join("\n- "));

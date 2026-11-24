@@ -60,7 +60,7 @@ struct U {
     emis: vec4<f32>,       // emissive colors: light, reach, glow, glow size (0 when nothing emits)
     emis2: vec4<f32>,      // emissive colors: rays for their light; steam strength (0 when nothing emits), size, grain
     emis3: vec4<f32>,      // steam offset, cover
-    path: vec4<f32>,       // path tracing: on, bounces, firefly clamp
+    path: vec4<f32>,       // path tracing: on, bounces, firefly clamp, sky reach (0 = none)
     ccenter: vec4<f32>,    // position color modes: center
     cdir: vec4<f32>,       // plane color mode: direction (normalized)
     c2opt: vec4<f32>,      // MB3D second color choice: option, multiplier, color on iteration
@@ -97,6 +97,7 @@ struct U {
     grid: vec4<f32>,       // mesh export (grid_main): grid origin, step
     grid2: vec4<f32>,      // mesh export: slice index
     tile: vec4<u32>,       // rendered tile of a larger image: left, top, full width, full height
+    dof2: vec4<f32>,       // aperture blades (0 = round), their rotation (radians)
 }
 
 @group(0) @binding(0) var<uniform> u: U;
@@ -2806,6 +2807,24 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sx: f32, 
     return tr;
 }
 
+// Mirrors Dof::lens_point: a point on the unit lens (disc, or the polygon of the blades).
+fn lens_point(u1: f32, u2: f32) -> vec2<f32> {
+    let blades = u.dof2.x;
+    if (blades < 3.0) {
+        let r = sqrt(u1);
+        let a = u2 * 6.283185307179586;
+        return vec2<f32>(r * cos(a), r * sin(a));
+    }
+    let k = min(floor(u1 * blades), blades - 1.0);
+    let v = u1 * blades - k;
+    let a0 = u.dof2.y + 6.283185307179586 * k / blades;
+    let a1 = u.dof2.y + 6.283185307179586 * (k + 1.0) / blades;
+    let s = sqrt(v);
+    let p = s * (1.0 - u2);
+    let q = s * u2;
+    return vec2<f32>(p * cos(a0) + q * cos(a1), p * sin(a0) + q * sin(a1));
+}
+
 // Mirrors ViewFrame::eye_screen: screen coordinates within one eye's image and the eye
 // (-1 left, 1 right, 0 without stereo) for the image position (fx, fy) and image k.
 fn eye_screen(fx: f32, fy: f32, k: u32) -> vec3<f32> {
@@ -2959,9 +2978,11 @@ fn sample_pixel(px: u32, py: u32, sample: u32, k: u32) -> vec3<f32> {
             }
             lu = normalize(cross(lr, d));
         }
-        let r = sqrt(rnd()) * u.dof.y * u.dof.z * 0.1;
-        let a = rnd() * 6.283185307179586;
-        o = o + lr * (r * cos(a)) + lu * (r * sin(a));
+        let u1 = rnd();
+        let u2 = rnd();
+        let lp = lens_point(u1, u2);
+        let r = u.dof.y * u.dof.z * 0.1;
+        o = o + lr * (r * lp.x) + lu * (r * lp.y);
         d = normalize(focus - o);
     }
     // Without reflections (most scenes) a single trace: compiles much faster.
@@ -3041,6 +3062,7 @@ fn sample_pixel(px: u32, py: u32, sample: u32, k: u32) -> vec3<f32> {
         }
         let vis = clamp(1.0 - tr.fog, 0.0, 1.0);
         var bn: Bounce;
+        var diffuse = false;
         if (path) {
             let ps = path_specular_share(amount, tr.spec, tr.trans, glass);
             var spec_lobe = false;
@@ -3055,6 +3077,7 @@ fn sample_pixel(px: u32, py: u32, sample: u32, k: u32) -> vec3<f32> {
                 let u2 = rnd();
                 bn.dir = cosine_dir(tr.n, u1, u2);
                 bn.refract = false;
+                diffuse = true;
                 let keep = max(1.0 - tr.trans * glass, 0.0);
                 weight *= tr.base * keep / (1.0 - ps) * vis;
             }
@@ -3083,6 +3106,10 @@ fn sample_pixel(px: u32, py: u32, sample: u32, k: u32) -> vec3<f32> {
         ro = start - rd * tr.t;
         t0 = tr.t;
         max_t = tr.t + u.cam_fwd.w;
+        // Sky reach: diffuse rays beyond it see the open sky (Lighting::path_reach).
+        if (diffuse && u.path.w > 0.0) {
+            max_t = tr.t + min(u.path.w * tr.t, u.cam_fwd.w);
+        }
         t_base = tr.t;
         syr = clamp(2.0 * asin(clamp(dot(rd, u.cam_up.xyz), -1.0, 1.0)) / fov, -1.0, 1.0);
         sxr = clamp(atan2(dot(rd, u.cam_right.xyz), dot(rd, u.cam_fwd.xyz)) / atan(u.cam_pos.w * u.cam_right.w), -1.0, 1.0);

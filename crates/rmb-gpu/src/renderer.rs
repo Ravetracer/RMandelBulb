@@ -152,6 +152,7 @@ struct Uniforms {
     grid: [f32; 4],
     grid2: [f32; 4],
     tile: [u32; 4],
+    dof2: [f32; 4],
 }
 
 /// Splits an f64 into the high and low f32 of a double-float.
@@ -636,7 +637,7 @@ fn uniforms(scene: &Scene, prog: &Program, w: u32, h: u32, fast: bool, tile: Opt
         },
         path: {
             let on = l.render_mode == rmb_core::scene::RenderMode::PathTraced;
-            [if on { 1.0 } else { 0.0 }, l.path_bounces.clamp(1, 16) as f32, l.path_clamp.max(0.0) as f32, 0.0]
+            [if on { 1.0 } else { 0.0 }, l.path_bounces.clamp(1, 16) as f32, l.path_clamp.max(0.0) as f32, l.path_reach.max(0.0) as f32]
         },
         emis3: [m.steam_offset[0] as f32, m.steam_offset[1] as f32, m.steam_offset[2] as f32, m.steam_cover as f32],
         bg2: [
@@ -667,6 +668,7 @@ fn uniforms(scene: &Scene, prog: &Program, w: u32, h: u32, fast: bool, tile: Opt
         grid: [0.0; 4],
         grid2: [0.0; 4],
         tile,
+        dof2: [scene.dof.blades.min(9) as f32, scene.dof.blade_rotation.to_radians() as f32, 0.0, 0.0],
         haze2: [if scene.fog.haze_shape == rmb_core::scene::HazeShape::Iterations { 1.0 } else { 0.0 }, scene.fog.haze_size as f32, 0.0, 0.0],
     }
 }

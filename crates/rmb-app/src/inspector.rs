@@ -223,6 +223,7 @@ impl Inspector {
             l.render_mode = d.render_mode;
             l.path_bounces = d.path_bounces;
             l.path_clamp = d.path_clamp;
+            l.path_reach = d.path_reach;
         }
         if sec.open {
             widgets::segmented(
@@ -241,6 +242,7 @@ impl Inspector {
                 widgets::grid(ui, "path", |ui| {
                     widgets::slider_u32(ui, "Bounces", "How often light bounces at most: more give brighter, softer indirect light and cost more per sample", &mut l.path_bounces, 1..=16, d.path_bounces);
                     widgets::slider_log(ui, "Firefly clamp", "Limits the light a single bounce adds: removes lone bright pixels at the cost of a little light (0 = off)", &mut l.path_clamp, 0.0..=100.0, d.path_clamp);
+                    widgets::slider(ui, "Sky reach", "Diffuse bounces that travel farther than this (relative to the surface's distance from the camera) count as open sky, like Mandelbulb3D's short ambient rays: brighter crevices and halls, less realistic. 0 = no limit (physically correct)", &mut l.path_reach, 0.0..=0.5, d.path_reach);
                 });
                 ui.label(
                     RichText::new("Ambient occlusion and the emission light rays are not used: the bounces bring that light. While moving the view the preview is shaded classically.")
@@ -1082,6 +1084,10 @@ fn effects(ui: &mut Ui, scene: &mut Scene) {
             widgets::checkbox(ui, "On", "Blur everything outside the focus distance. Double-click into the image to focus.", &mut dof.enabled);
             widgets::slider_log(ui, "Aperture", "Lens size: more blur", &mut dof.aperture, 0.0005..=1.0, dd.aperture);
             widgets::slider_log(ui, "Focus distance", "Distance from the camera that is sharp (double-click into the image to pick)", &mut dof.focus_distance, 0.0001..=100.0, dd.focus_distance);
+            widgets::slider_u32(ui, "Blades", "Shape of the lens opening, seen in out-of-focus highlights (bokeh): 0 round, 3 to 9 a polygon with that many corners", &mut dof.blades, 0..=9, dd.blades);
+            if dof.blades >= 3 {
+                widgets::slider(ui, "Blade rotation", "Turns the polygon of the blades (degrees)", &mut dof.blade_rotation, 0.0..=360.0, dd.blade_rotation);
+            }
         });
     }
 
