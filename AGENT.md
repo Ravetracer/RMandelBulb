@@ -281,6 +281,13 @@ cargo clippy -j 8 --workspace --all-targets
   facet (`ggx_normal`) only when gloss > 0, reflects and refracts on it; reflections below
   the surface are mirrored back above it. The weight stays the reflectance.
 
+## Light through glass
+
+- `Material::glass_shadows` (`Program::glass_shadows`, GPU switch `GLASS_SHADOW`):
+  `soft_shadow` returns a color; at a hit it takes the surface's gradient transparency × the
+  glass amount, marches through the solid with `flip` toggled and multiplies the absorption by
+  the surface color over that length (up to four crossings; no refraction).
+
 ## Light scattering in fog
 
 - `Fog::scatter` / `scatter_forward`: at the end of `trace` (not inside glass) four random

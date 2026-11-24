@@ -110,6 +110,9 @@ pub struct Program {
     /// then: it compiles faster without).
     pub layers: bool,
     pub bump: bool,
+    /// Shadows let light through glass (`Material::glass_shadows`; the GPU shader includes
+    /// that code only then).
+    pub glass_shadows: bool,
     /// Mandelbulb3D's second color choice (`SecondChoice::index`) and its multiplier.
     pub color2: (u32, f64),
     /// Mandelbulb3D's color on iteration (-1 off).
@@ -362,6 +365,7 @@ impl Program {
             main_transform: None,
             layers: false,
             bump: false,
+            glass_shadows: false,
         }
     }
 
@@ -373,6 +377,7 @@ impl Program {
         let m = &scene.material;
         p.color2 = (m.second_choice.index(), m.lli_multiplier);
         p.color_on_it = m.color_on_iteration;
+        p.glass_shadows = m.glass_shadows && m.transmission && m.reflection > 0.0;
         for (i, o) in scene.objects.iter().enumerate().take(MAX_OBJECTS) {
             if !o.enabled {
                 continue;
@@ -474,6 +479,7 @@ impl Program {
         s.push_str(if self.slot_extras() { "|extras" } else { "" });
         s.push_str(if self.layers { "|layers" } else { "" });
         s.push_str(if self.bump { "|bump" } else { "" });
+        s.push_str(if self.glass_shadows { "|gsh" } else { "" });
         for o in &self.objects {
             match &o.shape {
                 ObjectShape::Fractal(f) => {

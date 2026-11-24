@@ -1624,14 +1624,59 @@ fn rough_diffuse(k: u32, ndl: f32) -> f32 {
     return r;
 }
 
-fn soft_shadow(p: vec3<f32>, l: vec3<f32>, eps: f32, softness: f32, max_t: f32) -> f32 {
+// Mirrors Shader::soft_shadow: light reaching `p` from `l` per color channel; glass lets light
+// through with GLASS_SHADOW (tinted by its color and the absorption on the way).
+fn soft_shadow(p: vec3<f32>, l: vec3<f32>, eps: f32, softness: f32, max_t: f32, dist: f32) -> vec3<f32> {
+    var glass = 0.0;
+    if (GLASS_SHADOW && u.glass.x > 0.5) {
+        glass = u.glow3.w;
+    }
     var res = 1.0;
+    var tint = vec3<f32>(1.0);
+    var crossings = 0u;
     var t = eps * 4.0;
     for (var i = 0u; i < 160u; i++) {
+        let q = p + l * t;
         let e = eps_at(t) * 0.5 + eps * 0.5;
-        let d = de_at(p + l * t, e);
+        let d = de_at(q, e);
         if (d < e) {
-            return 0.0;
+            if (!GLASS_SHADOW || glass <= 0.0 || crossings >= 4u) {
+                return vec3<f32>(0.0);
+            }
+            var hit: Hit;
+            hit.hit = true;
+            hit.t = t;
+            hit.eps = e;
+            hit.orbit = orbit(q, e);
+            let cols = gradient(hit.orbit.obj, color_value(hit, -l, q), dist + t);
+            let through = min(cols.trans * glass, 1.0);
+            if (through <= 0.0) {
+                return vec3<f32>(0.0);
+            }
+            // Through the glass to the far side.
+            flip = !flip;
+            let enter = t;
+            t += e * 2.0;
+            for (var j = 0u; j < 160u; j++) {
+                let e2 = eps_at(t) * 0.5 + eps * 0.5;
+                let d2 = de_at(p + l * t, e2);
+                if (d2 < e2 || t > max_t) {
+                    break;
+                }
+                t += max(d2 * u.march.y, e2);
+            }
+            flip = !flip;
+            let len = t - enter;
+            tint *= through * exp2(len * u.glass.z * log2(max(cols.base, vec3<f32>(1.0e-30))));
+            if (max(tint.x, max(tint.y, tint.z)) < 1.0e-3) {
+                return vec3<f32>(0.0);
+            }
+            crossings += 1u;
+            t += e * 2.0;
+            if (t > max_t) {
+                break;
+            }
+            continue;
         }
         // Inside rendering: the estimate is a fixed step in the set, not a distance; only hits count.
         if (softness > 0.0 && !inside_now()) {
@@ -1643,7 +1688,7 @@ fn soft_shadow(p: vec3<f32>, l: vec3<f32>, eps: f32, softness: f32, max_t: f32) 
         }
     }
     let r = clamp(res, 0.0, 1.0);
-    return r * r * (3.0 - 2.0 * r);
+    return tint * (r * r * (3.0 - 2.0 * r));
 }
 
 fn cosine_dir(n: vec3<f32>, u1: f32, u2: f32) -> vec3<f32> {
@@ -2699,21 +2744,21 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sx: f32, 
             if (df <= 0.0 || (ndl <= 0.0 && li.opts.x > 0.5)) {
                 continue;
             }
-            var sh = 1.0;
+            var sh = vec3<f32>(1.0);
             if (li.opts.x > 0.5 && u.dof.w < 0.5) {
-                sh = soft_shadow(p, ldir, h.eps, li.opts.y, max_l);
+                sh = soft_shadow(p, ldir, h.eps, li.opts.y, max_l, h.t);
             }
-            if (sh <= 0.0) {
+            if (max(sh.x, max(sh.y, sh.z)) <= 0.0) {
                 continue;
             }
-            let w = sh * atten * (1.0 - li.opts.w * (1.0 - ao));
+            let w = atten * (1.0 - li.opts.w * (1.0 - ao));
             let hv = normalize(ldir - d);
             var s = 0.0;
             if (ndl > 0.0) {
                 s = pow(max(dot(n, hv), 0.0), shin) * li.dir.w * u.ground.w * (shin + 8.0) / 25.0 * spec_rough;
             }
-            diffuse += li.color.xyz * df * w;
-            spec += li.color.xyz * s * w;
+            diffuse += li.color.xyz * df * w * sh;
+            spec += li.color.xyz * s * w * sh;
         }
         let keep = max(1.0 - cols.trans * glass, 0.0);
         // Emissive colors shine by themselves.
@@ -2782,12 +2827,12 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sx: f32, 
             }
             let ls = light_sample(i, x, r);
             if (ls.atten > 0.0) {
-                var sh = 1.0;
+                var sh = vec3<f32>(1.0);
                 if (li.opts.x > 0.5 && u.dof.w < 0.5) {
-                    sh = soft_shadow(x, ls.dir, eps_at(t_base + s), li.opts.y, ls.dist);
+                    sh = soft_shadow(x, ls.dir, eps_at(t_base + s), li.opts.y, ls.dist, t_base + s);
                 }
-                let w = sh * ls.atten * scatter_phase(dot(ls.dir, d)) * u.fog4.x * amount * f32(u.size.w);
-                c += li.color.xyz * w;
+                let w = ls.atten * scatter_phase(dot(ls.dir, d)) * u.fog4.x * amount * f32(u.size.w);
+                c += li.color.xyz * w * sh;
             }
         }
     }

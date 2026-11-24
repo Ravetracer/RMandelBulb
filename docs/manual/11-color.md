@@ -144,6 +144,9 @@ With **Reflection** above 0 more settings appear:
 | **Refraction index** | *Glass.* 1 = no bending, water 1.33, glass 1.5, diamond 2.4. |
 | **Absorption** | *Glass.* Light absorbed per world unit, tinted with the surface color where the ray entered. |
 | **Scattering** | *Glass.* Light scattered inside the glass, in the surface color. |
+| **Light through glass** | *Glass.* Shadows of glass let light through: by the transparency of the gradient color, tinted by the surface color and the absorption along the way. The light goes straight through (no caustics). Off by default; costs a little more per shadow ray. |
+
+![Light through glass: off (left) and on (right)](images/glass-shadows.jpg)
 
 ![The "Glass bulb" preset](images/preset-glass-bulb.jpg)
 

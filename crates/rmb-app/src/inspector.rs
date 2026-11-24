@@ -811,6 +811,7 @@ fn mapping(ui: &mut Ui, m: &mut rmb_core::scene::Material, d: &rmb_core::scene::
                 widgets::slider(ui, "Refraction index", "How much rays bend entering the glass (1 = not at all, water 1.33, glass 1.5, diamond 2.4)", &mut m.refraction_index, 1.0..=3.0, d.refraction_index);
                 widgets::slider_log(ui, "Absorption", "How much light the glass absorbs per world unit; tints with the surface color where the ray entered", &mut m.absorption, 0.0..=1000.0, d.absorption);
                 widgets::slider_log(ui, "Scattering", "Light scattered inside the glass, in the surface color", &mut m.scattering, 0.0..=1000.0, d.scattering);
+                widgets::checkbox(ui, "Light through glass", "Shadows of glass let light through, tinted by the surface color and the absorption along the way (straight through: no caustics; costs a little more per shadow ray)", &mut m.glass_shadows);
             }
         }
     });

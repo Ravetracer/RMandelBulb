@@ -463,15 +463,59 @@ impl<'a> Shader<'a> {
         (n.normalize(), rough)
     }
 
-    fn soft_shadow(&self, ev: &mut Evaluator, p: V3, l: V3, eps: f64, softness: f64, max_t: f64) -> f64 {
+    /// Light reaching `p` from direction `l` (0 = in shadow, per color channel). With
+    /// `Material::glass_shadows`, glass surfaces let light through: by their transparency and the
+    /// glass amount, absorbed by their color along the straight path inside (at most four
+    /// crossings). `dist`: distance of `p` from the camera (for the gradient's depth shift).
+    #[allow(clippy::too_many_arguments)]
+    fn soft_shadow(&self, ev: &mut Evaluator, p: V3, l: V3, eps: f64, softness: f64, max_t: f64, dist: f64) -> [f64; 3] {
+        let m = &self.scene.material;
+        let glass = if m.glass_shadows && m.transmission { m.reflection } else { 0.0 };
         let mut res: f64 = 1.0;
+        let mut tint = [1.0f64; 3];
+        let mut crossings = 0;
         let mut t = eps * 4.0;
         for _ in 0..160 {
             let q = p + l * t;
             let e = self.eps_at(t) * 0.5 + eps * 0.5;
             let d = ev.de(q, e);
             if d < e {
-                return 0.0;
+                if glass <= 0.0 || crossings >= 4 {
+                    return [0.0; 3];
+                }
+                let orbit = ev.orbit(q, e);
+                let hit = Hit { t, pos: q, eps: e, orbit, steps: 0 };
+                let (base, _, trans, _) = self.gradient(self.material_of(&hit.orbit), self.color_value(&hit, -l), dist + t);
+                let pass = (trans * glass).min(1.0);
+                if pass <= 0.0 {
+                    return [0.0; 3];
+                }
+                // Through the glass to the far side.
+                ev.flip = !ev.flip;
+                let enter = t;
+                t += e * 2.0;
+                for _ in 0..160 {
+                    let e = self.eps_at(t) * 0.5 + eps * 0.5;
+                    let d = ev.de(p + l * t, e);
+                    if d < e || t > max_t {
+                        break;
+                    }
+                    t += (d * self.scene.march.step).max(e);
+                }
+                ev.flip = !ev.flip;
+                let len = t - enter;
+                for k in 0..3 {
+                    tint[k] *= pass * (len * m.absorption * base[k].max(1e-30).log2()).exp2();
+                }
+                if tint[0].max(tint[1]).max(tint[2]) < 1e-3 {
+                    return [0.0; 3];
+                }
+                crossings += 1;
+                t += e * 2.0;
+                if t > max_t {
+                    break;
+                }
+                continue;
             }
             // Inside rendering: the estimate is a fixed step in the set, not a distance; only hits count.
             if softness > 0.0 && !ev.inside() {
@@ -483,7 +527,8 @@ impl<'a> Shader<'a> {
             }
         }
         let r = res.clamp(0.0, 1.0);
-        r * r * (3.0 - 2.0 * r)
+        let r = r * r * (3.0 - 2.0 * r);
+        tint.map(|v| v * r)
     }
 
     /// Ambient occlusion and the light of emissive colors at `p`. Both use one random ray into
@@ -1103,16 +1148,16 @@ impl<'a> Shader<'a> {
                     if df <= 0.0 || (ndl <= 0.0 && li.shadows) {
                         continue;
                     }
-                    let sh = if li.shadows { self.soft_shadow(ev, p, ldir, h.eps, li.softness, max_t) } else { 1.0 };
-                    if sh <= 0.0 {
+                    let sh = if li.shadows { self.soft_shadow(ev, p, ldir, h.eps, li.softness, max_t, h.t) } else { [1.0; 3] };
+                    if sh[0].max(sh[1]).max(sh[2]) <= 0.0 {
                         continue;
                     }
-                    let w = sh * atten * (1.0 - li.occlusion * (1.0 - ao));
+                    let w = atten * (1.0 - li.occlusion * (1.0 - ao));
                     let hv = (ldir - d).normalize();
                     let s = if ndl > 0.0 { n.dot(hv).max(0.0).powf(l.shininess) * li.specular * sc.material.specular * (l.shininess + 8.0) / 25.0 * spec_rough } else { 0.0 };
                     for k in 0..3 {
-                        diffuse[k] += li.color[k] * df * w;
-                        spec[k] += li.color[k] * s * w;
+                        diffuse[k] += li.color[k] * df * w * sh[k];
+                        spec[k] += li.color[k] * s * w * sh[k];
                     }
                 }
                 let keep = (1.0 - trans * glass).max(0.0);
@@ -1161,10 +1206,10 @@ impl<'a> Shader<'a> {
                 let (r1, r2) = if li.sampled() { (r1, r2) } else { (0.5, 0.5) };
                 let (ldir, atten, max_l) = li.sample(x, r1, r2, sc.march.max_distance);
                 if atten > 0.0 {
-                    let sh = if li.shadows { self.soft_shadow(ev, x, ldir, self.eps_at(t_base + s), li.softness, max_l) } else { 1.0 };
-                    let w = sh * atten * sc.fog.scatter_phase(ldir.dot(d)) * sc.fog.scatter * amount * count as f64;
-                    for (ck, lk) in c.iter_mut().zip(li.color) {
-                        *ck += lk * w;
+                    let sh = if li.shadows { self.soft_shadow(ev, x, ldir, self.eps_at(t_base + s), li.softness, max_l, t_base + s) } else { [1.0; 3] };
+                    let w = atten * sc.fog.scatter_phase(ldir.dot(d)) * sc.fog.scatter * amount * count as f64;
+                    for k in 0..3 {
+                        c[k] += li.color[k] * w * sh[k];
                     }
                 }
             }

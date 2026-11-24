@@ -1022,6 +1022,9 @@ pub struct Material {
     pub absorption: f64,
     /// Light scattered inside the glass (Mandelbulb3D's scattering, 0..330 and more).
     pub scattering: f64,
+    /// Shadows of glass let light through: tinted by the surface color and the absorption
+    /// along the straight path through the glass (no refraction, so no caustics).
+    pub glass_shadows: bool,
     /// Emissive colors (`ColorStop::emission`): how much they light their surroundings (0 =
     /// not; costs a ray per sample).
     pub emission_light: f64,
@@ -1088,6 +1091,7 @@ impl Default for Material {
             refraction_index: 1.5,
             absorption: 1.0,
             scattering: 0.0,
+            glass_shadows: false,
             emission_light: 1.0,
             emission_reach: 0.5,
             emission_glow: 1.0,

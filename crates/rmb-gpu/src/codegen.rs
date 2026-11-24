@@ -35,6 +35,7 @@ pub fn march_shader_baked(prog: &Program, baked: &[Option<f64>]) -> String {
     let _ = writeln!(s, "const MAIN_T: bool = {};", prog.main_transform.is_some());
     let _ = writeln!(s, "const LAYERS: bool = {};", prog.layers);
     let _ = writeln!(s, "const BUMP: bool = {};", prog.bump);
+    let _ = writeln!(s, "const GLASS_SHADOW: bool = {};", prog.glass_shadows);
     let _ = writeln!(s, "const COLOR_ON_IT: bool = {};", prog.color_on_it >= 0 && prog.part2.is_none() && !prog.slots.is_empty());
     let _ = writeln!(s, "const MODELS: bool = {};", prog.objects.iter().any(|o| matches!(o.shape, rmb_core::fractal::ObjectShape::Model(_))));
     // Deep zoom: the main fractal in double-float arithmetic (composed objects stay f32, they

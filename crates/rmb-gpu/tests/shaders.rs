@@ -453,6 +453,35 @@ fn gpu_matches_cpu_with_glass() {
 }
 
 #[test]
+fn gpu_matches_cpu_with_light_through_glass() {
+    // Shadows of a glass bulb on a plane, tinted by the glass color and its absorption.
+    let mut scene = Scene::default();
+    scene.lighting.ao_mode = rmb_core::scene::AoMode::Fast;
+    for s in scene.material.gradient.iter_mut() {
+        s.color = [0.2, 0.5, 1.0];
+        s.transparency = 0.9;
+    }
+    scene.material.reflection = 1.0;
+    scene.material.transmission = true;
+    scene.material.absorption = 2.0;
+    scene.objects.push(rmb_core::compose::SceneObject {
+        shape: rmb_core::compose::Shape::Primitive(rmb_core::compose::Primitive::Plane),
+        transform: rmb_core::compose::Transform { position: rmb_core::v3(0.0, 0.0, -1.1), ..Default::default() },
+        ..Default::default()
+    });
+    let cpu = |s: &Scene| {
+        let mut r = rmb_core::render::cpu::CpuRenderer::new(s.clone(), 48, 32);
+        r.render_pass();
+        r.rgba8()
+    };
+    let mut lit = scene.clone();
+    lit.material.glass_shadows = true;
+    let changed = cpu(&scene).iter().zip(cpu(&lit)).filter(|(a, b)| (**a as i32 - *b as i32).abs() > 8).count();
+    assert!(changed > 20, "light through glass changes only {changed} channels");
+    parity(lit);
+}
+
+#[test]
 fn gpu_matches_cpu_with_mandelbulb3d_glass() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../mb3d/M3Parameter/toricaleggs.m3p");
     let Ok(bytes) = std::fs::read(&path) else {
