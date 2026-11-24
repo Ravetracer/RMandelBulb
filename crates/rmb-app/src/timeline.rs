@@ -39,11 +39,13 @@ pub struct Timeline {
     /// Sound analysis running in the background (file, result).
     audio_job: Option<(String, std::sync::mpsc::Receiver<Result<rmb_core::audio::AudioLevels, String>>)>,
     audio_message: Option<String>,
+    /// Driven values over the animation, per driver (sampled frames), for the curve view.
+    driver_curves: Option<(Animation, Vec<Vec<f64>>)>,
 }
 
 impl Default for Timeline {
     fn default() -> Self {
-        Timeline { open: false, frame: 0, playing: false, play_pos: 0.0, last_tick: None, previewing: false, selected: None, plan: None, driver_filter: String::new(), audio_job: None, audio_message: None }
+        Timeline { open: false, frame: 0, playing: false, play_pos: 0.0, last_tick: None, previewing: false, selected: None, plan: None, driver_filter: String::new(), audio_job: None, audio_message: None, driver_curves: None }
     }
 }
 
@@ -196,6 +198,24 @@ impl Timeline {
         // The driven scene at the current frame (for the drivers' values).
         let cur = self.frame;
         let driven = if anim.drivers.is_empty() { None } else { self.plan(&anim).and_then(|p| serde_json::to_value(p.scene_at(cur)).ok()) };
+        // The driven values over the whole animation (only when the animation changed).
+        if !anim.drivers.is_empty() && self.driver_curves.as_ref().is_none_or(|(a, _)| *a != anim) {
+            let paths: Vec<String> = anim.drivers.iter().map(|d| d.path.trim().to_string()).collect();
+            let curves = self.plan(&anim).map(|p| {
+                let n = p.frame_count();
+                let samples = n.clamp(1, 60);
+                let mut out = vec![Vec::with_capacity(samples); paths.len()];
+                for k in 0..samples {
+                    let f = if samples > 1 { k * (n - 1) / (samples - 1) } else { 0 };
+                    let v = serde_json::to_value(p.scene_at(f)).unwrap_or_default();
+                    for (c, path) in out.iter_mut().zip(&paths) {
+                        c.push(rmb_core::animation::value_at(&v, path).unwrap_or(f64::NAN));
+                    }
+                }
+                out
+            });
+            self.driver_curves = curves.map(|c| (anim.clone(), c));
+        }
         let mut a = anim.clone();
         egui::ScrollArea::horizontal().show(ui, |ui| {
             ui.horizontal_top(|ui| {
@@ -272,8 +292,9 @@ impl Timeline {
             return;
         }
         let (_, compile_errors) = compile_drivers(&a.drivers);
+        let frames = self.plan.as_ref().and_then(|(_, p)| p.as_ref().ok()).map_or(1, |p| p.frame_count());
         let mut remove = None;
-        egui::ScrollArea::vertical().id_salt("drivers").max_height(150.0).show(ui, |ui| {
+        egui::ScrollArea::vertical().id_salt("drivers").max_height(200.0).show(ui, |ui| {
             for (i, d) in a.drivers.iter_mut().enumerate() {
                 ui.horizontal(|ui| {
                     ui.checkbox(&mut d.enabled, "").on_hover_text("Driver on or off");
@@ -309,6 +330,9 @@ impl Timeline {
                     _ => (String::new(), theme::TEXT_MUTED),
                 };
                 ui.label(RichText::new(text).size(theme::fs(11.0)).color(color));
+                if let Some(curve) = self.driver_curves.as_ref().and_then(|(_, c)| c.get(i)).filter(|c| d.enabled && c.iter().any(|v| v.is_finite())) {
+                    driver_curve(ui, curve, self.frame, frames);
+                }
             }
         });
         if let Some(i) = remove {
@@ -579,3 +603,21 @@ fn audio_levels_ui(&mut self, ui: &mut Ui, a: &mut Animation, base: Option<&std:
     });
 }
 }
+
+/// A driver's value over the animation as a small curve, with the current frame marked.
+fn driver_curve(ui: &mut Ui, curve: &[f64], frame: usize, frames: usize) {
+    let (rect, resp) = ui.allocate_exact_size(vec2(420.0, 34.0), Sense::hover());
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 3.0, theme::BG);
+    let finite: Vec<f64> = curve.iter().copied().filter(|v| v.is_finite()).collect();
+    let (lo, hi) = finite.iter().fold((f64::MAX, f64::MIN), |(a, b), v| (a.min(*v), b.max(*v)));
+    let span = (hi - lo).max(1e-12);
+    let n = curve.len().max(2) - 1;
+    let pt = |k: usize, v: f64| pos2(rect.left() + 4.0 + (rect.width() - 8.0) * k as f32 / n as f32, rect.bottom() - 4.0 - (rect.height() - 8.0) * ((v - lo) / span) as f32);
+    let line: Vec<egui::Pos2> = curve.iter().enumerate().filter(|(_, v)| v.is_finite()).map(|(k, v)| pt(k, *v)).collect();
+    painter.add(egui::Shape::line(line, egui::Stroke::new(1.5, theme::ACCENT)));
+    let x = rect.left() + 4.0 + (rect.width() - 8.0) * frame as f32 / (frames.max(2) - 1) as f32;
+    painter.line_segment([pos2(x, rect.top()), pos2(x, rect.bottom())], egui::Stroke::new(1.0, theme::TEXT_MUTED));
+    resp.on_hover_text(format!("From {lo:.4} to {hi:.4} over the animation; the line marks the current frame"));
+}
+

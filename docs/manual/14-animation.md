@@ -138,7 +138,8 @@ keyframes, in the preview, the export, the render queue and network renders.
 Click **+ Driver** in the **DRIVERS** column of the timeline (scroll the settings to the
 right), choose the value with **…** (type to search: *power*, *fov*, *fog* …) and write the
 expression. Below each driver its value at the current frame shows, or what is wrong with the
-expression.
+expression, and a curve of the value over the whole animation (the line marks the current
+frame; hover over it for the range).
 
 | In an expression | Meaning |
 |------------------|---------|
