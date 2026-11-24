@@ -104,8 +104,31 @@ pub enum Primitive {
     Cylinder { radius: f64, height: f64, rounding: f64 },
     /// Ring around the z axis.
     Torus { major: f64, minor: f64 },
-    /// A water surface at z = 0 with waves (three octaves at turning directions).
-    Water { amplitude: f64, wavelength: f64, phase: f64, angle: f64 },
+    /// A water surface at z = 0 with ocean waves (`water_height`): many waves around the
+    /// wind direction, their crests sharpened by drag. It reflects by itself
+    /// (Fresnel, `reflect`) and shows foam on the crests. `phase` is the time of the waves;
+    /// animations add `speed` per second.
+    Water {
+        amplitude: f64,
+        wavelength: f64,
+        phase: f64,
+        angle: f64,
+        /// Sharpness of the crests (0 = round swell, 1 = like the sea, 2 = very choppy).
+        #[serde(default = "water_choppy")]
+        choppy: f64,
+        /// Number of waves (2-48): more give finer ripples on the swell.
+        #[serde(default = "water_detail")]
+        detail: f64,
+        /// Foam on the crests (0-1).
+        #[serde(default)]
+        foam: f64,
+        /// Strength of the reflection (1 = like water).
+        #[serde(default = "water_reflect")]
+        reflect: f64,
+        /// Movement of the waves per second in animations.
+        #[serde(default)]
+        speed: f64,
+    },
     /// Upright pill: a cylinder with half-sphere ends, `height` from end to end.
     Capsule { radius: f64, height: f64 },
     /// Upright cone from the bottom radius to the top radius (0: pointed), centered on the origin.
@@ -132,7 +155,7 @@ impl Primitive {
             Primitive::Torus { major: 0.6, minor: 0.15 },
             Primitive::HexPrism { radius: 0.4, height: 1.0 },
             Primitive::TriPrism { side: 0.8, height: 1.0 },
-            Primitive::Water { amplitude: 0.02, wavelength: 0.3, phase: 0.0, angle: 0.0 },
+            Primitive::water(),
         ]
     }
 
@@ -155,19 +178,25 @@ impl Primitive {
         Self::NAMES[self.index() as usize]
     }
 
-    /// The parameters in a fixed order (GPU buffer).
-    pub fn params(&self) -> [f64; 4] {
+    /// Water with good start values (moving waves in animations).
+    pub fn water() -> Primitive {
+        Primitive::Water { amplitude: 0.06, wavelength: 2.0, phase: 0.0, angle: 0.0, choppy: water_choppy(), detail: water_detail(), foam: 0.4, reflect: water_reflect(), speed: 1.0 }
+    }
+
+    /// The parameters in a fixed order (GPU buffer: `prim`, `prim2`).
+    pub fn params(&self) -> [f64; 8] {
+        let p4 = |a: [f64; 4]| [a[0], a[1], a[2], a[3], 0.0, 0.0, 0.0, 0.0];
         match *self {
-            Primitive::Plane => [0.0; 4],
-            Primitive::Box { size, rounding } => [size[0], size[1], size[2], rounding],
-            Primitive::Sphere { radius } => [radius, 0.0, 0.0, 0.0],
-            Primitive::Cylinder { radius, height, rounding } => [radius, height, rounding, 0.0],
-            Primitive::Torus { major, minor } => [major, minor, 0.0, 0.0],
-            Primitive::Water { amplitude, wavelength, phase, angle } => [amplitude, wavelength, phase, angle],
-            Primitive::Capsule { radius, height } => [radius, height, 0.0, 0.0],
-            Primitive::Cone { bottom, top, height } => [bottom, top, height, 0.0],
-            Primitive::HexPrism { radius, height } => [radius, height, 0.0, 0.0],
-            Primitive::TriPrism { side, height } => [side, height, 0.0, 0.0],
+            Primitive::Plane => [0.0; 8],
+            Primitive::Box { size, rounding } => p4([size[0], size[1], size[2], rounding]),
+            Primitive::Sphere { radius } => p4([radius, 0.0, 0.0, 0.0]),
+            Primitive::Cylinder { radius, height, rounding } => p4([radius, height, rounding, 0.0]),
+            Primitive::Torus { major, minor } => p4([major, minor, 0.0, 0.0]),
+            Primitive::Water { amplitude, wavelength, phase, angle, choppy, detail, foam, reflect, .. } => [amplitude, wavelength, phase, angle, choppy, detail, foam, reflect],
+            Primitive::Capsule { radius, height } => p4([radius, height, 0.0, 0.0]),
+            Primitive::Cone { bottom, top, height } => p4([bottom, top, height, 0.0]),
+            Primitive::HexPrism { radius, height } => p4([radius, height, 0.0, 0.0]),
+            Primitive::TriPrism { side, height } => p4([side, height, 0.0, 0.0]),
         }
     }
 
@@ -178,7 +207,7 @@ impl Primitive {
 }
 
 /// Signed distance of primitive `kind` with parameters `a` at the local point `q`.
-pub fn primitive_distance(kind: u32, a: [f64; 4], q: V3) -> f64 {
+pub fn primitive_distance(kind: u32, a: [f64; 8], q: V3) -> f64 {
     match kind {
         0 => q.z,
         1 => {
@@ -242,27 +271,116 @@ pub fn primitive_distance(kind: u32, a: [f64; 4], q: V3) -> f64 {
             let dz = q.z.abs() - a[1] * 0.5;
             dx.max(dz).min(0.0) + (dx.max(0.0) * dx.max(0.0) + dz.max(0.0) * dz.max(0.0)).sqrt()
         }
-        _ => {
-            let (h, slope) = water_height(a, q.x, q.y);
-            (q.z - h) / (1.0 + slope * slope).sqrt()
-        }
+        _ => water_distance(&a, q),
     }
 }
 
-/// Height of the water waves at (`x`, `y`) and the largest slope they can have.
-fn water_height(a: [f64; 4], x: f64, y: f64) -> (f64, f64) {
-    let (amp, len, phase, angle) = (a[0], a[1].max(1e-6), a[2], a[3].to_radians());
-    let mut h = 0.0;
-    let mut slope = 0.0;
-    for i in 0..3 {
-        let f = 2f64.powi(i);
-        let dir = angle + i as f64 * 1.1;
-        let k = std::f64::consts::TAU * f / len;
-        let amp_i = amp / f;
-        h += amp_i * (k * (x * dir.cos() + y * dir.sin()) + phase * (1.0 + 0.3 * i as f64)).sin();
-        slope += amp_i * k;
+fn water_choppy() -> f64 {
+    1.0
+}
+
+fn water_detail() -> f64 {
+    16.0
+}
+
+fn water_reflect() -> f64 {
+    1.0
+}
+
+/// Waves of a water surface: their number grows with the detail.
+pub fn water_waves(detail: f64) -> i32 {
+    (detail.round() as i32).clamp(2, 48)
+}
+
+/// Height of the waves at (`x`, `y`) in 0..1 (after "Very fast procedural ocean" by afl_ext;
+/// mirrors march.wgsl `water_wave01`): a sum of waves exp(sin - 1) in directions around the
+/// wind, each a little shorter, weaker and faster than the one before; every wave drags the
+/// point along its slope, which sharpens the crests (`choppy`).
+fn water_wave01(a: &[f64; 8], x: f64, y: f64) -> f64 {
+    let (len, t, wind) = (a[1].max(1e-6), a[2], a[3].to_radians());
+    let drag = a[4].max(0.0) * 0.38;
+    let freq0 = std::f64::consts::TAU / len;
+    let (mut px, mut py) = (x * freq0, y * freq0);
+    // Far apart, the waves fall out of step.
+    let shift = (px * px + py * py).sqrt() * 0.1;
+    let (mut f, mut speed, mut w, mut sum, mut weights) = (1.0, 1.0, 1.0, 0.0, 0.0);
+    for i in 0..water_waves(a[5]) {
+        let ang = wind + 1.2 * (crate::render::hash3(i, 0, 11) as f64 * 2.0 - 1.0);
+        let (dx, dy) = (ang.cos(), ang.sin());
+        let ph = (px * dx + py * dy) * f + t * speed + shift;
+        let wave = (ph.sin() - 1.0).exp();
+        let slope = -wave * ph.cos();
+        px += dx * slope * w * drag;
+        py += dy * slope * w * drag;
+        sum += wave * w;
+        weights += w;
+        w *= 0.8;
+        f *= 1.18;
+        speed *= 1.07;
     }
-    (h, slope)
+    sum / weights
+}
+
+/// Height of the waves at (`x`, `y`) (mirrors march.wgsl `water_height`): `a` = wave height,
+/// wave length, phase (time), wind direction (degrees), choppiness, detail. -1..1 times the
+/// wave height (crests up).
+pub fn water_height(a: &[f64; 8], x: f64, y: f64) -> f64 {
+    (water_wave01(a, x, y) * 2.0 - 1.0) * a[0]
+}
+
+/// The steepest slope the waves reach, times wave height × 2π / wave length (measured
+/// with `water_slopes_stay_below_the_distance_bound`).
+fn water_steepness(a: &[f64; 8]) -> f64 {
+    a[0].abs() * std::f64::consts::TAU / a[1].max(1e-6) * (2.0 + 2.5 * a[4].max(0.0))
+}
+
+/// Distance bound of the water surface: above every crest the distance to the highest one,
+/// near the waves the height difference scaled down by the steepest slope.
+fn water_distance(a: &[f64; 8], q: V3) -> f64 {
+    let amp = a[0].abs();
+    let above = q.z - amp;
+    if above > amp {
+        return above;
+    }
+    let steep = water_steepness(a);
+    let d = (q.z - water_height(a, q.x, q.y)) / (1.0 + steep * steep).sqrt();
+    if above > 0.0 { d.max(above) } else { d }
+}
+
+/// How water reflects light arriving at the cosine `cos_i` to its normal (Schlick, water's
+/// 2 % straight on), scaled by `strength` (mirrors march.wgsl `water_fresnel`).
+pub fn water_fresnel(cos_i: f64, strength: f64) -> f64 {
+    let x = (1.0 - cos_i.clamp(0.0, 1.0)).powi(5);
+    ((0.02 + 0.98 * x) * strength.max(0.0)).min(1.0)
+}
+
+/// Value noise 0..1 on the integer grid (mirrors march.wgsl `water_noise`).
+fn water_noise(x: f64, y: f64) -> f64 {
+    let (ix, iy) = (x.floor(), y.floor());
+    let (fx, fy) = (x - ix, y - iy);
+    let (ux, uy) = (fx * fx * (3.0 - 2.0 * fx), fy * fy * (3.0 - 2.0 * fy));
+    let h = |dx: i32, dy: i32| crate::render::hash3(ix as i32 + dx, iy as i32 + dy, 7) as f64;
+    let (a, b) = (h(0, 0) + (h(1, 0) - h(0, 0)) * ux, h(0, 1) + (h(1, 1) - h(0, 1)) * ux);
+    a + (b - a) * uy
+}
+
+/// The look of water at the local point `q`: its height 0..1 (crests brighten the water:
+/// light passing through them) and the foam share on the highest crests, by `a[6]`, broken
+/// up by noise that drifts with the wind.
+pub fn water_look(a: &[f64; 8], q: V3) -> (f64, f64) {
+    let h = water_wave01(a, q.x, q.y);
+    // The top ~15 % of the heights (90 % lie below 0.6, the highest crests reach about 0.88).
+    let crest = ((h - 0.56) / 0.16).clamp(0.0, 1.0);
+    if crest <= 0.0 || a[6] <= 0.0 {
+        return (h, 0.0);
+    }
+    let f = std::f64::consts::TAU / a[1].max(1e-6);
+    let wind = a[3].to_radians();
+    let (u, v) = ((q.x * wind.cos() + q.y * wind.sin()) * f - a[2] * 0.5, (q.y * wind.cos() - q.x * wind.sin()) * f);
+    // Streaks along the wind: the noise is stretched along it.
+    let n = 0.6 * water_noise(u * 1.5, v * 4.0) + 0.4 * water_noise(u * 4.0, v * 11.0);
+    let broken = ((n - 0.3) / 0.35).clamp(0.0, 1.0);
+    (h, (crest * crest * broken * a[6]).min(1.0))
 }
 
 /// Position, rotation (degrees about x, then y, then z), uniform scale and stretch along the
@@ -577,14 +695,36 @@ mod tests {
             }
         }
         // Water: never more than the vertical distance to the surface.
-        let w = Primitive::Water { amplitude: 0.05, wavelength: 0.3, phase: 0.4, angle: 20.0 };
+        let w = Primitive::Water { amplitude: 0.05, wavelength: 0.3, phase: 0.4, angle: 20.0, choppy: 1.0, detail: 16.0, foam: 0.3, reflect: 1.0, speed: 0.0 };
+        let a = w.params();
         for i in 0..200 {
             let (x, y) = (i as f64 * 0.013, i as f64 * 0.007);
-            let (h, _) = water_height(w.params(), x, y);
+            let h = water_height(&a, x, y);
             let d = w.distance(v3(x, y, 0.5));
             assert!(d <= 0.5 - h + 1e-12 && d > 0.0);
         }
     }
+
+    #[test]
+    fn water_slopes_stay_below_the_distance_bound() {
+        // The bound divides by the steepest slope: measure the real slopes.
+        for (amp, len, choppy, detail) in [(0.05, 0.3, 1.0, 16.0), (0.2, 1.0, 0.0, 8.0), (0.02, 0.5, 2.0, 48.0), (0.1, 2.0, 1.5, 32.0)] {
+            let a = [amp, len, 0.7, 25.0, choppy, detail, 0.0, 1.0];
+            let steep = water_steepness(&a);
+            let e = len * 1e-5;
+            let mut worst: f64 = 0.0;
+            for i in 0..20000 {
+                let (x, y) = ((i as f64 * 0.6180339) % 1.0 * len * 9.0, (i as f64 * 0.7548776) % 1.0 * len * 9.0);
+                let gx = (water_height(&a, x + e, y) - water_height(&a, x - e, y)) / (2.0 * e);
+                let gy = (water_height(&a, x, y + e) - water_height(&a, x, y - e)) / (2.0 * e);
+                worst = worst.max((gx * gx + gy * gy).sqrt());
+            }
+            assert!(worst < steep, "slope {worst} above the bound {steep} (ratio {:.2}; amp {amp}, len {len}, choppy {choppy})", worst / (amp * std::f64::consts::TAU / len));
+            let range = (0..2000).map(|i| water_height(&a, i as f64 * 0.0137, i as f64 * 0.0071) / amp).fold((f64::MAX, f64::MIN), |r, h| (r.0.min(h), r.1.max(h)));
+            assert!(range.0 >= -1.0 - 1e-9 && range.1 <= 1.0 + 1e-9, "{range:?}");
+        }
+    }
+
 
     #[test]
     fn rotation_matrix_round_trip() {

@@ -324,6 +324,19 @@ cargo clippy -j 8 --workspace --all-targets
   facet (`ggx_normal`) only when gloss > 0, reflects and refracts on it; reflections below
   the surface are mirrored back above it. The weight stays the reflectance.
 
+## Water
+
+- `Primitive::Water` (`compose.rs` `water_wave01` / `water_height` / `water_distance` /
+  `water_look`, mirrored in march.wgsl): a sum of `detail` waves exp(sin - 1) around the wind
+  (directions from `hash3`), each dragging the point along its slope (`choppy` × 0.38). The
+  distance divides by `water_steepness` (measured bound; test
+  `water_slopes_stay_below_the_distance_bound`). Parameters on the GPU in `Obj.prim` /
+  `prim2`. Water reflects by itself: `Surface::mirror` / `Traced.mirror` = Fresnel
+  (`water_fresnel`), used instead of the material's reflection amount in the bounce loop;
+  `Program::has_water` turns on the bounce loop (GPU `WATER`, `is_water(j)` from codegen,
+  `REFLECT`). Glints: shininess at least `WATER_SHININESS`. Animations add `speed` per second
+  to `phase` (`color_speeds` key `o{k}.water`).
+
 ## Light through glass
 
 - `Material::glass_shadows` (`Program::glass_shadows`, GPU switch `GLASS_SHADOW`):

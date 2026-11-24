@@ -119,6 +119,9 @@ pub struct Program {
     pub color_on_it: i32,
 }
 
+/// `Primitive::index` of the water surface.
+pub const WATER_KIND: u32 = 5;
+
 /// An object of the scene composition prepared for evaluation.
 pub struct ObjectProgram {
     pub shape: ObjectShape,
@@ -172,7 +175,7 @@ pub enum ObjectShape {
     /// A fractal chain; its constants are part of the main program's.
     Fractal(Box<Program>),
     /// `Primitive::index` and parameters.
-    Primitive(u32, [f64; 4]),
+    Primitive(u32, [f64; 8]),
     /// A baked 3D model (None while it bakes or when it does not load: no surface).
     Model(Option<crate::mesh::Model>),
 }
@@ -456,6 +459,11 @@ impl Program {
         if let Some(p2) = self.part2.as_deref_mut() {
             clear(p2);
         }
+    }
+
+    /// The water surfaces among the objects (they reflect by themselves).
+    pub fn has_water(&self) -> bool {
+        self.objects.iter().any(|o| matches!(o.shape, ObjectShape::Primitive(WATER_KIND, _)))
     }
 
     pub fn signature(&self) -> String {

@@ -794,7 +794,7 @@ fn gpu_matches_cpu_with_composed_objects() {
             material: ObjectMaterial { own: false, ..Default::default() },
             ..Default::default()
         },
-        SceneObject { name: "Sea".into(), shape: Shape::Primitive(Primitive::Water { amplitude: 0.03, wavelength: 0.4, phase: 1.0, angle: 30.0 }), transform: Transform { position: p(0.0, 3.0, -0.9), ..Default::default() }, ..Default::default() },
+        SceneObject { name: "Sea".into(), shape: Shape::Primitive(Primitive::Water { amplitude: 0.03, wavelength: 0.4, phase: 1.0, angle: 30.0, choppy: 4.0, detail: 5.0, foam: 0.4, reflect: 1.0, speed: 0.0 }), transform: Transform { position: p(0.0, 3.0, -0.9), ..Default::default() }, ..Default::default() },
     ];
     let prog = Program::for_scene(&scene);
     assert_eq!(prog.objects.len(), 5);

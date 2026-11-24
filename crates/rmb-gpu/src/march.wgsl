@@ -148,6 +148,7 @@ struct Obj {
     inv2: vec4<f32>,
     pos: vec4<f32>,   // w: material (0 main, k the k-th object's own)
     prim: vec4<f32>,  // primitive parameters
+    prim2: vec4<f32>, // more primitive parameters (water: choppy, octaves, foam, reflection)
     frac: vec4<f32>,  // fractal: w slice, julia, max iterations, repeat from
     julia: vec4<f32>,
     misc: vec4<f32>,  // bailout², formula DE scale, DE scale, kind (0 fractal, 1 primitive, 2 model)
@@ -679,7 +680,7 @@ fn obj_local(j: u32, p: vec3<f32>) -> vec3<f32> {
 }
 
 // Mirrors compose::primitive_distance.
-fn prim_de(kind: u32, a: vec4<f32>, q: vec3<f32>) -> f32 {
+fn prim_de(kind: u32, a: vec4<f32>, a2: vec4<f32>, q: vec3<f32>) -> f32 {
     if (kind == 0u) {
         return q.z;
     }
@@ -744,20 +745,90 @@ fn prim_de(kind: u32, a: vec4<f32>, q: vec3<f32>) -> f32 {
         let dz = abs(q.z) - a.y * 0.5;
         return min(max(dx, dz), 0.0) + length(max(vec2<f32>(dx, dz), vec2<f32>(0.0)));
     }
-    // Water: three octaves of waves at turning directions.
-    let len = max(a.y, 1.0e-6);
-    let angle = radians(a.w);
-    var hgt = 0.0;
-    var slope = 0.0;
-    for (var i = 0; i < 3; i++) {
-        let f = exp2(f32(i));
-        let dir = angle + f32(i) * 1.1;
-        let k = 6.283185307179586 * f / len;
-        let amp = a.x / f;
-        hgt += amp * sin(k * (q.x * cos(dir) + q.y * sin(dir)) + a.z * (1.0 + 0.3 * f32(i)));
-        slope += amp * k;
+    return water_distance(a, a2, q);
+}
+
+// Mirrors compose::water_wave01: waves exp(sin - 1) around the wind, dragging the point.
+fn water_wave01(a: vec4<f32>, a2: vec4<f32>, x: f32, y: f32) -> f32 {
+    let wind = radians(a.w);
+    let drag = max(a2.x, 0.0) * 0.38;
+    let freq0 = 6.283185307179586 / max(a.y, 1.0e-6);
+    var p = vec2<f32>(x, y) * freq0;
+    let shift = length(p) * 0.1;
+    var f = 1.0;
+    var speed = 1.0;
+    var w = 1.0;
+    var sum = 0.0;
+    var weights = 0.0;
+    let waves = clamp(i32(round(a2.y)), 2, 48);
+    for (var i = 0; i < waves; i++) {
+        let ang = wind + 1.2 * (hash3(i, 0, 11) * 2.0 - 1.0);
+        let dir = vec2<f32>(cos(ang), sin(ang));
+        let ph = dot(p, dir) * f + a.z * speed + shift;
+        let wave = exp(sin(ph) - 1.0);
+        let slope = -wave * cos(ph);
+        p += dir * slope * w * drag;
+        sum += wave * w;
+        weights += w;
+        w *= 0.8;
+        f *= 1.18;
+        speed *= 1.07;
     }
-    return (q.z - hgt) / sqrt(1.0 + slope * slope);
+    return sum / weights;
+}
+
+// Mirrors compose::water_height.
+fn water_height(a: vec4<f32>, a2: vec4<f32>, x: f32, y: f32) -> f32 {
+    return (water_wave01(a, a2, x, y) * 2.0 - 1.0) * a.x;
+}
+
+// Mirrors compose::water_distance.
+fn water_distance(a: vec4<f32>, a2: vec4<f32>, q: vec3<f32>) -> f32 {
+    let amp = abs(a.x);
+    let above = q.z - amp;
+    if (above > amp) {
+        return above;
+    }
+    let steep = amp * 6.283185307179586 / max(a.y, 1.0e-6) * (2.0 + 2.5 * max(a2.x, 0.0));
+    let d = (q.z - water_height(a, a2, q.x, q.y)) / sqrt(1.0 + steep * steep);
+    if (above > 0.0) {
+        return max(d, above);
+    }
+    return d;
+}
+
+// Mirrors compose::water_fresnel.
+fn water_fresnel(cos_i: f32, strength: f32) -> f32 {
+    let x = pow(1.0 - clamp(cos_i, 0.0, 1.0), 5.0);
+    return min((0.02 + 0.98 * x) * max(strength, 0.0), 1.0);
+}
+
+// Mirrors compose::water_noise.
+fn water_noise(x: f32, y: f32) -> f32 {
+    let i = floor(vec2<f32>(x, y));
+    let f = vec2<f32>(x, y) - i;
+    let u = f * f * (3.0 - 2.0 * f);
+    let ix = i32(i.x);
+    let iy = i32(i.y);
+    let a = hash3(ix, iy, 7) + (hash3(ix + 1, iy, 7) - hash3(ix, iy, 7)) * u.x;
+    let b = hash3(ix, iy + 1, 7) + (hash3(ix + 1, iy + 1, 7) - hash3(ix, iy + 1, 7)) * u.x;
+    return a + (b - a) * u.y;
+}
+
+// Mirrors compose::water_look: x the height 0..1, y the foam share.
+fn water_look(a: vec4<f32>, a2: vec4<f32>, q: vec3<f32>) -> vec2<f32> {
+    let h = water_wave01(a, a2, q.x, q.y);
+    let crest = clamp((h - 0.56) / 0.16, 0.0, 1.0);
+    if (crest <= 0.0 || a2.z <= 0.0) {
+        return vec2<f32>(h, 0.0);
+    }
+    let f = 6.283185307179586 / max(a.y, 1.0e-6);
+    let wind = radians(a.w);
+    let u = (q.x * cos(wind) + q.y * sin(wind)) * f - a.z * 0.5;
+    let v = (q.y * cos(wind) - q.x * sin(wind)) * f;
+    let n = 0.6 * water_noise(u * 1.5, v * 4.0) + 0.4 * water_noise(u * 4.0, v * 11.0);
+    let broken = clamp((n - 0.3) / 0.35, 0.0, 1.0);
+    return vec2<f32>(h, min(crest * crest * broken * a2.z, 1.0));
 }
 
 // Mirrors compose::combine: x the combined distance, y 1 when the object forms the surface.
@@ -2513,7 +2584,13 @@ struct Traced {
     base: vec3<f32>,
     trans: f32,
     fog: f32,
+    // The surface's own reflection (water); negative: the material's reflection amount.
+    mirror: f32,
 }
+
+// Foam on water crests and the sharpness of water highlights (mirror render::cpu).
+const WATER_FOAM: vec3<f32> = vec3<f32>(0.85, 0.88, 0.9);
+const WATER_SHININESS: f32 = 400.0;
 
 // Mirrors Shader::trace: one ray from `o` along `d` (distances `t0`..`max_t`; fog, glow and
 // visible lights measured from `t_base`; `inside`: inside glass; `glass`: light amount that
@@ -2548,6 +2625,7 @@ fn path_specular_share(amount: f32, spec: vec3<f32>, trans: f32, glass: f32) -> 
 fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sx: f32, sy: f32, inside: bool, glass: f32, env: bool) -> Traced {
     var tr: Traced;
     tr.hit = false;
+    tr.mirror = -1.0;
     // Glow and steam (mirrors Shader::trace): pick a point near the glowing surfaces, a random
     // ray from it finds the emitted light of the surface it came from.
     let steam_on = u.emis.z > 0.0 || u.emis2.y > 0.0;
@@ -2683,6 +2761,15 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sx: f32, 
         if (cols.emis > 0.0) {
             cols.emis *= shimmer(pos);
         }
+        // Water: foam on the crests, and its own (Fresnel) reflection.
+        var mirror = -1.0;
+        if (WATER && h.orbit.obj > 0u && is_water(h.orbit.obj - 1u)) {
+            let j = h.orbit.obj - 1u;
+            let look = water_look(objs[j].prim, objs[j].prim2, obj_local(j, pos));
+            let lifted = cols.base * (0.55 + 0.9 * look.x);
+            cols.base = lifted + (WATER_FOAM - lifted) * look.y;
+            mirror = water_fresnel(-dot(d, n), objs[j].prim2.w) * (1.0 - look.y);
+        }
         let base = cols.base;
         let p = pos + n * (h.eps * select(1.5, 4.0, inside_now()));
         // Path tracing: the bounces bring the ambient and emitted light.
@@ -2709,7 +2796,11 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sx: f32, 
         }
         var diffuse = amb * ambient * ao + aol.yzw;
         var spec = vec3<f32>(0.0);
-        let shin = u.sky.w;
+        var shin = u.sky.w;
+        // Water glints: a far sharper sun highlight than the scene's shininess.
+        if (mirror >= 0.0) {
+            shin = max(shin, WATER_SHININESS);
+        }
         for (var i = 0u; i < u.size.w; i++) {
             let li = u.lights[i];
             // Direction, falloff and shadow length (mirrors FrameLight::sample); area and line
@@ -2760,7 +2851,8 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sx: f32, 
             diffuse += li.color.xyz * df * w * sh;
             spec += li.color.xyz * s * w * sh;
         }
-        let keep = max(1.0 - cols.trans * glass, 0.0);
+        // What the reflection takes (water) does not reach the surface color.
+        let keep = max(1.0 - cols.trans * glass, 0.0) * (1.0 - max(mirror, 0.0));
         // Emissive colors shine by themselves.
         let lit = base * (diffuse * keep + cols.emis) + spec * cols.spec + model_emis;
         var f = 0.0;
@@ -2781,6 +2873,7 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sx: f32, 
         tr.t = h.t;
         tr.spec = cols.spec;
         tr.fog = f;
+        tr.mirror = mirror;
     }
     // Glow and steam of the emissive colors the ray passed (strengths included).
     c += h.halo;
@@ -3071,7 +3164,7 @@ fn sample_pixel(px: u32, py: u32, sample: u32, k: u32) -> vec3<f32> {
     var bounces = 0u;
     if (path) {
         bounces = clamp(u32(u.path.y), 1u, 16u);
-    } else if (amount > 0.0) {
+    } else if (amount > 0.0 || WATER) {
         bounces = clamp(u32(u.fog3.w), 1u, 8u);
     }
     var glass = 0.0;
@@ -3122,22 +3215,30 @@ fn sample_pixel(px: u32, py: u32, sample: u32, k: u32) -> vec3<f32> {
         let vis = clamp(1.0 - tr.fog, 0.0, 1.0);
         var bn: Bounce;
         var diffuse = false;
+        // Water reflects by its own amount.
+        var amt = amount;
+        if (tr.mirror >= 0.0) {
+            amt = tr.mirror;
+        }
         if (path) {
-            let ps = path_specular_share(amount, tr.spec, tr.trans, glass);
+            var ps = path_specular_share(amount, tr.spec, tr.trans, glass);
+            if (tr.mirror >= 0.0) {
+                ps = tr.mirror;
+            }
             var spec_lobe = false;
             if (ps > 0.0) {
                 spec_lobe = rnd() < ps;
             }
             if (spec_lobe) {
                 bn = bounce(tr, inside);
-                weight *= bn.f * amount / ps * vis;
+                weight *= bn.f * amt / ps * vis;
             } else {
                 let u1 = rnd();
                 let u2 = rnd();
                 bn.dir = cosine_dir(tr.n, u1, u2);
                 bn.refract = false;
                 diffuse = true;
-                let keep = max(1.0 - tr.trans * glass, 0.0);
+                let keep = max(1.0 - tr.trans * glass, 0.0) * (1.0 - max(tr.mirror, 0.0));
                 weight *= tr.base * keep / (1.0 - ps) * vis;
             }
             if (b >= 2u) {
@@ -3149,7 +3250,7 @@ fn sample_pixel(px: u32, py: u32, sample: u32, k: u32) -> vec3<f32> {
             }
         } else {
             bn = bounce(tr, inside);
-            weight *= bn.f * amount * vis;
+            weight *= bn.f * amt * vis;
         }
         if (all(weight < vec3<f32>(1.0e-4))) {
             break;

@@ -36,6 +36,10 @@ pub fn march_shader_baked(prog: &Program, baked: &[Option<f64>]) -> String {
     let _ = writeln!(s, "const LAYERS: bool = {};", prog.layers);
     let _ = writeln!(s, "const BUMP: bool = {};", prog.bump);
     let _ = writeln!(s, "const GLASS_SHADOW: bool = {};", prog.glass_shadows);
+    // Water surfaces reflect by themselves (Shader::water_at).
+    let water: Vec<String> = prog.objects.iter().enumerate().filter(|(_, o)| matches!(o.shape, rmb_core::fractal::ObjectShape::Primitive(rmb_core::fractal::WATER_KIND, _))).map(|(j, _)| format!("j == {j}u")).collect();
+    let _ = writeln!(s, "const WATER: bool = {};", !water.is_empty());
+    let _ = writeln!(s, "fn is_water(j: u32) -> bool {{\n    return {};\n}}", if water.is_empty() { "false".to_string() } else { water.join(" || ") });
     let _ = writeln!(s, "const COLOR_ON_IT: bool = {};", prog.color_on_it >= 0 && prog.part2.is_none() && !prog.slots.is_empty());
     let _ = writeln!(s, "const MODELS: bool = {};", prog.objects.iter().any(|o| matches!(o.shape, rmb_core::fractal::ObjectShape::Model(_))));
     // Deep zoom: the main fractal in double-float arithmetic (composed objects stay f32, they
@@ -320,7 +324,7 @@ fn objects(prog: &Program) -> String {
                 );
             }
             ObjectShape::Primitive(kind, _) => {
-                let _ = writeln!(s, "        b.de = prim_de({kind}u, ob.prim, q) * sc;\n        b.escaped = true;");
+                let _ = writeln!(s, "        b.de = prim_de({kind}u, ob.prim, ob.prim2, q) * sc;\n        b.escaped = true;");
             }
             ObjectShape::Model(_) => {
                 let _ = writeln!(s, "        b.de = model_de({j}u, q) * sc;\n        b.escaped = true;");

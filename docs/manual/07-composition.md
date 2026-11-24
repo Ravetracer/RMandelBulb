@@ -40,7 +40,7 @@ The **+** button next to the SCENE title opens a menu:
 | Fractal | Another fractal with its own formulas, placement and colors. It starts as a small Amazing Box. |
 | Plane | A ground: everything below it is solid. Turn it for walls. It starts below the scene with a checker pattern. |
 | Box, Sphere, Cylinder, Capsule, Cone, Torus, Hexagonal prism, Triangular prism | Basic shapes. |
-| Water | A water surface with waves. |
+| Water | An ocean surface: waves with foam that reflect the sky and the scene and move in animations. |
 | 3D model… | A model file: OBJ (with its MTL materials), STL, PLY, glTF/GLB or FBX. |
 
 New objects appear in front of the camera (the plane and the water below the scene). The
@@ -123,11 +123,38 @@ stand upright along their own z axis.
 | Torus | Ring radius, Thickness (radius of the tube) |
 | Hexagonal prism | Radius (from the axis to the middle of a side), Height |
 | Triangular prism | Side, Height |
-| Water | Wave height, Wave length, Phase (moves the waves; animate it for moving water), Direction |
+| Water | See below. |
+
+### Water
+
+The water is an ocean surface made of many waves that run around the wind direction, each a
+little shorter and faster than the one before; their crests are pulled sharp like those of
+the sea. It reflects the sky and the scene by itself, like real water: little when you look
+straight down, almost a mirror at grazing angles. The material's **Reflection** (Color tab)
+is not needed for it, and the rest of the scene keeps its own setting.
+
+![Calm water (left) and a rough sea with foam (right)](images/water.jpg)
+
+| Setting | What it does | Start value |
+|---------|--------------|-------------|
+| Wave height | Height of the largest waves. | 0.06 |
+| Wave length | Length of the largest waves (across the wind a bit shorter). | 2 |
+| Choppiness | Shape of the crests: 0 = round swell, 1 = like the sea, 2 = very choppy. | 1 |
+| Detail | Number of waves: more give finer ripples on the swell (and cost a little speed). | 16 |
+| Direction | Wind direction in degrees; the waves run mostly along it. | 0 |
+| Foam | White, broken foam on the highest crests, streaked along the wind. | 0.4 |
+| Reflection | How strongly the water reflects (1 = like water, 2 = twice as much). | 1 |
+| Speed | How fast the waves move in animations (per second; 0 = still). | 1 |
+| Time | The moment of the waves: another value shows another wave pattern in a still image. Animations add the speed per second to it. | 0 |
+
+The water's own colors (its material) are the color of the water body: it gets brighter on
+the crests, where the light shines through the waves. Dark blue-green colors look like deep
+sea; lighter, greener ones like shallow water. The sun shows as sharp glints on the waves.
 
 !!! tip
-    For real water, give the water's colors some transparency and turn on **Glass** in the
-    Color tab (chapter 11).
+    For water you can see into, give its colors some transparency and turn on **Glass** in
+    the Color tab (chapter 11): rays then also bend into the water. **Bounces** in the Color
+    tab sets how many reflections of reflections the water shows (default 2).
 
 ## Fractal objects
 

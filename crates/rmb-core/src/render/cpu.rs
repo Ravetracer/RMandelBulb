@@ -26,7 +26,14 @@ pub struct Shader<'a> {
     pub lut_int_spec: Vec<[f32; 3]>,
     /// Whether any color of any material emits.
     pub emissive: bool,
+    /// The scene has water (it reflects even without the material's reflection).
+    pub water: bool,
 }
+
+/// Color of the foam on water crests (march.wgsl `WATER_FOAM`).
+const WATER_FOAM: [f64; 3] = [0.85, 0.88, 0.9];
+/// Highlight sharpness of water (march.wgsl `WATER_SHININESS`).
+const WATER_SHININESS: f64 = 400.0;
 
 /// The binary refinement of a hit stops at steps below this part of the threshold.
 pub const REFINE_TOLERANCE: f64 = 1.0 / 128.0;
@@ -187,7 +194,20 @@ impl<'a> Shader<'a> {
             lut_int: if scene.material.interior.is_empty() { Vec::new() } else { crate::gradient::lut(&scene.material.interior) },
             lut_int_spec: if scene.material.interior.is_empty() { Vec::new() } else { crate::gradient::lut_specular(&scene.material.interior) },
             emissive,
+            water: prog.has_water(),
         }
+    }
+
+    /// Water at the hit `orbit` / `pos`: its color from `base` (brighter on the crests where
+    /// light shines through, foam on the highest) and its Fresnel reflection for a ray
+    /// arriving at the cosine `cos_i` (None: not water).
+    fn water_at(&self, orbit: &Orbit, pos: V3, cos_i: f64, base: [f64; 3]) -> Option<([f64; 3], f64)> {
+        let ob = self.prog.objects.get((orbit.object as usize).checked_sub(1)?)?;
+        let crate::fractal::ObjectShape::Primitive(crate::fractal::WATER_KIND, a) = &ob.shape else { return None };
+        let (h, foam) = crate::compose::water_look(a, ob.local(pos));
+        let lift = 0.55 + 0.9 * h;
+        let color = [0, 1, 2].map(|k| base[k] * lift + (WATER_FOAM[k] - base[k] * lift) * foam);
+        Some((color, crate::compose::water_fresnel(cos_i, a[7]) * (1.0 - foam)))
     }
 
     /// Surface threshold at ray distance `t`.
@@ -858,7 +878,7 @@ impl<'a> Shader<'a> {
         // the surface color), Russian roulette from the third bounce, the light of each bounce
         // limited by the firefly clamp.
         let path = sc_path(sc);
-        let max_b = if path { sc.lighting.path_bounces.clamp(1, 16) } else if amount > 0.0 { bounces } else { 0 };
+        let max_b = if path { sc.lighting.path_bounces.clamp(1, 16) } else if amount > 0.0 || self.water { bounces } else { 0 };
         if max_b > 0 {
             let mut weight = [1.0; 3];
             let mut surf = first.surface;
@@ -866,8 +886,13 @@ impl<'a> Shader<'a> {
             for b in 0..max_b {
                 let Some(s) = surf else { break };
                 let vis = (1.0 - s.fog).clamp(0.0, 1.0);
+                // Water reflects by its own amount.
+                let amount = s.mirror.unwrap_or(amount);
                 let (dir, refract, diffuse) = if path {
-                    let ps = path_specular_share(amount, s.spec, s.trans, glass);
+                    let ps = match s.mirror {
+                        Some(m) => m,
+                        None => path_specular_share(amount, s.spec, s.trans, glass),
+                    };
                     if ps > 0.0 && rng.next_f64() < ps {
                         let (dir, f, refract) = self.bounce(&s, inside, &mut rng);
                         for (w, fk) in weight.iter_mut().zip(f) {
@@ -876,7 +901,7 @@ impl<'a> Shader<'a> {
                         (dir, refract, false)
                     } else {
                         let (u1, u2) = (rng.next_f64(), rng.next_f64());
-                        let keep = (1.0 - s.trans * glass).max(0.0);
+                        let keep = (1.0 - s.trans * glass).max(0.0) * (1.0 - s.mirror.unwrap_or(0.0));
                         for (w, bk) in weight.iter_mut().zip(s.base) {
                             *w *= bk * keep / (1.0 - ps) * vis;
                         }
@@ -1109,6 +1134,13 @@ impl<'a> Shader<'a> {
                 };
                 // Shimmer: the emitted light flickers over the surface (and in time).
                 let emis = if emis > 0.0 { emis * super::shimmer(&sc.material, h.pos) } else { emis };
+                // Water: foam on the crests, and its own (Fresnel) reflection.
+                let (base, mirror) = match self.water.then(|| self.water_at(&h.orbit, h.pos, -d.dot(n), base)).flatten() {
+                    Some((color, refl)) => (color, Some(refl)),
+                    None => (base, None),
+                };
+                // Water glints: a far sharper sun highlight than the scene's shininess.
+                let shininess = if mirror.is_some() { sc.lighting.shininess.max(WATER_SHININESS) } else { sc.lighting.shininess };
                 // Shading point just off the surface; inside rendering puts the surface one
                 // threshold into the solid, so it needs a larger offset.
                 let p = h.pos + n * (h.eps * if ev.inside() { 4.0 } else { 1.5 });
@@ -1154,19 +1186,20 @@ impl<'a> Shader<'a> {
                     }
                     let w = atten * (1.0 - li.occlusion * (1.0 - ao));
                     let hv = (ldir - d).normalize();
-                    let s = if ndl > 0.0 { n.dot(hv).max(0.0).powf(l.shininess) * li.specular * sc.material.specular * (l.shininess + 8.0) / 25.0 * spec_rough } else { 0.0 };
+                    let s = if ndl > 0.0 { n.dot(hv).max(0.0).powf(shininess) * li.specular * sc.material.specular * (shininess + 8.0) / 25.0 * spec_rough } else { 0.0 };
                     for k in 0..3 {
                         diffuse[k] += li.color[k] * df * w * sh[k];
                         spec[k] += li.color[k] * s * w * sh[k];
                     }
                 }
-                let keep = (1.0 - trans * glass).max(0.0);
+                // What the reflection takes (water) does not reach the surface color.
+                let keep = (1.0 - trans * glass).max(0.0) * (1.0 - mirror.unwrap_or(0.0));
                 // Emissive colors shine by themselves.
                 let lit = [0, 1, 2].map(|k| base[k] * (diffuse[k] * keep + emis) + spec[k] * spec_col[k] + model_emis[k]);
                 let f = if inside { 0.0 } else { sc.fog.amount(h.t - t_base, near, far) };
                 albedo = [0, 1, 2].map(|k| (base[k] * (1.0 - f) + fog_col[k] * f.max(0.0)).clamp(0.0, 1.0));
                 normal = n;
-                surface = Some(Surface { pos: p, hit: h.pos, eps: h.eps, n, dir: d, t: h.t, spec: spec_col, base, trans, fog: f });
+                surface = Some(Surface { pos: p, hit: h.pos, eps: h.eps, n, dir: d, t: h.t, spec: spec_col, base, trans, fog: f, mirror });
                 [0, 1, 2].map(|k| lit[k] * (1.0 - f) + fog_col[k] * f.max(0.0))
             }
         };
@@ -1307,6 +1340,8 @@ struct Surface {
     trans: f64,
     /// Fog amount at the hit.
     fog: f64,
+    /// The surface's own reflection (water), instead of the material's reflection amount.
+    mirror: Option<f64>,
 }
 
 /// One pixel sample: radiance and the denoiser's helper values (albedo, world normal).

@@ -169,6 +169,7 @@ struct ObjGpu {
     inv: [[f32; 4]; 3],
     pos: [f32; 4],
     prim: [f32; 4],
+    prim2: [f32; 4],
     frac: [f32; 4],
     julia: [f32; 4],
     misc: [f32; 4],
@@ -364,7 +365,8 @@ fn objects_gpu(scene: &Scene, prog: &Program, lut: &mut Vec<[f32; 4]>) -> Vec<Ob
                 g.comb2 = [p2.map_or(1.0, |p| p.de_scale as f32), f.mix_pow as f32, w1 as f32, w2 as f32];
             }
             ObjectShape::Primitive(_, a) => {
-                g.prim = a.map(|v| v as f32);
+                g.prim = [a[0], a[1], a[2], a[3]].map(|v| v as f32);
+                g.prim2 = [a[4], a[5], a[6], a[7]].map(|v| v as f32);
                 g.misc[3] = 1.0;
             }
             ObjectShape::Model(_) => g.misc[3] = 2.0,
@@ -730,7 +732,7 @@ fn render_program(scene: &Scene, mut prog: Program, deep: bool) -> (Option<Scene
     }
     let s = shifted.as_ref().unwrap_or(scene);
     // Path tracing needs the bounce loop too.
-    prog.reflections = s.material.reflection > 0.0 || s.lighting.render_mode == rmb_core::scene::RenderMode::PathTraced;
+    prog.reflections = s.material.reflection > 0.0 || s.lighting.render_mode == rmb_core::scene::RenderMode::PathTraced || prog.has_water();
     (shifted, prog)
 }
 

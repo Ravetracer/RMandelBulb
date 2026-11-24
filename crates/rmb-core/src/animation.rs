@@ -748,6 +748,12 @@ fn color_speeds(s: &Scene) -> BTreeMap<String, f64> {
         out.insert(format!("steam{k}"), *v);
     }
     out.insert("shimmer".into(), s.material.shimmer_speed);
+    // Water waves move by their speed.
+    for (k, o) in s.objects.iter().enumerate() {
+        if let crate::compose::Shape::Primitive(crate::compose::Primitive::Water { speed, .. }) = o.shape {
+            out.insert(format!("o{k}.water"), speed);
+        }
+    }
     out
 }
 
@@ -793,6 +799,9 @@ fn apply_phases(s: &mut Scene, phase: &BTreeMap<String, f64>) {
     for (k, o) in s.objects.iter_mut().enumerate() {
         let m = &mut o.material;
         turn(format!("o{k}"), &mut m.color_offset, &mut m.bands, &mut m.layers);
+        if let crate::compose::Shape::Primitive(crate::compose::Primitive::Water { phase: p, .. }) = &mut o.shape {
+            *p += phase.get(&format!("o{k}.water")).copied().unwrap_or(0.0);
+        }
     }
 }
 
@@ -1235,6 +1244,21 @@ mod tests {
         let e = apply_drivers(&mut s, &compile_drivers(&[Driver { path: "no.such".into(), expression: "1".into(), ..Default::default() }]).0, DriverTime { frame: 0.0, frames: 1, fps: 30.0, key: 0.0, audio: [0.0; 4] });
         assert!(e[0].contains("no such value"), "{e:?}");
         assert!(drivable_values(&Scene::default()).iter().any(|(p, _)| p == "fractal.slots.0.params.power"));
+    }
+
+    #[test]
+    fn water_waves_move_by_their_speed() {
+        use crate::compose::{Primitive, SceneObject, Shape};
+        let mut s = Scene::default();
+        s.objects.push(SceneObject { shape: Shape::Primitive(Primitive::water()), ..Default::default() });
+        let Shape::Primitive(Primitive::Water { speed, .. }) = s.objects[0].shape else { panic!() };
+        let anim = Animation { fps: 25.0, keyframes: vec![Keyframe { scene: s.clone(), frames: 50, ..Default::default() }, Keyframe { scene: s, frames: 50, ..Default::default() }], ..Default::default() };
+        let plan = AnimationPlan::new(&anim).expect("plan");
+        let phase = |f: usize| match plan.scene_at(f).objects[0].shape {
+            Shape::Primitive(Primitive::Water { phase, .. }) => phase,
+            _ => f64::NAN,
+        };
+        assert!((phase(25) - phase(0) - speed).abs() < 1e-9, "{} {}", phase(0), phase(25));
     }
 
     #[test]

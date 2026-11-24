@@ -101,7 +101,7 @@ impl FormulasPanel {
                         for p in Primitive::defaults() {
                             let tip = match p {
                                 Primitive::Plane => "A ground: everything below it is solid",
-                                Primitive::Water { .. } => "A water surface with waves (for real water: give its colors transparency and turn on Glass in the Color tab)",
+                                Primitive::Water { .. } => "An ocean surface: choppy waves with foam, reflecting the sky and the scene; the waves move in animations (see-through water: give its colors transparency and turn on Glass in the Color tab)",
                                 _ => "A basic shape",
                             };
                             if ui.button(p.name()).on_hover_text(tip).clicked() {
@@ -579,7 +579,7 @@ fn primitive_object(p: Primitive, at: rmb_core::V3) -> SceneObject {
         }
         Primitive::Water { .. } => {
             pos = rmb_core::v3(0.0, 0.0, -1.0);
-            material.gradient = vec![rmb_core::scene::ColorStop::new(0.0, [0.02, 0.12, 0.2]), rmb_core::scene::ColorStop::new(1.0, [0.02, 0.12, 0.2])];
+            material.gradient = vec![rmb_core::scene::ColorStop::new(0.0, [0.01, 0.06, 0.09]), rmb_core::scene::ColorStop::new(1.0, [0.03, 0.14, 0.17])];
         }
         _ => {}
     }
@@ -629,11 +629,16 @@ fn primitive_params(ui: &mut Ui, p: &mut Primitive) {
             widgets::slider_log(ui, "Side", "Side length of the triangle", side, 0.001..=100.0, 0.8);
             widgets::slider_log(ui, "Height", "Height of the prism (along its z axis)", height, 0.001..=100.0, 1.0);
         }
-        Primitive::Water { amplitude, wavelength, phase, angle } => {
-            widgets::slider_log(ui, "Wave height", "Height of the largest waves", amplitude, 0.0..=10.0, 0.02);
-            widgets::slider_log(ui, "Wave length", "Length of the largest waves", wavelength, 0.001..=100.0, 0.3);
-            widgets::slider(ui, "Phase", "Moves the waves (animate it for moving water)", phase, -20.0..=20.0, 0.0);
-            widgets::slider(ui, "Direction", "Direction of the waves in degrees", angle, -180.0..=180.0, 0.0);
+        Primitive::Water { amplitude, wavelength, phase, angle, choppy, detail, foam, reflect, speed } => {
+            widgets::slider_log(ui, "Wave height", "Height of the largest waves", amplitude, 0.0..=10.0, 0.04);
+            widgets::slider_log(ui, "Wave length", "Length of the largest waves (across the wind they are a bit shorter)", wavelength, 0.001..=100.0, 1.0);
+            widgets::slider(ui, "Choppiness", "Shape of the crests: 1 = round swell, higher = sharp, choppy crests", choppy, 1.0..=10.0, 4.0);
+            widgets::slider(ui, "Detail", "Wave octaves: each adds smaller, faster ripples on top (more costs a little speed)", detail, 1.0..=8.0, 5.0);
+            widgets::slider(ui, "Direction", "Wind direction in degrees: the waves are longer along it", angle, -180.0..=180.0, 0.0);
+            widgets::slider(ui, "Foam", "White foam on the highest crests", foam, 0.0..=1.0, 0.3);
+            widgets::slider(ui, "Reflection", "How strongly the water reflects the sky and the scene (1 = like water: weak looking straight down, a mirror at grazing angles). Works without the material's Reflection", reflect, 0.0..=2.0, 1.0);
+            widgets::slider(ui, "Speed", "How fast the waves move in animations (per second; 0 = still)", speed, 0.0..=5.0, 0.6);
+            widgets::slider(ui, "Time", "The moment of the waves: change it to pick another wave pattern in a still image (animations add Speed per second)", phase, -100.0..=100.0, 0.0);
         }
     });
 }
