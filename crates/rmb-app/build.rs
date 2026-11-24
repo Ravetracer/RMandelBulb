@@ -7,6 +7,14 @@ use std::fmt::Write;
 use std::path::Path;
 
 fn main() {
+    // The program icon of the Windows .exe.
+    if std::env::var("CARGO_CFG_TARGET_OS").is_ok_and(|os| os == "windows") {
+        let mut res = winresource::WindowsResource::new();
+        res.set_icon("assets/icon.ico");
+        if let Err(e) = res.compile() {
+            println!("cargo:warning=no program icon: {e}");
+        }
+    }
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/manual");
     println!("cargo:rerun-if-changed={}", root.display());
     println!("cargo:rerun-if-changed={}", root.join("images").display());

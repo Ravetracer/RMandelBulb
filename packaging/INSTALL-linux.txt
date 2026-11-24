@@ -1,0 +1,48 @@
+RMandelbulb3D @VERSION@ for Linux (x86_64)
+==========================================
+
+This package
+------------
+  rmb-app          the program (start it from a terminal or a launcher)
+  rmb-cli          the command line tool (rendering, network render client, conversion)
+  lib/             Intel Open Image Denoise (the AI denoiser; loaded when present)
+  rmandelbulb3d.desktop, rmandelbulb3d.png   launcher entry and icon
+  RMandelbulb3D-Manual-@VERSION@.pdf          the manual (also in the program: Help > Manual)
+
+Unpack it anywhere and run ./rmb-app. Keep lib/ next to the programs.
+
+Optional launcher entry (adjust the path in Exec= first):
+  mkdir -p ~/.local/share/applications ~/.local/share/icons/hicolor/256x256/apps
+  cp rmandelbulb3d.desktop ~/.local/share/applications/
+  cp rmandelbulb3d.png ~/.local/share/icons/hicolor/256x256/apps/
+
+Libraries the programs need
+---------------------------
+The programs only link against the C library (glibc 2.35 or newer: Ubuntu 22.04, Debian 12,
+Fedora 36 and later). Everything else is loaded at run time and is part of every desktop
+system; on minimal or headless systems install:
+
+  Graphics (required for the GPU renderer; without it the CPU renders, much slower)
+    a Vulkan driver and the Vulkan loader (libvulkan.so.1)
+      Debian/Ubuntu: libvulkan1 mesa-vulkan-drivers   (NVIDIA: the proprietary driver)
+      Fedora:        vulkan-loader mesa-vulkan-drivers
+      Arch:          vulkan-icd-loader + vulkan-radeon / vulkan-intel / nvidia-utils
+  Window (rmb-app only)
+    Wayland: libwayland-client.so.0, libxkbcommon.so.0
+    X11:     libX11, libXcursor, libXrandr, libXi, libxkbcommon-x11
+      Debian/Ubuntu: libxkbcommon0 libxkbcommon-x11-0 libwayland-client0 libxcursor1 libxrandr2 libxi6
+  File dialogs (rmb-app only)
+    xdg-desktop-portal with a backend (GNOME, KDE or GTK); present on desktop systems
+  Movies and sound (optional)
+    ffmpeg on the search path (or set its path in Preferences > Movies)
+      Debian/Ubuntu/Fedora/Arch: package "ffmpeg"
+
+The network render client (rmb-cli --network) on a headless machine needs only the Vulkan
+packages for GPU rendering, or nothing at all with --cpu.
+
+Network rendering
+-----------------
+Open UDP port 47810 (announcements, on the computer that starts the job) and TCP port 47811
+(on the clients) in the firewall. All computers need the same version.
+
+More: the manual, chapter "Render and export".

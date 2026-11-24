@@ -1,0 +1,28 @@
+RMandelbulb3D @VERSION@ for Windows (x64)
+=========================================
+
+Unpack the zip anywhere (for example to C:\Programs\RMandelbulb3D) and start rmb-app.exe.
+Keep the DLL files next to the programs: they are the AI denoiser (Intel Open Image
+Denoise).
+
+  rmb-app.exe      the program
+  rmb-cli.exe      the command line tool (rendering, network render client, conversion);
+                   run it in a terminal (PowerShell or cmd)
+
+The programs are not signed. Windows SmartScreen may show "Windows protected your PC" on
+the first start: click "More info", then "Run anyway".
+
+Needed
+------
+  A graphics card with DirectX 12 or Vulkan support (Windows 10 or 11). Without one the CPU
+  renders, much slower.
+  For movies and sound: ffmpeg (https://ffmpeg.org, for example "winget install ffmpeg"),
+  on the search path, next to rmb-app.exe, or set in Preferences > Movies.
+
+Network rendering
+-----------------
+Allow rmb-cli.exe / rmb-app.exe through the Windows firewall when asked (private networks):
+UDP port 47810 (announcements, on the computer that starts the job) and TCP port 47811 (on
+the clients). All computers need the same version.
+
+Settings are kept in %APPDATA%\rmandelbulb3d, caches in %LOCALAPPDATA%\rmandelbulb.

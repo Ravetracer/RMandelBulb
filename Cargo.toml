@@ -5,7 +5,7 @@ members = ["crates/rmb-core", "crates/rmb-gpu", "crates/rmb-app", "crates/rmb-cl
 default-members = ["crates/rmb-core", "crates/rmb-gpu", "crates/rmb-app", "crates/rmb-cli", "crates/rmb-net"]
 
 [workspace.package]
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
 license = "LGPL-2.1-or-later"
 

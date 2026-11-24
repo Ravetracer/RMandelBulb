@@ -356,13 +356,15 @@ fn inline(ui: &mut Ui, text: &str) {
 }
 
 /// Opens the PDF manual (`RMandelbulb3D-Manual-*.pdf`) with the system's viewer: next to the
-/// program, in `share/doc/rmandelbulb3d` or, for development builds, in docs/manual/build.
+/// program, in `share/doc/rmandelbulb3d`, in the macOS bundle's `Resources` or, for development
+/// builds, in docs/manual/build.
 pub fn open_pdf() -> Result<std::path::PathBuf, String> {
     use std::path::PathBuf;
     let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf()));
     let mut dirs: Vec<PathBuf> = exe_dir.iter().cloned().collect();
     if let Some(d) = &exe_dir {
         dirs.extend(d.parent().map(|usr| usr.join("share").join("doc").join("rmandelbulb3d")));
+        dirs.extend(d.parent().map(|contents| contents.join("Resources")));
         dirs.extend(d.ancestors().nth(2).map(|root| root.join("docs").join("manual").join("build")));
     }
     let pdf = dirs

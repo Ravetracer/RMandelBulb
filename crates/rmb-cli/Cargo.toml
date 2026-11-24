@@ -1,11 +1,11 @@
 [package]
 name = "rmb-cli"
-version = "0.1.0"
-edition = "2024"
-license = "LGPL-2.1-or-later"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 
 [dependencies]
-rmb-core = { version = "0.1.0", path = "../rmb-core" }
-rmb-gpu = { version = "0.1.0", path = "../rmb-gpu" }
-rmb-net = { version = "0.1.0", path = "../rmb-net" }
+rmb-core = { path = "../rmb-core" }
+rmb-gpu = { path = "../rmb-gpu" }
+rmb-net = { path = "../rmb-net" }
 rayon = "1.12"

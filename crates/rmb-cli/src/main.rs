@@ -7,8 +7,10 @@ use std::process::ExitCode;
 
 mod net;
 
-const USAGE: &str = "\
-RMandelbulb3D command line
+const USAGE: &str = concat!(
+    "RMandelbulb3D command line, version ",
+    env!("CARGO_PKG_VERSION"),
+    "
 
 USAGE:
   rmb-cli render <scene> [-o out.png|out.exr] [-W width] [-H height] [-s samples] [--cpu]
@@ -37,6 +39,7 @@ USAGE:
   rmb-cli convert <scene> -o out.rmb       Import (e.g. a Mandelbulb3D .m3p) and save as .rmb
   rmb-cli info <scene>                     Formulas, camera and import notes
   rmb-cli formulas                         List all formulas
+  rmb-cli --version                        Version and network protocol
   rmb-cli m3f <dir|file>… [-o out.mbf] [-v] Translate Mandelbulb3D formulas (.m3f) into the formula
                                            language; writes all that translate into one file
 
@@ -83,7 +86,8 @@ megapixels or with --tiles) on all clients or the ones named
 with --clients; --local renders on this machine too, --client adds one by address where the
 network blocks the announcements. Frames go into the output folder (movies are encoded after
 the last frame; --keep-frames keeps the PNG files). A shared --key on both sides keeps other
-servers out.";
+servers out."
+);
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -101,6 +105,10 @@ fn main() -> ExitCode {
         Some("m3f") => m3f(&args[1..]),
         Some("formulas") => {
             formulas();
+            Ok(())
+        }
+        Some("-V" | "--version" | "version") => {
+            println!("rmb-cli {} (network protocol {})", env!("CARGO_PKG_VERSION"), rmb_net::PROTOCOL);
             Ok(())
         }
         Some("-h" | "--help" | "help") | None => {

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=RMandelbulb3D
+GenericName=3D Fractal Explorer
+Comment=Explore and render 3D fractals
+Exec=rmb-app %f
+Icon=rmandelbulb3d
+Terminal=false
+Categories=Graphics;3DGraphics;
+Keywords=fractal;mandelbulb;mandelbox;render;3d;

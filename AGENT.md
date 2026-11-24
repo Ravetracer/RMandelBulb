@@ -19,6 +19,22 @@ Notes for coding agents (and humans). RMandelbulb3D re-implements Mandelbulb3D (
 
 Open work and wished features: `TODO.md`.
 
+## Versions and releases
+
+- One version for all crates: `[workspace.package] version` in Cargo.toml, `MAJOR.FEATURE.FIX`
+  (major: incompatible files / network protocol; feature: new features; fix: bug fixes and
+  small improvements). Note user-visible changes under `## [Unreleased]` in CHANGELOG.md as
+  part of each change.
+- `tools/release.py fix|feature|major [--push]` bumps, moves the changelog entries, commits
+  and tags `vX.Y.Z`; the tag runs `.github/workflows/release.yml` (packages via
+  `tools/package.py` + `packaging/`, release notes from the changelog section). CI
+  (`ci.yml`) runs clippy and the tests without GPU on every push.
+- Linux builds run on Ubuntu 22.04 (glibc 2.35); binaries built on this machine need glibc
+  2.39. AppImage locally: build it in a throwaway `ubuntu:22.04` Docker container (download
+  and run appimagetool only inside it).
+- Platform folders: `rmb_core::paths` (settings, caches). OIDN is looked up next to the
+  program, in `lib/`, `../lib` (AppImage) and `../Frameworks` (macOS bundle).
+
 ## Layout
 
 | Path | Content |

@@ -119,6 +119,30 @@ in its help window (F1); `python3 tools/build_manual.py` builds the PDF version
 (`docs/manual/build/RMandelbulb3D-Manual-<version>.pdf`; needs Python 3 with `markdown`,
 Google Chrome or Chromium and poppler-utils).
 
+## Download
+
+Packages for Linux (tar.gz, AppImage), Windows and macOS (Apple silicon and Intel) are on the
+[releases page](https://github.com/Ravetracer/RMandelbulb/releases). They are not signed; see
+INSTALL.txt in each package (macOS: `xattr -dr com.apple.quarantine
+/Applications/RMandelbulb3D.app`).
+
+Versions are `MAJOR.FEATURE.FIX` (big changes / new features / fixes and small improvements);
+see [CHANGELOG.md](CHANGELOG.md).
+
+## Releases
+
+1. Note the changes under `## [Unreleased]` in `CHANGELOG.md`.
+2. `python3 tools/release.py fix|feature|major --push` (or an exact version): sets the version
+   in `Cargo.toml`, moves the changelog entries into the new version's section, commits,
+   tags `vX.Y.Z` and pushes.
+3. The tag starts `.github/workflows/release.yml`: it builds the packages on Linux
+   (Ubuntu 22.04, glibc 2.35), Windows and macOS (arm64 and x86_64), and publishes the GitHub
+   release with the changelog section as notes. Running the workflow by hand only builds the
+   packages (artifacts of the run).
+
+`python3 tools/package.py linux|appimage|windows|macos` makes a package locally from built
+programs (it downloads the denoiser; the AppImage needs `--appimagetool`).
+
 ## Build
 
 ```sh

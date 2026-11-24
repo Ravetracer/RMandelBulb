@@ -48,10 +48,16 @@ pub fn announce(info: Arc<Mutex<Announce>>, stop: Arc<AtomicBool>) -> std::io::R
     let sock = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))?;
     sock.set_broadcast(true)?;
     std::thread::spawn(move || {
-        let targets = [SocketAddr::from((Ipv4Addr::BROADCAST, crate::DISCOVERY_PORT)), SocketAddr::from((Ipv4Addr::LOCALHOST, crate::DISCOVERY_PORT))];
+        let mut targets = Vec::new();
+        let mut round = 0u32;
         while !stop.load(Ordering::Relaxed) {
+            // The interfaces can change (Wi-Fi, VPN): look again every half minute.
+            if round.is_multiple_of(15) {
+                targets = broadcast_targets();
+            }
+            round = round.wrapping_add(1);
             let msg = info.lock().map(|i| serde_json::to_vec(&*i).unwrap_or_default()).unwrap_or_default();
-            for t in targets {
+            for t in &targets {
                 // A network without broadcast still reaches a server on this machine.
                 let _ = sock.send_to(&msg, t);
             }
@@ -59,6 +65,35 @@ pub fn announce(info: Arc<Mutex<Announce>>, stop: Arc<AtomicBool>) -> std::io::R
         }
     });
     Ok(())
+}
+
+/// Where announcements go: the broadcast address of every IPv4 network of this machine
+/// (macOS and Windows do not pass 255.255.255.255 on to every interface), the general
+/// broadcast address, and this machine.
+fn broadcast_targets() -> Vec<SocketAddr> {
+    let mut out = vec![SocketAddr::from((Ipv4Addr::BROADCAST, crate::DISCOVERY_PORT)), SocketAddr::from((Ipv4Addr::LOCALHOST, crate::DISCOVERY_PORT))];
+    let Ok(nets) = sysinfo::Networks::new_with_refreshed_list() else { return out };
+    for data in nets.values() {
+        for n in data.ip_networks() {
+            if let IpAddr::V4(a) = n.addr
+                && !a.is_loopback()
+                && !a.is_link_local()
+                && (1..=30).contains(&n.prefix)
+            {
+                let b = SocketAddr::from((subnet_broadcast(a, n.prefix), crate::DISCOVERY_PORT));
+                if !out.contains(&b) {
+                    out.push(b);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The broadcast address of the network `addr/prefix`.
+fn subnet_broadcast(addr: Ipv4Addr, prefix: u8) -> Ipv4Addr {
+    let mask = u32::MAX.checked_shl(32 - prefix as u32).unwrap_or(0);
+    Ipv4Addr::from(u32::from(addr) | !mask)
 }
 
 /// A client the server heard.
@@ -129,4 +164,16 @@ pub fn parse_address(s: &str) -> Result<SocketAddr, String> {
     use std::net::ToSocketAddrs;
     let with_port = if s.parse::<IpAddr>().is_ok() || !s.contains(':') { format!("{s}:{}", crate::CLIENT_PORT) } else { s.to_string() };
     with_port.to_socket_addrs().map_err(|e| format!("{s}: {e}"))?.next().ok_or_else(|| format!("{s}: no address"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn subnet_broadcast_addresses() {
+        assert_eq!(subnet_broadcast(Ipv4Addr::new(192, 168, 1, 23), 24), Ipv4Addr::new(192, 168, 1, 255));
+        assert_eq!(subnet_broadcast(Ipv4Addr::new(10, 1, 2, 3), 8), Ipv4Addr::new(10, 255, 255, 255));
+        assert!(broadcast_targets().len() >= 2);
+    }
 }

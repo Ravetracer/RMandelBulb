@@ -1,8 +1,8 @@
 [package]
 name = "rmb-app"
-version = "0.1.0"
-edition = "2024"
-license = "LGPL-2.1-or-later"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 
 [dependencies]
 eframe = { version = "0.36.2", default-features = false, features = ["wgpu", "default_fonts", "x11", "wayland"] }
@@ -13,9 +13,13 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png"]
 png = "0.18.1"
 rayon = "1.12"
 rfd = "0.17.2"
-rmb-core = { version = "0.1.0", path = "../rmb-core" }
-rmb-gpu = { version = "0.1.0", path = "../rmb-gpu" }
-rmb-net = { version = "0.1.0", path = "../rmb-net" }
+rmb-core = { path = "../rmb-core" }
+rmb-gpu = { path = "../rmb-gpu" }
+rmb-net = { path = "../rmb-net" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 wgpu = "30"
+
+[build-dependencies]
+# The Windows program icon (only used when building for Windows).
+winresource = "0.1"

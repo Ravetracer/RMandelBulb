@@ -115,10 +115,7 @@ pub struct Cache {
 impl Cache {
     /// The cache below `dir`, or the user's cache folder.
     pub fn new(dir: Option<PathBuf>) -> Cache {
-        let root = dir.unwrap_or_else(|| {
-            let base = std::env::var_os("XDG_CACHE_HOME").map(PathBuf::from).or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache"))).or_else(|| std::env::var_os("LOCALAPPDATA").map(PathBuf::from)).unwrap_or_else(std::env::temp_dir);
-            base.join("rmandelbulb").join("net")
-        });
+        let root = dir.unwrap_or_else(|| rmb_core::paths::cache_dir().join("net"));
         Cache { root }
     }
 

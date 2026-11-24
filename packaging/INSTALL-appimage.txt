@@ -1,0 +1,16 @@
+RMandelbulb3D @VERSION@ AppImage (Linux x86_64)
+===============================================
+
+  chmod +x RMandelbulb3D-@VERSION@-x86_64.AppImage
+  ./RMandelbulb3D-@VERSION@-x86_64.AppImage
+
+The command line tool is inside too:
+  ./RMandelbulb3D-@VERSION@-x86_64.AppImage cli render scene.rmb -o out.png
+  ./RMandelbulb3D-@VERSION@-x86_64.AppImage cli --network          (network render client)
+
+The AppImage brings the denoiser and the manual. It uses the system's graphics driver
+(Vulkan), window libraries and, for movies, ffmpeg; see the Linux package's INSTALL.txt.
+AppImages need FUSE 2 (libfuse.so.2); without it run with --appimage-extract-and-run.
+On immutable systems (Bazzite, Silverblue, SteamOS) keep the file in your home folder. If
+ffmpeg is not on the system, install it in a distrobox/toolbox and set its path in
+Preferences > Movies (only needed for movies and sound).

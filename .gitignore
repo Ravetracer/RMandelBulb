@@ -11,3 +11,6 @@ target/
 
 # Agent worktrees
 /.claude/worktrees/
+
+# Release packages (tools/package.py)
+/dist/

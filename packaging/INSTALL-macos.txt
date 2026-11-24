@@ -1,0 +1,41 @@
+RMandelbulb3D @VERSION@ for macOS (@ARCH@)
+==========================================
+
+Builds: arm64 for Apple silicon (M1 and later), x86_64 for Intel Macs. macOS 11 or newer.
+
+1. Unpack the zip and move RMandelbulb3D.app to /Applications.
+
+2. The app is not signed by Apple (no paid developer account), so macOS puts it in
+   quarantine and refuses to open it ("RMandelbulb3D is damaged" or "cannot be opened").
+   Remove the quarantine flag once in the Terminal:
+
+     xattr -dr com.apple.quarantine /Applications/RMandelbulb3D.app
+
+   If macOS still refuses, sign it locally (ad hoc) and try again:
+
+     codesign --force --deep --sign - /Applications/RMandelbulb3D.app
+
+3. Start RMandelbulb3D from the Applications folder.
+
+Command line tool
+-----------------
+rmb-cli is inside the app:
+
+  /Applications/RMandelbulb3D.app/Contents/MacOS/rmb-cli --help
+
+Optionally link it onto your path:
+
+  sudo ln -s /Applications/RMandelbulb3D.app/Contents/MacOS/rmb-cli /usr/local/bin/rmb-cli
+
+Movies and sound
+----------------
+Install ffmpeg, for example with Homebrew: brew install ffmpeg
+(found in /opt/homebrew/bin or /usr/local/bin, or set its path in Preferences > Movies).
+
+Network rendering
+-----------------
+Allow incoming connections when macOS asks (TCP port 47811 on the clients, UDP port 47810 on
+the computer that starts the job). All computers need the same version.
+
+Settings are kept in ~/Library/Application Support/rmandelbulb3d, caches in
+~/Library/Caches/rmandelbulb.

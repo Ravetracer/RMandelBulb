@@ -3,6 +3,35 @@
 This chapter takes you through a first session: from the default Mandelbulb to a saved image.
 It touches every part of the window once; the later chapters explain each part in depth.
 
+## Installation
+
+Downloads are on the project's GitHub page under **Releases**
+(github.com/Ravetracer/RMandelbulb/releases), one file per system. Every package has an
+**INSTALL.txt** with the details.
+
+| System | Package | How |
+|--------|---------|-----|
+| Linux | `…-linux-x86_64.tar.gz` | Unpack anywhere, run `rmb-app`. INSTALL.txt lists the system libraries (Vulkan driver, window libraries; ffmpeg for movies). |
+| Linux | `…-x86_64.AppImage` | `chmod +x` the file and run it; works on most distributions, also immutable ones such as Bazzite. `….AppImage cli …` runs the command line tool. |
+| Windows 10/11 | `…-windows-x64.zip` | Unpack, run `rmb-app.exe`. SmartScreen may ask once: **More info › Run anyway**. |
+| macOS 11+ | `…-macos-arm64.zip` (Apple silicon), `…-macos-x86_64.zip` (Intel) | Move **RMandelbulb3D.app** to Applications, then remove the quarantine flag in the Terminal (below). |
+
+The builds are not signed. macOS therefore blocks the app at first ("damaged" or "cannot be
+opened"); this command releases it:
+
+```
+xattr -dr com.apple.quarantine /Applications/RMandelbulb3D.app
+```
+
+Every package brings the AI denoiser and this manual as PDF. For movies and sound tracks
+install **ffmpeg** (Linux: the distribution's package; Windows: `winget install ffmpeg`;
+macOS: `brew install ffmpeg`).
+
+**Versions** are numbered *major.feature.fix*: the last number grows with bug fixes and small
+improvements, the middle one with new features, the first one with big changes such as files
+or network renders older versions cannot handle. Help › About shows the version, `rmb-cli
+--version` too. Network renders need the same version on every computer.
+
 ## The window
 
 When RMandelbulb3D starts, it shows a Mandelbulb in the middle of the window:

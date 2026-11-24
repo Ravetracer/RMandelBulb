@@ -97,6 +97,11 @@ pub fn search_dirs() -> Vec<PathBuf> {
     }
     if let Some(exe_dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf)) {
         dirs.push(exe_dir.clone());
+        // Packages: `usr/bin` + `usr/lib` (AppImage), `Contents/MacOS` + `Contents/Frameworks`.
+        if let Some(up) = exe_dir.parent() {
+            dirs.push(up.to_path_buf());
+            dirs.push(up.join("Frameworks"));
+        }
         // Development: target/<profile>/<exe> and target/<profile>/deps/<test>.
         for up in [2, 3] {
             if let Some(root) = exe_dir.ancestors().nth(up) {

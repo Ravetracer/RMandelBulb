@@ -1,0 +1,150 @@
+# Builds the release packages for Linux (tar.gz, AppImage), Windows (zip) and macOS (arm64 and
+# x86_64 zips) and publishes them as a GitHub release.
+#
+# - Pushing a tag vX.Y.Z (tools/release.py makes it) builds and publishes release X.Y.Z with
+#   the CHANGELOG.md section of that version as the release notes.
+# - Running the workflow by hand (Actions > Release > Run workflow) only builds the packages;
+#   they are attached to the run as artifacts.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  version:
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        name: Version, tag and changelog agree
+        run: |
+          v=$(python3 tools/release.py --print-version)
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v$v" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match the version $v in Cargo.toml"; exit 1
+          fi
+          python3 tools/release.py --notes "$v" > /dev/null
+
+  manual:
+    needs: version
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the PDF manual
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq poppler-utils
+          pip install markdown
+          python3 tools/build_manual.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: manual
+          path: docs/manual/build/*.pdf
+
+  linux:
+    needs: manual
+    # The oldest supported runner: the programs then run on glibc 2.35 and newer.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --release -p rmb-app -p rmb-cli
+      - uses: actions/download-artifact@v4
+        with:
+          name: manual
+          path: docs/manual/build
+      - name: tar.gz
+        run: python3 tools/package.py linux
+      - name: AppImage
+        run: |
+          curl -sSL -o appimagetool https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool
+          python3 tools/package.py appimage --appimagetool ./appimagetool
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: dist/*.*
+
+  windows:
+    needs: manual
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --release -p rmb-app -p rmb-cli
+      - uses: actions/download-artifact@v4
+        with:
+          name: manual
+          path: docs/manual/build
+      - name: zip
+        run: python tools/package.py windows
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/*.zip
+
+  macos:
+    needs: manual
+    runs-on: macos-14
+    strategy:
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            arch: arm64
+          - target: x86_64-apple-darwin
+            arch: x86_64
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }} -p rmb-app -p rmb-cli
+      - uses: actions/download-artifact@v4
+        with:
+          name: manual
+          path: docs/manual/build
+      - name: App bundle (unsigned, ad hoc signature)
+        run: python3 tools/package.py macos --bin target/${{ matrix.target }}/release --arch ${{ matrix.arch }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.arch }}
+          path: dist/*.zip
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: [version, linux, windows, macos]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          python3 tools/release.py --notes "$VERSION" > notes.md
+          sed "s/<version>/$VERSION/g" packaging/release-footer.md >> notes.md
+          ls -la dist
+          gh release create "v$VERSION" dist/* --title "RMandelbulb3D $VERSION" --notes-file notes.md --verify-tag

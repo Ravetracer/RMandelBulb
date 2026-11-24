@@ -1,18 +1,18 @@
 [package]
 name = "rmb-net"
-version = "0.1.0"
-edition = "2024"
-license = "LGPL-2.1-or-later"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 
 [dependencies]
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 png = { version = "0.18.1", default-features = false }
-rmb-core = { version = "0.1.0", path = "../rmb-core" }
-rmb-gpu = { version = "0.1.0", path = "../rmb-gpu" }
+rmb-core = { path = "../rmb-core" }
+rmb-gpu = { path = "../rmb-gpu" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11.1"
-sysinfo = { version = "0.40.4", default-features = false, features = ["system"] }
+sysinfo = { version = "0.40.4", default-features = false, features = ["system", "network"] }
 
 [dev-dependencies]
 exr = "1.74.3"

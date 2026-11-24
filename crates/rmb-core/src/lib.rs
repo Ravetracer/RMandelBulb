@@ -18,6 +18,7 @@ pub mod maps;
 pub mod mesh;
 pub mod mesh_export;
 pub mod mesh_simplify;
+pub mod paths;
 pub mod palette;
 pub mod queue;
 pub mod math;

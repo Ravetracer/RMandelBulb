@@ -356,13 +356,15 @@ Curvichrome 1052 -> 254 ms, AboxShapes-Misty 44 -> 17 ms, temple 71 -> 35 ms, Ho
       With the JIT (4-10x on MB3D scenes) it is still about 100-400x slower: below 1 %, still
       not worth it
 
-## Windows and macOS (after the features above)
+## Windows and macOS
 
-- [ ] Windows and macOS versions of the app and the CLI: platform adjustments (paths, config
-      folders, file dialogs, OIDN libraries per platform, ffmpeg lookup, GPU backends DX12 /
-      Metal, font and UI scale checks)
-- [ ] GitHub Actions: build the macOS version (and Windows) on release; artifacts as
-      downloadable archives
-- [ ] Unsigned builds (users know it, as with the owner's audio plugins): an INSTALL.txt for
-      macOS with the commands to remove the quarantine flag (`xattr -dr com.apple.quarantine
-      …`)
+- [x] Windows and macOS versions of the app and the CLI: platform folders (`rmb_core::paths`),
+      OIDN in the packages (`lib/`, AppImage `usr/lib`, macOS `Contents/Frameworks`), ffmpeg
+      next to the program or in Homebrew/MacPorts folders, network announcements to every
+      subnet's broadcast address, Windows program icon, version 1.0.0 (`rmb-cli --version`)
+- [x] GitHub Actions: `release.yml` (tag vX.Y.Z → packages for Linux tar.gz + AppImage,
+      Windows zip, macOS arm64 + x86_64 zips, GitHub release with the changelog section),
+      `ci.yml` (clippy, tests without GPU); `tools/release.py`, `tools/package.py`
+- [x] Unsigned builds: INSTALL.txt per package (macOS: `xattr -dr com.apple.quarantine`,
+      ad hoc signature; Windows: SmartScreen; Linux: needed libraries)
+- [ ] Not tested on real Windows and macOS machines yet (only built on CI)

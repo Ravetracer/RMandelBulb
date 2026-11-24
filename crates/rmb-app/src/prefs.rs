@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
-//! Preferences kept between sessions (`$XDG_CONFIG_HOME/rmandelbulb3d/prefs.json`).
+//! Preferences kept between sessions (`prefs.json` in `rmb_core::paths::config_dir`).
 
 use std::path::PathBuf;
 
@@ -174,12 +174,7 @@ pub fn dialog(kind: Folder) -> rfd::FileDialog {
 }
 
 pub fn config_dir() -> PathBuf {
-    let base = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("APPDATA").map(PathBuf::from))
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
-        .unwrap_or_else(|| PathBuf::from("."));
-    base.join("rmandelbulb3d")
+    rmb_core::paths::config_dir()
 }
 
 /// User formula folder inside the config folder.

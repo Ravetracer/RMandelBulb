@@ -126,9 +126,28 @@ pub struct AudioTrack {
     pub start_s: f64,
 }
 
-/// The ffmpeg program: `configured` if given, else `ffmpeg` from the search path.
+/// The ffmpeg program: `configured` if given, else one next to the program, else `ffmpeg` from
+/// the search path, or from the usual install folders a desktop launch may not have on its
+/// path (Homebrew and MacPorts on macOS, `/usr/local/bin`).
 pub fn ffmpeg_program(configured: Option<&Path>) -> PathBuf {
-    configured.filter(|p| !p.as_os_str().is_empty()).map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("ffmpeg"))
+    if let Some(p) = configured.filter(|p| !p.as_os_str().is_empty()) {
+        return p.to_path_buf();
+    }
+    let exe = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
+    let beside = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join(exe))).filter(|p| p.is_file());
+    if let Some(p) = beside {
+        return p;
+    }
+    let on_path = std::env::var_os("PATH").is_some_and(|path| std::env::split_paths(&path).any(|d| d.join(exe).is_file()));
+    if !on_path {
+        for d in ["/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin"] {
+            let p = Path::new(d).join(exe);
+            if p.is_file() {
+                return p;
+            }
+        }
+    }
+    PathBuf::from("ffmpeg")
 }
 
 /// Whether the ffmpeg program runs (checked once per program).

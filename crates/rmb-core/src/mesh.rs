@@ -1898,17 +1898,7 @@ pub fn grid_cache_dir() -> Option<PathBuf> {
     if let Some(d) = std::env::var_os("RMB_MODEL_CACHE") {
         return (!d.is_empty() && d != "off").then(|| PathBuf::from(d));
     }
-    let base = std::env::var_os("XDG_CACHE_HOME")
-        .filter(|d| !d.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("LOCALAPPDATA").map(PathBuf::from))
-        .or_else(|| {
-            std::env::var_os("HOME").map(|h| {
-                let h = PathBuf::from(h);
-                if cfg!(target_os = "macos") { h.join("Library/Caches") } else { h.join(".cache") }
-            })
-        })?;
-    Some(base.join("rmandelbulb").join("models"))
+    Some(crate::paths::cache_dir().join("models"))
 }
 
 /// The cache file of a model's grid (file, its time, the bake options).
