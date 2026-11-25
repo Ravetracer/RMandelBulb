@@ -19,6 +19,7 @@ everywhere in the program, a double-click on a single slider resets just that sl
 |---------|--------------|-----------------|
 | **Detail** | The surface threshold in pixels (Mandelbulb3D's *DEstop*). A ray counts as a hit when it comes closer to the surface than this. Smaller values give finer detail, but cost time. | 0.05–8, default 1 |
 | **Step** | Multiplies every step of the ray. Lower it against holes and noise caused by overstepping. | 0.05–1, default 0.8 |
+| **Step limit** | Largest ray step, in half widths of the view at that distance (Mandelbulb3D's ray step limiter; 0 = no limit). See below. | 0–4, default 0 |
 | **Max steps** | Steps per ray before it gives up. | 50–3000, default 400 |
 | **Max distance** | Rays end after this distance from the camera. | 0.01–1000, default 40 |
 | **Refinement** | Binary search steps at the surface for an exact hit. | 0–12, default 4 |
@@ -50,6 +51,16 @@ are holes, speckled noise or flat "stripes" on the surface.
   formulas need 0.2–0.3.
 - Every halving of the step roughly doubles the number of steps per ray, so raise **Max steps**
   when parts far away start to vanish.
+
+### Step limit
+
+Some estimates are far too large away from the fractal (hybrids of very different formulas,
+Mandelbulb3D's dIFS "mix"). A single step can then jump past the whole fractal, so it appears
+tiny or partly missing, or deep into it, which shows as dark speckles. **Step limit** caps every
+step at a share of the view's width at that distance, and with a limit the estimate may also
+grow by at most the last step from one step to the next. Mandelbulb3D always marches like
+this, so its imports set the limit (from its ray step limiter, the step and DEstop); 0.3–1 is
+a good range to try on your own scenes.
 
 ### Max steps and Max distance
 

@@ -656,7 +656,7 @@ fn uniforms(scene: &Scene, prog: &Program, w: u32, h: u32, fast: bool, tile: Opt
         mot_right: scene.motion_end.as_ref().map_or([0.0; 4], |c| v4(c.right, 0.0)),
         mot_up: scene.motion_end.as_ref().map_or([0.0; 4], |c| v4(c.up, 0.0)),
         fog4: [scene.fog.scatter.max(0.0) as f32, scene.fog.scatter_forward as f32, 0.0, 0.0],
-        gloss: [scene.material.gloss.clamp(0.0, 1.0) as f32, 0.0, 0.0, 0.0],
+        gloss: [scene.material.gloss.clamp(0.0, 1.0) as f32, fr.step_cap as f32, 0.0, 0.0],
         shim: [m.shimmer.max(0.0) as f32, m.shimmer_size as f32, m.shimmer_phase as f32, m.color_map.emission.max(0.0) as f32],
         // Placement of the main fractal: inverse rotation rows divided by the scale per axis
         // (w of the first: the smallest scale), position (deep zoom: in the reference point).

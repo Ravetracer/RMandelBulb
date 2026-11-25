@@ -178,6 +178,8 @@ pub struct Frame {
     pub tan_half: f64,
     /// Angle covered by one pixel (radians), the base of the surface threshold.
     pub pixel_angle: f64,
+    /// Largest ray step per unit of distance from the camera (`March::step_limit`; 0 = none).
+    pub step_cap: f64,
     pub lights: Vec<FrameLight>,
     /// Axis toward the sky color of the ambient light.
     pub ambient_up: V3,
@@ -365,6 +367,7 @@ impl Frame {
             aspect: ew / eh,
             tan_half,
             pixel_angle,
+            step_cap: scene.march.step_limit.max(0.0) * pixel_angle * ew.max(eh) * 0.5,
             lights,
             ambient_up: if scene.lighting.ambient_camera_relative { scene.camera.up } else { v3(0.0, 0.0, 1.0) },
             view,

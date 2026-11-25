@@ -8,16 +8,30 @@ use crate::scene::Scene;
 
 const KEY: &str = "rmandelbulb3d";
 
+/// Stores the scene as compressed text: Latin-1 (zTXt) when it fits, which older versions read
+/// too, else UTF-8 (iTXt; e.g. imported titles with other characters).
+fn write_scene_chunk<W: std::io::Write>(w: &mut png::Writer<W>, scene: &Scene) -> Result<(), String> {
+    use png::text_metadata::{ITXtChunk, ZTXtChunk};
+    let json = scene.to_json();
+    if json.chars().all(|c| (c as u32) < 256) {
+        w.write_text_chunk(&ZTXtChunk::new(KEY, json)).map_err(|e| e.to_string())
+    } else {
+        let mut c = ITXtChunk::new(KEY, json);
+        c.compressed = true;
+        w.write_text_chunk(&c).map_err(|e| e.to_string())
+    }
+}
+
 /// Writes 8-bit RGBA; `scene` is stored in a compressed text chunk.
 pub fn write_png(path: &Path, width: u32, height: u32, rgba: &[u8], scene: Option<&Scene>) -> Result<(), String> {
     let file = std::fs::File::create(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let mut enc = png::Encoder::new(std::io::BufWriter::new(file), width, height);
     enc.set_color(png::ColorType::Rgba);
     enc.set_depth(png::BitDepth::Eight);
-    if let Some(s) = scene {
-        enc.add_ztxt_chunk(KEY.to_string(), s.to_json()).map_err(|e| e.to_string())?;
-    }
     let mut w = enc.write_header().map_err(|e| e.to_string())?;
+    if let Some(s) = scene {
+        write_scene_chunk(&mut w, s)?;
+    }
     w.write_image_data(rgba).map_err(|e| e.to_string())?;
     w.finish().map_err(|e| e.to_string())
 }
@@ -28,10 +42,10 @@ pub fn write_png16(path: &Path, width: u32, height: u32, rgba: &[u16], scene: Op
     let mut enc = png::Encoder::new(std::io::BufWriter::new(file), width, height);
     enc.set_color(png::ColorType::Rgba);
     enc.set_depth(png::BitDepth::Sixteen);
-    if let Some(s) = scene {
-        enc.add_ztxt_chunk(KEY.to_string(), s.to_json()).map_err(|e| e.to_string())?;
-    }
     let mut w = enc.write_header().map_err(|e| e.to_string())?;
+    if let Some(s) = scene {
+        write_scene_chunk(&mut w, s)?;
+    }
     let bytes: Vec<u8> = rgba.iter().flat_map(|v| v.to_be_bytes()).collect();
     w.write_image_data(&bytes).map_err(|e| e.to_string())?;
     w.finish().map_err(|e| e.to_string())
@@ -176,12 +190,31 @@ pub fn scene_from_png(bytes: &[u8]) -> Option<Scene> {
             return Scene::from_json(&c.text).ok();
         }
     }
+    for c in &info.utf8_text {
+        if c.keyword == KEY {
+            return Scene::from_json(&c.get_text().ok()?).ok();
+        }
+    }
     None
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn png_keeps_a_scene_with_characters_beyond_latin1() {
+        let dir = std::env::temp_dir().join(format!("rmb-png-utf8-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for (k, notes) in ["plain café", "Spirals ★ – 渦"].iter().enumerate() {
+            let scene = Scene { notes: notes.to_string(), ..Scene::default() };
+            let path = dir.join(format!("{k}.png"));
+            write_png(&path, 2, 2, &[0u8; 16], Some(&scene)).unwrap();
+            let back = scene_from_png(&std::fs::read(&path).unwrap()).expect("scene");
+            assert_eq!(back.notes, *notes);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn exr_has_linear_color_and_passes_and_png16_keeps_the_scene() {

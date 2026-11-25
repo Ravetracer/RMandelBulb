@@ -45,7 +45,7 @@ the status bar says "Opened … with import notes". Typical notes:
 | Hybrid modes | Alternating hybrids; interpolation hybrids (slots 1 and 2 with their weights); DE combination with its mode (including "mix"), the second chain, its iteration limit and blend distance (chapter 5). |
 | Monte Carlo settings | The ambient rays depth becomes the bounces of path tracing (Lighting › Global illumination); changed settings (depth, reflection diffusity, soft shadow radius) are listed in the scene notes. Files do not say whether the Monte Carlo renderer was used, so scenes open with classic shading; **Sky reach** comes close to the look of Mandelbulb3D's Monte Carlo renders. |
 | Inside rendering | Inside rendering; "inside and outside" becomes inside rendering when the camera starts within the set. |
-| Ray marching | The surface threshold (DEstop, as **Detail**), the ray step, the refinement steps and the smoothed normals. Because Mandelbulb3D marches without a step limit, **Max steps** is set high enough for small steps. |
+| Ray marching | The surface threshold (DEstop, as **Detail**), the ray step, the ray step limiter (as **Step limit**), the refinement steps and the smoothed normals. **Max steps** is set high enough for small steps. |
 | Cutting planes | The X, Y and Z cuts; the side between the camera and the plane is removed. |
 | Lights | Directional and positional lights with color, intensity, highlights and Mandelbulb3D's diffuse functions; shadows; visible light sources with their glow shape (soft, sharp, ball, halo). |
 | Ambient light | The two ambient colors (upper and lower); the ambient shadow as ray traced ambient occlusion with its strength and reach; the roughness factor. |

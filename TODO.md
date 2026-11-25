@@ -15,7 +15,8 @@
   - [x] Smoothing on load (TBoptions bit 19; no sample uses it)
 - [x] Reflections (MB3D's reflection amount and bounces, weighted by the highlight colors)
 - [x] DE combination "mix" (dIFS measured where the first chain ends; "Dodeca Torus mix")
-  - [ ] Unverified: "genQuat helix mix" renders very small
+  - [x] "genQuat helix mix" rendered very small: MB3D's ray step limiter was missing
+        (`March::step_limit`; also removes dark speckles in many samples)
 - [x] Transparency / transmission (MB3D's glass: refraction, Fresnel, absorption, scattering;
       "toricaleggs", "Torii")
 - [x] Positional lights (point lights with 1/d² falloff)

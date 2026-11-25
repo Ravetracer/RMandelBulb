@@ -217,7 +217,7 @@ impl<'a> Shader<'a> {
 
     /// Marches a ray. Returns the hit (if any), the number of steps taken and the number of
     /// glowing steps (see `Fog::glow_iteration`).
-    pub fn march(&self, ev: &mut Evaluator, o: V3, d: V3, t0: f64, max_t: f64, max_steps: u32) -> (Option<Hit>, u32, u32) {
+    pub fn march(&self, ev: &mut Evaluator, o: V3, d: V3, t0: f64, max_t: f64, max_steps: u32) -> (Option<Hit>, u32, f64) {
         self.march_ex(ev, o, d, t0, max_t, max_steps, true, None)
     }
 
@@ -230,20 +230,23 @@ impl<'a> Shader<'a> {
     /// [`Shader::march`] that with `pick` also offers the points near emissive parts for the
     /// glow and the steam (see [`SteamPick`]).
     #[allow(clippy::too_many_arguments)]
-    fn march_ex(&self, ev: &mut Evaluator, o: V3, d: V3, t0: f64, max_t: f64, max_steps: u32, refine: bool, mut pick: Option<&mut SteamPick>) -> (Option<Hit>, u32, u32) {
+    fn march_ex(&self, ev: &mut Evaluator, o: V3, d: V3, t0: f64, max_t: f64, max_steps: u32, refine: bool, mut pick: Option<&mut SteamPick>) -> (Option<Hit>, u32, f64) {
         let m = &self.scene.march;
         let sm = &self.scene.material;
         let glow_it = self.scene.fog.glow_iteration;
         let mut t = t0;
         let mut last_step = 0.0;
-        let mut glow = 0;
+        // Glowing steps (steps cut by the limiter count by the part they cover, like MB3D).
+        let mut glow = 0.0;
+        // Ray step limiter (Mandelbulb3D's RayMarch): the estimate before the last step and
+        // the step factor.
+        let cap = self.frame.step_cap;
+        let mut last_de = 0.0;
         for step in 0..max_steps {
             let p = o + d * t;
             let eps = self.eps_at(t);
             let orbit = ev.orbit(p, eps * 0.5);
-            if glow_it == 0 || orbit.iterations == glow_it {
-                glow += 1;
-            }
+            let glowing = glow_it == 0 || orbit.iterations == glow_it;
             if orbit.de < eps {
                 // Binary refinement toward the threshold, until the step is a small part of the
                 // threshold (the evaluations at the surface are the most expensive ones).
@@ -265,10 +268,26 @@ impl<'a> Shader<'a> {
                         dt *= 0.5;
                     }
                 }
-                return (Some(Hit { t: t_hit, pos: o + d * t_hit, eps: self.eps_at(t_hit), orbit: orbit_hit, steps: step }), step, glow.min(step));
+                return (Some(Hit { t: t_hit, pos: o + d * t_hit, eps: self.eps_at(t_hit), orbit: orbit_hit, steps: step }), step, glow);
             }
             // At least a tenth of the threshold: no stalling where the estimate is near zero.
-            last_step = (orbit.de * m.step).max(eps * 0.1);
+            if cap > 0.0 {
+                // The estimate grows by at most the last step; where it falls faster than the
+                // ray advances, the next step shrinks (to half at most); no step beyond the cap.
+                let de = if step > 0 { orbit.de.min(last_de + last_step) } else { orbit.de };
+                let shrink = if step > 0 && last_de > de + 1e-30 { (last_step / (last_de - de)).clamp(0.5, 1.0) } else { 1.0 };
+                last_de = de;
+                let want = de * m.step * shrink;
+                if glowing {
+                    glow += if want > cap * t { cap * t / want } else { 1.0 };
+                }
+                last_step = want.min(cap * t).max(eps * 0.1);
+            } else {
+                if glowing {
+                    glow += 1.0;
+                }
+                last_step = (orbit.de * m.step).max(eps * 0.1);
+            }
             if let Some(pk) = pick.as_deref_mut().filter(|pk| pk.haze) {
                 // Fractal haze over this step: thickness relative to the distance of the step's middle
                 // (the same at every zoom), its own light dimmed by the haze in front of it.
@@ -301,7 +320,7 @@ impl<'a> Shader<'a> {
             }
             t += last_step;
             if t > max_t {
-                return (None, step, glow.min(step));
+                return (None, step, glow.min(step as f64));
             }
         }
         (None, max_steps, glow)
@@ -1081,7 +1100,7 @@ impl<'a> Shader<'a> {
                 }
             }
         }
-        let (glow, glow_mix) = sc.fog.glow_at(steps as f64, sc.march.max_steps as f64);
+        let (glow, glow_mix) = sc.fog.glow_at(steps, sc.march.max_steps as f64);
         let grad = self.background(d, sy);
         let bg = if env { self.environment(d) } else { self.background_image(d, sx, sy).unwrap_or(grad) };
         let fog_col = if sc.fog.from_background { grad } else { sc.fog.color.map(|x| x as f64) };

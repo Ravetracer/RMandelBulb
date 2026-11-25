@@ -473,7 +473,7 @@ fn chain(prog: &Program, k: &str, cfg: &Uni) -> String {
         s.push_str(&emit_iter(&prog.slots[1].formula.def, prog.slots[1].offset, 3));
         let _ = writeln!(
             s,
-            "        }}\n        let w1 = fl({bw1});\n        let w2 = fl({bw2});\n        let len_b = sqrt({x} * {x} + {y} * {y} + {z} * {z});\n        let l = length(a_s.xyz) * w1 + len_b * w2;\n        {x} = a_s.x * w1 + {x} * w2;\n        {y} = a_s.y * w1 + {y} * w2;\n        {z} = a_s.z * w1 + {z} * w2;\n        {w} = a_s.w * w1 + {w} * w2;\n        {dr} = abs(a_dr) * w1 + abs({dr}) * w2;\n        let f = l / sqrt({x} * {x} + {y} * {y} + {z} * {z} + 1.0e-40);\n        {x} = {x} * f;\n        {y} = {y} * f;\n        {z} = {z} * f;\n        n += 1u;\n        let r2 = f32(l * l);\n        {rout} = fl(r2);\n        out.trap = min(out.trap, r2);\n        if ((!use_fixed || color_bail) && !(r2 <= select({bail2}, {bail2} * {bail2} * 64.0, color_bail))) {{\n            out.escaped = true;\n            break;\n        }}\n    }}\n    // The normal hybrid loop is not used.\n    if (false) {{"
+            "        }}\n        let w1 = fl({bw1});\n        let w2 = fl({bw2});\n        let len_b = sqrt({x} * {x} + {y} * {y} + {z} * {z});\n        let l = length(a_s.xyz) * w1 + len_b * w2;\n        {x} = a_s.x * w1 + {x} * w2;\n        {y} = a_s.y * w1 + {y} * w2;\n        {z} = a_s.z * w1 + {z} * w2;\n        {w} = a_s.w * w1 + {w} * w2;\n        {dr} = abs(a_dr) * w1 + abs({dr}) * w2;\n        let f = l / sqrt({x} * {x} + {y} * {y} + {z} * {z} + 1.0e-40);\n        {x} = {x} * f;\n        {y} = {y} * f;\n        {z} = {z} * f;\n        n += 1u;\n        let r2 = f32(l * l);\n        {rout} = fl(r2);\n        out.trap = min(out.trap, r2);\n        if ((!use_fixed || color_bail) && !(r2 <= select({bail2}, {bail2} * min({bail2}, 5.0e36 / max({bail2}, 1.0)) * 64.0, color_bail))) {{\n            out.escaped = true;\n            break;\n        }}\n    }}\n    // The normal hybrid loop is not used.\n    if (false) {{"
         );
     }
     s.push_str("    var slot = 0u;\n    var count = 0u;\n    let cap = limit * 8u + 64u;\n    var steps = 0u;\n");
@@ -516,7 +516,7 @@ fn f32_loop(prog: &Program, k: &str, cfg: &Uni, names: &[String]) -> String {
         "        if (!transform) {{\n            n += 1u;\n        }}\n        count += 1u;\n        if (count >= {slot_iter}) {{\n            count = 0u;\n            slot += 1u;\n            if (slot >= NSLOTS_{k}) {{\n                slot = repeat_from;\n            }}\n        }}\n\
          \x20       if (DIFS_{k}) {{\n            if (!transform) {{\n                let de_i = f32({rout} / {a0});\n                if (de_i < out.de) {{\n                    out.de = de_i;\n                    out.trap = f32({a2} * {a2});\n                }}\n            }}\n            continue;\n        }}\n\
          \x20       if (!transform) {{\n            let r2 = f32({x} * {x} + {y} * {y} + {z} * {z} + {w} * {w});\n            out.trap = min(out.trap, r2);\n            {rout} = fl(r2);\n\
-         \x20           if ((!use_fixed || color_bail) && !(r2 <= select({bail2}, {bail2} * {bail2} * 64.0, color_bail)){extra_bail}) {{\n                out.escaped = true;\n                if (!is_finite(r2)) {{\n                    {x} = prev_s.x;\n                    {y} = prev_s.y;\n                    {z} = prev_s.z;\n                    {w} = prev_s.w;\n                    {dr} = prev_dr;\n                }}\n                break;\n            }}\n        }}\n    }}\n",
+         \x20           if ((!use_fixed || color_bail) && !(r2 <= select({bail2}, {bail2} * min({bail2}, 5.0e36 / max({bail2}, 1.0)) * 64.0, color_bail)){extra_bail}) {{\n                out.escaped = true;\n                if (!is_finite(r2)) {{\n                    {x} = prev_s.x;\n                    {y} = prev_s.y;\n                    {z} = prev_s.z;\n                    {w} = prev_s.w;\n                    {dr} = prev_dr;\n                }}\n                break;\n            }}\n        }}\n    }}\n",
         x = names[0],
         y = names[1],
         z = names[2],
@@ -589,7 +589,8 @@ fn chain_dd(prog: &Program, k: &str, cfg: &Uni) -> String {
     let _ = writeln!(s, "    if (NSLOTS_{k} == 0u) {{\n        return out;\n    }}");
     let _ = writeln!(s, "    let limit = select(u32({limit}), fixed_n, use_fixed);\n    let repeat_from = u32({repeat});");
     s.push_str("    var n = 0u;\n");
-    let bail_plain = format!("(!use_fixed || color_bail) && !(r2 <= select({b}, {b} * {b} * 64.0, color_bail))", b = cfg.bail2);
+    // bailout² · 64 kept below the f32 maximum (a baked constant that overflows is an error).
+    let bail_plain = format!("(!use_fixed || color_bail) && !(r2 <= select({b}, {b} * min({b}, 5.0e36 / max({b}, 1.0)) * 64.0, color_bail))", b = cfg.bail2);
     // The interpolation hybrid ignores the per-slot settings (like fractal.rs).
     let bail = format!("{bail_plain}{}", extras_bail(cfg));
     let blend = k == "1" && prog.blend.is_some() && prog.slots.len() >= 2;

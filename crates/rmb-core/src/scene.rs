@@ -436,6 +436,11 @@ pub struct March {
     pub refine_steps: u32,
     /// Rays start at this distance from the camera (near clipping).
     pub near: f64,
+    /// Largest ray step, in half widths of the view at the step's distance (Mandelbulb3D's ray
+    /// step limiter; 0 = no limit). With a limit, the estimate may also grow by at most the
+    /// last step and steps shrink where it falls faster than the ray advances (against
+    /// overstepping with estimates that are far too large).
+    pub step_limit: f64,
     /// Smoothed normals (Mandelbulb3D): the estimate is averaged over this many steps to each
     /// side along the surface; also measures the roughness (0 = off, 1..8).
     pub smooth_normals: u32,
@@ -445,7 +450,7 @@ pub struct March {
 
 impl Default for March {
     fn default() -> Self {
-        March { detail: 1.0, step: 0.8, max_steps: 400, max_distance: 40.0, refine_steps: 4, near: 0.0, smooth_normals: 0, precision: Precision::Auto }
+        March { detail: 1.0, step: 0.8, max_steps: 400, max_distance: 40.0, refine_steps: 4, near: 0.0, step_limit: 0.0, smooth_normals: 0, precision: Precision::Auto }
     }
 }
 

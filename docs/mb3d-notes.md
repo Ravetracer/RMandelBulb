@@ -32,6 +32,12 @@ little-endian.
   directions fan out with `fov/height` radians per pixel. The import uses a pinhole camera at
   `mid + forward * (dZstart - dZmid - sw*H/2/tan(fov/2))`.
 - Depth fog reaches `28000 * TBpos[4] * 0.8e-6` at the far end of the ray.
+- Ray marching (CalcPart.pas, Calc.RayMarch): every step is capped at max(DEstop, 0.4) ·
+  mctMH04ZSD pixels, mctMH04ZSD = max(W, H) · 0.5 · √(mZstepDiv + 0.001) · max(0.01,
+  sRaystepLimiter at 242) (pure dIFS: max(W, H)); a capped step adds cap / step to the step
+  count (dynamic fog). The estimate after a step is clamped to the last one plus the step, and
+  when it fell by more than the step, the next step is multiplied by max(0.5, step / fall).
+  Import: `March::step_limit` (in half view widths; `Frame::step_cap`).
 
 ## Formula calling convention (.m3f machine code)
 

@@ -200,7 +200,7 @@ pub fn import_binary(b: &[u8]) -> Result<Import, String> {
     let step = r.f32(182);
     s.march.step = if step > 1e-4 { step.min(1.0) } else { 0.5 };
     s.march.refine_steps = (r.u8(134) as u32).min(16);
-    // MB3D marches without a step limit; small ray steps need many.
+    // Small ray steps need many.
     s.march.max_steps = ((1.0 / s.march.step) * 300.0).clamp(400.0, 3000.0) as u32;
 
     // ---- formulas
@@ -371,6 +371,17 @@ pub fn import_binary(b: &[u8]) -> Result<Import, String> {
             s.fractal.inside = ev.de(s.camera.position, 1e-9) <= 0.0;
         }
         _ => {}
+    }
+
+    // ---- ray step limiter (HeaderTrafos: mctMH04ZSD; RayMarch caps each step at
+    // max(DEstop, 0.4) · mctMH04ZSD pixels): half the larger image side · √(step + 0.001) ·
+    // max(0.01, limiter), or the whole side for pure dIFS hybrids.
+    {
+        let limiter = if mand_id < 23 { 1.0 } else { r.f32(242) };
+        let prog = crate::fractal::Program::for_scene(&s);
+        let pure_difs = prog.difs && prog.part2.as_ref().is_none_or(|p| p.difs);
+        let k = if pure_difs { 2.0 } else { (s.march.step + 0.001).sqrt() * limiter.max(0.01) };
+        s.march.step_limit = s.march.detail.max(0.4) * k;
     }
 
     // ---- cutting planes: the half-space between camera and plane is removed

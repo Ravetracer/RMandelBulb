@@ -77,7 +77,7 @@ struct U {
     mot_right: vec4<f32>,
     mot_up: vec4<f32>,
     fog4: vec4<f32>,       // light scattering: strength (0 = off), forward anisotropy
-    gloss: vec4<f32>,      // x: roughness of reflections and refractions (0 = mirror)
+    gloss: vec4<f32>,      // x: roughness of reflections and refractions (0 = mirror); y: ray step cap per unit distance (0 = none)
     shim: vec4<f32>,       // shimmer amount, size, phase; emission of the color map
     // Placement of the main fractal (MAIN_T): inverse rotation rows over the scale per axis
     // (w of mt0: the smallest scale), position.
@@ -1132,7 +1132,7 @@ struct Hit {
     t: f32,
     eps: f32,
     steps: u32,
-    glow_steps: u32,
+    glow_steps: f32,
     orbit: Orbit,
     // Glow of emissive colors collected along the ray.
     halo: vec3<f32>,
@@ -1638,17 +1638,18 @@ fn march_ray(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, max_steps: u32, pr
     var t = t0;
     var last_step = 0.0;
     var step = 0u;
-    var glow = 0u;
+    var glow = 0.0;
     let glow_it = u32(u.glow3.z);
+    // Ray step limiter (mirrors Shader::march_ex).
+    let cap = u.gloss.y;
+    var last_de = 0.0;
     loop {
         if (step >= max_steps) {
             break;
         }
         let eps = eps_at(t);
         let ob = orbit(o + d * t, eps * 0.5);
-        if (glow_it == 0u || ob.n == glow_it) {
-            glow++;
-        }
+        let glowing = glow_it == 0u || ob.n == glow_it;
         if (ob.de < eps) {
             var t_hit = t;
             var ob_hit = ob;
@@ -1675,10 +1676,30 @@ fn march_ray(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, max_steps: u32, pr
             h.eps = eps_at(t_hit);
             h.orbit = ob_hit;
             h.steps = step;
-            h.glow_steps = min(glow, step);
+            h.glow_steps = glow;
             return h;
         }
-        last_step = max(ob.de * u.march.y, eps * 0.1);
+        if (cap > 0.0) {
+            var de = ob.de;
+            var shrink = 1.0;
+            if (step > 0u) {
+                de = min(de, last_de + last_step);
+                if (last_de > de + 1.0e-30) {
+                    shrink = clamp(last_step / (last_de - de), 0.5, 1.0);
+                }
+            }
+            last_de = de;
+            let want = de * u.march.y * shrink;
+            if (glowing) {
+                glow += select(1.0, cap * t / want, want > cap * t);
+            }
+            last_step = max(min(want, cap * t), eps * 0.1);
+        } else {
+            if (glowing) {
+                glow += 1.0;
+            }
+            last_step = max(ob.de * u.march.y, eps * 0.1);
+        }
         if (primary && haze_on && ob.obj == 0u) {
             // Mirrors Shader::march_ex: the fractal haze over this step.
             let tm = max(t + 0.5 * last_step, eps);
@@ -1709,7 +1730,7 @@ fn march_ray(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, max_steps: u32, pr
         t += last_step;
         if (t > max_t) {
             h.steps = step;
-            h.glow_steps = min(glow, step);
+            h.glow_steps = min(glow, f32(step));
             return h;
         }
         step++;
@@ -2799,10 +2820,10 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sx: f32, 
             }
         }
     }
-    let glow = u.glow.w * max(f32(h.glow_steps) - u.glow3.x, 0.0) / f32(max(u.band.z, 1u));
+    let glow = u.glow.w * max(h.glow_steps - u.glow3.x, 0.0) / f32(max(u.band.z, 1u));
     var glow_mix = 0.0;
     if (u.glow2.w > 0.0) {
-        glow_mix = min(f32(h.glow_steps) / u.glow2.w, 1.0);
+        glow_mix = min(h.glow_steps / u.glow2.w, 1.0);
     }
     let grad = background(d, sy);
     var bg = grad;

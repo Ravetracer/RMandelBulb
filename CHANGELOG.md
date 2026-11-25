@@ -12,6 +12,13 @@ and the release workflow uses it as the release notes.
 
 ## [Unreleased]
 
+- Ray marching: new setting Step limit (Mandelbulb3D's ray step limiter), set by Mandelbulb3D
+  imports. Fixes "genQuat helix mix" rendering tiny and removes dark speckles in many
+  imported scenes; the imported samples also render faster.
+- PNG files keep the scene when its texts have characters outside Latin-1 (several
+  Mandelbulb3D imports could not be saved as PNG).
+- Fixed the GPU shader of scenes with a very large bailout and color on iteration ("spineJulia").
+
 - Background images: new option Smooth (softens the image on load); Mandelbulb3D parameters
   with "smooth background image" now import it.
 

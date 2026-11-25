@@ -484,6 +484,7 @@ fn render(ui: &mut Ui, scene: &mut Scene) {
         widgets::grid(ui, "march", |ui| {
             widgets::slider_log(ui, "Detail", "Surface threshold in pixels (Mandelbulb3D's DEstop). Smaller: finer detail, slower.", &mut m.detail, 0.05..=8.0, d.detail);
             widgets::slider(ui, "Step", "Ray step multiplier. Lower it against holes and noise (overstepping).", &mut m.step, 0.05..=1.0, d.step);
+            widgets::slider_log(ui, "Step limit", "Largest ray step, in half widths of the view at that distance (Mandelbulb3D's ray step limiter; 0 = no limit). Helps formulas whose distance estimate is far too large: without it, rays jump past the fractal or deep into it.", &mut m.step_limit, 0.0..=4.0, d.step_limit);
             widgets::slider_u32(ui, "Max steps", "Steps per ray before giving up", &mut m.max_steps, 50..=3000, d.max_steps);
             widgets::slider_log(ui, "Max distance", "Rays end after this distance", &mut m.max_distance, 0.01..=1000.0, d.max_distance);
             widgets::slider_u32(ui, "Refinement", "Binary search steps at the surface for an exact hit", &mut m.refine_steps, 0..=12, d.refine_steps);
