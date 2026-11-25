@@ -978,6 +978,7 @@ fn effects(ui: &mut Ui, scene: &mut Scene) {
         if !b.image.is_empty() {
             widgets::grid(ui, "bg-image", |ui| {
                 widgets::slider(ui, "Brightness", "Brightness of the image, and of the ambient light taken from it", &mut b.image_intensity, 0.0..=4.0, db.image_intensity);
+                widgets::checkbox(ui, "Smooth", "Softens the image when it loads, against noise and hard pixel edges (Mandelbulb3D's \"smooth\" option)", &mut b.image_smooth);
                 widgets::checkbox(ui, "Fill the screen", "The image fills the screen instead of surrounding the scene (reflections see it by angle)", &mut b.image_screen);
                 if !b.image_screen {
                     for (k, axis) in ["X", "Y", "Z"].iter().enumerate() {

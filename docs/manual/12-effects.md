@@ -26,6 +26,7 @@ name that is not found is shown as a warning: give the full path or put the file
 | Setting | What it does |
 |---------|--------------|
 | **Brightness** | Brightness of the image, and of the ambient light taken from it (0–4, default 1). |
+| **Smooth** | Softens the image when it loads, against noise and hard pixel edges (Mandelbulb3D's "smooth" option). |
 | **Fill the screen** | The image fills the screen instead of surrounding the scene. Reflections still see it by angle. |
 | **Rotate X/Y/Z** | Turns the panorama (degrees). Not with Fill the screen. |
 | **Make spherical** | Squeezes a flat photo toward the poles so it wraps around the scene with less distortion (Mandelbulb3D's "convert to spherical"). |

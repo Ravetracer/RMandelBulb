@@ -12,7 +12,7 @@
 - [x] Background images (panorama with MB3D's rotation and B-spline sampling)
   - [x] Screen-coordinate images, "convert to spherical" and border fitting on load, ambient
         light from the image, image brightness, fog added on top
-  - [ ] Smoothing on load (TBoptions bit 19; no sample uses it)
+  - [x] Smoothing on load (TBoptions bit 19; no sample uses it)
 - [x] Reflections (MB3D's reflection amount and bounces, weighted by the highlight colors)
 - [x] DE combination "mix" (dIFS measured where the first chain ends; "Dodeca Torus mix")
   - [ ] Unverified: "genQuat helix mix" renders very small

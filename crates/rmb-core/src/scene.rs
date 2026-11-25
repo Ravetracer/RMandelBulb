@@ -1136,6 +1136,8 @@ pub struct Background {
     pub image_rotation: [f64; 3],
     /// Brightness of the image (also of the ambient light taken from it).
     pub image_intensity: f64,
+    /// Soften the image on load (Mandelbulb3D's "smooth" option for background images).
+    pub image_smooth: bool,
     /// Squeeze a flat image into a panorama on load (Mandelbulb3D's "convert to spherical").
     pub image_spherical: bool,
     /// Blend the left and right borders on load, so the panorama has no seam.
@@ -1157,6 +1159,7 @@ impl Default for Background {
             image: String::new(),
             image_rotation: [0.0; 3],
             image_intensity: 1.0,
+            image_smooth: false,
             image_spherical: false,
             image_fit_border: false,
             image_screen: false,

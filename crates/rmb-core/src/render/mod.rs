@@ -489,7 +489,7 @@ pub fn background_maps(scene: &Scene) -> Option<BackgroundMaps> {
     if b.image.trim().is_empty() {
         return None;
     }
-    crate::maps::background(b.image.trim(), b.image_spherical, b.image_fit_border).map(|(m, s)| (m, s, crate::maps::rotation_matrix(b.image_rotation)))
+    crate::maps::background(b.image.trim(), b.image_smooth, b.image_spherical, b.image_fit_border).map(|(m, s)| (m, s, crate::maps::rotation_matrix(b.image_rotation)))
 }
 
 /// sRGB value (0..1) to linear light.

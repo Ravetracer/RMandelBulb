@@ -12,6 +12,9 @@ and the release workflow uses it as the release notes.
 
 ## [Unreleased]
 
+- Background images: new option Smooth (softens the image on load); Mandelbulb3D parameters
+  with "smooth background image" now import it.
+
 ## [1.1.1] - 2026-11-24
 
 - Water spray: drops fly in arcs, sideways with a direction shared by nearby drops; new

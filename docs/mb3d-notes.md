@@ -136,7 +136,8 @@ little-endian.
   cubic 1/6·(3f² − 2f − f³, 3(f³ − 2f² − f + 2), 3(f² + 2f − f³), f³ − f) over pixels i..i+3,
   which samples one pixel to the right (i + 1 + f); bit 4 "fit border" blends the six outer
   columns of both sides (weights 0.5 ∓ 0.5·sin(π/2·(x + 0.5)/6)); TBoptions bit 19 smooths
-  (not implemented).
+  first (8-bit images only): the 5-tap filter (-0.05, 0.25, 0.6, 0.25, -0.05) down every
+  column, then along every row, wrapping, in place (`Map::smoothed`).
 - Ambient light from the image (AdditionalOptions bit 5, bUseSmallBGpicForAmb): a 16 × 8 copy
   (MakeSmallLMimage: box averages of columns, then rows, leaving out the last source pixel;
   rows widened toward the poles by 2·16/(sin(y·π/7) + 1) − 16 pixels, the first and last row

@@ -172,19 +172,26 @@ pub fn get(n: i32) -> Option<Arc<Map>> {
     m
 }
 
-/// A background image prepared like Mandelbulb3D's LoadLightMap (`spherical`: "convert to
-/// spherical", `fit_border`: blend the left and right borders) and its 16 × 8 copy for ambient
-/// light (MakeSmallLMimage). Cached.
-pub fn background(name: &str, spherical: bool, fit_border: bool) -> Option<(Arc<Map>, Arc<Map>)> {
-    type Prepared = RwLock<HashMap<(String, bool, bool, u64), Option<(Arc<Map>, Arc<Map>)>>>;
+/// A background image prepared like Mandelbulb3D's LoadLightMap (`smooth`: soften the image,
+/// `spherical`: "convert to spherical", `fit_border`: blend the left and right borders) and its
+/// 16 × 8 copy for ambient light (MakeSmallLMimage). Cached.
+pub fn background(name: &str, smooth: bool, spherical: bool, fit_border: bool) -> Option<(Arc<Map>, Arc<Map>)> {
+    type Prepared = RwLock<HashMap<(String, bool, bool, bool, u64), Option<(Arc<Map>, Arc<Map>)>>>;
     static PREPARED: OnceLock<Prepared> = OnceLock::new();
     let cache = PREPARED.get_or_init(|| RwLock::new(HashMap::new()));
-    let key = (name.to_string(), spherical, fit_border, generation());
+    let key = (name.to_string(), smooth, spherical, fit_border, generation());
     if let Some(m) = cache.read().unwrap_or_else(|e| e.into_inner()).get(&key) {
         return m.clone();
     }
     let m = get_file(name).map(|m| {
-        let mut big = if spherical { m.to_spherical() } else { (*m).clone() };
+        let smoothed;
+        let src: &Map = if smooth {
+            smoothed = m.smoothed();
+            &smoothed
+        } else {
+            &m
+        };
+        let mut big = if spherical { src.to_spherical() } else { src.clone() };
         if fit_border {
             big.fit_border();
         }
@@ -195,7 +202,50 @@ pub fn background(name: &str, spherical: bool, fit_border: bool) -> Option<(Arc<
     m
 }
 
+/// One line of Mandelbulb3D's smoothing (SmoothLightMap, `ipolC`): the 5-tap filter
+/// (-0.05, 0.25, 0.6, 0.25, -0.05) with wrap-around, done in place like the original: the last
+/// value reads `extra` (the copy MB3D keeps after the line) as its right neighbor and the
+/// already smoothed first value as the one after it.
+fn smooth_line(line: &mut [[u8; 3]], extra: [u8; 3]) {
+    let n = line.len();
+    if n < 3 {
+        return;
+    }
+    let orig = line.to_vec();
+    let at = |i: usize| if i == n { extra } else { orig[i % n] };
+    for i in 0..n {
+        let t = [orig[(i + n - 2) % n], orig[(i + n - 1) % n], orig[i], at(i + 1), if i == n - 1 { line[0] } else { at(i + 2) }];
+        line[i] = [0, 1, 2].map(|c| {
+            let v = (t[0][c] as f64 + t[4][c] as f64) * -0.05 + (t[1][c] as f64 + t[3][c] as f64) * 0.25 + t[2][c] as f64 * 0.6;
+            // Delphi's Round: halves to even.
+            v.round_ties_even().clamp(0.0, 255.0) as u8
+        });
+    }
+}
+
 impl Map {
+    /// Mandelbulb3D's "smooth on load" (SmoothLightMap): a 5-tap filter down every column, then
+    /// along every row, both wrapping around.
+    pub fn smoothed(&self) -> Map {
+        let (w, h) = (self.width as usize, self.height as usize);
+        let mut px = self.pixels.clone();
+        let mut col = vec![[0u8; 3]; h];
+        for x in 0..w {
+            for y in 0..h {
+                col[y] = px[y * w + x];
+            }
+            smooth_line(&mut col, self.pixels[x]);
+            for y in 0..h {
+                px[y * w + x] = col[y];
+            }
+        }
+        // MB3D's copy after each row still holds the row's first pixel before the column pass.
+        for y in 0..h {
+            smooth_line(&mut px[y * w..(y + 1) * w], self.pixels[y * w]);
+        }
+        Map { number: self.number, width: self.width, height: self.height, pixels: px, alpha: self.alpha.clone() }
+    }
+
     /// Mandelbulb3D's "convert to spherical" (SmoothLightMap): every row is squeezed toward the
     /// center by the cosine of its latitude, with its cubic interpolation (which reads one pixel
     /// to the right).
@@ -440,5 +490,19 @@ mod tests {
         let m = Map { number: 1, width: 4, height: 3, pixels: vec![[10, 20, 30]; 12], alpha: None };
         let v = m.sample(3.7, 0.2);
         assert!((v[0] - 10.0 / 255.0).abs() < 1e-12 && (v[2] - 30.0 / 255.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn smoothing_spreads_a_pixel_with_mb3d_weights() {
+        let mut pixels = vec![[0u8; 3]; 64];
+        pixels[4 * 8 + 4] = [200, 100, 0];
+        let m = Map { number: 1, width: 8, height: 8, pixels, alpha: None }.smoothed();
+        let at = |x: usize, y: usize| m.pixels[y * 8 + x][0];
+        // 200 · 0.6 · 0.6 = 72, 200 · 0.6 · 0.25 = 30, 200 · 0.25 · 0.25 = 12.5 → 12 (halves to even).
+        assert_eq!((at(4, 4), at(5, 4), at(4, 3), at(5, 5)), (72, 30, 30, 12));
+        // Negative lobes clip at 0.
+        assert_eq!(at(6, 4), 0);
+        let flat = Map { number: 1, width: 5, height: 4, pixels: vec![[10, 20, 30]; 20], alpha: None }.smoothed();
+        assert!(flat.pixels.iter().all(|p| *p == [10, 20, 30]));
     }
 }

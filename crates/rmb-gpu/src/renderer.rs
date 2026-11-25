@@ -1172,7 +1172,7 @@ impl GpuRenderer {
         let numbers = prog.map_numbers();
         let b = &scene.background;
         let layers = layer_images(scene);
-        let background = format!("{}|{}|{}|{}|{}", b.image.trim(), b.image_spherical, b.image_fit_border, scene.material.color_map.image.trim(), layers.join("|"));
+        let background = format!("{}|{}|{}|{}|{}|{}", b.image.trim(), b.image_smooth, b.image_spherical, b.image_fit_border, scene.material.color_map.image.trim(), layers.join("|"));
         // New buffers are zeroed: no maps (count 0) until the first upload.
         let none = b.image.trim().is_empty() && scene.material.color_map.image.trim().is_empty() && layers.is_empty();
         if numbers == self.map_numbers && background == self.map_background && !(numbers.is_empty() && none && self.maps.size() > 16) {

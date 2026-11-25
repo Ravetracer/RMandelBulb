@@ -51,7 +51,7 @@ the status bar says "Opened … with import notes". Typical notes:
 | Ambient light | The two ambient colors (upper and lower); the ambient shadow as ray traced ambient occlusion with its strength and reach; the roughness factor. |
 | Colors | The ten color stops with their surface and highlight colors and transparency; Mandelbulb3D's color index (color mode **Iterations (MB3D)**) with the start and end sliders and color cycling; the second color choice; color on iteration; color variation with depth; interior colors; color maps. |
 | Background and fog | The vertical background gradient, the depth fog with its curve and "far fog", and the dynamic fog as **Glow** with its offset, second color, blend option and "on iteration" setting. |
-| Background image | The panorama with its rotation, screen coordinates, brightness, "convert to spherical", border fitting, fog added on top, and the image as ambient light. |
+| Background image | The panorama with its rotation, screen coordinates, brightness, smoothing, "convert to spherical", border fitting, fog added on top, and the image as ambient light. |
 | Depth of field | Focus distance and aperture. |
 | Reflections and glass | Reflection amount and bounces; for transmission, the refraction index, absorption and scattering. |
 | Output | Mandelbulb3D's gamma. Mandelbulb3D shades with the colors as shown on screen, without tone mapping; the import turns on **Display space** (Effects › Image) and switches off filmic tone mapping and the vignette. |
