@@ -72,6 +72,14 @@ Mandelbulb3D formulas are found by their Mandelbulb3D name. RMandelbulb3D has:
 The translations were checked against the original formula code. Each imported option value goes
 to the matching parameter, in Mandelbulb3D's option order.
 
+The `_Cond…` formulas (`_CondItcountR`, `_CondItcountSwitch`, `_CondItcountSwX2`,
+`_CondLyapunov`, `_CondLyapunovEx`) change the iteration count of other slots while a point is
+iterated. Their **Formula nr** parameters count the slots of the hybrid from 1; the import
+converts Mandelbulb3D's formula numbers and keeps slots with 0 iterations, which these formulas
+can switch on. Unlike Mandelbulb3D, every point starts again with the iteration counts of the
+scene (Mandelbulb3D keeps the changed counts from one pixel to the next, so its images can
+depend on the render order).
+
 A formula that is not available stays in the hybrid as a slot with a warning sign and is
 skipped when rendering; the view shows "Formulas not available" with its name. To add formulas
 from your own Mandelbulb3D installation, use **Import .m3f…** in **Edit › Preferences… ›
@@ -97,7 +105,6 @@ program. Background images are also found by their full path.
 ## What is not imported
 
 - **(K/L)IFS hybrids**, Mandelbulb3D's fourth hybrid mode, are not supported.
-- **Formulas that switch the hybrid's formulas** (the `_Cond…` formulas) are not available.
 - The **panorama camera** is shown as a normal perspective camera.
 - A **DE combination "mix" with the second chain first** is shown with the first chain first.
 - **Reflections and transmission only on dIFS formulas** are shown on all surfaces.

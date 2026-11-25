@@ -285,11 +285,14 @@ pub fn import_binary(b: &[u8]) -> Result<Import, String> {
             warnings.push("an interpolation hybrid uses only its first two formulas".into());
         }
     }
+    // Formulas that set other slots' iteration counts (_Cond*) may switch on slots with 0
+    // iterations: keep those slots.
+    let keep_zero = hybrid_type != 1 && raw.iter().any(|r| r.0 > 0 && r.1 >= 0 && lib.find_alias(&r.2).is_some_and(|f| f.def.sets_counts));
     for (i, (its, fnr, name, values)) in raw.into_iter().enumerate() {
         if hybrid_type == 1 && (i > 1 || fnr < 0) {
             continue;
         }
-        if hybrid_type != 1 && (its <= 0 || fnr < 0) {
+        if hybrid_type != 1 && (its < 0 || (its == 0 && !keep_zero) || fnr < 0) {
             continue;
         }
         if hybrid_type == 0 && i > end1 && end1 > 0 {
@@ -313,13 +316,27 @@ pub fn import_binary(b: &[u8]) -> Result<Import, String> {
                     }
                 }
                 slot.formula = fm.def.name.clone();
-                if !fm.def.transform {
+                if !fm.def.transform && its > 0 {
                     color_info.push((its as f64, fm.def.de, values.first().copied().unwrap_or(0.0), name.to_lowercase()));
                 }
             }
             None => missing.push(name),
         }
         slots.push((i, slot));
+    }
+    // Their formula numbers (Mandelbulb3D: 1..6, clamped) become the scene's slot numbers
+    // (0: the slot was not imported, nothing is set).
+    let numbers: Vec<usize> = slots.iter().map(|(i, _)| *i).collect();
+    for (_, slot) in slots.iter_mut() {
+        if !lib.find(&slot.formula).is_some_and(|f| f.def.sets_counts) {
+            continue;
+        }
+        for (ident, v) in slot.params.iter_mut() {
+            if ident.starts_with("slot") {
+                let mb3d = (v.round().clamp(1.0, 6.0) as usize) - 1;
+                *v = numbers.iter().position(|i| *i == mb3d).map_or(0.0, |k| (k + 1) as f64);
+            }
+        }
     }
     drop(lib);
     if !missing.is_empty() {

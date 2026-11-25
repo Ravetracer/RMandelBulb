@@ -10,7 +10,7 @@ use std::fmt::Write;
 
 use rmb_core::formula::DeKind;
 use rmb_core::formula::lang::{STATE_AUX, STATE_COUNT, STATE_DIST, STATE_JULIA, STATE_PX, STATE_ROLD, STATE_ROUT};
-use rmb_core::formula::wgsl::{PRELUDE, emit_iter, emit_iter_dd, state_name};
+use rmb_core::formula::wgsl::{PRELUDE, emit_iter, emit_iter_counts, emit_iter_dd, state_name};
 use rmb_core::fractal::Program;
 
 const TEMPLATE: &str = include_str!("march.wgsl");
@@ -349,7 +349,8 @@ fn objects(prog: &Program) -> String {
 }
 
 /// Where a chain reads its settings: WGSL expressions (uniforms for the main fractal, the
-/// object buffer for composed objects). `slot_iter` is the iteration count of slot `slot`.
+/// object buffer for composed objects). `slot_iter` is the iteration count of the slot whose
+/// index replaces `SLOT` (see [`Uni::slot_iter`]).
 struct Uni {
     wslice: String,
     julia_on: String,
@@ -378,7 +379,7 @@ impl Uni {
             limit: limit.into(),
             repeat: repeat.into(),
             bail2: "u.march.z".into(),
-            slot_iter: format!("u.slots[slot + {slot_base}u].x"),
+            slot_iter: format!("u.slots[SLOT + {slot_base}u].x"),
             scale: scale.into(),
             rot4: "ROTATE_4D",
             blend: (slot_base == 0).then(|| ("u.blend.x".into(), "u.blend.y".into())),
@@ -396,7 +397,7 @@ impl Uni {
             limit: format!("objs[{j}].frac.z"),
             repeat: format!("objs[{j}].frac.w"),
             bail2: format!("objs[{j}].misc.x"),
-            slot_iter: format!("objs[{j}].slots[slot / 4u][slot % 4u]"),
+            slot_iter: format!("objs[{j}].slots[SLOT / 4u][SLOT % 4u]"),
             scale: format!("objs[{j}].misc.y"),
             rot4: "false",
             blend: Some((format!("objs[{j}].comb2.z"), format!("objs[{j}].comb2.w"))),
@@ -411,11 +412,60 @@ impl Uni {
         Uni {
             limit: format!("objs[{j}].comb.y"),
             repeat: format!("objs[{j}].comb.z"),
-            slot_iter: format!("objs[{j}].slots[(slot + {slot_base}u) / 4u][(slot + {slot_base}u) % 4u]"),
+            slot_iter: format!("objs[{j}].slots[(SLOT + {slot_base}u) / 4u][(SLOT + {slot_base}u) % 4u]"),
             scale: format!("objs[{j}].comb2.x"),
             blend: None,
             ..Uni::object(j)
         }
+    }
+
+    /// The iteration count of slot `slot` (a WGSL u32 expression).
+    fn slot_iter(&self, slot: &str) -> String {
+        self.slot_iter.replace("SLOT", slot)
+    }
+}
+
+/// Formulas that set slot iteration counts (`setcount`): the chain keeps the counts of its
+/// slots in `cnt` (from the slot table at the start), `run` is the current slot's run length
+/// (fixed when the slot is entered). Empty for other chains.
+fn counts_init(prog: &Program, cfg: &Uni) -> String {
+    if !prog.sets_counts() {
+        return String::new();
+    }
+    let mut s = format!("    var cnt: array<u32, {}>;\n", prog.slots.len());
+    for i in 0..prog.slots.len() {
+        let _ = writeln!(s, "    cnt[{i}] = u32({});", cfg.slot_iter(&format!("{i}u")));
+    }
+    s.push_str("    var run = 0u;\n    var zero_skipped = 0u;\n");
+    s
+}
+
+/// In the hybrid loop of a chain with `counts_init`: takes the run length when a slot is
+/// entered and skips slots whose count is 0 (all of them in a row ends the orbit; mirrors
+/// fractal.rs iterate_from).
+fn counts_skip(prog: &Program, k: &str) -> String {
+    if !prog.sets_counts() {
+        return String::new();
+    }
+    format!(
+        "        if (count == 0u) {{\n            run = cnt[slot];\n        }}\n        if (run == 0u) {{\n            slot += 1u;\n            if (slot >= NSLOTS_{k}) {{\n                slot = repeat_from;\n            }}\n            zero_skipped += 1u;\n            if (zero_skipped > NSLOTS_{k}) {{\n                break;\n            }}\n            continue;\n        }}\n        zero_skipped = 0u;\n"
+    )
+}
+
+/// The run length the hybrid loop compares the slot's count with.
+fn run_length(prog: &Program, cfg: &Uni) -> String {
+    if prog.sets_counts() { "run".into() } else { cfg.slot_iter("slot") }
+}
+
+/// One slot's formula in a hybrid loop (`dd`: double-float).
+fn slot_iter_code(prog: &Program, i: usize, dd: bool) -> String {
+    let sl = &prog.slots[i];
+    if prog.sets_counts() {
+        emit_iter_counts(&sl.formula.def, sl.offset, 4, dd, prog.first_slot, prog.slots.len())
+    } else if dd {
+        emit_iter_dd(&sl.formula.def, sl.offset, 4)
+    } else {
+        emit_iter(&sl.formula.def, sl.offset, 4)
     }
 }
 
@@ -477,6 +527,7 @@ fn chain(prog: &Program, k: &str, cfg: &Uni) -> String {
         );
     }
     s.push_str("    var slot = 0u;\n    var count = 0u;\n    let cap = limit * 8u + 64u;\n    var steps = 0u;\n");
+    s.push_str(&counts_init(prog, cfg));
     s.push_str(&f32_loop(prog, k, cfg, &names));
     if blend.is_some() {
         s.push_str("    }\n");
@@ -494,6 +545,7 @@ fn f32_loop(prog: &Program, k: &str, cfg: &Uni, names: &[String]) -> String {
     let mut s = String::new();
     s.push_str("    loop {\n        if (n >= limit || steps >= cap) {\n            break;\n        }\n        steps += 1u;\n");
     s.push_str(&extras_skip(cfg, k));
+    s.push_str(&counts_skip(prog, k));
     let _ = writeln!(
         s,
         "        let prev_s = vec4<fl>({}, {}, {}, {});\n        let prev_dr = {};",
@@ -506,7 +558,7 @@ fn f32_loop(prog: &Program, k: &str, cfg: &Uni, names: &[String]) -> String {
         if sl.transform {
             s.push_str("                transform = true;\n");
         }
-        s.push_str(&emit_iter(&sl.formula.def, sl.offset, 4));
+        s.push_str(&slot_iter_code(prog, i, false));
         s.push_str("            }\n");
     }
     s.push_str("            default: {}\n        }\n");
@@ -525,7 +577,7 @@ fn f32_loop(prog: &Program, k: &str, cfg: &Uni, names: &[String]) -> String {
         a0 = names[STATE_AUX],
         a2 = names[STATE_AUX + 2],
         dr = names[8],
-        slot_iter = cfg.slot_iter,
+        slot_iter = run_length(prog, cfg),
         bail2 = cfg.bail2,
         extra_bail = extras_bail(cfg),
     );
@@ -593,6 +645,10 @@ fn chain_dd(prog: &Program, k: &str, cfg: &Uni) -> String {
     // The interpolation hybrid ignores the per-slot settings (like fractal.rs).
     let bail = format!("{bail_plain}{}", extras_bail(cfg));
     let blend = k == "1" && prog.blend.is_some() && prog.slots.len() >= 2;
+    // Declared before the interpolation loop: the f32 continuation below reads them.
+    s.push_str("    var slot = 0u;\n    var count = 0u;\n    let cap = limit * 8u + 64u;\n    var steps = 0u;\n");
+    s.push_str("    var switched = false;\n");
+    s.push_str(&counts_init(prog, cfg));
     if blend {
         let _ = writeln!(s, "    loop {{\n        if (n >= limit) {{\n            break;\n        }}\n        {rold} = {rout};\n        {it} = dd_f(f32(n));");
         let _ = writeln!(s, "        let in_x = {x};\n        let in_y = {y};\n        let in_z = {z};\n        let in_w = {w};\n        let in_dr = {dr};\n        {{ // {}", prog.slots[0].formula.def.name);
@@ -608,10 +664,9 @@ fn chain_dd(prog: &Program, k: &str, cfg: &Uni) -> String {
             "        }}\n        let w1 = dd(u.blend.x, u.blend_lo.x);\n        let w2 = dd(u.blend.y, u.blend_lo.y);\n        let len_a = dd_sqrt(dd_add(dd_add(dd_sqr(a_x), dd_sqr(a_y)), dd_sqr(a_z)));\n        let len_b = dd_sqrt(dd_add(dd_add(dd_sqr({x}), dd_sqr({y})), dd_sqr({z})));\n        let l = dd_add(dd_mul(len_a, w1), dd_mul(len_b, w2));\n        {x} = dd_add(dd_mul(a_x, w1), dd_mul({x}, w2));\n        {y} = dd_add(dd_mul(a_y, w1), dd_mul({y}, w2));\n        {z} = dd_add(dd_mul(a_z, w1), dd_mul({z}, w2));\n        {w} = dd_add(dd_mul(a_w, w1), dd_mul({w}, w2));\n        {dr} = dd_add(dd_mul(dd_abs(a_dr), w1), dd_mul(dd_abs({dr}), w2));\n        let f = dd_div(l, dd_sqrt(dd_add(dd_add(dd_add(dd_sqr({x}), dd_sqr({y})), dd_sqr({z})), dd_f(1.0e-40))));\n        {x} = dd_mul({x}, f);\n        {y} = dd_mul({y}, f);\n        {z} = dd_mul({z}, f);\n        n += 1u;\n        {rout} = dd_sqr(l);\n        let r2 = dd_hi({rout});\n        out.trap = min(out.trap, r2);\n        if ({bail_plain}) {{\n            out.escaped = true;\n            break;\n        }}\n    }}\n    // The normal hybrid loop is not used.\n    if (false) {{"
         );
     }
-    s.push_str("    var slot = 0u;\n    var count = 0u;\n    let cap = limit * 8u + 64u;\n    var steps = 0u;\n");
-    s.push_str("    var switched = false;\n");
     s.push_str("    loop {\n        if (n >= limit || steps >= cap) {\n            break;\n        }\n        steps += 1u;\n");
     s.push_str(&extras_skip(cfg, k));
+    s.push_str(&counts_skip(prog, k));
     let _ = writeln!(s, "        let prev_x = {x};\n        let prev_y = {y};\n        let prev_z = {z};\n        let prev_w = {w};\n        let prev_dr = {dr};");
     s.push_str(&extras_pre(cfg, &n, "dd_f(0.0)"));
     let _ = writeln!(s, "        {it} = dd_f(f32(n));\n        {rold} = {rout};\n        var transform = false;\n        switch slot {{");
@@ -620,7 +675,7 @@ fn chain_dd(prog: &Program, k: &str, cfg: &Uni) -> String {
         if sl.transform {
             s.push_str("                transform = true;\n");
         }
-        s.push_str(&emit_iter_dd(&sl.formula.def, sl.offset, 4));
+        s.push_str(&slot_iter_code(prog, i, true));
         s.push_str("            }\n");
     }
     s.push_str("            default: {}\n        }\n");
@@ -633,7 +688,7 @@ fn chain_dd(prog: &Program, k: &str, cfg: &Uni) -> String {
          \x20           if ({bail}) {{\n                out.escaped = true;\n                if (!is_finite(r2)) {{\n                    {x} = prev_x;\n                    {y} = prev_y;\n                    {z} = prev_z;\n                    {w} = prev_w;\n                    {dr} = prev_dr;\n                }}\n                break;\n            }}\n            if ({switch}abs(dd_hi({dr})) * dd_target > 1.0e-5 * {zlen}) {{\n                switched = true;\n                break;\n            }}\n        }}\n    }}\n",
         a0 = n[STATE_AUX],
         a2 = n[STATE_AUX + 2],
-        slot_iter = cfg.slot_iter,
+        slot_iter = run_length(prog, cfg),
         switch = format!("DD_SWITCH_{k} && dd_target > 0.0 && "),
         zlen = format!("length(vec4<f32>(dd_hi({x}), dd_hi({y}), dd_hi({z}), dd_hi({w})))"),
     );

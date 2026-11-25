@@ -2,7 +2,9 @@
 
 //! Compiles formula ASTs into closures over a flat `f64` register file.
 //!
-//! Register layout of `iter`: `[state (STATE_COUNT)] [params + init constants] [locals]`.
+//! Register layout of `iter`: `[state (STATE_COUNT)] [params + init constants] [locals]`, then
+//! for formulas with `setcount` the iteration counts of the hybrid's slots (`COUNT_SLOTS`,
+//! by slot index; the hybrid loop fills them before and reads them after the call).
 //! Register layout of `init`: `[params + init constants] [init locals]`.
 //!
 //! `iter` also compiles to native code (`super::jit`, Cranelift) on first use; the closures
@@ -10,7 +12,7 @@
 
 use std::sync::OnceLock;
 
-use super::lang::{BinOp, Expr, FormulaDef, Func, STATE_COUNT, Stmt, VarRef};
+use super::lang::{BinOp, COUNT_SLOTS, Expr, FormulaDef, Func, STATE_COUNT, Stmt, VarRef};
 
 pub type NumFn = Box<dyn Fn(&[f64]) -> f64 + Send + Sync>;
 pub type BoolFn = Box<dyn Fn(&[f64]) -> bool + Send + Sync>;
@@ -27,6 +29,8 @@ pub(super) struct Layout {
     state: usize,
     param: usize,
     local: usize,
+    /// First of the `COUNT_SLOTS` slot iteration counts (`setcount`).
+    pub(super) count: usize,
 }
 
 impl Layout {
@@ -51,6 +55,8 @@ pub struct CpuFormula {
     init: StmtFn,
     /// Registers needed by `iter`.
     pub iter_regs: usize,
+    /// First register of the slot iteration counts (`setcount`; None: the formula sets none).
+    pub count_regs: Option<usize>,
     n_params: usize,
     n_const: usize,
     init_regs: usize,
@@ -59,15 +65,17 @@ pub struct CpuFormula {
 impl CpuFormula {
     pub fn compile(f: &FormulaDef) -> Self {
         let n_const = f.constant_count();
-        let iter_layout = Layout { state: 0, param: STATE_COUNT, local: STATE_COUNT + n_const };
-        let init_layout = Layout { state: usize::MAX / 4, param: 0, local: n_const };
+        let count = STATE_COUNT + n_const + f.locals.len();
+        let iter_layout = Layout { state: 0, param: STATE_COUNT, local: STATE_COUNT + n_const, count };
+        let init_layout = Layout { state: usize::MAX / 4, param: 0, local: n_const, count: usize::MAX / 4 };
         CpuFormula {
             closure: block(&f.iter, iter_layout),
             jit: OnceLock::new(),
             iter_ast: f.iter.clone(),
             iter_layout,
             init: block(&f.init, init_layout),
-            iter_regs: STATE_COUNT + n_const + f.locals.len(),
+            iter_regs: count + if f.sets_counts { COUNT_SLOTS } else { 0 },
+            count_regs: f.sets_counts.then_some(count),
             n_params: f.params.len(),
             n_const,
             init_regs: n_const + f.init_locals,
@@ -173,7 +181,22 @@ fn stmt(s: &Stmt, l: Layout) -> StmtFn {
         }
         Stmt::Break => Box::new(|_| BREAK),
         Stmt::Continue => Box::new(|_| CONTINUE),
+        Stmt::SetCount(slot, n) => {
+            let (slot, n, base) = (num(slot, l), num(n, l), l.count);
+            Box::new(move |r| {
+                let k = slot(r).round_ties_even();
+                if (1.0..=COUNT_SLOTS as f64).contains(&k) {
+                    r[base + k as usize - 1] = count_value(n(r));
+                }
+                NEXT
+            })
+        }
     }
+}
+
+/// The iteration count `setcount` stores: `clamp(round(n), 0, 1e9)` (NaN: 0).
+pub fn count_value(n: f64) -> f64 {
+    if n.is_nan() { 0.0 } else { n.round_ties_even().clamp(0.0, 1.0e9) }
 }
 
 fn cond(e: &Expr, l: Layout) -> BoolFn {

@@ -29,22 +29,32 @@ struct Emitter<'a> {
     /// Double-float code (`dd` values, arithmetic through the df64 functions of rmb-gpu's
     /// df64.wgsl) for deep zooms.
     dd: bool,
+    /// `setcount` target: the chain's first slot (0-based slot number) and its slot count;
+    /// the counts live in the chain's `cnt` array. None: `setcount` is left out.
+    counts: Option<(usize, usize)>,
 }
 
 /// Emits the body of one iteration of `f` (a WGSL block, without braces). `offset` is the index
 /// of the formula's first constant in `prm`.
 pub fn emit_iter(f: &FormulaDef, offset: usize, indent: usize) -> String {
-    emit_iter_with(f, offset, indent, false)
+    emit_iter_with(f, offset, indent, false, None)
+}
+
+/// [`emit_iter`] (or [`emit_iter_dd`] with `dd`) inside a hybrid chain whose slot iteration
+/// counts are the array `cnt`: `setcount` writes `cnt[slot - 1 - first]` if that is one of the
+/// chain's `n` slots.
+pub fn emit_iter_counts(f: &FormulaDef, offset: usize, indent: usize, dd: bool, first: usize, n: usize) -> String {
+    emit_iter_with(f, offset, indent, dd, Some((first, n)))
 }
 
 /// [`emit_iter`] in double-float arithmetic: every value is a `dd` (hi + lo of two f32), the
 /// constants come from `prm` (high parts, then from entry 1024 on the low parts).
 pub fn emit_iter_dd(f: &FormulaDef, offset: usize, indent: usize) -> String {
-    emit_iter_with(f, offset, indent, true)
+    emit_iter_with(f, offset, indent, true, None)
 }
 
-fn emit_iter_with(f: &FormulaDef, offset: usize, indent: usize, dd: bool) -> String {
-    let mut e = Emitter { f, out: String::new(), indent, loops: 0, dd };
+fn emit_iter_with(f: &FormulaDef, offset: usize, indent: usize, dd: bool, counts: Option<(usize, usize)>) -> String {
+    let mut e = Emitter { f, out: String::new(), indent, loops: 0, dd, counts };
     let mut used = vec![false; f.constant_count()];
     mark_params(&f.iter, &mut used);
     for (k, u) in used.iter().enumerate() {
@@ -89,6 +99,10 @@ fn mark_params(stmts: &[Stmt], used: &mut [bool]) {
             }
             Stmt::For(_, _, _, b) | Stmt::Loop(b) => mark_params(b, used),
             Stmt::Break | Stmt::Continue => {}
+            Stmt::SetCount(a, b) => {
+                ex(a, used);
+                ex(b, used);
+            }
         }
     }
 }
@@ -146,6 +160,20 @@ impl Emitter<'_> {
             }
             Stmt::Break => self.line("break;"),
             Stmt::Continue => self.line("continue;"),
+            Stmt::SetCount(slot, n) => {
+                let Some((first, nslots)) = self.counts else { return };
+                let (k, v) = if self.dd {
+                    (format!("dd_hi({})", self.expr(slot)), format!("dd_hi({})", self.expr(n)))
+                } else {
+                    (format!("f32({})", self.expr(slot)), format!("f32({})", self.expr(n)))
+                };
+                self.line("{");
+                self.line(&format!("    let ck = i32(round({k})) - {};", first + 1));
+                self.line(&format!("    if (ck >= 0 && ck < {nslots}) {{"));
+                self.line(&format!("        cnt[ck] = u32(clamp(round({v}), 0.0, 1.0e9));"));
+                self.line("    }");
+                self.line("}");
+            }
             Stmt::For(k, a, b, body) => {
                 let n = self.var(VarRef::Local(*k));
                 let l = if self.dd {

@@ -32,7 +32,8 @@
 - [x] Missing formulas of the samples: Bulbox and Aexion C (built-in), Amazing Surf 2,
       GeneralQuat (by hand), Mandalex, _Transform, TilingIFS, ABoxVSShapes (translator)
 - [x] Height map / image formulas (9; Mandelbulb3D maps with its B-spline sampling, CPU and GPU)
-- [ ] `_Cond*` formulas that switch the hybrid's formulas (5)
+- [x] `_Cond*` formulas that switch the hybrid's formulas (5): `setcount` statement, counts
+      reset per point
 - [ ] Check "material colors" and "Nothing left but bones" (render empty, no reference renders)
 
 ## Features
@@ -147,9 +148,9 @@
   - [x] More DE kinds: `de maxaxis`, `de custom` (the formula writes `dist`; no escape test),
         Kleinian formulas (Pseudo Kleinian, Jos Kleinian) with presets. Inside rendering
         (Mandelbulber's interior mode) is covered by the existing MB3D inside rendering
-  - [ ] Possible later: nested boolean groups (Mandelbulber's object tree), `_Cond*`
-        formulas, per-slot settings and 4D rotation for object fractals, language helpers
-        (functions, vectors, enum parameters)
+  - [ ] Possible later: nested boolean groups (Mandelbulber's object tree), per-slot
+        settings and 4D rotation for object fractals, language helpers (functions, vectors,
+        enum parameters)
 - [x] Explore lane: own presets (thumbnails), random batches, mutations (like RWildFire)
   - [x] Quality filter (`explore::thumb_quality`: brightness change between half and all
         samples, relative to the contrast; above 0.22 the scene is made again, up to four

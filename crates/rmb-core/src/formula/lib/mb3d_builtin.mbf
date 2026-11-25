@@ -332,3 +332,127 @@ formula "GeneralQuat" {
         w = a3 + cw
     }
 }
+
+// Mandelbulb3D's _Cond* formulas: transforms that leave the point unchanged and set the
+// iteration count of another hybrid slot (`setcount`, slot numbers from 1). The import maps
+// Mandelbulb3D's formula numbers to the scene's slots. `a1` is Mandelbulb3D's per-point
+// execution counter (bFirstIt).
+
+formula "_CondItcountR" {
+    category "MB3D transforms"
+    description "Sets the iteration count of another hybrid slot by the squared length of the point: below R1, between R1 and R2, above R2 (a high R2 like 1e30 disables the last case)."
+    transform
+    alias "_CondItcountR" (r1, r2, slot, n_lo, n_mid, n_hi)
+    param r1 "R1" = 1 [0, 10]
+    param r2 "R2" = 2 [0, 10]
+    param slot "Formula nr" = 2 [1, 9] int
+    param n_lo "ItCount R<R1" = 0 [0, 100] int
+    param n_mid "ItCount R1<R<R2" = 1 [0, 100] int
+    param n_hi "ItCount R>R2" = 2 [0, 100] int
+    iter {
+        let n = sel(rout <= r1 * r1, n_lo, sel(rout <= r2 * r2, n_mid, n_hi))
+        setcount(slot, clamp(round(n), 0.0, 99999.0))
+    }
+}
+
+formula "_CondItcountSwitch" {
+    category "MB3D transforms"
+    description "Counts its runs per point and sets the iteration count of another hybrid slot by comparing the count with the execution value (lower, equal, higher)."
+    transform
+    alias "_CondItcountSwitch" (exec, slot, n_lo, n_eq, n_hi)
+    param exec "ExecCnt value" = 1 [1, 100] int
+    param slot "Formula nr" = 2 [1, 9] int
+    param n_lo "ItCount if lower" = 5 [0, 100] int
+    param n_eq "ItCount if equal" = 0 [0, 100] int
+    param n_hi "ItCount if higher" = 0 [0, 100] int
+    iter {
+        a1 += 1.0
+        let e = clamp(round(exec), 1.0, 100.0)
+        let n = sel(a1 < e, n_lo, sel(a1 == e, n_eq, n_hi))
+        setcount(slot, clamp(round(n), 0.0, 100.0))
+    }
+}
+
+formula "_CondItcountSwX2" {
+    category "MB3D transforms"
+    description "_CondItcountSwitch for two slots: one run counter, compared with the execution value of A and of B."
+    transform
+    alias "_CondItcountSwX2" (exec_a, slot_a, lo_a, eq_a, hi_a, exec_b, slot_b, lo_b, eq_b, hi_b)
+    param exec_a "ExecCnt value A" = 1 [1, 100] int
+    param slot_a "Formula nr A" = 2 [1, 9] int
+    param lo_a "ItCount if lower A" = 2 [0, 100] int
+    param eq_a "ItCount if equal A" = 0 [0, 100] int
+    param hi_a "ItCount if higher A" = 1 [0, 100] int
+    param exec_b "ExecCnt value B" = 3 [1, 100] int
+    param slot_b "Formula nr B" = 3 [1, 9] int
+    param lo_b "ItCount if lower B" = 0 [0, 100] int
+    param eq_b "ItCount if equal B" = 3 [0, 100] int
+    param hi_b "ItCount if higher B" = 1 [0, 100] int
+    iter {
+        a1 += 1.0
+        let ea = clamp(round(exec_a), 1.0, 100.0)
+        let na = sel(a1 < ea, lo_a, sel(a1 == ea, eq_a, hi_a))
+        setcount(slot_a, clamp(round(na), 0.0, 100.0))
+        let eb = clamp(round(exec_b), 1.0, 100.0)
+        let nb = sel(a1 < eb, lo_b, sel(a1 == eb, eq_b, hi_b))
+        setcount(slot_b, clamp(round(nb), 0.0, 100.0))
+    }
+}
+
+formula "_CondLyapunov" {
+    category "MB3D transforms"
+    description "Lyapunov-like sequence: bit k-1 of the sequential code (k = run counter mod 16) runs formula A once (bit 1) or formula B once (bit 0); the other gets 0 iterations."
+    transform
+    alias "_CondLyapunov" (code, slot_a, slot_b, _, _)
+    param code "Sequential code" = 33964 [0, 65535] int
+    param slot_a "Formula A" = 2 [1, 9] int
+    param slot_b "Formula B" = 3 [1, 9] int
+    iter {
+        a1 += 1.0
+        let k = a1 - 16.0 * floor(a1 / 16.0)
+        let q = round(code)
+        for j in 1..16 {
+            if j < k {
+                q = floor(q * 0.5)
+            }
+        }
+        let bit = q - 2.0 * floor(q * 0.5)
+        setcount(slot_a, bit)
+        setcount(slot_b, 1.0 - bit)
+        // Mandelbulb3D writes B first for bit 1 (matters when A and B are the same slot).
+        if bit > 0.5 {
+            setcount(slot_a, 1.0)
+        }
+    }
+}
+
+formula "_CondLyapunovEx" {
+    category "MB3D transforms"
+    description "_CondLyapunov with own counts: bit k-1 of the sequential code (k = run counter mod 16) gives formula A the high count and B the low one (bit 1), or the reverse (bit 0)."
+    transform
+    alias "_CondLyapunovEx" (code, slot_a, slot_b, n_low, n_high)
+    param code "Sequential code" = 33964 [0, 65535] int
+    param slot_a "Formula A" = 2 [1, 9] int
+    param slot_b "Formula B" = 3 [1, 9] int
+    param n_low "I.C. Low" = 0 [0, 100] int
+    param n_high "I.C. High" = 2 [1, 100] int
+    iter {
+        a1 += 1.0
+        let k = a1 - 16.0 * floor(a1 / 16.0)
+        let q = round(code)
+        for j in 1..16 {
+            if j < k {
+                q = floor(q * 0.5)
+            }
+        }
+        let lo = clamp(round(n_low), 0.0, 100.0)
+        let hi = clamp(round(n_high), 1.0, 100.0)
+        let bit = q - 2.0 * floor(q * 0.5)
+        setcount(slot_a, sel(bit > 0.5, hi, lo))
+        setcount(slot_b, sel(bit > 0.5, lo, hi))
+        // Mandelbulb3D writes B first for bit 1 (matters when A and B are the same slot).
+        if bit > 0.5 {
+            setcount(slot_a, hi)
+        }
+    }
+}

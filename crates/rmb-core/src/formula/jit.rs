@@ -24,7 +24,7 @@ use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{Module, default_libcall_names};
 
 use super::cpu::{BREAK, CONTINUE, Layout, NEXT};
-use super::lang::{BinOp, Expr, Func, LOOP_CAP, Stmt, VarRef};
+use super::lang::{BinOp, COUNT_SLOTS, Expr, Func, LOOP_CAP, Stmt, VarRef};
 
 /// A compiled `iter` block. The pointer must address at least the formula's `iter_regs`
 /// registers.
@@ -155,6 +155,15 @@ fn scan_block(stmts: &[Stmt], l: Layout, used: &mut [bool], written: &mut [bool]
             }
             Stmt::Loop(body) => scan_block(body, l, used, written),
             Stmt::Break | Stmt::Continue => {}
+            Stmt::SetCount(a, b) => {
+                scan_expr(a, l, used);
+                scan_expr(b, l, used);
+                for k in l.count..l.count + COUNT_SLOTS {
+                    if let (Some(u), Some(w)) = (used.get_mut(k), written.get_mut(k)) {
+                        (*u, *w) = (true, true);
+                    }
+                }
+            }
         }
     }
 }
@@ -319,6 +328,23 @@ impl Gen<'_> {
                     }
                 }
                 true
+            }
+            Stmt::SetCount(slot, n) => {
+                // As the closures (`cpu::count_value`): branch-free over the count registers.
+                let k = self.num(&Expr::Call(Func::Round, vec![slot.clone()]));
+                let v = self.num(&Expr::Call(Func::Clamp, vec![Expr::Call(Func::Round, vec![n.clone()]), Expr::Num(0.0), Expr::Num(1.0e9)]));
+                for j in 0..COUNT_SLOTS {
+                    let Some(var) = self.vars.get(self.layout.count + j).copied().flatten() else {
+                        self.ok = false;
+                        continue;
+                    };
+                    let kj = self.f64((j + 1) as f64);
+                    let hit = self.b.ins().fcmp(FloatCC::Equal, k, kj);
+                    let old = self.b.use_var(var);
+                    let new = self.b.ins().select(hit, v, old);
+                    self.b.def_var(var, new);
+                }
+                false
             }
         }
     }

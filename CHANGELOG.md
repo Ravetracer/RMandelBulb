@@ -12,6 +12,11 @@ and the release workflow uses it as the release notes.
 
 ## [Unreleased]
 
+- Mandelbulb3D's `_Cond…` formulas (`_CondItcountR`, `_CondItcountSwitch`, `_CondItcountSwX2`,
+  `_CondLyapunov`, `_CondLyapunovEx`), which change the iteration counts of other hybrid slots,
+  are available and imported. The formula language has a new statement `setcount(slot, count)`.
+- Deep zoom (double precision) with an interpolation hybrid no longer fails to compile its
+  shader.
 - Background images: new option Smooth (softens the image on load); Mandelbulb3D parameters
   with "smooth background image" now import it.
 

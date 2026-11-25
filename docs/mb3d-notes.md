@@ -50,6 +50,17 @@ little-endian.
   convention, not translated yet).
 - Hybrid loop: Rold = Rout before each call; counted formulas increase ItResultI and set
   Rout = x^2+y^2+z^2; stop at maxIt or Rout > RStop^2.
+- Iteration counts per slot: `nHybrid[0..5]` in the record at +76 (sign bit = transform). On
+  entering slot n the loop loads `nHybrid[n] & 0x7FFFFFFF` as the run length; slots with 0 are
+  skipped (`while bTmp <= 0`, wrapping to iRepeatFrom after EndTo). MB3D never resets nHybrid
+  per point, so changed counts carry over between pixels of a thread.
+- `_Cond*` formulas (transforms, point unchanged) write `nHybrid[f-1]` (f = formula number,
+  clamped 1..6, sign bit kept): `_CondItcountR` by Rout against R1² / R2² (DSQUARE options,
+  `<=`), count clamped 0..99999; `_CondItcountSwitch` increments bFirstIt (+208) and compares it
+  with ExecCnt (1..100): lower / equal / higher count (0..100); `_CondItcountSwX2` the same for
+  A and B with one increment; `_CondLyapunov(Ex)`: counter += 1, k = counter & 15, bit =
+  (code >> max(k - 1, 0)) & 1; bit 0: A = 0 / Low, B = 1 / High (written A then B), bit 1: B =
+  0 / Low, A = 1 / High (written B then A). Freq Hi/Lo of `_CondLyapunov` are unused.
 
 ## Translation status
 

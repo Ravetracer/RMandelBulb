@@ -132,8 +132,8 @@ shader, which takes 10–20 seconds. Zooms beyond about 1e11 need the CPU render
 (`rmb-cli render --cpu`).
 
 **A Mandelbulb3D scene opens with "Formulas not available".**
-Not every Mandelbulb3D formula is translated: formulas that switch the hybrid's formulas or use
-random numbers, and a few others, are missing. The scene opens without those slots and the
+Not every Mandelbulb3D formula is translated: formulas that use random numbers and a few others
+are missing. The scene opens without those slots and the
 **Notes** tab lists what could not be converted. If you have the formula's `.m3f` file, try
 **Preferences › Formulas › Import .m3f…**. See chapter "Mandelbulb3D import".
 
