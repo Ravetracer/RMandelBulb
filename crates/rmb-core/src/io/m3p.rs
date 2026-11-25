@@ -285,11 +285,14 @@ pub fn import_binary(b: &[u8]) -> Result<Import, String> {
             warnings.push("an interpolation hybrid uses only its first two formulas".into());
         }
     }
+    // Formulas that set other slots' iteration counts (_Cond*) may switch on slots with 0
+    // iterations: keep those slots.
+    let keep_zero = hybrid_type != 1 && raw.iter().any(|r| r.0 > 0 && r.1 >= 0 && lib.find_alias(&r.2).is_some_and(|f| f.def.sets_counts));
     for (i, (its, fnr, name, values)) in raw.into_iter().enumerate() {
         if hybrid_type == 1 && (i > 1 || fnr < 0) {
             continue;
         }
-        if hybrid_type != 1 && (its <= 0 || fnr < 0) {
+        if hybrid_type != 1 && (its < 0 || (its == 0 && !keep_zero) || fnr < 0) {
             continue;
         }
         if hybrid_type == 0 && i > end1 && end1 > 0 {
@@ -313,13 +316,27 @@ pub fn import_binary(b: &[u8]) -> Result<Import, String> {
                     }
                 }
                 slot.formula = fm.def.name.clone();
-                if !fm.def.transform {
+                if !fm.def.transform && its > 0 {
                     color_info.push((its as f64, fm.def.de, values.first().copied().unwrap_or(0.0), name.to_lowercase()));
                 }
             }
             None => missing.push(name),
         }
         slots.push((i, slot));
+    }
+    // Their formula numbers (Mandelbulb3D: 1..6, clamped) become the scene's slot numbers
+    // (0: the slot was not imported, nothing is set).
+    let numbers: Vec<usize> = slots.iter().map(|(i, _)| *i).collect();
+    for (_, slot) in slots.iter_mut() {
+        if !lib.find(&slot.formula).is_some_and(|f| f.def.sets_counts) {
+            continue;
+        }
+        for (ident, v) in slot.params.iter_mut() {
+            if ident.starts_with("slot") {
+                let mb3d = (v.round().clamp(1.0, 6.0) as usize) - 1;
+                *v = numbers.iter().position(|i| *i == mb3d).map_or(0.0, |k| (k + 1) as f64);
+            }
+        }
     }
     drop(lib);
     if !missing.is_empty() {
@@ -382,6 +399,8 @@ pub fn import_binary(b: &[u8]) -> Result<Import, String> {
         let pure_difs = prog.difs && prog.part2.as_ref().is_none_or(|p| p.difs);
         let k = if pure_difs { 2.0 } else { (s.march.step + 0.001).sqrt() * limiter.max(0.01) };
         s.march.step_limit = s.march.detail.max(0.4) * k;
+        // iOptions bit 2: steps minus the threshold (StepSubDEstop).
+        s.march.step_sub = r.u16(16) & 4 != 0;
     }
 
     // ---- cutting planes: the half-space between camera and plane is removed
@@ -667,8 +686,12 @@ pub fn import_binary(b: &[u8]) -> Result<Import, String> {
         base = 137.0;
     }
     let off = (base - ((tb(3) & 0xFFFF) as f64).sqrt() * 11.313708) * off_mul * 0.28;
+    // Depth term (sShadZmul · zPos, TBpos[3] >> 16): zPos is the distance from the mid plane,
+    // about t - vp_off + z_start - z_mid here.
+    let zmul = off_mul * 0.7 / (z_end - z_start).abs().max(1e-30) * (128.0 - ((tb(3) >> 16) as f64).max(0.0).sqrt() * 11.313708);
     s.fog.glow = gr * s.march.max_steps as f64;
-    s.fog.glow_offset = off.max(0.0);
+    s.fog.glow_offset = (off + zmul * (z_start - z_mid - vp_off)).max(0.0);
+    s.fog.glow_offset_depth = zmul;
     s.fog.glow_color = [srgb_to_linear(r.u8(light + 55)), srgb_to_linear(r.u8(light + 59)), srgb_to_linear(r.u8(light + 63))];
     s.fog.glow_color2 = r.rgb(light + 4);
     s.fog.glow_mix_steps = if mix_mul > 0.0 { 1.0 / mix_mul } else { 0.0 };

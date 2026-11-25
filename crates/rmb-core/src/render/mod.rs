@@ -180,6 +180,10 @@ pub struct Frame {
     pub pixel_angle: f64,
     /// Largest ray step per unit of distance from the camera (`March::step_limit`; 0 = none).
     pub step_cap: f64,
+    /// Share of the threshold taken off every step (`March::step_sub`; 0 = off) and the step
+    /// factor of the primary march (`March::step`, changed by `step_sub`).
+    pub step_sub: f64,
+    pub march_step: f64,
     pub lights: Vec<FrameLight>,
     /// Axis toward the sky color of the ambient light.
     pub ambient_up: V3,
@@ -361,6 +365,15 @@ impl Frame {
             Projection::Panorama => (std::f64::consts::TAU / ew).min(std::f64::consts::PI / eh),
             Projection::HalfPanorama => (std::f64::consts::PI / ew).min(std::f64::consts::PI / eh),
         };
+        // Mandelbulb3D (HeaderTrafos, StepSubDEstop): s' = s² + 1.2 s (1 - s), minus
+        // min(0.9, √s') thresholds.
+        let s = scene.march.step;
+        let (step_sub, march_step) = if scene.march.step_sub {
+            let s2 = s * s + 1.2 * s * (1.0 - s);
+            (s2.max(0.0).sqrt().min(0.9), s2)
+        } else {
+            (0.0, s)
+        };
         Frame {
             width,
             height,
@@ -368,6 +381,8 @@ impl Frame {
             tan_half,
             pixel_angle,
             step_cap: scene.march.step_limit.max(0.0) * pixel_angle * ew.max(eh) * 0.5,
+            step_sub,
+            march_step,
             lights,
             ambient_up: if scene.lighting.ambient_camera_relative { scene.camera.up } else { v3(0.0, 0.0, 1.0) },
             view,

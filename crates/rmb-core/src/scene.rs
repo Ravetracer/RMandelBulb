@@ -441,6 +441,9 @@ pub struct March {
     /// last step and steps shrink where it falls faster than the ray advances (against
     /// overstepping with estimates that are far too large).
     pub step_limit: f64,
+    /// Rays step by the estimate minus most of the threshold, with a smaller step factor near
+    /// 1 (Mandelbulb3D's "step sub DEstop"): more, shorter steps close to the surface.
+    pub step_sub: bool,
     /// Smoothed normals (Mandelbulb3D): the estimate is averaged over this many steps to each
     /// side along the surface; also measures the roughness (0 = off, 1..8).
     pub smooth_normals: u32,
@@ -450,7 +453,7 @@ pub struct March {
 
 impl Default for March {
     fn default() -> Self {
-        March { detail: 1.0, step: 0.8, max_steps: 400, max_distance: 40.0, refine_steps: 4, near: 0.0, step_limit: 0.0, smooth_normals: 0, precision: Precision::Auto }
+        March { detail: 1.0, step: 0.8, max_steps: 400, max_distance: 40.0, refine_steps: 4, near: 0.0, step_limit: 0.0, step_sub: false, smooth_normals: 0, precision: Precision::Auto }
     }
 }
 
@@ -1227,6 +1230,9 @@ pub struct Fog {
     pub glow_color: [f32; 3],
     /// Ray steps that give no glow yet.
     pub glow_offset: f64,
+    /// Ray steps added to the glow offset per unit of distance from the camera (negative: more
+    /// glow farther away; Mandelbulb3D's "fog offset Z").
+    pub glow_offset_depth: f64,
     /// Second glow color, reached after `glow_mix_steps` ray steps.
     pub glow_color2: [f32; 3],
     /// Ray steps until the glow is fully the second color (0 = only the first color).
@@ -1277,6 +1283,7 @@ impl Default for Fog {
             glow: 0.0,
             glow_color: [0.5, 0.7, 1.0],
             glow_offset: 0.0,
+            glow_offset_depth: 0.0,
             glow_color2: [0.5, 0.7, 1.0],
             glow_mix_steps: 0.0,
             glow_blend: false,
@@ -1388,8 +1395,9 @@ impl Fog {
     }
 
     /// Glow amount and the mix toward the second glow color after `steps` ray steps.
-    pub fn glow_at(&self, steps: f64, max_steps: f64) -> (f64, f64) {
-        let g = self.glow * (steps - self.glow_offset).max(0.0) / max_steps.max(1.0);
+    /// `dist`: distance of the hit (or the ray's end) from the camera.
+    pub fn glow_at(&self, steps: f64, max_steps: f64, dist: f64) -> (f64, f64) {
+        let g = self.glow * (steps - self.glow_offset - self.glow_offset_depth * dist).max(0.0) / max_steps.max(1.0);
         let mix = if self.glow_mix_steps > 0.0 { (steps / self.glow_mix_steps).min(1.0) } else { 0.0 };
         (g, mix)
     }

@@ -390,6 +390,43 @@ fn gpu_matches_cpu_with_a_difs_mix() {
     parity(scene);
 }
 
+fn cond_slot(name: &str, iterations: u32, params: &[(&str, f64)]) -> Slot {
+    let mut s = Slot::new(name);
+    s.iterations = iterations;
+    for (k, v) in params {
+        s.params.insert(k.to_string(), *v);
+    }
+    s
+}
+
+#[test]
+fn gpu_matches_cpu_with_formulas_that_set_iteration_counts() {
+    use rmb_core::compose::{SceneObject, Shape, Transform};
+    use rmb_core::scene::Fractal;
+    let mut scene = Scene::default();
+    scene.lighting.ao_mode = rmb_core::scene::AoMode::Fast;
+    // Mandelbulb3D's _CondItcountSwitch: the cosine bulb (0 iterations in the scene) runs twice
+    // after the second bulb iteration. (Bulb and box hybrids are too chaotic for f32 against
+    // f64, with or without the switch.)
+    let switch = cond_slot("_CondItcountSwitch", 1, &[("exec", 2.0), ("slot", 3.0), ("n_lo", 0.0), ("n_eq", 2.0), ("n_hi", 0.0)]);
+    scene.fractal.slots = vec![switch, Slot::new("Mandelbulb"), cond_slot("Mandelbulb (cosine)", 0, &[])];
+    // An object fractal alternating the two bulbs by a Lyapunov sequence.
+    let lyapunov = cond_slot("_CondLyapunovEx", 1, &[("code", 33964.0), ("slot_a", 2.0), ("slot_b", 3.0), ("n_low", 0.0), ("n_high", 1.0)]);
+    let f = Fractal { slots: vec![lyapunov, cond_slot("Mandelbulb", 0, &[]), cond_slot("Mandelbulb (cosine)", 0, &[])], ..Default::default() };
+    scene.objects = vec![SceneObject {
+        name: "Lyapunov".into(),
+        shape: Shape::Fractal(Box::new(f)),
+        transform: Transform { position: rmb_core::v3(1.0, -0.6, 0.3), scale: 0.35, ..Default::default() },
+        ..Default::default()
+    }];
+    let mut prog = Program::for_scene(&scene);
+    assert!(prog.sets_counts() && prog.slots.len() == 3);
+    validate(&rmb_gpu::codegen::march_shader(&prog), "setcount");
+    prog.deep = Some([0.1, -0.2, 0.3]);
+    validate(&rmb_gpu::codegen::march_shader(&prog), "setcount (deep)");
+    parity(scene);
+}
+
 #[test]
 fn gpu_matches_cpu_with_object_fractals_with_de_combination() {
     use rmb_core::compose::{SceneObject, Shape, Transform};
@@ -1318,4 +1355,15 @@ fn gpu_matches_cpu_with_a_custom_estimate() {
     scene.camera.look_at(rmb_core::v3(0.4, 0.3, 0.0), rmb_core::v3(0.0, 0.0, 1.0));
     scene.camera.fov = 80.0;
     parity(scene);
+}
+
+#[test]
+fn interpolation_hybrid_compiles_for_deep_zoom() {
+    let mut s = Scene::default();
+    s.fractal.slots = vec![Slot::new("Mandelbulb"), Slot::new("Mandelbulb (cosine)"), cond_slot("_CondItcountSwitch", 1, &[])];
+    s.fractal.blend = Some([0.6, 0.4]);
+    let mut prog = Program::for_scene(&s);
+    assert!(prog.blend.is_some() && prog.sets_counts());
+    prog.deep = Some([0.1, -0.2, 0.3]);
+    validate(&rmb_gpu::codegen::march_shader(&prog), "interpolation hybrid (deep)");
 }

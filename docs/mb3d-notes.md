@@ -37,7 +37,12 @@ little-endian.
   sRaystepLimiter at 242) (pure dIFS: max(W, H)); a capped step adds cap / step to the step
   count (dynamic fog). The estimate after a step is clamped to the last one plus the step, and
   when it fell by more than the step, the next step is multiplied by max(0.5, step / fall).
-  Import: `March::step_limit` (in half view widths; `Frame::step_cap`).
+  Import: `March::step_limit` (in half view widths; `Frame::step_cap`; measured from the camera,
+  so rays that start at a surface get the cap of their depth).
+- Camera rays (CalcThread/CalcPart) also step by max(0.11 px, (DE − msDEsub · DEstop) · s'):
+  with iOptions bit 2 ("step sub DEstop") s' = s² + 1.2 s (1 − s) and msDEsub = min(0.9, √s'),
+  else msDEsub = 0 (`March::step_sub`). Reflection/glass rays (Calc.RayMarch) use s' but no
+  subtraction and no floor. We cap the 0.11 px floor at the threshold.
 
 ## Formula calling convention (.m3f machine code)
 
@@ -56,6 +61,17 @@ little-endian.
   convention, not translated yet).
 - Hybrid loop: Rold = Rout before each call; counted formulas increase ItResultI and set
   Rout = x^2+y^2+z^2; stop at maxIt or Rout > RStop^2.
+- Iteration counts per slot: `nHybrid[0..5]` in the record at +76 (sign bit = transform). On
+  entering slot n the loop loads `nHybrid[n] & 0x7FFFFFFF` as the run length; slots with 0 are
+  skipped (`while bTmp <= 0`, wrapping to iRepeatFrom after EndTo). MB3D never resets nHybrid
+  per point, so changed counts carry over between pixels of a thread.
+- `_Cond*` formulas (transforms, point unchanged) write `nHybrid[f-1]` (f = formula number,
+  clamped 1..6, sign bit kept): `_CondItcountR` by Rout against R1² / R2² (DSQUARE options,
+  `<=`), count clamped 0..99999; `_CondItcountSwitch` increments bFirstIt (+208) and compares it
+  with ExecCnt (1..100): lower / equal / higher count (0..100); `_CondItcountSwX2` the same for
+  A and B with one increment; `_CondLyapunov(Ex)`: counter += 1, k = counter & 15, bit =
+  (code >> max(k - 1, 0)) & 1; bit 0: A = 0 / Low, B = 1 / High (written A then B), bit 1: B =
+  0 / Low, A = 1 / High (written B then A). Freq Hi/Lo of `_CondLyapunov` are unused.
 
 ## Translation status
 
@@ -78,7 +94,9 @@ little-endian.
 - Depth fog: amount = (28000 - Zpos) * TBpos[4] * 0.8e-6 (squared if "far fog", TBoptions bit
   18; negative amounts brighten); the fog color is the background: DepthCol (top) to DepthCol2
   (bottom) over the screen height, curve TBoptions >> 30 (0 linear, 1 square, else sqrt).
-- Dynamic fog: amount = (steps - sShad) * sShadGr with sShadGr = (TBpos[6] - 53) * mZstepDiv *
+- Dynamic fog: amount = (steps - sShad - sShadZmul · zPos) * sShadGr, sShadZmul = dTmp · 0.7 /
+  (dZend - dZstart) · (128 - sqrt(TBpos[3] >> 16) · 11.3137), zPos = distance + dZstart - dZmid
+  (`Fog::glow_offset_depth`); older notes: amount = (steps - sShad) * sShadGr with sShadGr = (TBpos[6] - 53) * mZstepDiv *
   0.00065 and sShad = (137 - sqrt(TBpos[3] & 0xFFFF) * 11.3137) * 2.2 / mZstepDiv * 0.28 (other
   factors with bDFogIt, header 223); color mix(DynFogRGB, DynFogCol2, min(1, steps * mZstepDiv *
   0.015)); Lights[0].FreeByte bit 0: blend instead of add.

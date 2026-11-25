@@ -218,19 +218,19 @@ impl<'a> Shader<'a> {
     /// Marches a ray. Returns the hit (if any), the number of steps taken and the number of
     /// glowing steps (see `Fog::glow_iteration`).
     pub fn march(&self, ev: &mut Evaluator, o: V3, d: V3, t0: f64, max_t: f64, max_steps: u32) -> (Option<Hit>, u32, f64) {
-        self.march_ex(ev, o, d, t0, max_t, max_steps, true, None)
+        self.march_ex(ev, o, d, t0, max_t, max_steps, true, None, false)
     }
 
     /// [`Shader::march`] without the binary refinement of the hit: for the ambient occlusion,
     /// emission and scatter rays, which need neither the exact distance nor the exact point.
     pub fn march_rough(&self, ev: &mut Evaluator, o: V3, d: V3, t0: f64, max_t: f64, max_steps: u32) -> Option<Hit> {
-        self.march_ex(ev, o, d, t0, max_t, max_steps, false, None).0
+        self.march_ex(ev, o, d, t0, max_t, max_steps, false, None, false).0
     }
 
     /// [`Shader::march`] that with `pick` also offers the points near emissive parts for the
     /// glow and the steam (see [`SteamPick`]).
     #[allow(clippy::too_many_arguments)]
-    fn march_ex(&self, ev: &mut Evaluator, o: V3, d: V3, t0: f64, max_t: f64, max_steps: u32, refine: bool, mut pick: Option<&mut SteamPick>) -> (Option<Hit>, u32, f64) {
+    fn march_ex(&self, ev: &mut Evaluator, o: V3, d: V3, t0: f64, max_t: f64, max_steps: u32, refine: bool, mut pick: Option<&mut SteamPick>, camera: bool) -> (Option<Hit>, u32, f64) {
         let m = &self.scene.march;
         let sm = &self.scene.material;
         let glow_it = self.scene.fog.glow_iteration;
@@ -240,7 +240,13 @@ impl<'a> Shader<'a> {
         let mut glow = 0.0;
         // Ray step limiter (Mandelbulb3D's RayMarch): the estimate before the last step and
         // the step factor.
-        let cap = self.frame.step_cap;
+        // Mandelbulb3D's marching (`cap`, `sub`): camera rays (CalcPart) take `sub` thresholds
+        // off every step and step at least 0.11 pixels; other rays (Calc.RayMarch) do neither.
+        let (cap, mstep) = (self.frame.step_cap, self.frame.march_step);
+        let mb = cap > 0.0 || self.frame.step_sub > 0.0;
+        let (sub, floor) = if camera { (self.frame.step_sub, 0.11 * self.frame.pixel_angle) } else { (0.0, 0.0) };
+        // The cap grows with the distance from the camera (rays that start at a surface too).
+        let base = if cap > 0.0 { (o - self.scene.camera.position).length() } else { 0.0 };
         let mut last_de = 0.0;
         for step in 0..max_steps {
             let p = o + d * t;
@@ -271,17 +277,22 @@ impl<'a> Shader<'a> {
                 return (Some(Hit { t: t_hit, pos: o + d * t_hit, eps: self.eps_at(t_hit), orbit: orbit_hit, steps: step }), step, glow);
             }
             // At least a tenth of the threshold: no stalling where the estimate is near zero.
-            if cap > 0.0 {
-                // The estimate grows by at most the last step; where it falls faster than the
-                // ray advances, the next step shrinks (to half at most); no step beyond the cap.
+            if mb {
+                // Mandelbulb3D's marching: the estimate grows by at most the last step; where it
+                // falls faster than the ray advances, the next step shrinks (to half at most);
+                // with `sub` most of the threshold is taken off; no step beyond the cap, none
+                // below 0.11 pixels.
                 let de = if step > 0 { orbit.de.min(last_de + last_step) } else { orbit.de };
                 let shrink = if step > 0 && last_de > de + 1e-30 { (last_step / (last_de - de)).clamp(0.5, 1.0) } else { 1.0 };
                 last_de = de;
-                let want = de * m.step * shrink;
+                // The floor never above the threshold (finer thresholds than MB3D's 0.11 pixels
+                // would otherwise be stepped over).
+                let want = ((de - sub * eps) * mstep * shrink).max((floor * t).min(eps));
+                let lim = if cap > 0.0 { cap * (base + t) } else { f64::INFINITY };
                 if glowing {
-                    glow += if want > cap * t { cap * t / want } else { 1.0 };
+                    glow += if want > lim { lim / want } else { 1.0 };
                 }
-                last_step = want.min(cap * t).max(eps * 0.1);
+                last_step = want.min(lim).max(eps * 0.1);
             } else {
                 if glowing {
                     glow += 1.0;
@@ -1077,7 +1088,8 @@ impl<'a> Shader<'a> {
         // Fractal haze along the ray (not inside glass).
         let haze_on = sc.fog.haze > 0.0 && !inside;
         let mut pick = SteamPick { steam: steam_on, seed: if steam_on { (rng.next_f64() * 16_777_216.0) as u32 } else { 0 }, haze: haze_on, haze_keep: 1.0, ..SteamPick::default() };
-        let (hit, _, steps) = self.march_ex(ev, o, d, t0, max_t, sc.march.max_steps, true, (steam_on || haze_on).then_some(&mut pick));
+        let camera = t_base <= 0.0 && !inside;
+        let (hit, _, steps) = self.march_ex(ev, o, d, t0, max_t, sc.march.max_steps, true, (steam_on || haze_on).then_some(&mut pick), camera);
         let mut halo = [0.0; 3];
         if steam_on {
             let (u1, u2) = (rng.next_f64(), rng.next_f64());
@@ -1100,7 +1112,8 @@ impl<'a> Shader<'a> {
                 }
             }
         }
-        let (glow, glow_mix) = sc.fog.glow_at(steps, sc.march.max_steps as f64);
+        let glow_dist = t_base + hit.as_ref().map_or(max_t, |h| h.t);
+        let (glow, glow_mix) = sc.fog.glow_at(steps, sc.march.max_steps as f64, glow_dist);
         let grad = self.background(d, sy);
         let bg = if env { self.environment(d) } else { self.background_image(d, sx, sy).unwrap_or(grad) };
         let fog_col = if sc.fog.from_background { grad } else { sc.fog.color.map(|x| x as f64) };

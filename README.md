@@ -172,8 +172,7 @@ denoiser the noise pattern stays the same from frame to frame and does not flick
 
 ## Status and limits
 
-- Not yet translated: formulas that switch the hybrid's formulas (5), use random numbers (3)
-  and a few others. Scenes that use them open with the missing slots listed and skipped. All 80
+- Not yet translated: formulas that use random numbers (3) and a few others. Scenes that use them open with the missing slots listed and skipped. All 80
   Mandelbulb3D example parameter files are supported.
 - Formulas that read Mandelbulb3D maps (height maps, map translations) find them by number in
   Mandelbulb3D's `M3Maps` folder: Preferences › Maps, `RMB_MAPS_DIR`, or a `maps` folder next

@@ -359,7 +359,7 @@ fn objects_gpu(scene: &Scene, prog: &Program, lut: &mut Vec<[f32; 4]>) -> Vec<Ob
                 // Both chains of a DE combination share the sixteen slot entries.
                 let p2 = f.part2.as_deref();
                 for (i, s) in f.slots.iter().chain(p2.map(|p| p.slots.iter()).into_iter().flatten()).take(16).enumerate() {
-                    g.slots[i / 4][i % 4] = s.iterations.max(1);
+                    g.slots[i / 4][i % 4] = s.iterations;
                 }
                 let [w1, w2] = f.blend.unwrap_or([0.0; 2]);
                 g.comb = [f.combine_mode.index() as f32, p2.map_or(0.0, |p| p.max_iterations as f32), p2.map_or(0.0, |p| p.repeat_from as f32), f.combine_smooth as f32];
@@ -522,7 +522,7 @@ fn uniforms(scene: &Scene, prog: &Program, w: u32, h: u32, fast: bool, tile: Opt
     let mut slotw = [[1.0f32; 4]; 4];
     let all = prog.slots.iter().chain(prog.part2.iter().flat_map(|p| p.slots.iter()));
     for (i, (s, ps)) in slots.iter_mut().zip(all).enumerate() {
-        *s = [ps.iterations.max(1), ps.start, ps.stop, u32::from(!ps.add_c) | (u32::from(!ps.check_bailout) << 1)];
+        *s = [ps.iterations, ps.start, ps.stop, u32::from(!ps.add_c) | (u32::from(!ps.check_bailout) << 1)];
         slotw[i / 4][i % 4] = ps.weight as f32;
     }
     let cfac = [prog.c_factor[0] as f32, prog.c_factor[1] as f32, prog.c_factor[2] as f32, prog.min_iterations as f32];
@@ -655,8 +655,8 @@ fn uniforms(scene: &Scene, prog: &Program, w: u32, h: u32, fast: bool, tile: Opt
         mot_fwd: scene.motion_end.as_ref().map_or([0.0; 4], |c| v4(c.forward, c.tan_half_fov())),
         mot_right: scene.motion_end.as_ref().map_or([0.0; 4], |c| v4(c.right, 0.0)),
         mot_up: scene.motion_end.as_ref().map_or([0.0; 4], |c| v4(c.up, 0.0)),
-        fog4: [scene.fog.scatter.max(0.0) as f32, scene.fog.scatter_forward as f32, 0.0, 0.0],
-        gloss: [scene.material.gloss.clamp(0.0, 1.0) as f32, fr.step_cap as f32, 0.0, 0.0],
+        fog4: [scene.fog.scatter.max(0.0) as f32, scene.fog.scatter_forward as f32, scene.fog.glow_offset_depth as f32, 0.0],
+        gloss: [scene.material.gloss.clamp(0.0, 1.0) as f32, fr.step_cap as f32, fr.step_sub as f32, fr.march_step as f32],
         shim: [m.shimmer.max(0.0) as f32, m.shimmer_size as f32, m.shimmer_phase as f32, m.color_map.emission.max(0.0) as f32],
         // Placement of the main fractal: inverse rotation rows divided by the scale per axis
         // (w of the first: the smallest scale), position (deep zoom: in the reference point).

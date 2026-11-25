@@ -30,6 +30,9 @@
 //! 0; Mandelbulb3D formulas keep e.g. a varying scale there), `julia` (1 in Julia mode, else 0;
 //! read only). `let` declares a mutable local. `init` runs once per render on the CPU: its
 //! top-level `let`s become read-only constants of `iter` (e.g. a rotation matrix).
+//! `setcount(slot, count)` (in `iter`) sets the iteration count of hybrid slot `slot` (1-based,
+//! rounded; numbers outside the hybrid are ignored) for the rest of the point's orbit
+//! (Mandelbulb3D's `_Cond*` formulas); the new count applies the next time the slot is entered.
 
 use std::fmt;
 
@@ -285,7 +288,12 @@ pub enum Stmt {
     Loop(Vec<Stmt>),
     Break,
     Continue,
+    /// `setcount(slot, count)`: sets the iteration count of hybrid slot `slot` (1-based).
+    SetCount(Expr, Expr),
 }
+
+/// Slots `setcount` can address (the hybrid's slot limit, `scene::MAX_SLOTS`).
+pub const COUNT_SLOTS: usize = crate::scene::MAX_SLOTS;
 
 /// Rounds a `loop` runs at most (a formula must never hang the GPU).
 pub const LOOP_CAP: u32 = 4096;
@@ -364,6 +372,8 @@ pub struct FormulaDef {
     pub iter: Vec<Stmt>,
     /// Local names of `iter`, by index (for readable WGSL).
     pub locals: Vec<String>,
+    /// `iter` sets iteration counts of hybrid slots (`setcount`).
+    pub sets_counts: bool,
 }
 
 impl FormulaDef {
@@ -517,6 +527,7 @@ impl Parser {
             init_locals: 0,
             iter: Vec::new(),
             locals: Vec::new(),
+            sets_counts: false,
         };
         let mut has_iter = false;
         while !self.eat("}") {
@@ -596,6 +607,7 @@ impl Parser {
                     self.expect("{")?;
                     f.iter = self.block_body(&mut sc)?;
                     f.locals = sc.local_names;
+                    f.sets_counts = sets_counts(&f.iter);
                     has_iter = true;
                 }
                 o => return self.err(format!("unknown formula item '{o}'")),
@@ -666,6 +678,19 @@ impl Parser {
                 let body = self.nested_block(sc);
                 sc.loops -= 1;
                 Ok(Stmt::Loop(body?))
+            }
+            "setcount" if *self.peek() == Tok::Sym("(") => {
+                if sc.init {
+                    return self.err("'setcount' only works in 'iter'");
+                }
+                self.expect("(")?;
+                let slot = self.expr(sc)?;
+                self.check_float(&slot)?;
+                self.expect(",")?;
+                let count = self.expr(sc)?;
+                self.check_float(&count)?;
+                self.expect(")")?;
+                Ok(Stmt::SetCount(slot, count))
             }
             "break" | "continue" => {
                 if sc.loops == 0 {
@@ -840,6 +865,17 @@ pub fn uses_state(stmts: &[Stmt], idx: usize) -> bool {
         Stmt::If(c, t, e) => ex(c, idx) || uses_state(t, idx) || uses_state(e, idx),
         Stmt::For(_, _, _, b) | Stmt::Loop(b) => uses_state(b, idx),
         Stmt::Break | Stmt::Continue => false,
+        Stmt::SetCount(a, b) => ex(a, idx) || ex(b, idx),
+    })
+}
+
+/// True if the statements contain `setcount`.
+pub fn sets_counts(stmts: &[Stmt]) -> bool {
+    stmts.iter().any(|s| match s {
+        Stmt::SetCount(..) => true,
+        Stmt::If(_, t, e) => sets_counts(t) || sets_counts(e),
+        Stmt::For(_, _, _, b) | Stmt::Loop(b) => sets_counts(b),
+        _ => false,
     })
 }
 
@@ -872,6 +908,10 @@ pub fn map_number_args(stmts: &[Stmt]) -> Vec<Expr> {
                 }
                 Stmt::For(_, _, _, b) | Stmt::Loop(b) => st(b, out),
                 Stmt::Break | Stmt::Continue => {}
+                Stmt::SetCount(a, b) => {
+                    ex(a, out);
+                    ex(b, out);
+                }
             }
         }
     }

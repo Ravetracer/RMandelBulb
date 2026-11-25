@@ -77,6 +77,7 @@ Negative values darken instead.
 | **Glow** | Strength (−4–4, default 0). |
 | **Glow color** | The first glow color. |
 | **Glow offset** | Ray steps that give no glow yet. |
+| **Offset per distance** | Ray steps added to the glow offset per unit of distance from the camera; negative values give more glow farther away (Mandelbulb3D's fog offset Z). |
 | **Second color after** | Ray steps until the glow has the **Second glow color** (0 = only the first color). |
 | **Cover** | The glow covers the image instead of adding light. |
 | **Glow iteration** | Only ray steps where the fractal escaped after this many iterations glow (0 = all steps). |

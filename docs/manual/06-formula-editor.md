@@ -147,6 +147,7 @@ Parameters are read-only in the code.
 | `for k in 0..3 { … }` | Repeats with `k` = 0, 1, 2 (the end is not included; the bounds are fixed numbers). |
 | `loop { … }` | Repeats until `break` (at most 4096 rounds). |
 | `break`, `continue` | Leave the loop, or start its next round. |
+| `setcount(slot, count)` | Sets the iteration count of hybrid slot `slot` (counted from 1) for the rest of this point's iterations; it applies the next time that slot starts. A slot with count 0 is skipped. Mandelbulb3D's `_Cond…` formulas use it. |
 
 Expressions use `+ - * / %`, the comparisons `< <= > >= == !=` and the logic operators `&& || !`.
 Comparisons give conditions, which can only be used in `if`, in `sel` and with `&& || !`.

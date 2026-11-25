@@ -9,7 +9,7 @@
 
 use std::sync::Arc;
 
-use crate::formula::lang::{STATE_AUX, STATE_COUNT, STATE_DR, STATE_ITER, STATE_JULIA, STATE_PX, STATE_ROLD, STATE_ROUT, uses_state};
+use crate::formula::lang::{COUNT_SLOTS, STATE_AUX, STATE_COUNT, STATE_DR, STATE_ITER, STATE_JULIA, STATE_PX, STATE_ROLD, STATE_ROUT, uses_state};
 use crate::formula::{DeKind, Formula};
 use crate::math::V3;
 use crate::scene::{CombineMode, Cutting, DeMode, Fractal, Slot};
@@ -57,6 +57,9 @@ pub const NUMERIC_STEP_F64: f64 = 1e-13;
 
 pub struct Program {
     pub slots: Vec<ProgramSlot>,
+    /// Slot number (0-based, in `Fractal::slots`) of this chain's first slot: `setcount`
+    /// addresses slots by that number.
+    pub first_slot: usize,
     /// Slot the chain continues with after the last one (index into `slots`).
     pub repeat_from: usize,
     pub max_iterations: u32,
@@ -290,8 +293,11 @@ impl Program {
         let mut constants = Vec::new();
         let mut missing = Vec::new();
         let mut repeat_from = None;
+        // A formula that sets iteration counts may switch on slots with 0 iterations; they stay
+        // (so slot numbers match `Fractal::slots`) and are skipped while their count is 0.
+        let keep_zero = slots_in.iter().any(|s| crate::formula::find(&s.formula).is_some_and(|f| f.def.sets_counts));
         for (i, s) in slots_in.iter().enumerate() {
-            if s.iterations == 0 {
+            if s.iterations == 0 && !keep_zero {
                 continue;
             }
             let Some(formula) = crate::formula::find(&s.formula) else {
@@ -339,6 +345,7 @@ impl Program {
         Program {
             repeat_from: repeat_from.unwrap_or(0).min(slots.len().saturating_sub(1)),
             slots,
+            first_slot: first,
             max_iterations: max_iterations.max(1),
             min_iterations: f.min_iterations,
             c_factor: f.c_factor,
@@ -432,6 +439,12 @@ impl Program {
         self.slots.is_empty()
     }
 
+    /// A formula of this chain sets slot iteration counts (`setcount`): the hybrid loop then
+    /// keeps the counts per point and skips slots whose count is 0.
+    pub fn sets_counts(&self) -> bool {
+        self.slots.iter().any(|s| s.formula.def.sets_counts)
+    }
+
     /// Identifies the generated shader: formulas per slot and the DE variant of each part, and
     /// whether the 4D rotation is used. Parameter values are not part of it.
     /// Mix combination: the second chain is a dIFS measured where the first chain ends.
@@ -472,6 +485,9 @@ impl Program {
         let part = |p: &Program| -> String {
             let mut s: String = p.slots.iter().map(|sl| format!("{}|{:x}|", sl.formula.def.name, sl.formula.text_hash())).collect();
             s.push_str(&format!("{:?}{}{}", p.de_kind, p.numeric, p.difs));
+            if p.sets_counts() {
+                s.push_str(&format!("|cnt{}", p.first_slot));
+            }
             s
         };
         let mut s = part(self);
@@ -660,11 +676,23 @@ fn iterate_from(top: &Program, prog: &Program, regs: &mut [Vec<f64>], p: V3, fix
         return out;
     }
     let (mut slot, mut count) = (0usize, 0u32);
+    // Iteration counts of the slots for this point: formulas may change them (`setcount`,
+    // Mandelbulb3D's `_Cond*`). A slot's run length is fixed when it is entered; slots with
+    // count 0 are skipped. Every point starts from the scene's counts (Mandelbulb3D keeps
+    // changed counts from one pixel to the next).
+    let counts = prog.sets_counts();
+    let mut cnt = [0u32; COUNT_SLOTS];
+    for (c, s) in cnt.iter_mut().zip(&prog.slots) {
+        *c = s.iterations;
+    }
+    let mut run = 0u32;
     // Transforms do not count as iterations; the step cap ends chains of only transforms.
     let cap = limit.saturating_mul(8).saturating_add(64);
     let mut steps = 0u32;
     // Slots skipped in a row (iteration ranges): all of them out of range ends the orbit.
     let mut skipped = 0usize;
+    // Slots skipped in a row for count 0: all of them ends the orbit.
+    let mut zero_skipped = 0usize;
     while out.n < limit && steps < cap {
         steps += 1;
         let s = &prog.slots[slot];
@@ -681,6 +709,25 @@ fn iterate_from(top: &Program, prog: &Program, regs: &mut [Vec<f64>], p: V3, fix
             continue;
         }
         skipped = 0;
+        if counts {
+            if count == 0 {
+                run = cnt.get(slot).copied().unwrap_or(s.iterations);
+            }
+            if run == 0 {
+                slot += 1;
+                if slot >= prog.slots.len() {
+                    slot = prog.repeat_from;
+                }
+                zero_skipped += 1;
+                if zero_skipped > prog.slots.len() {
+                    break;
+                }
+                continue;
+            }
+            zero_skipped = 0;
+        } else {
+            run = s.iterations;
+        }
         let regs = &mut regs[slot];
         let prev = st;
         st[STATE_ROLD] = st[STATE_ROUT];
@@ -689,7 +736,19 @@ fn iterate_from(top: &Program, prog: &Program, regs: &mut [Vec<f64>], p: V3, fix
         if !s.add_c {
             regs[4..8].fill(0.0);
         }
+        // The counts by slot number (see `cpu` register layout).
+        let count_regs = s.formula.cpu.count_regs.map(|b| b + prog.first_slot);
+        if let Some(b) = count_regs {
+            for (r, c) in regs[b..].iter_mut().zip(&cnt) {
+                *r = *c as f64;
+            }
+        }
         s.formula.cpu.iter(regs);
+        if let Some(b) = count_regs {
+            for (c, r) in cnt.iter_mut().zip(&regs[b..]).take(prog.slots.len()) {
+                *c = *r as u32;
+            }
+        }
         st.copy_from_slice(&regs[..STATE_COUNT]);
         if !s.add_c {
             st[4..8].copy_from_slice(&prev[4..8]);
@@ -705,7 +764,7 @@ fn iterate_from(top: &Program, prog: &Program, regs: &mut [Vec<f64>], p: V3, fix
             out.n += 1;
         }
         count += 1;
-        if count >= s.iterations {
+        if count >= run {
             count = 0;
             slot += 1;
             if slot >= prog.slots.len() {
@@ -980,6 +1039,60 @@ mod tests {
             let mut ev = prog.evaluator();
             let d = ev.de(v3(2.5, 0.3, 0.2), 1e-5);
             assert!(d.is_finite() && d >= 0.0, "{}: {d}", f.def.name);
+        }
+    }
+
+    fn slot(name: &str, iterations: u32, params: &[(&str, f64)]) -> crate::scene::Slot {
+        let mut s = crate::scene::Slot::new(name);
+        s.iterations = iterations;
+        for (k, v) in params {
+            s.params.insert(k.to_string(), *v);
+        }
+        s
+    }
+
+    fn orbits(slots: Vec<crate::scene::Slot>, max_iterations: u32) -> Vec<Orbit> {
+        let mut s = Scene::default();
+        s.fractal.slots = slots;
+        s.fractal.max_iterations = max_iterations;
+        s.fractal.repeat_from = 0;
+        let prog = Program::for_scene(&s);
+        assert!(prog.missing.is_empty());
+        let mut ev = prog.evaluator();
+        [v3(0.3, 0.2, 0.1), v3(-0.5, 0.4, 0.3), v3(0.9, -0.2, 0.5), v3(1.4, 0.6, -0.3)].into_iter().map(|p| ev.orbit(p, 1e-5)).collect()
+    }
+
+    #[test]
+    fn cond_itcount_switch_changes_the_iteration_pattern() {
+        // Counter 1 < 2: slot 3 gets 0 iterations; 2 == 2: 2 iterations; 3 > 2: 0 again. So the
+        // formulas run as bulb, bulb, box, box, bulb, bulb, … (the zero-count box is skipped).
+        let cond = slot("_CondItcountSwitch", 1, &[("exec", 2.0), ("slot", 3.0), ("n_lo", 0.0), ("n_eq", 2.0), ("n_hi", 0.0)]);
+        let with = orbits(vec![cond.clone(), slot("Mandelbulb", 1, &[]), slot("Amazing Box", 0, &[])], 6);
+        let expected = orbits(vec![slot("Mandelbulb", 2, &[]), slot("Amazing Box", 2, &[]), slot("Mandelbulb", 2, &[])], 6);
+        let without = orbits(vec![slot("Mandelbulb", 1, &[])], 6);
+        let mut differs = false;
+        for ((a, b), c) in with.iter().zip(&expected).zip(&without) {
+            assert_eq!((a.iterations, a.escaped), (b.iterations, b.escaped));
+            assert_eq!(a.r2.to_bits(), b.r2.to_bits());
+            assert_eq!(a.de.to_bits(), b.de.to_bits());
+            differs |= a.r2 != c.r2;
+        }
+        assert!(differs, "the switch has no effect");
+    }
+
+    #[test]
+    fn cond_counts_start_again_for_every_point() {
+        // Lyapunov code 0b10: bit k-1 for run k, so B (box), A (bulb), then B up to run 17.
+        let cond = slot("_CondLyapunovEx", 1, &[("code", 2.0), ("slot_a", 2.0), ("slot_b", 3.0), ("n_low", 0.0), ("n_high", 1.0)]);
+        let slots = vec![cond, slot("Mandelbulb", 0, &[]), slot("Amazing Box", 0, &[])];
+        let first = orbits(slots.clone(), 8);
+        let again = orbits(slots, 8);
+        for (a, b) in first.iter().zip(&again) {
+            assert_eq!(a.r2.to_bits(), b.r2.to_bits());
+        }
+        let expected = orbits(vec![slot("Amazing Box", 1, &[]), slot("Mandelbulb", 1, &[]), slot("Amazing Box", 6, &[])], 8);
+        for (a, b) in first.iter().zip(&expected) {
+            assert_eq!((a.iterations, a.r2.to_bits()), (b.iterations, b.r2.to_bits()));
         }
     }
 }

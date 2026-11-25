@@ -76,8 +76,8 @@ struct U {
     mot_fwd: vec4<f32>,
     mot_right: vec4<f32>,
     mot_up: vec4<f32>,
-    fog4: vec4<f32>,       // light scattering: strength (0 = off), forward anisotropy
-    gloss: vec4<f32>,      // x: roughness of reflections and refractions (0 = mirror); y: ray step cap per unit distance (0 = none)
+    fog4: vec4<f32>,       // light scattering: strength (0 = off), forward anisotropy; z: glow offset per unit of distance
+    gloss: vec4<f32>,      // x: roughness of reflections and refractions (0 = mirror); y: ray step cap per unit distance (0 = none); z: threshold share taken off each step; w: primary march step factor
     shim: vec4<f32>,       // shimmer amount, size, phase; emission of the color map
     // Placement of the main fractal (MAIN_T): inverse rotation rows over the scale per axis
     // (w of mt0: the smallest scale), position.
@@ -1630,7 +1630,9 @@ fn steam_density(p: vec3<f32>) -> f32 {
 // Mirrors Shader::march_ex (`halo`: collect the glow of emissive colors).
 // `primary`: the camera, reflection or bounce ray (refined hit, glow and steam points); else
 // an ambient occlusion, emission or scatter ray (mirrors Shader::march_rough).
-fn march_ray(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, max_steps: u32, primary: bool) -> Hit {
+// `camera`: a camera ray (Mandelbulb3D marching takes thresholds off its steps, at least 0.11
+// pixels per step).
+fn march_ray(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, max_steps: u32, primary: bool, camera: bool) -> Hit {
     var h: Hit;
     h.hit = false;
     h.halo = vec3<f32>(0.0);
@@ -1642,6 +1644,11 @@ fn march_ray(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, max_steps: u32, pr
     let glow_it = u32(u.glow3.z);
     // Ray step limiter (mirrors Shader::march_ex).
     let cap = u.gloss.y;
+    let mb = cap > 0.0 || u.gloss.z > 0.0;
+    let sub = select(0.0, u.gloss.z, camera);
+    let floor_px = select(0.0, 0.11 * u.cam_up.w, camera);
+    // The cap grows with the distance from the camera (rays that start at a surface too).
+    let base = select(0.0, length(o - u.cam_pos.xyz), cap > 0.0);
     var last_de = 0.0;
     loop {
         if (step >= max_steps) {
@@ -1679,7 +1686,7 @@ fn march_ray(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, max_steps: u32, pr
             h.glow_steps = glow;
             return h;
         }
-        if (cap > 0.0) {
+        if (mb) {
             var de = ob.de;
             var shrink = 1.0;
             if (step > 0u) {
@@ -1689,11 +1696,12 @@ fn march_ray(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, max_steps: u32, pr
                 }
             }
             last_de = de;
-            let want = de * u.march.y * shrink;
+            let want = max((de - sub * eps) * u.gloss.w * shrink, min(floor_px * t, eps));
+            let lim = select(3.0e38, cap * (base + t), cap > 0.0);
             if (glowing) {
-                glow += select(1.0, cap * t / want, want > cap * t);
+                glow += select(1.0, lim / want, want > lim);
             }
-            last_step = max(min(want, cap * t), eps * 0.1);
+            last_step = max(min(want, lim), eps * 0.1);
         } else {
             if (glowing) {
                 glow += 1.0;
@@ -1980,7 +1988,7 @@ fn ambient_occlusion(p: vec3<f32>, n: vec3<f32>, t: f32) -> vec4<f32> {
             steps = 96u;
         }
         let o = p + n * (eps * 2.0);
-        let h = march_ray(o, d, 0.0, reach, steps, false);
+        let h = march_ray(o, d, 0.0, reach, steps, false, false);
         if (h.hit) {
             if (traced && h.t < radius) {
                 ao = ao_curve(clamp(1.0 - h.t / radius, 0.0, 1.0));
@@ -1998,7 +2006,7 @@ fn ambient_occlusion(p: vec3<f32>, n: vec3<f32>, t: f32) -> vec4<f32> {
             let v1 = rnd();
             let v2 = rnd();
             let dr = cosine_dir(n, v1, v2);
-            let hr = march_ray(o, dr, 0.0, u.emis.y * t, 96u, false);
+            let hr = march_ray(o, dr, 0.0, u.emis.y * t, 96u, false, false);
             if (hr.hit) {
                 emitted += emission_at(hr.orbit, o + dr * hr.t, hr.eps, t + hr.t) * u.emis.x;
             }
@@ -2793,7 +2801,7 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sx: f32, 
     haze_on = hz;
     haze_light = vec3<f32>(0.0);
     haze_keep = 1.0;
-    var h = march_ray(o, d, t0, max_t, u.band.z, true);
+    var h = march_ray(o, d, t0, max_t, u.band.z, true, t_base <= 0.0 && !inside);
     pick_on = false;
     haze_on = false;
     if (steam_on) {
@@ -2810,7 +2818,7 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sx: f32, 
                 n = -normalize(g);
             }
             let dir = cosine_dir(n, u1, u2);
-            let sh = march_ray(pick_pos, dir, 0.0, 8.0 * pick_rs, 64u, false);
+            let sh = march_ray(pick_pos, dir, 0.0, 8.0 * pick_rs, 64u, false, false);
             if (sh.hit) {
                 var f = pick_w;
                 if (pick_fall) {
@@ -2820,7 +2828,8 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sx: f32, 
             }
         }
     }
-    let glow = u.glow.w * max(h.glow_steps - u.glow3.x, 0.0) / f32(max(u.band.z, 1u));
+    let glow_dist = t_base + select(max_t, h.t, h.hit);
+    let glow = u.glow.w * max(h.glow_steps - u.glow3.x - u.fog4.z * glow_dist, 0.0) / f32(max(u.band.z, 1u));
     var glow_mix = 0.0;
     if (u.glow2.w > 0.0) {
         glow_mix = min(h.glow_steps / u.glow2.w, 1.0);

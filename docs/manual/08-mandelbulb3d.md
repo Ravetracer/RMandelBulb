@@ -45,12 +45,12 @@ the status bar says "Opened … with import notes". Typical notes:
 | Hybrid modes | Alternating hybrids; interpolation hybrids (slots 1 and 2 with their weights); DE combination with its mode (including "mix"), the second chain, its iteration limit and blend distance (chapter 5). |
 | Monte Carlo settings | The ambient rays depth becomes the bounces of path tracing (Lighting › Global illumination); changed settings (depth, reflection diffusity, soft shadow radius) are listed in the scene notes. Files do not say whether the Monte Carlo renderer was used, so scenes open with classic shading; **Sky reach** comes close to the look of Mandelbulb3D's Monte Carlo renders. |
 | Inside rendering | Inside rendering; "inside and outside" becomes inside rendering when the camera starts within the set. |
-| Ray marching | The surface threshold (DEstop, as **Detail**), the ray step, the ray step limiter (as **Step limit**), the refinement steps and the smoothed normals. **Max steps** is set high enough for small steps. |
+| Ray marching | The surface threshold (DEstop, as **Detail**), the ray step, the ray step limiter (as **Step limit**), "step sub DEstop" (as **Step minus detail**), the refinement steps and the smoothed normals. **Max steps** is set high enough for small steps. |
 | Cutting planes | The X, Y and Z cuts; the side between the camera and the plane is removed. |
 | Lights | Directional and positional lights with color, intensity, highlights and Mandelbulb3D's diffuse functions; shadows; visible light sources with their glow shape (soft, sharp, ball, halo). |
 | Ambient light | The two ambient colors (upper and lower); the ambient shadow as ray traced ambient occlusion with its strength and reach; the roughness factor. |
 | Colors | The ten color stops with their surface and highlight colors and transparency; Mandelbulb3D's color index (color mode **Iterations (MB3D)**) with the start and end sliders and color cycling; the second color choice; color on iteration; color variation with depth; interior colors; color maps. |
-| Background and fog | The vertical background gradient, the depth fog with its curve and "far fog", and the dynamic fog as **Glow** with its offset, second color, blend option and "on iteration" setting. |
+| Background and fog | The vertical background gradient, the depth fog with its curve and "far fog", and the dynamic fog as **Glow** with its offset (also the offset by depth), second color, blend option and "on iteration" setting. |
 | Background image | The panorama with its rotation, screen coordinates, brightness, smoothing, "convert to spherical", border fitting, fog added on top, and the image as ambient light. |
 | Depth of field | Focus distance and aperture. |
 | Reflections and glass | Reflection amount and bounces; for transmission, the refraction index, absorption and scattering. |
@@ -71,6 +71,14 @@ Mandelbulb3D formulas are found by their Mandelbulb3D name. RMandelbulb3D has:
 
 The translations were checked against the original formula code. Each imported option value goes
 to the matching parameter, in Mandelbulb3D's option order.
+
+The `_Cond…` formulas (`_CondItcountR`, `_CondItcountSwitch`, `_CondItcountSwX2`,
+`_CondLyapunov`, `_CondLyapunovEx`) change the iteration count of other slots while a point is
+iterated. Their **Formula nr** parameters count the slots of the hybrid from 1; the import
+converts Mandelbulb3D's formula numbers and keeps slots with 0 iterations, which these formulas
+can switch on. Unlike Mandelbulb3D, every point starts again with the iteration counts of the
+scene (Mandelbulb3D keeps the changed counts from one pixel to the next, so its images can
+depend on the render order).
 
 A formula that is not available stays in the hybrid as a slot with a warning sign and is
 skipped when rendering; the view shows "Formulas not available" with its name. To add formulas
@@ -97,7 +105,6 @@ program. Background images are also found by their full path.
 ## What is not imported
 
 - **(K/L)IFS hybrids**, Mandelbulb3D's fourth hybrid mode, are not supported.
-- **Formulas that switch the hybrid's formulas** (the `_Cond…` formulas) are not available.
 - The **panorama camera** is shown as a normal perspective camera.
 - A **DE combination "mix" with the second chain first** is shown with the first chain first.
 - **Reflections and transmission only on dIFS formulas** are shown on all surfaces.

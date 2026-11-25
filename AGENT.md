@@ -140,7 +140,19 @@ cargo clippy -j 8 --workspace --all-targets
   Loops become `loop`/`break`/`continue` (natural loops by back edges; registers that change in
   the loop become variables, found by retrying). Value sets of integer indexes turn table
   accesses into `sel` / `if` chains. JIT formulas (`[SOURCE]`, Pascal) go through `pascal.rs`.
-  Not supported: map functions, formulas that switch the hybrid's formulas, random numbers.
+  Not supported: map functions, random numbers; formulas that switch the hybrid's formulas
+  (`_Cond*`) are hand-written (below).
+- Formulas that set slot iteration counts (MB3D's `_Cond*`, hand-written in
+  `lib/mb3d_builtin.mbf`): statement `setcount(slot, count)` (`Stmt::SetCount`, slot numbers
+  1-based in `Fractal::slots`; `FormulaDef::sets_counts`). CPU: the counts live in
+  `COUNT_SLOTS` registers after the locals (`CpuFormula::count_regs`, filled and read back by
+  `iterate_from`; JIT: branch-free selects). The hybrid loop keeps a count per slot for each
+  point (reset to the scene's counts at the start of every orbit; MB3D keeps them from pixel to
+  pixel), fixes a slot's run length when it is entered and skips slots with count 0.
+  `Program::build` keeps zero-count slots in chains with such a formula (`Program::first_slot`
+  maps slot numbers). GPU: only for those chains `cnt`/`run` in `codegen.rs` (`counts_init`,
+  `counts_skip`, `emit_iter_counts`); other shaders are unchanged. The m3p import keeps the
+  zero-count slots and maps the formula numbers (params `slot*`) to scene slots.
 - Formula library (`formula/mod.rs`): a copy-on-write snapshot (`library()` returns an `Arc`;
   writers go through `change`), so nested lookups never wait for a writer. Every formula keeps
   its source text (`Formula::text`, from `lang::parse_library_texts`); `Program::signature`

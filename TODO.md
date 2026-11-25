@@ -28,13 +28,17 @@
 - [x] Color maps on the surface (orbit trap × iterations, normals, 3D waves, 3D projection;
       4 of the 7 maps the samples use are not in this MB3D copy)
 - [ ] Unverified (no reference render): "KentPress - Parameter 3 tweak fogits" renders almost
-      white (dynamic fog on iteration 31), "Waste-and-tragedy - Mandalex" overexposed (strong
-      point light; MB3D's screen-space AO probably darkens more)
+      white (dynamic fog on iteration 31; 45-58 counted steps × 0.045 per step by MB3D's own
+      factors, so its fog saturates there too unless MB3D counts fewer steps),
+      "Waste-and-tragedy - Mandalex" overexposed (strong point light; MB3D's screen-space AO
+      probably darkens more). Checked 2026-11-25: step limiter, step sub DEstop and the fog's
+      depth offset are imported now.
 - [x] Missing formulas of the samples: Bulbox and Aexion C (built-in), Amazing Surf 2,
       GeneralQuat (by hand), Mandalex, _Transform, TilingIFS, ABoxVSShapes (translator)
 - [x] Height map / image formulas (9; Mandelbulb3D maps with its B-spline sampling, CPU and GPU)
-- [ ] `_Cond*` formulas that switch the hybrid's formulas (5)
-- [ ] Check "material colors" and "Nothing left but bones" (render empty, no reference renders)
+- [x] `_Cond*` formulas that switch the hybrid's formulas (5): `setcount` statement, counts
+      reset per point
+- [x] Check "material colors" and "Nothing left but bones" (both render; no reference renders)
 
 ## Features
 
@@ -148,9 +152,9 @@
   - [x] More DE kinds: `de maxaxis`, `de custom` (the formula writes `dist`; no escape test),
         Kleinian formulas (Pseudo Kleinian, Jos Kleinian) with presets. Inside rendering
         (Mandelbulber's interior mode) is covered by the existing MB3D inside rendering
-  - [ ] Possible later: nested boolean groups (Mandelbulber's object tree), `_Cond*`
-        formulas, per-slot settings and 4D rotation for object fractals, language helpers
-        (functions, vectors, enum parameters)
+  - [ ] Possible later: nested boolean groups (Mandelbulber's object tree), per-slot
+        settings and 4D rotation for object fractals, language helpers (functions, vectors,
+        enum parameters)
 - [x] Explore lane: own presets (thumbnails), random batches, mutations (like RWildFire)
   - [x] Quality filter (`explore::thumb_quality`: brightness change between half and all
         samples, relative to the contrast; above 0.22 the scene is made again, up to four
