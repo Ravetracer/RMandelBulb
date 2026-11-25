@@ -53,7 +53,7 @@
 - [x] Lens flares for light sources with extensive options (glow and haze, diffraction star and
       spikes, anamorphic streak with sparkles, aperture ghosts with coating tints and color
       fringes, rainbow ring, lens dirt; presets; fade when hidden, in fog or off screen)
-  - [x] Compared with the reference images in `../_dev` (presets via `flare_presets`): the haze
+  - [x] Compared with the lens-flare reference images (formerly `../_dev`, since removed) (presets via `flare_presets`): the haze
         now fades out within about its size (it covered the whole image), about a third of the
         generated ghosts are large, faint and soft. Hand-placed ghost layouts (Ghosts › Place
         ghosts by hand) and bokeh images that shape the ghosts; god rays come from light
