@@ -387,6 +387,17 @@ cargo clippy -j 8 --workspace --all-targets
   (Fresnel at a flat surface, `fade depth / cos`; lights under the water: `exp(-ext dist)`,
   bits in `wmed[1].w`). Tests: `render::cpu::tests`, `gpu_matches_cpu_under_water`; demo
   scenes: `cargo run --release -p rmb-core --example underwater_demo -- dir`.
+- Caustics (`compose::water_caustic`, GPU same name, ten heights from one loop = one call
+  site): the surface point a flat surface would refract toward the point, three points
+  `caustic_step` apart refracted through the real wave normals (differences) down to the
+  point's depth, brightness = 1 / |area ratio| (≤ `CAUSTIC_MAX`), contrast × strength ×
+  exp(-depth / 4 wave lengths); jitter (two random numbers per wet light in the light loop)
+  against aliasing. Light rays: `water_ray_distance` (by the mean extinction) +
+  `water_ray_tint`, sharing the fog-scatter block's single `soft_shadow` call (a second call
+  site doubled the compile time); their caustic lands at `RAYS_SHAFT` wave lengths below
+  the entry point (`shaft` argument: the pattern stays constant along the light → shafts)
+  with `RAYS_CONTRAST`. Scattering `WaterMedium::scattering` (murk + a little), phase HG
+  `RAYS_FORWARD`. Medium scenes compile in ~14 s (11 s without caustics and rays).
 
 ## Light through glass
 

@@ -99,8 +99,9 @@ struct U {
     tile: vec4<u32>,       // rendered tile of a larger image: left, top, full width, full height
     dof2: vec4<f32>,       // aperture blades (0 = round), their rotation (radians)
     // Water medium (cpu::MediumFrame): [0] extinction, w: refraction index; [1] depth fade,
-    // w: lights under the water (bits); [2] water color; [3] the water's up axis.
-    wmed: array<vec4<f32>, 4>,
+    // w: lights under the water (bits); [2] water color; [3] the water's up axis; [4] caustics
+    // (0 = off), their step (local units), light rays (0 = off), scattering per unit.
+    wmed: array<vec4<f32>, 5>,
 }
 
 @group(0) @binding(0) var<uniform> u: U;
@@ -2815,6 +2816,123 @@ fn water_light(i: u32, depth: f32, ldir: vec3<f32>, dist: f32) -> vec3<f32> {
     return through * exp(-u.wmed[1].xyz * depth / c);
 }
 
+// Mirrors compose::refract_dir (zero vector at total internal reflection).
+fn refract_dir(i: vec3<f32>, n: vec3<f32>, eta: f32) -> vec3<f32> {
+    let ci = -dot(i, n);
+    let k = 1.0 - eta * eta * (1.0 - ci * ci);
+    if (k <= 0.0) {
+        return vec3<f32>(0.0);
+    }
+    return normalize(i * eta + n * (eta * ci - sqrt(k)));
+}
+
+// Mirrors compose::CAUSTIC_MAX.
+const CAUSTIC_MAX: f32 = 6.0;
+
+// Mirrors compose::water_caustic: brightness of the light the waves focus at the local point
+// q (light toward the local direction l), ten heights from one loop.
+fn water_caustic(j: u32, q: vec3<f32>, l: vec3<f32>, jx: f32, jy: f32, shaft: f32) -> f32 {
+    let strength = u.wmed[4].x * select(1.0, RAYS_CONTRAST, shaft > 0.0);
+    if (l.z <= 0.0 || strength <= 0.0) {
+        return 1.0;
+    }
+    let e = u.wmed[4].y;
+    let i = -l;
+    let eta = 1.0 / max(u.wmed[0].w, 1.0);
+    let t0 = refract_dir(i, vec3<f32>(0.0, 0.0, 1.0), eta);
+    if (t0.z == 0.0) {
+        return 1.0;
+    }
+    var hs: array<f32, 10>;
+    var sx = 0.0;
+    var sy = 0.0;
+    var depth = 0.0;
+    for (var k = 0u; k < 10u; k++) {
+        var x = q.x;
+        var y = q.y;
+        if (k > 0u) {
+            let c = (k - 1u) / 3u;
+            let n = (k - 1u) % 3u;
+            x = sx + select(0.0, e, c == 1u) + select(0.0, e, n == 1u);
+            y = sy + select(0.0, e, c == 2u) + select(0.0, e, n == 2u);
+        }
+        hs[k] = water_height(objs[j].prim, objs[j].prim2, objs[j].prim3, x, y, 1.0e30);
+        if (k == 0u) {
+            depth = hs[0] - q.z;
+            if (depth <= 0.0) {
+                return 1.0;
+            }
+            sx = q.x - t0.x * depth / -t0.z + jx * e;
+            sy = q.y - t0.y * depth / -t0.z + jy * e;
+        }
+    }
+    var floor_z = q.z;
+    if (shaft > 0.0) {
+        floor_z = hs[1] - shaft;
+    }
+    var land: array<vec2<f32>, 3>;
+    for (var c = 0u; c < 3u; c++) {
+        let x = sx + select(0.0, e, c == 1u);
+        let y = sy + select(0.0, e, c == 2u);
+        let h0 = hs[1u + 3u * c];
+        let n = normalize(vec3<f32>(-(hs[2u + 3u * c] - h0) / e, -(hs[3u + 3u * c] - h0) / e, 1.0));
+        let t = refract_dir(i, n, eta);
+        if (t.z == 0.0) {
+            return 1.0;
+        }
+        let kk = max(h0 - floor_z, 0.0) / max(-t.z, 1.0e-6);
+        land[c] = vec2<f32>(x + t.x * kk, y + t.y * kk);
+    }
+    let det = ((land[1].x - land[0].x) * (land[2].y - land[0].y) - (land[1].y - land[0].y) * (land[2].x - land[0].x)) / (e * e);
+    let bright = min(1.0 / max(abs(det), 1.0e-6), CAUSTIC_MAX);
+    let fade = exp(-depth / (4.0 * max(objs[j].prim.y, 1.0e-6)));
+    return max(1.0 + (bright - 1.0) * strength * fade, 0.0);
+}
+
+// Mirrors MediumFrame::caustic: the caustic at world point p for light toward ldir.
+fn caustic_at(p: vec3<f32>, ldir: vec3<f32>, jx: f32, jy: f32, shaft: f32) -> f32 {
+    let j = MEDIUM_OBJ;
+    let l = vec3<f32>(dot(objs[j].inv0.xyz, ldir), dot(objs[j].inv1.xyz, ldir), dot(objs[j].inv2.xyz, ldir));
+    return water_caustic(j, obj_local(j, p), l, jx, jy, shaft * objs[j].prim.y);
+}
+
+// Mirrors cpu::RAYS_SHAFT, cpu::RAYS_CONTRAST.
+const RAYS_SHAFT: f32 = 0.5;
+const RAYS_CONTRAST: f32 = 2.5;
+
+// Mirrors cpu::RAYS_FORWARD.
+const RAYS_FORWARD: f32 = 0.6;
+
+// Mirrors cpu::water_ray_distance: x the distance, y the weight (0: none).
+fn water_ray_distance(end: f32, ut: f32) -> vec2<f32> {
+    let k = (u.wmed[0].x + u.wmed[0].y + u.wmed[0].z) / 3.0;
+    let norm = 1.0 - exp(-k * end);
+    if (k <= 0.0 || norm <= 1.0e-9) {
+        return vec2<f32>(0.0);
+    }
+    let s = -log(1.0 - ut * norm) / k;
+    return vec2<f32>(s, norm / (k * exp(-k * s)));
+}
+
+// Mirrors Shader::water_ray_tint: the light rays at x, s along the ray part in the water.
+fn water_ray_tint(i: u32, x: vec3<f32>, s: f32, ldir: vec3<f32>, max_l: f32, d: vec3<f32>) -> vec3<f32> {
+    let depth = water_depth(x);
+    if (depth <= 0.0) {
+        return vec3<f32>(0.0);
+    }
+    let through = water_light(i, depth, ldir, max_l);
+    if (max(through.x, max(through.y, through.z)) <= 0.0) {
+        return vec3<f32>(0.0);
+    }
+    var caustic = 1.0;
+    if ((u32(u.wmed[1].w) & (1u << i)) == 0u) {
+        caustic = caustic_at(x, ldir, 0.0, 0.0, RAYS_SHAFT);
+    }
+    let g = RAYS_FORWARD;
+    let phase = (1.0 - g * g) / pow(max(1.0 + g * g - 2.0 * g * dot(ldir, d), 1.0e-12), 1.5);
+    return phase * u.wmed[4].z * u.wmed[4].w * caustic * through * exp(-u.wmed[0].xyz * s);
+}
+
 // Mirrors Shader::water_top: light from above that lights the water at its surface.
 fn water_top(a: vec3<f32>) -> vec3<f32> {
     var top = u.sky.xyz * u.ao.w;
@@ -3165,7 +3283,15 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sx: f32, 
                 sh = soft_shadow(p, ldir, h.eps, li.opts.y, max_l, h.t);
             }
             if (wet_depth > 0.0) {
-                sh *= water_light(i, wet_depth, ldir, max_l);
+                var caustic = 1.0;
+                if (u.wmed[4].x > 0.0) {
+                    let jx = rnd() - 0.5;
+                    let jy = rnd() - 0.5;
+                    if ((u32(u.wmed[1].w) & (1u << i)) == 0u) {
+                        caustic = caustic_at(p, ldir, jx, jy, 0.0);
+                    }
+                }
+                sh *= water_light(i, wet_depth, ldir, max_l) * caustic;
             }
             if (max(sh.x, max(sh.y, sh.z)) <= 0.0) {
                 continue;
@@ -3208,8 +3334,25 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sx: f32, 
     }
     // Glow and steam of the emissive colors the ray passed (strengths included).
     c += h.halo;
-    // Light scattered by the fog (mirrors Shader::trace).
-    if (!inside && !water && u.fog4.x > 0.0 && u.size.w > 0u) {
+    // In the water: faded by the way through it, plus the water's own light (mirrors
+    // Shader::trace).
+    let in_medium = MEDIUM && water;
+    if (in_medium) {
+        var len = u.cam_fwd.w;
+        if (h.hit) {
+            len = h.t - t_base;
+        }
+        let mp = medium_path(o + d * t_base, d, len);
+        c = c * mp.keep + mp.add;
+        tr.albedo = tr.albedo * mp.keep + (1.0 - mp.keep) * clamp(u.wmed[2].xyz, vec3<f32>(0.0), vec3<f32>(1.0));
+    }
+    // Light scattered by the fog, or in the water the light rays, through one shadow call
+    // (mirrors Shader::trace).
+    var scatter_on = !inside && u.fog4.x > 0.0;
+    if (water) {
+        scatter_on = in_medium && u.wmed[4].z > 0.0;
+    }
+    if (scatter_on && u.size.w > 0u) {
         let ut = rnd();
         let ul = rnd();
         var r = vec2<f32>(rnd(), rnd());
@@ -3218,16 +3361,23 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sx: f32, 
         if (h.hit) {
             end = h.t - t_base;
         }
-        let fa = clamp(fog_amount(0.0), 0.0, 1.0);
-        let fb = clamp(fog_amount(end), 0.0, 1.0);
         let i = min(u32(ul * f32(u.size.w)), u.size.w - 1u);
         let li = u.lights[i];
         let kind = u32(li.color.w + 0.5);
         let start = o + d * t_base;
-        if (fb - fa > 1.0e-6) {
-            var s = 0.0;
-            var amount = 0.0;
-            if (kind != 0u) {
+        var ok = false;
+        var s = 0.0;
+        var amount = 0.0;
+        if (in_medium) {
+            let wr = water_ray_distance(end, ut);
+            ok = wr.y > 0.0;
+            s = wr.x;
+            amount = wr.y;
+        } else {
+            let fa = clamp(fog_amount(0.0), 0.0, 1.0);
+            let fb = clamp(fog_amount(end), 0.0, 1.0);
+            ok = fb - fa > 1.0e-6;
+            if (ok && kind != 0u) {
                 // Equiangular sampling around the light.
                 var center = li.dir.xyz;
                 if (kind == 4u) {
@@ -3241,22 +3391,28 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sx: f32, 
                 let pdf = dist / (max(tb - ta, 1.0e-12) * (dist * dist + (s - delta) * (s - delta)));
                 amount = fog_density_at(s) / pdf;
                 s = clamp(s, 0.0, end);
-            } else {
+            } else if (ok) {
                 s = fog_distance_for(fa + ut * (fb - fa), end);
                 amount = fb - fa;
             }
+        }
+        if (ok) {
             let x = start + d * s;
             if (kind < 3u) {
                 r = vec2<f32>(0.5);
             }
             let ls = light_sample(i, x, r);
-            if (ls.atten > 0.0) {
+            var tint = vec3<f32>(scatter_phase(dot(ls.dir, d)) * u.fog4.x);
+            if (in_medium) {
+                tint = water_ray_tint(i, x, s, ls.dir, ls.dist, d);
+            }
+            if (ls.atten > 0.0 && max(tint.x, max(tint.y, tint.z)) > 0.0) {
                 var sh = vec3<f32>(1.0);
                 if (li.opts.x > 0.5 && u.dof.w < 0.5) {
                     sh = soft_shadow(x, ls.dir, eps_at(t_base + s), li.opts.y, ls.dist, t_base + s);
                 }
-                let w = ls.atten * scatter_phase(dot(ls.dir, d)) * u.fog4.x * amount * f32(u.size.w);
-                c += li.color.xyz * w * sh;
+                let w = ls.atten * amount * f32(u.size.w);
+                c += li.color.xyz * w * tint * sh;
             }
         }
     }
@@ -3264,17 +3420,6 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sx: f32, 
     if (hz) {
         c = c * haze_keep + haze_light;
         tr.albedo = tr.albedo * haze_keep + (1.0 - haze_keep) * clamp(haze_light / max(1.0 - haze_keep, 1.0e-9), vec3<f32>(0.0), vec3<f32>(1.0));
-    }
-    // In the water: faded by the way through it, plus the water's own light (mirrors
-    // Shader::trace).
-    if (MEDIUM && water) {
-        var len = u.cam_fwd.w;
-        if (h.hit) {
-            len = h.t - t_base;
-        }
-        let mp = medium_path(o + d * t_base, d, len);
-        c = c * mp.keep + mp.add;
-        tr.albedo = tr.albedo * mp.keep + (1.0 - mp.keep) * clamp(u.wmed[2].xyz, vec3<f32>(0.0), vec3<f32>(1.0));
     }
     if (inside) {
         // Inside glass: no glow and no visible lights.

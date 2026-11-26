@@ -17,6 +17,9 @@ and the release workflow uses it as the release notes.
   distance and depth, red first (filter color, visibility, murkiness, depth darkening). From
   below, the sky shows through Snell's window and the surface mirrors the depths beyond it.
   Water in older scenes stays opaque.
+- Water: caustics from the real waves on everything under the water, and light rays (god
+  rays) in the water with shafts from the waves and the shadows of objects (settings
+  Caustics, Caustic sharpness, Light rays).
 - Ray marching: new option "Step minus detail" (Mandelbulb3D's "step sub DEstop"), imported.
 - Glow: new setting Offset per distance (Mandelbulb3D's fog offset Z), imported; several
   Mandelbulb3D scenes get their depth glow back.

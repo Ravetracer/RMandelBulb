@@ -267,11 +267,19 @@ pub struct WaterMedium {
     /// How much light from above weakens with depth (1 = like the view through the water;
     /// 0 = equally bright at every depth).
     pub depth_dark: f64,
+    /// Strength of the caustics: light focused by the waves on everything under the water
+    /// (0 = none, 1 = natural).
+    pub caustics: f64,
+    /// Sharpness of the caustics (0 = soft, 1 = fine lines).
+    pub caustic_sharpness: f64,
+    /// Strength of the light rays (god rays) in the water: sunlight scattered by the water,
+    /// broken into shafts by the waves and by the shadows of objects (0 = none).
+    pub light_rays: f64,
 }
 
 impl Default for WaterMedium {
     fn default() -> Self {
-        WaterMedium { see_through: false, ior: 1.33, color: [0.03, 0.22, 0.3], filter: [0.12, 0.6, 0.78], visibility: 3.0, murk: 0.25, depth_dark: 1.0 }
+        WaterMedium { see_through: false, ior: 1.33, color: [0.03, 0.22, 0.3], filter: [0.12, 0.6, 0.78], visibility: 3.0, murk: 0.25, depth_dark: 1.0, caustics: 1.0, caustic_sharpness: 0.5, light_rays: 0.4 }
     }
 }
 
@@ -283,10 +291,89 @@ impl WaterMedium {
         self.filter.map(|f| -(f as f64).clamp(1e-4, 1.0).ln() / vis + self.murk.max(0.0) * 3.0 / vis)
     }
 
+    /// Light scattered per scene unit (all colors alike): the murk plus a little that even
+    /// clear water scatters (the light rays come from it).
+    pub fn scattering(&self) -> f64 {
+        (self.murk.max(0.0) * 3.0 + 0.3) / self.visibility.max(1e-6)
+    }
+
     /// Fading per unit of depth of the light from above.
     pub fn depth_fade(&self) -> [f64; 3] {
         self.extinction().map(|e| e * self.depth_dark.max(0.0))
     }
+
+    /// Distance (local units of the water) between the surface points whose light the
+    /// caustics compare: from 6 % of the wave length (soft) down to 0.8 % (fine lines).
+    pub fn caustic_step(&self, wavelength: f64) -> f64 {
+        wavelength.max(1e-6) * (0.06 - 0.052 * self.caustic_sharpness.clamp(0.0, 1.0))
+    }
+}
+
+/// Most a caustic brightens the light (march.wgsl `CAUSTIC_MAX`).
+pub const CAUSTIC_MAX: f64 = 6.0;
+
+/// Refraction of the unit direction `i` at the unit normal `n` (facing against `i`) with
+/// `eta` = index before / index after (None at total internal reflection; march.wgsl
+/// `refract_dir`).
+pub fn refract_dir(i: V3, n: V3, eta: f64) -> Option<V3> {
+    let ci = -i.dot(n);
+    let k = 1.0 - eta * eta * (1.0 - ci * ci);
+    (k > 0.0).then(|| (i * eta + n * (eta * ci - k.sqrt())).normalize())
+}
+
+/// Brightness of the light the waves focus at the local point `q` below the open sea
+/// (caustics; mirrors march.wgsl `water_caustic`), 1 for flat water: light from the local
+/// direction `l` (unit, toward the light) refracts into the water at the waves; three
+/// surface points `e` apart send their light to three points at `q`'s depth, and the
+/// brightness is the ratio of the areas between them (light spread or focused). The surface
+/// points sit where a flat surface would refract the light toward `q`, moved by
+/// (`jx`, `jy`) × `e` (jitter against aliasing). The contrast fades with depth (over four
+/// wave lengths) and by `strength`. With `shaft` > 0 the light lands at that depth below the
+/// surface instead of at `q`'s: the pattern stays the same along the light (light shafts).
+#[allow(clippy::too_many_arguments)]
+pub fn water_caustic(a: &[f64; 12], q: V3, l: V3, ior: f64, e: f64, jx: f64, jy: f64, strength: f64, shaft: f64) -> f64 {
+    if l.z <= 0.0 || strength <= 0.0 {
+        return 1.0;
+    }
+    let i = -l;
+    let eta = 1.0 / ior.max(1.0);
+    let Some(t0) = refract_dir(i, v3(0.0, 0.0, 1.0), eta) else { return 1.0 };
+    // Ten heights from one loop (one call site on the GPU): the depth, then per surface
+    // point its own and two neighbors' (normal by differences).
+    let mut hs = [0.0; 10];
+    let (mut sx, mut sy, mut depth) = (0.0, 0.0, 0.0);
+    for (k, hk) in hs.iter_mut().enumerate() {
+        let (x, y) = if k == 0 {
+            (q.x, q.y)
+        } else {
+            let c = (k - 1) / 3;
+            let n = (k - 1) % 3;
+            (sx + if c == 1 { e } else { 0.0 } + if n == 1 { e } else { 0.0 }, sy + if c == 2 { e } else { 0.0 } + if n == 2 { e } else { 0.0 })
+        };
+        *hk = water_height(a, x, y, NO_SHORE);
+        if k == 0 {
+            depth = *hk - q.z;
+            if depth <= 0.0 {
+                return 1.0;
+            }
+            sx = q.x - t0.x * depth / -t0.z + jx * e;
+            sy = q.y - t0.y * depth / -t0.z + jy * e;
+        }
+    }
+    let floor = if shaft > 0.0 { hs[1] - shaft } else { q.z };
+    let mut land = [(0.0, 0.0); 3];
+    for (c, lc) in land.iter_mut().enumerate() {
+        let (x, y) = (sx + if c == 1 { e } else { 0.0 }, sy + if c == 2 { e } else { 0.0 });
+        let h0 = hs[1 + 3 * c];
+        let n = v3(-(hs[2 + 3 * c] - h0) / e, -(hs[3 + 3 * c] - h0) / e, 1.0).normalize();
+        let Some(t) = refract_dir(i, n, eta) else { return 1.0 };
+        let k = (h0 - floor).max(0.0) / (-t.z).max(1e-6);
+        *lc = (x + t.x * k, y + t.y * k);
+    }
+    let det = ((land[1].0 - land[0].0) * (land[2].1 - land[0].1) - (land[1].1 - land[0].1) * (land[2].0 - land[0].0)) / (e * e);
+    let bright = (1.0 / det.abs().max(1e-6)).min(CAUSTIC_MAX);
+    let fade = (-depth / (4.0 * a[1].max(1e-6))).exp();
+    (1.0 + (bright - 1.0) * strength * fade).max(0.0)
 }
 
 /// Signed distance of primitive `kind` with parameters `a` at the local point `q`.
@@ -960,6 +1047,38 @@ mod tests {
     use super::*;
 
     #[test]
+    fn caustics_keep_the_light_and_shafts_follow_it() {
+        let a = Primitive::water().params();
+        let l = v3(0.3, 0.2, 0.9).normalize();
+        // Flat water (no waves): no caustics.
+        let mut flat = a;
+        flat[0] = 0.0;
+        assert!((water_caustic(&flat, v3(0.3, 0.4, -1.0), l, 1.33, 0.07, 0.0, 0.0, 1.0, 0.0) - 1.0).abs() < 1e-9);
+        // Waves focus and spread the light, about as much as they take away.
+        let (mut sum, mut lo, mut hi) = (0.0, f64::MAX, 0.0f64);
+        let n = 3000;
+        for i in 0..n {
+            let q = v3((i % 61) as f64 * 0.0731, (i / 61) as f64 * 0.0517, -0.5);
+            let c = water_caustic(&a, q, l, 1.33, 0.07, 0.0, 0.0, 1.0, 0.0);
+            sum += c;
+            lo = lo.min(c);
+            hi = hi.max(c);
+        }
+        let mean = sum / n as f64;
+        assert!((0.9..1.2).contains(&mean) && lo < 0.8 && hi > 1.5, "mean {mean} range {lo}..{hi}");
+        // Shafts: the same pattern along the light (refracted) below the surface.
+        let t = refract_dir(-l, v3(0.0, 0.0, 1.0), 1.0 / 1.33).unwrap();
+        let q = v3(0.4, 0.3, -0.4);
+        let c1 = water_caustic(&a, q, l, 1.33, 0.07, 0.0, 0.0, 1.0, 1.0);
+        let c2 = water_caustic(&a, q + t * 0.5, l, 1.33, 0.07, 0.0, 0.0, 1.0, 1.0);
+        let fade = (-(0.5 * -t.z) / (4.0 * a[1])).exp();
+        assert!(((c2 - 1.0) - (c1 - 1.0) * fade).abs() < 0.03, "{c1} {c2}");
+        // Another point beside it shows another part of the pattern.
+        let c3 = water_caustic(&a, q + v3(0.13, 0.05, 0.0), l, 1.33, 0.07, 0.0, 0.0, 1.0, 1.0);
+        assert!((c3 - c1).abs() > 0.03, "{c1} {c3}");
+    }
+
+    #[test]
     fn primitive_distances_are_exact_or_safe() {
         let sphere = Primitive::Sphere { radius: 0.5 };
         assert!((sphere.distance(v3(2.0, 0.0, 0.0)) - 1.5).abs() < 1e-12);
@@ -1224,5 +1343,6 @@ mod scene_tests {
         assert!(c[0] > 60 && c[1] < c[0] / 3 && c[2] < c[0] / 3, "{c:?}");
     }
 }
+
 
 

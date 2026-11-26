@@ -37,9 +37,37 @@ impl MediumFrame {
     pub fn new(prog: &Program, lights: &[super::FrameLight]) -> Option<MediumFrame> {
         let (obj, m) = prog.medium?;
         let inv = prog.objects[obj].inv;
-        let mut mf = MediumFrame { obj, ext: m.extinction(), fade: m.depth_fade(), color: m.color.map(|c| c as f64), ior: m.ior.max(1.0), up: v3(inv[2][0], inv[2][1], inv[2][2]).normalize(), wet_lights: Vec::new() };
+        let len = match &prog.objects[obj].shape {
+            crate::fractal::ObjectShape::Primitive(_, a) => a[1],
+            _ => 1.0,
+        };
+        let mut mf = MediumFrame {
+            obj,
+            ext: m.extinction(),
+            fade: m.depth_fade(),
+            color: m.color.map(|c| c as f64),
+            ior: m.ior.max(1.0),
+            up: v3(inv[2][0], inv[2][1], inv[2][2]).normalize(),
+            wet_lights: Vec::new(),
+            caustics: m.caustics.max(0.0),
+            caustic_step: m.caustic_step(len),
+            rays: m.light_rays.max(0.0),
+            scatter: m.scattering(),
+        };
         mf.wet_lights = lights.iter().map(|li| li.point.is_some_and(|lp| mf.depth(prog, lp) > 0.0)).collect();
         Some(mf)
+    }
+
+    /// Caustic brightness at world point `p` under the water for light toward `ldir`
+    /// (`compose::water_caustic` in the water's coordinates; march.wgsl `caustic_at`).
+    /// `shaft`: see `water_caustic` (wave lengths; 0 for surfaces).
+    #[allow(clippy::too_many_arguments)]
+    pub fn caustic(&self, prog: &Program, p: V3, ldir: V3, jx: f64, jy: f64, shaft: f64) -> f64 {
+        let ob = &prog.objects[self.obj];
+        let crate::fractal::ObjectShape::Primitive(_, a) = &ob.shape else { return 1.0 };
+        let l = crate::compose::rotate(&ob.inv, ldir);
+        let strength = if shaft > 0.0 { self.caustics * RAYS_CONTRAST } else { self.caustics };
+        crate::compose::water_caustic(a, ob.local(p), l, self.ior, self.caustic_step, jx, jy, strength, shaft * a[1])
     }
 
     /// Depth of world point `p` below the water surface in world units (negative above it):
@@ -68,7 +96,40 @@ pub struct MediumFrame {
     pub up: V3,
     /// Per frame light: whether the light sits under the water.
     pub wet_lights: Vec<bool>,
+    /// Caustics: strength (0 = off) and the step between compared surface points (local
+    /// units); light rays: strength (0 = off).
+    pub caustics: f64,
+    pub caustic_step: f64,
+    pub rays: f64,
+    /// Light scattered per unit (`WaterMedium::scattering`).
+    pub scatter: f64,
 }
+
+/// Distance of the light ray sample along a ray part `end` long in the water from the random
+/// number `ut` (by the mean fading) and its weight (1 / probability density; march.wgsl
+/// `water_ray_distance`).
+fn water_ray_distance(m: &MediumFrame, end: f64, ut: f64) -> Option<(f64, f64)> {
+    let k = (m.ext[0] + m.ext[1] + m.ext[2]) / 3.0;
+    let norm = 1.0 - (-k * end).exp();
+    if k <= 0.0 || norm <= 1e-9 {
+        return None;
+    }
+    let s = -(1.0 - ut * norm).ln() / k;
+    Some((s, norm / (k * (-k * s).exp())))
+}
+
+/// The light rays take the caustic pattern this deep (wave lengths) below the surface where
+/// their light came in, so it stays the same along the light: shafts (march.wgsl
+/// `RAYS_SHAFT`).
+pub const RAYS_SHAFT: f64 = 0.5;
+
+/// The shafts' contrast relative to the caustics (darker gaps between them; march.wgsl
+/// `RAYS_CONTRAST`).
+pub const RAYS_CONTRAST: f64 = 2.5;
+
+/// Forward scattering of the light rays in the water (Henyey-Greenstein g; march.wgsl
+/// `RAYS_FORWARD`).
+pub const RAYS_FORWARD: f64 = 0.6;
 
 /// Color of the foam on water crests (march.wgsl `WATER_FOAM`).
 const WATER_FOAM: [f64; 3] = [0.85, 0.88, 0.9];
@@ -284,6 +345,27 @@ impl<'a> Shader<'a> {
             }
         }
         top
+    }
+
+    /// Light rays (god rays) at the point `x`, `s` along a ray part in the water (direction
+    /// `d`), for light `i` toward `ldir`: the light reaching it through the surface (depth,
+    /// caustics), scattered forward toward the camera and faded on the way back; the shadow,
+    /// the light's color and falloff come on top (march.wgsl `water_ray_tint`).
+    #[allow(clippy::too_many_arguments)]
+    fn water_ray_tint(&self, m: &MediumFrame, i: usize, x: V3, s: f64, ldir: V3, max_l: f64, d: V3) -> [f64; 3] {
+        let depth = self.water_depth(x);
+        if depth <= 0.0 {
+            return [0.0; 3];
+        }
+        let pass = self.water_light(m, i, depth, ldir, max_l);
+        if pass[0].max(pass[1]).max(pass[2]) <= 0.0 {
+            return [0.0; 3];
+        }
+        let caustic = if m.wet_lights.get(i).copied().unwrap_or(false) { 1.0 } else { m.caustic(self.prog, x, ldir, 0.0, 0.0, RAYS_SHAFT) };
+        let g = RAYS_FORWARD;
+        let phase = (1.0 - g * g) / (1.0 + g * g - 2.0 * g * ldir.dot(d)).max(1e-12).powf(1.5);
+        let w = phase * m.rays * m.scatter * caustic;
+        [0, 1, 2].map(|c| w * pass[c] * (-m.ext[c] * s).exp())
     }
 
     /// The water along a ray part from `a` along `d`, `len` long: the share of the light behind
@@ -1405,7 +1487,15 @@ impl<'a> Shader<'a> {
                     let mut sh = if li.shadows { self.soft_shadow(ev, p, ldir, h.eps, li.softness, max_t, h.t) } else { [1.0; 3] };
                     if let Some((m, depth)) = wet {
                         let pass = self.water_light(m, li_index, depth, ldir, max_t);
-                        sh = [0, 1, 2].map(|k| sh[k] * pass[k]);
+                        // Caustics: light from above the water, focused by the waves.
+                        let mut caustic = 1.0;
+                        if m.caustics > 0.0 {
+                            let (jx, jy) = (rng.next_f64() - 0.5, rng.next_f64() - 0.5);
+                            if !m.wet_lights.get(li_index).copied().unwrap_or(false) {
+                                caustic = m.caustic(self.prog, p, ldir, jx, jy, 0.0);
+                            }
+                        }
+                        sh = [0, 1, 2].map(|k| sh[k] * pass[k] * caustic);
                     }
                     if sh[0].max(sh[1]).max(sh[2]) <= 0.0 {
                         continue;
@@ -1434,62 +1524,76 @@ impl<'a> Shader<'a> {
         for k in 0..3 {
             c[k] += halo[k];
         }
-        // Light scattered by the fog: one random light, one point along the ray (positional
-        // lights: equiangular sampling around the light, which keeps the haze near it smooth;
-        // directional lights: in proportion to the fog added there), lit through a shadow ray.
-        if !inside && !water && sc.fog.scatter > 0.0 && !fr.lights.is_empty() {
-            let (ut, ul, r1, r2) = (rng.next_f64(), rng.next_f64(), rng.next_f64(), rng.next_f64());
-            let end = hit.as_ref().map_or(far, |h| h.t - t_base);
-            let a = sc.fog.amount(0.0, near, far).clamp(0.0, 1.0);
-            let b = sc.fog.amount(end, near, far).clamp(0.0, 1.0);
-            let count = fr.lights.len();
-            let li = &fr.lights[((ul * count as f64) as usize).min(count - 1)];
-            let start = o + d * t_base;
-            let sample = match li.point {
-                _ if b - a <= 1e-6 => None,
-                Some(p0) => {
-                    let center = match li.shape {
-                        super::LightShape::Line { end } => p0 + (end - p0) * 0.5,
-                        _ => p0,
-                    };
-                    let delta = (center - start).dot(d);
-                    let dist = (center - start - d * delta).length().max(1e-6 * end);
-                    let (ta, tb) = ((-delta / dist).atan(), ((end - delta) / dist).atan());
-                    let s = delta + dist * (ta + ut * (tb - ta)).tan();
-                    let pdf = dist / ((tb - ta).max(1e-12) * (dist * dist + (s - delta) * (s - delta)));
-                    Some((s.clamp(0.0, end), sc.fog.density_at(s, near, far) / pdf))
-                }
-                None => Some((sc.fog.distance_for(a + ut * (b - a), near, far, end), b - a)),
-            };
-            if let Some((s, amount)) = sample {
-                let x = start + d * s;
-                let (r1, r2) = if li.sampled() { (r1, r2) } else { (0.5, 0.5) };
-                let (ldir, atten, max_l) = li.sample(x, r1, r2, sc.march.max_distance);
-                if atten > 0.0 {
-                    let sh = if li.shadows { self.soft_shadow(ev, x, ldir, self.eps_at(t_base + s), li.softness, max_l, t_base + s) } else { [1.0; 3] };
-                    let w = atten * sc.fog.scatter_phase(ldir.dot(d)) * sc.fog.scatter * amount * count as f64;
-                    for k in 0..3 {
-                        c[k] += li.color[k] * w * sh[k];
-                    }
-                }
-            }
-        }
-        // The fractal haze in front of everything the ray saw.
-        let mut albedo = albedo;
-        if haze_on {
-            let keep = pick.haze_keep;
-            for k in 0..3 {
-                c[k] = c[k] * keep + pick.haze_light[k];
-                albedo[k] = albedo[k] * keep + (1.0 - keep) * (pick.haze_light[k] / (1.0 - keep).max(1e-9)).clamp(0.0, 1.0);
-            }
-        }
         // In the water: faded by the way through it, plus the water's own light.
-        if water && let Some(m) = &self.medium {
+        let mut albedo = albedo;
+        let medium = self.medium.as_ref().filter(|_| water);
+        if let Some(m) = medium {
             let len = hit.as_ref().map_or(far, |h| h.t - t_base);
             let (keep, add) = self.medium_path(m, o + d * t_base, d, len);
             for k in 0..3 {
                 c[k] = c[k] * keep[k] + add[k];
                 albedo[k] = albedo[k] * keep[k] + (1.0 - keep[k]) * m.color[k].clamp(0.0, 1.0);
+            }
+        }
+        // Light scattered by the fog, or in the water the light rays: one random light, one
+        // point along the ray (fog: positional lights by equiangular sampling around the
+        // light, which keeps the haze near it smooth, directional lights in proportion to the
+        // fog added there; water: by the mean fading), lit through a shadow ray (one shadow
+        // call for both: compile time).
+        let scatter_on = if water { medium.is_some_and(|m| m.rays > 0.0) } else { !inside && sc.fog.scatter > 0.0 };
+        if scatter_on && !fr.lights.is_empty() {
+            let (ut, ul, r1, r2) = (rng.next_f64(), rng.next_f64(), rng.next_f64(), rng.next_f64());
+            let end = hit.as_ref().map_or(far, |h| h.t - t_base);
+            let count = fr.lights.len();
+            let i = ((ul * count as f64) as usize).min(count - 1);
+            let li = &fr.lights[i];
+            let start = o + d * t_base;
+            let sample = match medium {
+                Some(m) => water_ray_distance(m, end, ut),
+                None => {
+                    let a = sc.fog.amount(0.0, near, far).clamp(0.0, 1.0);
+                    let b = sc.fog.amount(end, near, far).clamp(0.0, 1.0);
+                    match li.point {
+                        _ if b - a <= 1e-6 => None,
+                        Some(p0) => {
+                            let center = match li.shape {
+                                super::LightShape::Line { end } => p0 + (end - p0) * 0.5,
+                                _ => p0,
+                            };
+                            let delta = (center - start).dot(d);
+                            let dist = (center - start - d * delta).length().max(1e-6 * end);
+                            let (ta, tb) = ((-delta / dist).atan(), ((end - delta) / dist).atan());
+                            let s = delta + dist * (ta + ut * (tb - ta)).tan();
+                            let pdf = dist / ((tb - ta).max(1e-12) * (dist * dist + (s - delta) * (s - delta)));
+                            Some((s.clamp(0.0, end), sc.fog.density_at(s, near, far) / pdf))
+                        }
+                        None => Some((sc.fog.distance_for(a + ut * (b - a), near, far, end), b - a)),
+                    }
+                }
+            };
+            if let Some((s, amount)) = sample {
+                let x = start + d * s;
+                let (r1, r2) = if li.sampled() { (r1, r2) } else { (0.5, 0.5) };
+                let (ldir, atten, max_l) = li.sample(x, r1, r2, sc.march.max_distance);
+                let tint = match medium {
+                    Some(m) => self.water_ray_tint(m, i, x, s, ldir, max_l, d),
+                    None => [sc.fog.scatter_phase(ldir.dot(d)) * sc.fog.scatter; 3],
+                };
+                if atten > 0.0 && tint[0].max(tint[1]).max(tint[2]) > 0.0 {
+                    let sh = if li.shadows { self.soft_shadow(ev, x, ldir, self.eps_at(t_base + s), li.softness, max_l, t_base + s) } else { [1.0; 3] };
+                    let w = atten * amount * count as f64;
+                    for k in 0..3 {
+                        c[k] += li.color[k] * w * tint[k] * sh[k];
+                    }
+                }
+            }
+        }
+        // The fractal haze in front of everything the ray saw.
+        if haze_on {
+            let keep = pick.haze_keep;
+            for k in 0..3 {
+                c[k] = c[k] * keep + pick.haze_light[k];
+                albedo[k] = albedo[k] * keep + (1.0 - keep) * (pick.haze_light[k] / (1.0 - keep).max(1e-9)).clamp(0.0, 1.0);
             }
         }
         if inside {

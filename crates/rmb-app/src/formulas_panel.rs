@@ -666,6 +666,9 @@ fn water_medium_params(ui: &mut Ui, m: &mut rmb_core::compose::WaterMedium) {
         widgets::slider_log(ui, "Visibility", "Distance (scene units) after which light is filtered down to the filter color", &mut m.visibility, 0.01..=1000.0, d.visibility);
         widgets::slider(ui, "Murkiness", "Fading of all colors alike, like floating particles: 0 = clear, 1 = murky", &mut m.murk, 0.0..=2.0, d.murk);
         widgets::slider(ui, "Depth darkening", "How much the light from above weakens with depth (1 = as much as the view through the water; 0 = equally bright at every depth)", &mut m.depth_dark, 0.0..=3.0, d.depth_dark);
+        widgets::slider(ui, "Caustics", "Light focused by the waves into moving bright lines on everything under the water: fractals, objects, the ground (0 = none, 1 = natural, 2 = strong). Also shapes the light rays", &mut m.caustics, 0.0..=2.0, d.caustics);
+        widgets::slider(ui, "Caustic sharpness", "0 = soft, wide patches; 1 = fine, sharp lines (follow smaller waves; can flicker in animations)", &mut m.caustic_sharpness, 0.0..=1.0, d.caustic_sharpness);
+        widgets::slider(ui, "Light rays", "Sunlight scattered in the water: shafts from the waves and shadows of the objects in the water, brightest looking toward the light (0 = none). Costs a shadow ray per sample", &mut m.light_rays, 0.0..=3.0, d.light_rays);
     });
 }
 

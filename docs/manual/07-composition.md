@@ -191,6 +191,14 @@ light that reaches a point under it is weakened by the way it travels through th
 
 ![The same scene from above the water and from below it](images/water-underwater.jpg)
 
+The waves focus the sunlight into **caustics**: bright, moving lines on everything under
+the water (fractals, objects, the ground). They come from the real waves, so they move with
+them in animations and grow coarser and softer with depth. The same light, scattered by the
+water, shows as **light rays**: shafts that come down from the waves, cut by the shadows of
+the objects in the water. They are brightest when you look toward the light.
+
+![Light rays in the water, looking up toward the sun](images/water-rays.jpg)
+
 The **Underwater** section of the water object holds the settings:
 
 | Setting | What it does | Start value |
@@ -202,12 +210,20 @@ The **Underwater** section of the water object holds the settings:
 | Visibility | Distance (scene units) after which light is filtered down to the filter color. | 3 |
 | Murkiness | Fading of all colors alike, like floating particles (0 = clear, 1 = murky). | 0.25 |
 | Depth darkening | How much the light from above weakens with depth (0 = equally bright at every depth). | 1 |
+| Caustics | Light focused by the waves into moving bright lines on everything under the water (0 = none, 1 = natural, 2 = strong). Also shapes the light rays. | 1 |
+| Caustic sharpness | 0 = soft, wide patches; 1 = fine, sharp lines. | 0.5 |
+| Light rays | Sunlight scattered in the water: shafts from the waves and the shadows of objects, brightest looking toward the light (0 = none). | 0.4 |
 
 !!! note
     Only the first see-through water of a scene is a medium you can dive into; further
     water objects are surfaces. The depth is measured from the open sea's surface, without
     the shore waves. **Bounces** in the Color tab sets how many reflections and passes
     through the surface a ray follows (default 2).
+
+!!! note
+    Caustics and light rays come from directional lights and lights above the water; a
+    light under the water lights its surroundings without them. Light rays cost a shadow
+    ray per sample, and need more samples than the rest of the image to get smooth.
 
 !!! tip
     For a scale to start from: the visibility is the distance at which the red of an
