@@ -12,6 +12,8 @@ and the release workflow uses it as the release notes.
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-26
+
 - Water: new Underwater settings. See-through water bends rays into it (refraction) and the
   camera can dive below the surface; light and sight fade into the water's color with
   distance and depth, red first (filter color, visibility, murkiness, depth darkening). From
