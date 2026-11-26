@@ -99,11 +99,12 @@ struct U {
     tile: vec4<u32>,       // rendered tile of a larger image: left, top, full width, full height
     dof2: vec4<f32>,       // aperture blades (0 = round), their rotation (radians)
     // Water medium (cpu::MediumFrame): [0] extinction, w: refraction index; [1] depth fade,
-    // w: lights under the water (bits); [2] water color; [3] the water's up axis; [4] caustics
+    // w: lights under the water (bits); [2] water color, w: clock; [3] the water's up axis,
+    // w: lens drops; [4] caustics
     // (0 = off), their step (local units), light rays (0 = off), scattering per unit;
     // [5] bubbles, [6] particles: cell, share, smallest and largest radius; [7] their rise,
-    // z: the camera's front glass size.
-    wmed: array<vec4<f32>, 8>,
+    // z: the camera's front glass size, w: flat glass; [8] x: focus of the lens drops.
+    wmed: array<vec4<f32>, 9>,
 }
 
 @group(0) @binding(0) var<uniform> u: U;
@@ -3831,6 +3832,7 @@ fn sample_pixel(px: u32, py: u32, sample: u32, k: u32) -> vec3<f32> {
     var in_water = false;
     var line = 1.0;
     var crossed = false;
+    var glint = 0.0;
     if (MEDIUM) {
         let lens = u.wmed[7].z;
         ro = o + (cr * (sx * u.cam_right.w) + cu * sy) * (lens * 0.5);
@@ -3838,6 +3840,40 @@ fn sample_pixel(px: u32, py: u32, sample: u32, k: u32) -> vec3<f32> {
         in_water = depth > 0.0;
         crossed = abs(depth) < lens;
         line = waterline_shade(depth, lens);
+        if (in_water && u.wmed[7].w > 0.5) {
+            // A flat glass: the ray bends into the water.
+            let t = refract_dir(rd, -cf, 1.0 / max(u.wmed[0].w, 1.0));
+            if (t.z != 0.0 || t.x != 0.0 || t.y != 0.0) {
+                rd = t;
+            }
+        } else if (!in_water && u.wmed[3].w > 0.0 && lens > 0.0) {
+            // Drops on the glass above the water.
+            let share = u.wmed[3].w * clamp(1.0 + depth / (lens * 5.0), 0.0, 1.0);
+            let ld = lens_drop(sx * u.cam_right.w, sy, u.wmed[2].w, share);
+            if (ld.z > 0.5) {
+                // Out of focus: a soft edge and a blurred view (mirrors Shader::sample_eye).
+                let u1 = rnd();
+                let u2 = rnd();
+                let u3 = rnd();
+                let focus = u.wmed[8].x;
+                let r = sqrt(ld.x * ld.x + ld.y * ld.y);
+                let soft = 0.08 + 0.52 * (1.0 - focus);
+                let a = clamp((1.0 - r) / soft, 0.0, 1.0);
+                if (u1 < a * a * (3.0 - 2.0 * a)) {
+                    let blur = 0.05 * (1.0 - focus) * sqrt(u2);
+                    let ang = u3 * 6.283185307179586;
+                    rd = normalize(rd - cr * (ld.x * 0.12 + blur * cos(ang)) - cu * (ld.y * 0.12 + blur * sin(ang)));
+                    let x = clamp((r * r - 0.5) / 0.5, 0.0, 1.0);
+                    let rim = x * x * (3.0 - 2.0 * x) * (0.6 + 0.4 * clamp(-ld.y, 0.0, 1.0));
+                    let ring = clamp((r - 0.6) / 0.4, 0.0, 1.0);
+                    let blurred = 0.5 * (1.0 - r * r) - 0.2 * ring * ring * (3.0 - 2.0 * ring);
+                    line *= 1.0 + (1.0 - focus) * blurred - 0.6 * focus * rim;
+                    let hx = ld.x + 0.35;
+                    let hy = ld.y - 0.35;
+                    glint = 0.5 * focus * exp(-(hx * hx + hy * hy) / 0.03);
+                }
+            }
+        }
     }
     water_mode = select(0u, 1u, in_water);
     var prev: Traced;
@@ -3960,7 +3996,40 @@ fn sample_pixel(px: u32, py: u32, sample: u32, k: u32) -> vec3<f32> {
     }
     flip = false;
     water_mode = 0u;
-    return c * line;
+    return c * line + glint * u.sky.xyz * u.ao.w;
+}
+
+// Mirrors cpu::LENS_DROP_CELL.
+const LENS_DROP_CELL: f32 = 0.22;
+
+// Mirrors cpu::lens_drop: xy the position in the drop, z 1 when the point is in one.
+fn lens_drop(u_: f32, v: f32, time: f32, share: f32) -> vec3<f32> {
+    if (share <= 0.0) {
+        return vec3<f32>(0.0);
+    }
+    let s = LENS_DROP_CELL;
+    let ci = i32(floor(u_ / s));
+    for (var di = -1; di <= 1; di++) {
+        let i = ci + di;
+        let vv = v + time * (0.02 + 0.08 * hash3(i, 0, 71));
+        let cj = i32(floor(vv / s));
+        for (var dj = -1; dj <= 1; dj++) {
+            let j = cj + dj;
+            if (hash3(i, j, 72) >= share) {
+                continue;
+            }
+            let r = s * (0.1 + 0.35 * hash3(i, j, 73) * hash3(i, j, 73));
+            let cx = (f32(i) + 0.5 + (hash3(i, j, 74) - 0.5) * 0.5) * s;
+            let cy = (f32(j) + 0.5 + (hash3(i, j, 75) - 0.5) * 0.5) * s;
+            let wide = 0.75 + 0.6 * hash3(i, j, 76);
+            let dx = (u_ - cx) / (r * wide);
+            let dy = (vv - cy) / (r / wide);
+            if (dx * dx + dy * dy < 1.0) {
+                return vec3<f32>(dx, dy, 1.0);
+            }
+        }
+    }
+    return vec3<f32>(0.0);
 }
 
 // Mirrors cpu::waterline_shade: the line where the water clings to the camera's glass.

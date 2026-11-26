@@ -64,6 +64,10 @@ impl MediumFrame {
                 },
             ],
             lens: m.lens.max(0.0),
+            flat_lens: m.flat_lens,
+            lens_drops: m.lens_drops.clamp(0.0, 1.0),
+            drop_focus: m.drop_focus.clamp(0.0, 1.0),
+            time: m.time,
         };
         mf.wet_lights = lights.iter().map(|li| li.point.is_some_and(|lp| mf.depth(prog, lp) > 0.0)).collect();
         Some(mf)
@@ -116,8 +120,67 @@ pub struct MediumFrame {
     pub scatter: f64,
     /// Floating drops: bubbles, particles.
     pub drops: [DropKind; 2],
-    /// Size of the camera's front glass (`WaterMedium::lens`).
+    /// Size of the camera's front glass (`WaterMedium::lens`), whether it is flat, the lens
+    /// drops and the clock.
     pub lens: f64,
+    pub flat_lens: bool,
+    pub lens_drops: f64,
+    pub drop_focus: f64,
+    pub time: f64,
+}
+
+/// A water drop on the camera's glass at the screen position (`u` = sx × aspect, `v` = sy)
+/// at time `time` (march.wgsl `lens_drop`): drops sit in a grid of `LENS_DROP_CELL`, `share`
+/// of the cells hold one, each column of cells slides down at its own speed; sizes from tiny
+/// to large (few), each with its own width to height. Returns the position in the drop (x,
+/// y; length below 1).
+pub fn lens_drop(u: f64, v: f64, time: f64, share: f64) -> Option<(f64, f64)> {
+    if share <= 0.0 {
+        return None;
+    }
+    let s = LENS_DROP_CELL;
+    let ci = (u / s).floor() as i32;
+    for di in -1..=1 {
+        let i = ci + di;
+        let vv = v + time * (0.02 + 0.08 * super::hash3(i, 0, 71) as f64);
+        let cj = (vv / s).floor() as i32;
+        for dj in -1..=1 {
+            let j = cj + dj;
+            let h = |n: i32| super::hash3(i, j, n) as f64;
+            if h(72) >= share {
+                continue;
+            }
+            let r = s * (0.1 + 0.35 * h(73) * h(73));
+            let cx = (i as f64 + 0.5 + (h(74) - 0.5) * 0.5) * s;
+            let cy = (j as f64 + 0.5 + (h(75) - 0.5) * 0.5) * s;
+            let wide = 0.75 + 0.6 * h(76);
+            let (dx, dy) = ((u - cx) / (r * wide), (vv - cy) / (r / wide));
+            if dx * dx + dy * dy < 1.0 {
+                return Some((dx, dy));
+            }
+        }
+    }
+    None
+}
+
+/// Grid of the lens drops in screen units (march.wgsl `LENS_DROP_CELL`).
+pub const LENS_DROP_CELL: f64 = 0.22;
+
+/// A lens drop at (`dx`, `dy`) in it with `focus` (march.wgsl `lens_drop_look`): the share of
+/// samples that look through the drop (soft edge out of focus), the brightness factor
+/// (brighter when blurred; in focus a dark rim, heavier at the bottom) and the highlight
+/// (in focus, up left).
+pub fn lens_drop_look(dx: f64, dy: f64, focus: f64) -> (f64, f64, f64) {
+    let r = (dx * dx + dy * dy).sqrt();
+    let soft = 0.08 + 0.52 * (1.0 - focus);
+    let a = ((1.0 - r) / soft).clamp(0.0, 1.0);
+    let x = ((r * r - 0.5) / 0.5).clamp(0.0, 1.0);
+    let rim = x * x * (3.0 - 2.0 * x) * (0.6 + 0.4 * (-dy).clamp(0.0, 1.0));
+    let (hx, hy) = (dx + 0.35, dy - 0.35);
+    // Out of focus like bokeh: brighter inside, a slightly darker ring.
+    let ring = ((r - 0.6) / 0.4).clamp(0.0, 1.0);
+    let blurred = 0.5 * (1.0 - r * r) - 0.2 * ring * ring * (3.0 - 2.0 * ring);
+    (a * a * (3.0 - 2.0 * a), 1.0 + (1.0 - focus) * blurred - 0.6 * focus * rim, 0.5 * focus * (-(hx * hx + hy * hy) / 0.03).exp())
 }
 
 /// The camera's front glass at the waterline (march.wgsl `waterline`): the point of the glass
@@ -1309,6 +1372,7 @@ impl<'a> Shader<'a> {
         // The ray starts on the glass (it may be on the other side of the surface than the
         // camera's center) and first leaves the surface when it is near.
         let mut line = 1.0;
+        let mut glint = 0.0;
         let mut in_water = false;
         let mut leave = false;
         if let Some(m) = &self.medium {
@@ -1317,6 +1381,29 @@ impl<'a> Shader<'a> {
             in_water = depth > 0.0;
             leave = depth.abs() < m.lens;
             line = waterline_shade(depth, m.lens);
+            if in_water && m.flat_lens {
+                // A flat glass: the ray bends into the water (the view under it magnifies).
+                if let Some(t) = crate::compose::refract_dir(d, -cam.forward, 1.0 / m.ior) {
+                    d = t;
+                }
+            } else if !in_water && m.lens_drops > 0.0 && m.lens > 0.0 {
+                // Drops on the glass above the water, fewer higher up: each a tiny lens that
+                // shows the view turned around.
+                let share = m.lens_drops * (1.0 + depth / (m.lens * 5.0)).clamp(0.0, 1.0);
+                if let Some((dx, dy)) = lens_drop(sx * fr.aspect, sy, m.time, share) {
+                    // Out of focus: a soft edge (a share of the samples look past the drop)
+                    // and a blurred view through it.
+                    let (u1, u2, u3) = (rng.next_f64(), rng.next_f64(), rng.next_f64());
+                    let (alpha, f, g) = lens_drop_look(dx, dy, m.drop_focus);
+                    if u1 < alpha {
+                        let blur = 0.05 * (1.0 - m.drop_focus) * u2.sqrt();
+                        let ang = u3 * std::f64::consts::TAU;
+                        d = (d - cam.right * (dx * 0.12 + blur * ang.cos()) - cam.up * (dy * 0.12 + blur * ang.sin())).normalize();
+                        line *= f;
+                        glint = g;
+                    }
+                }
+            }
         }
         ev.water_mode = if in_water { crate::fractal::WATER_INSIDE } else { crate::fractal::WATER_SOLID };
         let first = self.trace(ev, Seg { o, d, t0, max_t: sc.march.max_distance, t_base: 0.0, sx, sy, inside: false, glass, env: false, water: in_water, leave }, &mut rng);
@@ -1430,7 +1517,9 @@ impl<'a> Shader<'a> {
         }
         ev.water_mode = crate::fractal::WATER_SOLID;
         let (depth, hit) = first.surface.map_or((0.0, 0.0), |s| (s.t, 1.0));
-        Sample { color: c.map(|v| v * line), albedo: first.albedo, normal: first.normal, depth, hit }
+        let sky = sc.lighting.sky_color.map(|v| v as f64 * sc.lighting.ambient);
+        let color = [0, 1, 2].map(|k| c[k] * line + glint * sky[k]);
+        Sample { color, albedo: first.albedo, normal: first.normal, depth, hit }
     }
 
     /// Direction of the path after surface `s` (`inside`: the ray travels inside glass), the
@@ -2186,6 +2275,17 @@ mod tests {
         assert!(sh.water_depth(top) < 0.0 && sh.water_depth(bottom) > 0.0);
         assert!(waterline_shade(0.0, m.lens) < 0.5 && (waterline_shade(m.lens, m.lens) - 1.0).abs() < 1e-6);
         assert_eq!(waterline_shade(0.0, 0.0), 1.0);
+        // A flat glass narrows the view into the water (magnifies) by the refraction index.
+        let d = (cam.forward + cam.right * 0.3).normalize();
+        let t = crate::compose::refract_dir(d, -cam.forward, 1.0 / 1.33).unwrap();
+        let sin = |v: V3| (1.0 - v.dot(cam.forward).powi(2)).sqrt();
+        assert!((sin(d) / sin(t) - 1.33).abs() < 1e-9);
+        // Lens drops: none without a share, some with, and they slide down with time.
+        assert!((0..400).all(|i| lens_drop(i as f64 * 0.01 - 2.0, 0.3, 0.0, 0.0).is_none()));
+        let wet = |time: f64| (0..4000).filter(|i| lens_drop((i % 80) as f64 * 0.025 - 1.0, (i / 80) as f64 * 0.04 - 1.0, time, 0.5).is_some()).count();
+        assert!(wet(0.0) > 100);
+        let at = |time: f64| (0..4000).map(|i| lens_drop((i % 80) as f64 * 0.025 - 1.0, (i / 80) as f64 * 0.04 - 1.0, time, 0.5).is_some()).collect::<Vec<_>>();
+        assert_ne!(at(0.0), at(3.0));
     }
 
     #[test]

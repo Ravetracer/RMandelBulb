@@ -93,6 +93,9 @@ pub struct ModelRef {
 }
 
 /// Primitive shapes in their own coordinates (z is up).
+// The water carries its medium settings; a scene has at most a few primitives, so the size
+// does not matter and the type stays Copy.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Primitive {
     /// The ground: everything below z = 0 is solid.
@@ -300,11 +303,21 @@ pub struct WaterMedium {
     /// the picture splits into the view above and below the water, with a dark line where
     /// the water clings to the glass (0 = a point: no split).
     pub lens: f64,
+    /// The camera's front glass is flat: rays bend where they leave it into the water, so
+    /// everything under the water looks 1.33 times larger (like most underwater cameras);
+    /// off: a dome (no bending).
+    pub flat_lens: bool,
+    /// Water drops on the part of the glass above the water near the surface (0 = none, 1 =
+    /// many); they run down the glass with the clock.
+    pub lens_drops: f64,
+    /// Focus of the lens drops: 0 = soft, blurred blobs (drops on a camera lens are out of
+    /// focus), 1 = sharp drops with dark rims (like a window in focus).
+    pub drop_focus: f64,
 }
 
 impl Default for WaterMedium {
     fn default() -> Self {
-        WaterMedium { see_through: false, ior: 1.33, color: [0.03, 0.22, 0.3], filter: [0.12, 0.6, 0.78], visibility: 3.0, murk: 0.25, depth_dark: 1.0, caustics: 1.0, caustic_sharpness: 0.5, light_rays: 0.4, bubbles: 0.2, bubble_size: 0.012, bubble_speed: 0.25, particles: 0.15, particle_size: 0.0025, time: 0.0, lens: 0.2 }
+        WaterMedium { see_through: false, ior: 1.33, color: [0.03, 0.22, 0.3], filter: [0.12, 0.6, 0.78], visibility: 3.0, murk: 0.25, depth_dark: 1.0, caustics: 1.0, caustic_sharpness: 0.5, light_rays: 0.4, bubbles: 0.2, bubble_size: 0.012, bubble_speed: 0.25, particles: 0.15, particle_size: 0.0025, time: 0.0, lens: 0.2, flat_lens: true, lens_drops: 0.4, drop_focus: 0.0 }
     }
 }
 

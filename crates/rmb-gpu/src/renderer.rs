@@ -154,7 +154,7 @@ struct Uniforms {
     grid2: [f32; 4],
     tile: [u32; 4],
     dof2: [f32; 4],
-    wmed: [[f32; 4]; 8],
+    wmed: [[f32; 4]; 9],
 }
 
 /// Splits an f64 into the high and low f32 of a double-float.
@@ -166,12 +166,12 @@ fn split_dd(v: f64) -> (f32, f32) {
 /// The water medium (march.wgsl `u.wmed`): extinction and refraction index, depth fade and
 /// the lights under the water (bits), its color, its up axis; caustics, their step, light
 /// rays, scattering; bubbles and particles (cell, share, radii), their rise.
-fn medium_gpu(prog: &Program, lights: &[rmb_core::render::FrameLight]) -> [[f32; 4]; 8] {
-    let Some(m) = rmb_core::render::cpu::MediumFrame::new(prog, lights) else { return [[0.0; 4]; 8] };
+fn medium_gpu(prog: &Program, lights: &[rmb_core::render::FrameLight]) -> [[f32; 4]; 9] {
+    let Some(m) = rmb_core::render::cpu::MediumFrame::new(prog, lights) else { return [[0.0; 4]; 9] };
     let wet = m.wet_lights.iter().enumerate().filter(|(_, w)| **w).fold(0u32, |b, (i, _)| b | 1 << i);
     let f = |a: [f64; 3], w: f32| [a[0] as f32, a[1] as f32, a[2] as f32, w];
     let drop = |g: &rmb_core::render::cpu::DropKind| [g.cell as f32, g.share as f32, g.r_min as f32, g.r_max as f32];
-    [f(m.ext, m.ior as f32), f(m.fade, wet as f32), f(m.color, 0.0), f(m.up.to_array(), 0.0), [m.caustics as f32, m.caustic_step as f32, m.rays as f32, m.scatter as f32], drop(&m.drops[0]), drop(&m.drops[1]), [m.drops[0].rise as f32, m.drops[1].rise as f32, m.lens as f32, 0.0]]
+    [f(m.ext, m.ior as f32), f(m.fade, wet as f32), f(m.color, m.time as f32), f(m.up.to_array(), m.lens_drops as f32), [m.caustics as f32, m.caustic_step as f32, m.rays as f32, m.scatter as f32], drop(&m.drops[0]), drop(&m.drops[1]), [m.drops[0].rise as f32, m.drops[1].rise as f32, m.lens as f32, if m.flat_lens { 1.0 } else { 0.0 }], [m.drop_focus as f32, 0.0, 0.0, 0.0]]
 }
 
 /// A composed object (march.wgsl `Obj`).

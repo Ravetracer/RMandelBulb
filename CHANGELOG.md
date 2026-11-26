@@ -22,6 +22,9 @@ and the release workflow uses it as the release notes.
   Caustics, Caustic sharpness, Light rays).
 - Water: rising air bubbles and floating particles in the water; with the camera at the
   surface the picture splits into the views above and below the water (Lens size).
+- Water: flat camera lens (the view under the water magnifies, like underwater cameras) and
+  water drops on the lens above the water that run down in animations, soft and out of focus
+  or sharp like rain on a window (Drop focus).
 - New object Seabed: an ocean floor with rolling hills and sand ripples (goes below the
   water when the scene has one).
 - Ray marching: new option "Step minus detail" (Mandelbulb3D's "step sub DEstop"), imported.

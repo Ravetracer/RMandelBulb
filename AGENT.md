@@ -409,7 +409,14 @@ cargo clippy -j 8 --workspace --all-targets
   numbers. `WaterMedium::time` advances 1 per second in animations (phase `o{k}.medium`).
 - Waterline: the ray starts on the camera's front glass (`waterline_point`, `lens` wide),
   in the water when that point is below the open sea; near the surface the first march
-  leaves it; `waterline_shade` darkens the meniscus.
+  leaves it; `waterline_shade` darkens the meniscus. `flat_lens`: rays starting in the water
+  refract at the glass (normal = -forward, 1/ior) before the first trace. Lens drops
+  (`lens_drop`, `lens_drop_shade`): screen-space grid (`LENS_DROP_CELL`, 3 × 3 cells, each
+  column sliding down by its own speed × `time`) on glass points above the water, share
+  fading over five lens sizes of height; the drop bends the ray (inverted view), darkens
+  the rim and adds a sky-colored highlight after the bounce loop. `lens_drop_look` with
+  `drop_focus`: out of focus a soft edge (three random numbers per sample inside a drop:
+  look through it by the edge share, blur jitter) and a bokeh-like brighter center.
 - `Primitive::Seabed` (`SEABED_KIND` 10, `seabed_height` / `seabed_distance`, GPU same):
   4 octaves of value noise + warped sine ripples; bound by the measured slope
   (`seabed_steepness`, test `seabed_stays_a_distance_bound`).
