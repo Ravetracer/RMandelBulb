@@ -370,6 +370,24 @@ cargo clippy -j 8 --workspace --all-targets
   surface). Parameters `a[8]` shore, `a[9]` spray (`Obj.prim3`); test
   `water_with_a_shore_stays_a_distance_bound` checks balls of the bound for sign changes.
 
+- Water medium (`compose::WaterMedium` in `Primitive::Water::medium`, `Program::medium` =
+  the first see-through water, part of the signature; GPU `MEDIUM`, `MEDIUM_OBJ`, uniform
+  `wmed` from `renderer::medium_gpu`): `Evaluator::water_mode` / private `water_mode`
+  (`WATER_SOLID`, `WATER_INSIDE`: the negated `water_body_distance` without spray, the air is
+  the solid; `WATER_IGNORED`: 3e38, used by `soft_shadow` / `ambient_occlusion`). The bounce
+  loop keeps `in_water` (camera: `MediumFrame::depth` > 0, open sea without shore waves) and
+  passes it to `trace` (`Seg::water`); at the medium's surface `water_at` gives reflection
+  (`water_fresnel` above, `fresnel_exact` with TIR below) and `see` (passing share; foam is
+  the only diffuse part), `water_bounce` picks one by share and refracts; the start point
+  after a crossing steps on until `MediumFrame::clearance` ≥ 1.05 eps (no extra fractal call
+  site: compile time). In water: no fog, background or visible lights; `medium_path` fades by
+  `exp(-ext t)` and adds the water color lit from above (`water_top`) darkened by
+  `exp(-fade depth)`, depth linear along the ray (closed-form integral, exponents kept ≥ 0
+  for f32). Lit points under water: ambient × `exp(-fade depth)`, each light × `water_light`
+  (Fresnel at a flat surface, `fade depth / cos`; lights under the water: `exp(-ext dist)`,
+  bits in `wmed[1].w`). Tests: `render::cpu::tests`, `gpu_matches_cpu_under_water`; demo
+  scenes: `cargo run --release -p rmb-core --example underwater_demo -- dir`.
+
 ## Light through glass
 
 - `Material::glass_shadows` (`Program::glass_shadows`, GPU switch `GLASS_SHADOW`):

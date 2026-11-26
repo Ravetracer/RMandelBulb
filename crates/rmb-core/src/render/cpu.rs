@@ -28,12 +28,56 @@ pub struct Shader<'a> {
     pub emissive: bool,
     /// The scene has water (it reflects even without the material's reflection).
     pub water: bool,
+    /// The water medium (see-through water the camera and rays can enter).
+    pub medium: Option<MediumFrame>,
+}
+
+impl MediumFrame {
+    /// The water medium of `prog` (if any) for the frame's `lights`.
+    pub fn new(prog: &Program, lights: &[super::FrameLight]) -> Option<MediumFrame> {
+        let (obj, m) = prog.medium?;
+        let inv = prog.objects[obj].inv;
+        let mut mf = MediumFrame { obj, ext: m.extinction(), fade: m.depth_fade(), color: m.color.map(|c| c as f64), ior: m.ior.max(1.0), up: v3(inv[2][0], inv[2][1], inv[2][2]).normalize(), wet_lights: Vec::new() };
+        mf.wet_lights = lights.iter().map(|li| li.point.is_some_and(|lp| mf.depth(prog, lp) > 0.0)).collect();
+        Some(mf)
+    }
+
+    /// Depth of world point `p` below the water surface in world units (negative above it):
+    /// the open sea's height, without the shore waves (march.wgsl `water_depth`).
+    pub fn depth(&self, prog: &Program, p: V3) -> f64 {
+        let ob = &prog.objects[self.obj];
+        let crate::fractal::ObjectShape::Primitive(_, a) = &ob.shape else { return 0.0 };
+        let q = ob.local(p);
+        (crate::compose::water_height(a, q.x, q.y, crate::compose::NO_SHORE) - q.z) * ob.size.z
+    }
+}
+
+/// The water medium prepared for shading (march.wgsl `u.wmed*`).
+#[derive(Clone, Debug)]
+pub struct MediumFrame {
+    /// Index into `Program::objects`.
+    pub obj: usize,
+    /// Fading of the view per unit (`WaterMedium::extinction`) and of the light from above
+    /// per unit of depth (`WaterMedium::depth_fade`).
+    pub ext: [f64; 3],
+    pub fade: [f64; 3],
+    /// Color of deep water near the surface.
+    pub color: [f64; 3],
+    pub ior: f64,
+    /// The water's up axis in the world.
+    pub up: V3,
+    /// Per frame light: whether the light sits under the water.
+    pub wet_lights: Vec<bool>,
 }
 
 /// Color of the foam on water crests (march.wgsl `WATER_FOAM`).
 const WATER_FOAM: [f64; 3] = [0.85, 0.88, 0.9];
 /// Highlight sharpness of water (march.wgsl `WATER_SHININESS`).
 const WATER_SHININESS: f64 = 400.0;
+
+/// Most threshold steps a ray takes to leave the water surface it passed through
+/// (march.wgsl `LEAVE_STEPS`).
+const LEAVE_STEPS: u32 = 8;
 
 /// The binary refinement of a hit stops at steps below this part of the threshold.
 pub const REFINE_TOLERANCE: f64 = 1.0 / 128.0;
@@ -195,19 +239,93 @@ impl<'a> Shader<'a> {
             lut_int_spec: if scene.material.interior.is_empty() { Vec::new() } else { crate::gradient::lut_specular(&scene.material.interior) },
             emissive,
             water: prog.has_water(),
+            medium: None,
         }
+        .with_medium()
+    }
+
+    /// Prepares the water medium of the program (if any).
+    fn with_medium(mut self) -> Self {
+        self.medium = MediumFrame::new(self.prog, &self.frame.lights);
+        self
+    }
+
+    /// See [`MediumFrame::depth`] (0 without a medium).
+    pub fn water_depth(&self, p: V3) -> f64 {
+        self.medium.as_ref().map_or(0.0, |m| m.depth(self.prog, p))
+    }
+
+    /// Share of light `li` (toward `ldir`, `dist` away) reaching a point `depth` below the
+    /// water surface: through the surface (Fresnel, flat surface) and the depth along the
+    /// light, or straight through the water from a light below the surface (march.wgsl
+    /// `water_light`).
+    fn water_light(&self, m: &MediumFrame, i: usize, depth: f64, ldir: V3, dist: f64) -> [f64; 3] {
+        if m.wet_lights.get(i).copied().unwrap_or(false) {
+            return m.ext.map(|e| (-e * dist).exp());
+        }
+        let c = ldir.dot(m.up);
+        if c <= 0.0 {
+            return [0.0; 3];
+        }
+        let pass = 1.0 - crate::compose::fresnel_exact(c, 1.0 / m.ior);
+        m.fade.map(|f| pass * (-f * depth / c).exp())
+    }
+
+    /// Light from above that lights the water itself at its surface (ambient sky and the
+    /// lights, by their height over the water; march.wgsl `water_top`).
+    fn water_top(&self, m: &MediumFrame, a: V3) -> [f64; 3] {
+        let l = &self.scene.lighting;
+        let mut top = l.sky_color.map(|c| c as f64 * l.ambient);
+        for li in &self.frame.lights {
+            let (ldir, atten, _) = li.sample(a, 0.5, 0.5, self.scene.march.max_distance);
+            let c = ldir.dot(m.up).max(0.0) * atten;
+            for (t, lc) in top.iter_mut().zip(li.color) {
+                *t += lc * c;
+            }
+        }
+        top
+    }
+
+    /// The water along a ray part from `a` along `d`, `len` long: the share of the light behind
+    /// it that gets through and the light the water adds (its color, lit from above and
+    /// darker with depth; the depth changes linearly along the ray and ends at the surface;
+    /// march.wgsl `medium_path`).
+    fn medium_path(&self, m: &MediumFrame, a: V3, d: V3, len: f64) -> ([f64; 3], [f64; 3]) {
+        let d0 = self.water_depth(a).max(0.0);
+        let g = -d.dot(m.up);
+        let top = self.water_top(m, a);
+        let reach = if g < 0.0 { len.min(d0 / -g) } else { len };
+        let mut keep = [0.0; 3];
+        let mut add = [0.0; 3];
+        for k in 0..3 {
+            let (e, f) = (m.ext[k], m.fade[k]);
+            keep[k] = (-e * len).exp();
+            // ∫ e exp(-e t) exp(-f (d0 + g t)) dt over 0..reach (both exponents stay >= 0).
+            let rate = e + f * g;
+            let x = rate * reach;
+            let int = if x.abs() < 1e-6 { reach * (-f * d0).exp() } else { ((-f * d0).exp() - (-(f * d0 + x)).exp()) / rate };
+            add[k] = e * m.color[k] * top[k] * int;
+        }
+        (keep, add)
     }
 
     /// Water at the hit `orbit` / `pos`: its color from `base` (brighter on the crests where
-    /// light shines through, foam on the highest) and its Fresnel reflection for a ray
-    /// arriving at the cosine `cos_i` (None: not water).
-    fn water_at(&self, orbit: &Orbit, pos: V3, cos_i: f64, base: [f64; 3]) -> Option<([f64; 3], f64)> {
-        let ob = self.prog.objects.get((orbit.object as usize).checked_sub(1)?)?;
+    /// light shines through, foam on the highest), its Fresnel reflection for a ray arriving
+    /// at the cosine `cos_i` and the share passing into (or out of) the water medium
+    /// (`below`: the ray comes from inside; None: not water).
+    fn water_at(&self, orbit: &Orbit, pos: V3, cos_i: f64, base: [f64; 3], below: bool) -> Option<([f64; 3], f64, f64, bool)> {
+        let k = (orbit.object as usize).checked_sub(1)?;
+        let ob = self.prog.objects.get(k)?;
         let crate::fractal::ObjectShape::Primitive(crate::fractal::WATER_KIND, a) = &ob.shape else { return None };
         let (h, foam) = crate::compose::water_look(a, ob.local(pos), orbit.shore);
+        if let Some(m) = self.medium.as_ref().filter(|m| m.obj == k) {
+            // See-through: only the foam has a color of its own; the body is the medium.
+            let r = if below { crate::compose::fresnel_exact(cos_i, m.ior) } else { crate::compose::water_fresnel(cos_i, a[7]) };
+            return Some((WATER_FOAM, r * (1.0 - foam), (1.0 - r) * (1.0 - foam), true));
+        }
         let lift = 0.55 + 0.9 * h;
         let color = [0, 1, 2].map(|k| base[k] * lift + (WATER_FOAM[k] - base[k] * lift) * foam);
-        Some((color, crate::compose::water_fresnel(cos_i, a[7]) * (1.0 - foam)))
+        Some((color, crate::compose::water_fresnel(cos_i, a[7]) * (1.0 - foam), 0.0, false))
     }
 
     /// Surface threshold at ray distance `t`.
@@ -218,19 +336,19 @@ impl<'a> Shader<'a> {
     /// Marches a ray. Returns the hit (if any), the number of steps taken and the number of
     /// glowing steps (see `Fog::glow_iteration`).
     pub fn march(&self, ev: &mut Evaluator, o: V3, d: V3, t0: f64, max_t: f64, max_steps: u32) -> (Option<Hit>, u32, f64) {
-        self.march_ex(ev, o, d, t0, max_t, max_steps, true, None, false)
+        self.march_ex(ev, o, d, t0, max_t, max_steps, true, None, false, 0)
     }
 
     /// [`Shader::march`] without the binary refinement of the hit: for the ambient occlusion,
     /// emission and scatter rays, which need neither the exact distance nor the exact point.
     pub fn march_rough(&self, ev: &mut Evaluator, o: V3, d: V3, t0: f64, max_t: f64, max_steps: u32) -> Option<Hit> {
-        self.march_ex(ev, o, d, t0, max_t, max_steps, false, None, false).0
+        self.march_ex(ev, o, d, t0, max_t, max_steps, false, None, false, 0).0
     }
 
     /// [`Shader::march`] that with `pick` also offers the points near emissive parts for the
     /// glow and the steam (see [`SteamPick`]).
     #[allow(clippy::too_many_arguments)]
-    fn march_ex(&self, ev: &mut Evaluator, o: V3, d: V3, t0: f64, max_t: f64, max_steps: u32, refine: bool, mut pick: Option<&mut SteamPick>, camera: bool) -> (Option<Hit>, u32, f64) {
+    fn march_ex(&self, ev: &mut Evaluator, o: V3, d: V3, t0: f64, max_t: f64, max_steps: u32, refine: bool, mut pick: Option<&mut SteamPick>, camera: bool, leave: u32) -> (Option<Hit>, u32, f64) {
         let m = &self.scene.march;
         let sm = &self.scene.material;
         let glow_it = self.scene.fog.glow_iteration;
@@ -248,11 +366,19 @@ impl<'a> Shader<'a> {
         // The cap grows with the distance from the camera (rays that start at a surface too).
         let base = if cap > 0.0 { (o - self.scene.camera.position).length() } else { 0.0 };
         let mut last_de = 0.0;
+        // Leaving the surface the ray just passed through (`leave` steps at most): the
+        // threshold steps until the estimate first reaches the threshold are no hit.
+        let mut leaving = leave > 0;
         for step in 0..max_steps {
             let p = o + d * t;
             let eps = self.eps_at(t);
             let orbit = ev.orbit(p, eps * 0.5);
             let glowing = glow_it == 0 || orbit.iterations == glow_it;
+            if leaving && orbit.de < eps && step < leave {
+                t += eps;
+                continue;
+            }
+            leaving = false;
             if orbit.de < eps {
                 // Binary refinement toward the threshold, until the step is a small part of the
                 // threshold (the evaluations at the surface are the most expensive ones).
@@ -519,6 +645,18 @@ impl<'a> Shader<'a> {
     /// crossings). `dist`: distance of `p` from the camera (for the gradient's depth shift).
     #[allow(clippy::too_many_arguments)]
     fn soft_shadow(&self, ev: &mut Evaluator, p: V3, l: V3, eps: f64, softness: f64, max_t: f64, dist: f64) -> [f64; 3] {
+        // Light passes through the water medium (its loss is `water_light`).
+        let mode = ev.water_mode;
+        if self.medium.is_some() {
+            ev.water_mode = crate::fractal::WATER_IGNORED;
+        }
+        let r = self.soft_shadow_in(ev, p, l, eps, softness, max_t, dist);
+        ev.water_mode = mode;
+        r
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn soft_shadow_in(&self, ev: &mut Evaluator, p: V3, l: V3, eps: f64, softness: f64, max_t: f64, dist: f64) -> [f64; 3] {
         let m = &self.scene.material;
         let glass = if m.glass_shadows && m.transmission { m.reflection } else { 0.0 };
         let mut res: f64 = 1.0;
@@ -585,6 +723,17 @@ impl<'a> Shader<'a> {
     /// the hemisphere (ray traced occlusion counts hits within the occlusion radius, the
     /// emission of whatever the ray hits within the emission reach adds to the light).
     fn ambient_occlusion(&self, ev: &mut Evaluator, p: V3, n: V3, t: f64, rng: &mut Rng) -> (f64, [f64; 3]) {
+        // The water medium occludes nothing.
+        let mode = ev.water_mode;
+        if self.medium.is_some() {
+            ev.water_mode = crate::fractal::WATER_IGNORED;
+        }
+        let r = self.ambient_occlusion_in(ev, p, n, t, rng);
+        ev.water_mode = mode;
+        r
+    }
+
+    fn ambient_occlusion_in(&self, ev: &mut Evaluator, p: V3, n: V3, t: f64, rng: &mut Rng) -> (f64, [f64; 3]) {
         let l = &self.scene.lighting;
         let m = &self.scene.material;
         let radius = l.ao_radius * t;
@@ -897,7 +1046,10 @@ impl<'a> Shader<'a> {
         // Glass scales the diffuse light down by the transparency on every surface a path
         // continues from (Mandelbulb3D's bScaleAmbDiffDown).
         let glass = if m.transmission && amount > 0.0 { amount } else { 0.0 };
-        let first = self.trace(ev, Seg { o, d, t0, max_t: sc.march.max_distance, t_base: 0.0, sx, sy, inside: false, glass, env: false }, &mut rng);
+        // The camera under the water: the ray starts in the medium.
+        let mut in_water = self.medium.is_some() && self.water_depth(o) > 0.0;
+        ev.water_mode = if in_water { crate::fractal::WATER_INSIDE } else { crate::fractal::WATER_SOLID };
+        let first = self.trace(ev, Seg { o, d, t0, max_t: sc.march.max_distance, t_base: 0.0, sx, sy, inside: false, glass, env: false, water: in_water, leave: false }, &mut rng);
         let mut c = first.color;
         // Reflections and transmission (Mandelbulb3D's CalcSR): each part of the path adds the
         // scene it sees, weighted by the reflectance or transmittance of the surfaces before it,
@@ -916,29 +1068,31 @@ impl<'a> Shader<'a> {
             for b in 0..max_b {
                 let Some(s) = surf else { break };
                 let vis = (1.0 - s.fog).clamp(0.0, 1.0);
-                // Water reflects by its own amount.
-                let amount = s.mirror.unwrap_or(amount);
+                // Water reflects by its own amount (the medium's surface: reflection plus the
+                // share passing through).
+                let own = s.mirror.map(|m| m + s.see);
+                let amount = own.unwrap_or(amount);
                 let (dir, refract, diffuse) = if path {
-                    let ps = match s.mirror {
+                    let ps = match own {
                         Some(m) => m,
                         None => path_specular_share(amount, s.spec, s.trans, glass),
                     };
                     if ps > 0.0 && rng.next_f64() < ps {
-                        let (dir, f, refract) = self.bounce(&s, inside, &mut rng);
+                        let (dir, f, refract) = if s.medium { self.water_bounce(&s, in_water, &mut rng) } else { self.bounce(&s, inside, &mut rng) };
                         for (w, fk) in weight.iter_mut().zip(f) {
                             *w *= fk * amount / ps * vis;
                         }
                         (dir, refract, false)
                     } else {
                         let (u1, u2) = (rng.next_f64(), rng.next_f64());
-                        let keep = (1.0 - s.trans * glass).max(0.0) * (1.0 - s.mirror.unwrap_or(0.0));
+                        let keep = (1.0 - s.trans * glass).max(0.0) * (1.0 - own.unwrap_or(0.0)).max(0.0);
                         for (w, bk) in weight.iter_mut().zip(s.base) {
                             *w *= bk * keep / (1.0 - ps) * vis;
                         }
                         (cosine_dir(s.n, u1, u2), false, true)
                     }
                 } else {
-                    let (dir, f, refract) = self.bounce(&s, inside, &mut rng);
+                    let (dir, f, refract) = if s.medium { self.water_bounce(&s, in_water, &mut rng) } else { self.bounce(&s, inside, &mut rng) };
                     for (w, fk) in weight.iter_mut().zip(f) {
                         *w *= fk * amount * vis;
                     }
@@ -958,7 +1112,13 @@ impl<'a> Shader<'a> {
                 // shading point. Both are marched as a continuation of the path, so the surface
                 // threshold keeps growing with the distance travelled.
                 let start = if refract { s.hit - s.n * s.eps } else { s.pos };
-                if refract {
+                let crossed = refract && s.medium;
+                if crossed {
+                    // Into or out of the water: the other side's surface is the solid now (the
+                    // march first leaves the surface it starts on).
+                    in_water = !in_water;
+                    ev.water_mode = if in_water { crate::fractal::WATER_INSIDE } else { crate::fractal::WATER_SOLID };
+                } else if refract {
                     inside = !inside;
                     ev.flip = inside;
                 }
@@ -967,7 +1127,7 @@ impl<'a> Shader<'a> {
                 let sxr = (dir.dot(c0.right).atan2(dir.dot(c0.forward)) / (fr.tan_half * fr.aspect).atan()).clamp(-1.0, 1.0);
                 // Sky reach: diffuse rays beyond it see the open sky (path_reach).
                 let reach = if diffuse && sc.lighting.path_reach > 0.0 { (sc.lighting.path_reach * s.t).min(sc.march.max_distance) } else { sc.march.max_distance };
-                let seg = Seg { o: start - dir * s.t, d: dir, t0: s.t, max_t: s.t + reach, t_base: s.t, sx: sxr, sy: syr, inside, glass: if b + 1 < max_b { glass } else { 0.0 }, env: path };
+                let seg = Seg { o: start - dir * s.t, d: dir, t0: s.t, max_t: s.t + reach, t_base: s.t, sx: sxr, sy: syr, inside, glass: if b + 1 < max_b { glass } else { 0.0 }, env: path, water: in_water, leave: crossed };
                 let tr = self.trace(ev, seg, &mut rng);
                 if inside {
                     // Absorbed by the color where the ray entered; light scattered on the way.
@@ -998,6 +1158,7 @@ impl<'a> Shader<'a> {
             }
             ev.flip = false;
         }
+        ev.water_mode = crate::fractal::WATER_SOLID;
         let (depth, hit) = first.surface.map_or((0.0, 0.0), |s| (s.t, 1.0));
         Sample { color: c, albedo: first.albedo, normal: first.normal, depth, hit }
     }
@@ -1051,6 +1212,28 @@ impl<'a> Shader<'a> {
         if rng.next_f64() < p { (t, [wt / p; 3], true) } else { (reflect, wr.map(|v| v / (1.0 - p)), false) }
     }
 
+    /// Direction after the surface of the water medium `s` (`in_water`: the ray comes from
+    /// inside), the factor of the path weight relative to the surface's own amount (reflection
+    /// plus passing share) and whether the ray passes through: one of both picked by its share
+    /// (march.wgsl `water_bounce`).
+    fn water_bounce(&self, s: &Surface, in_water: bool, rng: &mut Rng) -> (V3, [f64; 3], bool) {
+        let reflect = s.dir - s.n * (2.0 * s.dir.dot(s.n));
+        let total = s.mirror.unwrap_or(0.0) + s.see;
+        if total <= 0.0 {
+            return (reflect, [0.0; 3], false);
+        }
+        let ior = self.medium.as_ref().map_or(1.33, |m| m.ior);
+        if s.see > 0.0 && rng.next_f64() * total < s.see {
+            let eta = if in_water { ior } else { 1.0 / ior };
+            let ci = -s.dir.dot(s.n);
+            let k = 1.0 - eta * eta * (1.0 - ci * ci);
+            if k > 0.0 {
+                return ((s.dir * eta + s.n * (eta * ci - k.sqrt())).normalize(), [1.0; 3], true);
+            }
+        }
+        (reflect, s.spec, false)
+    }
+
     /// Light reaching the segment `a`..`b` (Mandelbulb3D's AddLight): point lights by their
     /// squared distance to it.
     fn light_sum(&self, a: V3, b: V3) -> [f64; 3] {
@@ -1075,7 +1258,7 @@ impl<'a> Shader<'a> {
 
     /// Traces one part of a path: its color and the surface it hit.
     fn trace(&self, ev: &mut Evaluator, seg: Seg, rng: &mut Rng) -> Traced {
-        let Seg { o, d, t0, max_t, t_base, sx, sy, inside, glass, env } = seg;
+        let Seg { o, d, t0, max_t, t_base, sx, sy, inside, glass, env, water, leave } = seg;
         let path = sc_path(self.scene);
         let sc = self.scene;
         let fr = &self.frame;
@@ -1089,7 +1272,8 @@ impl<'a> Shader<'a> {
         let haze_on = sc.fog.haze > 0.0 && !inside;
         let mut pick = SteamPick { steam: steam_on, seed: if steam_on { (rng.next_f64() * 16_777_216.0) as u32 } else { 0 }, haze: haze_on, haze_keep: 1.0, ..SteamPick::default() };
         let camera = t_base <= 0.0 && !inside;
-        let (hit, _, steps) = self.march_ex(ev, o, d, t0, max_t, sc.march.max_steps, true, (steam_on || haze_on).then_some(&mut pick), camera);
+        let leave = if leave { LEAVE_STEPS } else { 0 };
+        let (hit, _, steps) = self.march_ex(ev, o, d, t0, max_t, sc.march.max_steps, true, (steam_on || haze_on).then_some(&mut pick), camera, leave);
         let mut halo = [0.0; 3];
         if steam_on {
             let (u1, u2) = (rng.next_f64(), rng.next_f64());
@@ -1123,8 +1307,9 @@ impl<'a> Shader<'a> {
         let mut surface = None;
         let mut c = match &hit {
             None => {
-                // Inside glass there is no fog (CalcOpenAir).
-                let f = if inside { 0.0 } else { sc.fog.amount(far, near, far) };
+                // Inside glass there is no fog (CalcOpenAir); in the water no background either.
+                let f = if inside || water { 0.0 } else { sc.fog.amount(far, near, far) };
+                let bg = if water { [0.0; 3] } else { bg };
                 // The fog can lie on top of a background image instead of covering it.
                 let cover = if sc.background.image_fog_add && self.bg_image.is_some() { 0.0 } else { 1.0 };
                 let c = [0, 1, 2].map(|k| bg[k] * (1.0 - f.max(0.0) * cover) + fog_col[k] * f.max(0.0));
@@ -1167,10 +1352,12 @@ impl<'a> Shader<'a> {
                 // Shimmer: the emitted light flickers over the surface (and in time).
                 let emis = if emis > 0.0 { emis * super::shimmer(&sc.material, h.pos) } else { emis };
                 // Water: foam on the crests, and its own (Fresnel) reflection.
-                let (base, mirror) = match self.water.then(|| self.water_at(&h.orbit, h.pos, -d.dot(n), base)).flatten() {
-                    Some((color, refl)) => (color, Some(refl)),
-                    None => (base, None),
+                let (base, mirror, see, medium) = match self.water.then(|| self.water_at(&h.orbit, h.pos, -d.dot(n), base, water)).flatten() {
+                    Some((color, refl, see, medium)) => (color, Some(refl), see, medium),
+                    None => (base, None, 0.0, false),
                 };
+                // The medium's surface is no glass.
+                let trans = if medium { 0.0 } else { trans };
                 // Water glints: a far sharper sun highlight than the scene's shininess.
                 let shininess = if mirror.is_some() { sc.lighting.shininess.max(WATER_SHININESS) } else { sc.lighting.shininess };
                 // Shading point just off the surface; inside rendering puts the surface one
@@ -1193,9 +1380,12 @@ impl<'a> Shader<'a> {
                     None => [0, 1, 2].map(|k| l.ground_color[k] as f64 + (l.sky_color[k] - l.ground_color[k]) as f64 * hemi),
                 };
                 let ambient = if path { 0.0 } else { l.ambient };
-                let mut diffuse = [0, 1, 2].map(|k| amb[k] * ambient * ao + emitted[k]);
+                // Under the water: less light from above with depth, red first.
+                let wet = self.medium.as_ref().map(|m| (m, self.water_depth(p))).filter(|w| w.1 > 0.0);
+                let amb_keep = wet.map_or([1.0; 3], |(m, depth)| m.fade.map(|f| (-f * depth).exp()));
+                let mut diffuse = [0, 1, 2].map(|k| amb[k] * ambient * ao * amb_keep[k] + emitted[k]);
                 let mut spec = [0.0; 3];
-                for li in &fr.lights {
+                for (li_index, li) in fr.lights.iter().enumerate() {
                     // Direction, falloff and shadow length; area and line lights at a random
                     // point of the light.
                     let (r1, r2) = if li.sampled() { (rng.next_f64(), rng.next_f64()) } else { (0.5, 0.5) };
@@ -1212,7 +1402,11 @@ impl<'a> Shader<'a> {
                     if df <= 0.0 || (ndl <= 0.0 && li.shadows) {
                         continue;
                     }
-                    let sh = if li.shadows { self.soft_shadow(ev, p, ldir, h.eps, li.softness, max_t, h.t) } else { [1.0; 3] };
+                    let mut sh = if li.shadows { self.soft_shadow(ev, p, ldir, h.eps, li.softness, max_t, h.t) } else { [1.0; 3] };
+                    if let Some((m, depth)) = wet {
+                        let pass = self.water_light(m, li_index, depth, ldir, max_t);
+                        sh = [0, 1, 2].map(|k| sh[k] * pass[k]);
+                    }
                     if sh[0].max(sh[1]).max(sh[2]) <= 0.0 {
                         continue;
                     }
@@ -1224,14 +1418,15 @@ impl<'a> Shader<'a> {
                         spec[k] += li.color[k] * s * w * sh[k];
                     }
                 }
-                // What the reflection takes (water) does not reach the surface color.
-                let keep = (1.0 - trans * glass).max(0.0) * (1.0 - mirror.unwrap_or(0.0));
+                // What the reflection takes (water) and what passes into or out of the water
+                // medium does not reach the surface color.
+                let keep = (1.0 - trans * glass).max(0.0) * (1.0 - mirror.unwrap_or(0.0) - see).max(0.0);
                 // Emissive colors shine by themselves.
                 let lit = [0, 1, 2].map(|k| base[k] * (diffuse[k] * keep + emis) + spec[k] * spec_col[k] + model_emis[k]);
-                let f = if inside { 0.0 } else { sc.fog.amount(h.t - t_base, near, far) };
+                let f = if inside || water { 0.0 } else { sc.fog.amount(h.t - t_base, near, far) };
                 albedo = [0, 1, 2].map(|k| (base[k] * (1.0 - f) + fog_col[k] * f.max(0.0)).clamp(0.0, 1.0));
                 normal = n;
-                surface = Some(Surface { pos: p, hit: h.pos, eps: h.eps, n, dir: d, t: h.t, spec: spec_col, base, trans, fog: f, mirror });
+                surface = Some(Surface { pos: p, hit: h.pos, eps: h.eps, n, dir: d, t: h.t, spec: spec_col, base, trans, fog: f, mirror, see, medium });
                 [0, 1, 2].map(|k| lit[k] * (1.0 - f) + fog_col[k] * f.max(0.0))
             }
         };
@@ -1242,7 +1437,7 @@ impl<'a> Shader<'a> {
         // Light scattered by the fog: one random light, one point along the ray (positional
         // lights: equiangular sampling around the light, which keeps the haze near it smooth;
         // directional lights: in proportion to the fog added there), lit through a shadow ray.
-        if !inside && sc.fog.scatter > 0.0 && !fr.lights.is_empty() {
+        if !inside && !water && sc.fog.scatter > 0.0 && !fr.lights.is_empty() {
             let (ut, ul, r1, r2) = (rng.next_f64(), rng.next_f64(), rng.next_f64(), rng.next_f64());
             let end = hit.as_ref().map_or(far, |h| h.t - t_base);
             let a = sc.fog.amount(0.0, near, far).clamp(0.0, 1.0);
@@ -1288,6 +1483,15 @@ impl<'a> Shader<'a> {
                 albedo[k] = albedo[k] * keep + (1.0 - keep) * (pick.haze_light[k] / (1.0 - keep).max(1e-9)).clamp(0.0, 1.0);
             }
         }
+        // In the water: faded by the way through it, plus the water's own light.
+        if water && let Some(m) = &self.medium {
+            let len = hit.as_ref().map_or(far, |h| h.t - t_base);
+            let (keep, add) = self.medium_path(m, o + d * t_base, d, len);
+            for k in 0..3 {
+                c[k] = c[k] * keep[k] + add[k];
+                albedo[k] = albedo[k] * keep[k] + (1.0 - keep[k]) * m.color[k].clamp(0.0, 1.0);
+            }
+        }
         if inside {
             // Inside glass: no glow and no visible lights.
             return Traced { color: c, albedo, normal, surface };
@@ -1305,10 +1509,10 @@ impl<'a> Shader<'a> {
                 *ck += glow_col[k] * glow;
             }
         }
-        // Visible light sources (seen from where this ray part starts).
+        // Visible light sources (seen from where this ray part starts; not through the water).
         let hit_t = hit.as_ref().map(|h| h.t - t_base);
         let from = o + d * t_base;
-        for li in &fr.lights {
+        for li in fr.lights.iter().filter(|_| !water) {
             if let Some(g) = &li.glow
                 && let Some((add, keep, fl)) = super::light_glow(li, g, from, d, hit_t, &sc.fog, near, far)
             {
@@ -1349,6 +1553,10 @@ struct Seg {
     glass: f64,
     /// Path tracing bounce: a miss sees the environment light instead of the background.
     env: bool,
+    /// The ray travels in the water medium.
+    water: bool,
+    /// The ray starts on the water medium's surface it just passed through.
+    leave: bool,
 }
 
 /// A surface hit, as far as a reflection or refraction needs it.
@@ -1374,6 +1582,10 @@ struct Surface {
     fog: f64,
     /// The surface's own reflection (water), instead of the material's reflection amount.
     mirror: Option<f64>,
+    /// Share passing through the surface of the water medium (0: none) and whether this is
+    /// that surface.
+    see: f64,
+    medium: bool,
 }
 
 /// One pixel sample: radiance and the denoiser's helper values (albedo, world normal).
@@ -1626,4 +1838,62 @@ pub fn distance_at_camera(scene: &Scene) -> f64 {
     let prog = Program::for_scene(scene);
     let mut ev = prog.evaluator();
     ev.de(scene.camera.position, 1e-6)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::compose::{Primitive, SceneObject, Shape, Transform};
+
+    /// The bulb half in see-through water, the camera below the surface looking at it.
+    fn underwater_scene() -> Scene {
+        let mut s = Scene { objects: vec![SceneObject { name: "Sea".into(), shape: Shape::Primitive(Primitive::water()), transform: Transform { position: v3(0.0, 0.0, 0.2), ..Default::default() }, ..Default::default() }], ..Default::default() };
+        s.camera.position = v3(2.4, -2.6, -0.6);
+        s.camera.look_at(v3(0.0, 0.0, -0.4), v3(0.0, 0.0, 1.0));
+        s
+    }
+
+    #[test]
+    fn camera_under_water_sees_the_fractal_through_blue_water() {
+        let s = underwater_scene();
+        let prog = Program::for_scene(&s);
+        let sh = Shader::new(&s, &prog, 64, 36);
+        let mut ev = prog.evaluator();
+        assert!(sh.water_depth(s.camera.position) > 0.0);
+        let center = sh.sample_aux(&mut ev, 32, 20, 0);
+        assert_eq!(center.hit, 1.0, "the fractal under the water is hit");
+        // Looking down into the open water: no hit, only the water's own blue-green light.
+        let mut down = s.clone();
+        down.camera.look_at(down.camera.position + v3(0.0, 0.0, -1.0), v3(0.0, 1.0, 0.0));
+        let sh = Shader::new(&down, &prog, 64, 36);
+        let deep = sh.sample_aux(&mut ev, 32, 18, 0);
+        assert_eq!(deep.hit, 0.0);
+        assert!(deep.color[2] > deep.color[0] * 2.0 && deep.color[1] > deep.color[0], "{:?}", deep.color);
+        // Opaque water (not see-through) hides everything below: the camera is in the solid.
+        let mut opaque = s.clone();
+        if let Shape::Primitive(Primitive::Water { medium, .. }) = &mut opaque.objects[0].shape {
+            medium.see_through = false;
+        }
+        assert!(Program::for_scene(&opaque).medium.is_none());
+    }
+
+    #[test]
+    fn water_absorbs_red_first_and_light_fades_with_depth() {
+        let m = crate::compose::WaterMedium::default();
+        let e = m.extinction();
+        assert!(e[0] > e[1] && e[1] > e[2], "{e:?}");
+        let s = underwater_scene();
+        let prog = Program::for_scene(&s);
+        let sh = Shader::new(&s, &prog, 64, 36);
+        let mf = sh.medium.as_ref().unwrap();
+        let shallow = sh.water_light(mf, 0, 0.2, mf.up, 10.0);
+        let deep = sh.water_light(mf, 0, 2.0, mf.up, 10.0);
+        assert!((0..3).all(|k| deep[k] < shallow[k]));
+        assert!(deep[0] / shallow[0] < deep[2] / shallow[2]);
+        // Light from below the water's horizon never reaches it.
+        assert_eq!(sh.water_light(mf, 0, 0.5, -mf.up, 10.0), [0.0; 3]);
+        // Total internal reflection beyond the critical angle (48.75° for 1.33).
+        assert_eq!(crate::compose::fresnel_exact((50f64).to_radians().cos(), 1.33), 1.0);
+        assert!(crate::compose::fresnel_exact(1.0, 1.0 / 1.33) < 0.03);
+    }
 }

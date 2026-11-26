@@ -831,7 +831,7 @@ fn gpu_matches_cpu_with_composed_objects() {
             material: ObjectMaterial { own: false, ..Default::default() },
             ..Default::default()
         },
-        SceneObject { name: "Sea".into(), shape: Shape::Primitive(Primitive::Water { amplitude: 0.03, wavelength: 0.4, phase: 1.0, angle: 30.0, choppy: 4.0, detail: 5.0, foam: 0.4, reflect: 1.0, speed: 0.0, shore: 1.5, spray: 2.0, drop_size: 1.5, drop_variation: 0.8 }), transform: Transform { position: p(0.0, 3.0, -0.9), ..Default::default() }, ..Default::default() },
+        SceneObject { name: "Sea".into(), shape: Shape::Primitive(Primitive::Water { amplitude: 0.03, wavelength: 0.4, phase: 1.0, angle: 30.0, choppy: 4.0, detail: 5.0, foam: 0.4, reflect: 1.0, speed: 0.0, shore: 1.5, spray: 2.0, drop_size: 1.5, drop_variation: 0.8, medium: Default::default() }), transform: Transform { position: p(0.0, 3.0, -0.9), ..Default::default() }, ..Default::default() },
     ];
     let prog = Program::for_scene(&scene);
     assert_eq!(prog.objects.len(), 5);
@@ -846,6 +846,36 @@ fn gpu_matches_cpu_with_composed_objects() {
     plain.objects.clear();
     let changed = cpu(&scene).iter().zip(cpu(&plain)).filter(|(a, b)| (**a as i32 - *b as i32).abs() > 8).count();
     assert!(changed > 500, "the objects change only {changed} channels");
+    parity(scene);
+}
+
+/// The water medium: seen from above (refraction into it), from below (Snell's window, total
+/// internal reflection) and with a light under the water.
+#[test]
+fn gpu_matches_cpu_under_water() {
+    use rmb_core::compose::{ObjectMaterial, Pattern, Primitive, SceneObject, Shape, Transform};
+    use rmb_core::scene::ColorStop;
+    let mut scene = Scene::default();
+    scene.lighting.ao_mode = rmb_core::scene::AoMode::Fast;
+    let p = |x: f64, y: f64, z: f64| rmb_core::v3(x, y, z);
+    let two = |a: [f32; 3], b: [f32; 3]| vec![ColorStop::new(0.0, a), ColorStop::new(1.0, b)];
+    scene.objects = vec![
+        SceneObject { name: "Ground".into(), shape: Shape::Primitive(Primitive::Plane), transform: Transform { position: p(0.0, 0.0, -1.3), ..Default::default() }, material: ObjectMaterial { gradient: two([0.85, 0.8, 0.65], [0.45, 0.4, 0.3]), pattern: Pattern::Checker, pattern_size: 0.5, repeat: false, ..Default::default() }, ..Default::default() },
+        SceneObject { name: "Sea".into(), shape: Shape::Primitive(Primitive::water()), transform: Transform { position: p(0.0, 0.0, 0.2), rotation: [4.0, -3.0, 0.0], ..Default::default() }, ..Default::default() },
+    ];
+    let prog = Program::for_scene(&scene);
+    assert_eq!(prog.medium.map(|m| m.0), Some(1));
+    validate(&rmb_gpu::codegen::march_shader(&prog), "water medium");
+    for (pos, at) in [(p(3.0, -3.2, 1.6), p(0.0, 0.0, -0.3)), (p(2.4, -2.6, -0.6), p(0.0, 0.0, 0.1))] {
+        scene.camera.position = pos;
+        scene.camera.look_at(at, p(0.0, 0.0, 1.0));
+        parity(scene.clone());
+    }
+    // A point light under the water.
+    let mut light = scene.lighting.lights[0].clone();
+    light.kind = rmb_core::scene::LightKind::Point;
+    light.position = p(1.2, -1.0, -0.8);
+    scene.lighting.lights.push(light);
     parity(scene);
 }
 

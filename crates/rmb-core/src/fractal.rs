@@ -116,6 +116,8 @@ pub struct Program {
     /// Shadows let light through glass (`Material::glass_shadows`; the GPU shader includes
     /// that code only then).
     pub glass_shadows: bool,
+    /// The water medium: index into `objects` of the first see-through water and its settings.
+    pub medium: Option<(usize, crate::compose::WaterMedium)>,
     /// Mandelbulb3D's second color choice (`SecondChoice::index`) and its multiplier.
     pub color2: (u32, f64),
     /// Mandelbulb3D's color on iteration (-1 off).
@@ -378,6 +380,7 @@ impl Program {
             layers: false,
             bump: false,
             glass_shadows: false,
+            medium: None,
         }
     }
 
@@ -408,7 +411,14 @@ impl Program {
                     p.missing.append(&mut op.missing);
                     ObjectShape::Fractal(Box::new(op))
                 }
-                Shape::Primitive(pr) => ObjectShape::Primitive(pr.index(), pr.params()),
+                Shape::Primitive(pr) => {
+                    if p.medium.is_none()
+                        && let Some(m) = pr.medium().filter(|m| m.see_through)
+                    {
+                        p.medium = Some((p.objects.len(), *m));
+                    }
+                    ObjectShape::Primitive(pr.index(), pr.params())
+                }
                 Shape::Model(m) => match crate::mesh::request(&m.path, &m.options) {
                     crate::mesh::Status::Ready(v) => ObjectShape::Model(Some(crate::mesh::Model::new(v, m))),
                     _ => ObjectShape::Model(None),
@@ -506,6 +516,9 @@ impl Program {
         s.push_str(if self.layers { "|layers" } else { "" });
         s.push_str(if self.bump { "|bump" } else { "" });
         s.push_str(if self.glass_shadows { "|gsh" } else { "" });
+        if let Some((j, _)) = self.medium {
+            s.push_str(&format!("|med{j}"));
+        }
         for o in &self.objects {
             match &o.shape {
                 ObjectShape::Fractal(f) => {
@@ -539,7 +552,7 @@ impl Program {
                 ObjectShape::Primitive(..) | ObjectShape::Model(_) => (Vec::new(), Vec::new()),
             })
             .collect();
-        Evaluator { prog: self, regs: regs(self), regs2: self.part2.as_deref().map(regs).unwrap_or_default(), regs_obj, flip: false }
+        Evaluator { prog: self, regs: regs(self), regs2: self.part2.as_deref().map(regs).unwrap_or_default(), regs_obj, flip: false, water_mode: WATER_SOLID }
     }
 }
 
@@ -555,7 +568,16 @@ pub struct Evaluator<'a> {
     regs_obj: Vec<(Regs, Regs)>,
     /// Swaps inside and outside rendering (rays travelling inside glass).
     pub flip: bool,
+    /// How the water medium (`Program::medium`) takes part: `WATER_SOLID` (rays in the air
+    /// stop at its surface), `WATER_INSIDE` (rays in the water stop at the surface from below)
+    /// or `WATER_IGNORED` (shadow and occlusion rays pass through it).
+    pub water_mode: u8,
 }
+
+/// See [`Evaluator::water_mode`].
+pub const WATER_SOLID: u8 = 0;
+pub const WATER_INSIDE: u8 = 1;
+pub const WATER_IGNORED: u8 = 2;
 
 struct Iterated {
     state: [f64; 4],
@@ -972,10 +994,16 @@ impl Evaluator<'_> {
             }
         }
         let dry = de;
+        let medium = prog.medium.map(|(j, _)| j);
         for (k, ob) in prog.objects.iter().enumerate() {
             let ObjectShape::Primitive(WATER_KIND, a) = &ob.shape else { continue };
             let shore = dry / ob.scale;
-            let d = crate::compose::water_distance(a, ob.local(p), shore) * ob.scale;
+            let d = match self.water_mode {
+                // The medium seen from inside: the air above is the solid.
+                WATER_INSIDE if medium == Some(k) => -crate::compose::water_body_distance(a, ob.local(p), shore) * ob.scale,
+                WATER_IGNORED if medium == Some(k) => 3.0e38,
+                _ => crate::compose::water_distance(a, ob.local(p), shore) * ob.scale,
+            };
             let (nd, wins) = crate::compose::combine(ob.op, de, d, ob.smooth);
             de = nd;
             if wins {

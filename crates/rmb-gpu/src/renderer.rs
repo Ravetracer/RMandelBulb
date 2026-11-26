@@ -154,12 +154,22 @@ struct Uniforms {
     grid2: [f32; 4],
     tile: [u32; 4],
     dof2: [f32; 4],
+    wmed: [[f32; 4]; 4],
 }
 
 /// Splits an f64 into the high and low f32 of a double-float.
 fn split_dd(v: f64) -> (f32, f32) {
     let hi = v as f32;
     (hi, if hi.is_finite() { (v - hi as f64) as f32 } else { 0.0 })
+}
+
+/// The water medium (march.wgsl `u.wmed`): extinction and refraction index, depth fade and
+/// the lights under the water (bits), its color, its up axis.
+fn medium_gpu(prog: &Program, lights: &[rmb_core::render::FrameLight]) -> [[f32; 4]; 4] {
+    let Some(m) = rmb_core::render::cpu::MediumFrame::new(prog, lights) else { return [[0.0; 4]; 4] };
+    let wet = m.wet_lights.iter().enumerate().filter(|(_, w)| **w).fold(0u32, |b, (i, _)| b | 1 << i);
+    let f = |a: [f64; 3], w: f32| [a[0] as f32, a[1] as f32, a[2] as f32, w];
+    [f(m.ext, m.ior as f32), f(m.fade, wet as f32), f(m.color, 0.0), f(m.up.to_array(), 0.0)]
 }
 
 /// A composed object (march.wgsl `Obj`).
@@ -674,6 +684,7 @@ fn uniforms(scene: &Scene, prog: &Program, w: u32, h: u32, fast: bool, tile: Opt
         grid2: [0.0; 4],
         tile,
         dof2: [scene.dof.blades.min(9) as f32, scene.dof.blade_rotation.to_radians() as f32, 0.0, 0.0],
+        wmed: medium_gpu(prog, &fr.lights),
         haze2: [if scene.fog.haze_shape == rmb_core::scene::HazeShape::Iterations { 1.0 } else { 0.0 }, scene.fog.haze_size as f32, 0.0, 0.0],
     }
 }

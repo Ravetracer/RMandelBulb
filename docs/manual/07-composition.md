@@ -152,9 +152,11 @@ is not needed for it, and the rest of the scene keeps its own setting.
 | Speed | How fast the waves move in animations (per second; 0 = still). Long waves run faster than ripples. | 1 |
 | Time | The moment of the waves: another value shows another wave pattern in a still image. Animations add the speed per second to it. | 0 |
 
-The water's own colors (its material) are the color of the water body: it gets brighter on
-the crests, where the light shines through the waves. Dark blue-green colors look like deep
-sea; lighter, greener ones like shallow water. The sun shows as sharp glints on the waves.
+Opaque water (**See-through** off, see below) takes the color of its body from its own colors
+(its material): it gets brighter on the crests, where the light shines through the waves.
+Dark blue-green colors look like deep sea; lighter, greener ones like shallow water.
+See-through water gets its color from the **Underwater** settings instead and uses the
+material only for the foam's highlights. The sun shows as sharp glints on the waves.
 The water looks best under a bright sky: it reflects the background (chapter 12), so a blue
 sky gradient and a low light give the contrast of open sea.
 
@@ -177,10 +179,40 @@ them too.
     distance estimate is often smaller than the real distance, so around fractals it can
     reach a bit farther. Shore waves and spray cost some speed near the coast.
 
+#### Under water
+
+New water is **see-through**: rays bend into it at the surface (refraction) and the camera can
+dive below it. Everything in the water fades into the water's color with distance, red
+first, then green, as in real water; light from above gets weaker and bluer with depth, so
+deep parts of a fractal turn dark blue-green. From below, the sky shows through a bright
+circle above the camera (Snell's window); beyond it the surface is a mirror that reflects
+the depths (total internal reflection). Shadows and occlusion pass through the water; the
+light that reaches a point under it is weakened by the way it travels through the water.
+
+![The same scene from above the water and from below it](images/water-underwater.jpg)
+
+The **Underwater** section of the water object holds the settings:
+
+| Setting | What it does | Start value |
+|---------|--------------|-------------|
+| See-through | Rays pass through the surface, the camera can dive. Off: opaque, reflecting water (scenes from older versions). | on |
+| Refraction index | How much rays bend at the surface (water 1.33; 1 = not at all). | 1.33 |
+| Water color | Color of deep water near the surface: what distant things fade into. | dark blue-green |
+| Filter color | Color white light keeps after the visibility distance: darker channels fade faster. | red low, blue high |
+| Visibility | Distance (scene units) after which light is filtered down to the filter color. | 3 |
+| Murkiness | Fading of all colors alike, like floating particles (0 = clear, 1 = murky). | 0.25 |
+| Depth darkening | How much the light from above weakens with depth (0 = equally bright at every depth). | 1 |
+
+!!! note
+    Only the first see-through water of a scene is a medium you can dive into; further
+    water objects are surfaces. The depth is measured from the open sea's surface, without
+    the shore waves. **Bounces** in the Color tab sets how many reflections and passes
+    through the surface a ray follows (default 2).
+
 !!! tip
-    For water you can see into, give its colors some transparency and turn on **Glass** in
-    the Color tab (chapter 11): rays then also bend into the water. **Bounces** in the Color
-    tab sets how many reflections of reflections the water shows (default 2).
+    For a scale to start from: the visibility is the distance at which the red of an
+    object is almost gone. A visibility of a few times the fractal's size gives clear
+    tropical water; less than its size gives a murky lake.
 
 ## Fractal objects
 

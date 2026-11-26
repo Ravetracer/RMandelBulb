@@ -40,6 +40,8 @@ pub fn march_shader_baked(prog: &Program, baked: &[Option<f64>]) -> String {
     let water: Vec<String> = prog.objects.iter().enumerate().filter(|(_, o)| matches!(o.shape, rmb_core::fractal::ObjectShape::Primitive(rmb_core::fractal::WATER_KIND, _))).map(|(j, _)| format!("j == {j}u")).collect();
     let _ = writeln!(s, "const WATER: bool = {};", !water.is_empty());
     let _ = writeln!(s, "fn is_water(j: u32) -> bool {{\n    return {};\n}}", if water.is_empty() { "false".to_string() } else { water.join(" || ") });
+    // The water medium (Program::medium): see-through water the camera and rays can enter.
+    let _ = writeln!(s, "const MEDIUM: bool = {};\nconst MEDIUM_OBJ: u32 = {}u;", prog.medium.is_some(), prog.medium.map_or(0, |(j, _)| j));
     let _ = writeln!(s, "const COLOR_ON_IT: bool = {};", prog.color_on_it >= 0 && prog.part2.is_none() && !prog.slots.is_empty());
     let _ = writeln!(s, "const MODELS: bool = {};", prog.objects.iter().any(|o| matches!(o.shape, rmb_core::fractal::ObjectShape::Model(_))));
     // Deep zoom: the main fractal in double-float arithmetic (composed objects stay f32, they
@@ -326,6 +328,14 @@ fn objects(prog: &Program) -> String {
         }
         let _ = writeln!(s, "    {{\n        let ob = objs[{j}];\n        let q = obj_local({j}u, p);\n        let sc = ob.inv0.w;\n        let op = u32(ob.inv1.w);\n        var b: Orbit;");
         match &o.shape {
+            ObjectShape::Primitive(rmb_core::fractal::WATER_KIND, _) if prog.medium.is_some_and(|(m, _)| m == j) => {
+                // The medium (mirrors Evaluator::orbit): seen from inside the air above is the
+                // solid; shadow and occlusion rays pass through it.
+                let _ = writeln!(
+                    s,
+                    "        if (water_mode == 2u) {{\n            b.de = 3.0e38;\n        }} else {{\n            b.shore = dry / sc;\n            if (water_mode == 1u) {{\n                b.de = -water_body_distance(ob.prim, ob.prim2, ob.prim3, q, b.shore) * sc;\n            }} else {{\n                b.de = water_distance(ob.prim, ob.prim2, ob.prim3, q, b.shore) * sc;\n            }}\n        }}\n        b.escaped = true;"
+                );
+            }
             ObjectShape::Primitive(rmb_core::fractal::WATER_KIND, _) => {
                 let _ = writeln!(s, "        b.shore = dry / sc;\n        b.de = water_distance(ob.prim, ob.prim2, ob.prim3, q, b.shore) * sc;\n        b.escaped = true;");
             }

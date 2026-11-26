@@ -12,6 +12,11 @@ and the release workflow uses it as the release notes.
 
 ## [Unreleased]
 
+- Water: new Underwater settings. See-through water bends rays into it (refraction) and the
+  camera can dive below the surface; light and sight fade into the water's color with
+  distance and depth, red first (filter color, visibility, murkiness, depth darkening). From
+  below, the sky shows through Snell's window and the surface mirrors the depths beyond it.
+  Water in older scenes stays opaque.
 - Ray marching: new option "Step minus detail" (Mandelbulb3D's "step sub DEstop"), imported.
 - Glow: new setting Offset per distance (Mandelbulb3D's fog offset Z), imported; several
   Mandelbulb3D scenes get their depth glow back.

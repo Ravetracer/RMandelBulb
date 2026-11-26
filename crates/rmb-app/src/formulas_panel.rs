@@ -101,7 +101,7 @@ impl FormulasPanel {
                         for p in Primitive::defaults() {
                             let tip = match p {
                                 Primitive::Plane => "A ground: everything below it is solid",
-                                Primitive::Water { .. } => "An ocean surface: choppy waves with foam, reflecting the sky and the scene; waves break on the other objects with foam and spray; the waves move in animations (see-through water: give its colors transparency and turn on Glass in the Color tab)",
+                                Primitive::Water { .. } => "An ocean surface: choppy waves with foam, reflecting the sky and the scene; waves break on the other objects with foam and spray; the waves move in animations. See-through: the camera can dive, light bends and fades in the water (Underwater section)",
                                 _ => "A basic shape",
                             };
                             if ui.button(p.name()).on_hover_text(tip).clicked() {
@@ -255,6 +255,11 @@ impl FormulasPanel {
             Shape::Primitive(p) => {
                 if widgets::section(ui, p.name(), false).open {
                     primitive_params(ui, p);
+                }
+                if let Primitive::Water { medium, .. } = p
+                    && widgets::section(ui, "Underwater", false).open
+                {
+                    water_medium_params(ui, medium);
                 }
             }
             Shape::Fractal(f) => {
@@ -629,7 +634,7 @@ fn primitive_params(ui: &mut Ui, p: &mut Primitive) {
             widgets::slider_log(ui, "Side", "Side length of the triangle", side, 0.001..=100.0, 0.8);
             widgets::slider_log(ui, "Height", "Height of the prism (along its z axis)", height, 0.001..=100.0, 1.0);
         }
-        Primitive::Water { amplitude, wavelength, phase, angle, choppy, detail, foam, reflect, speed, shore, spray, drop_size, drop_variation } => {
+        Primitive::Water { amplitude, wavelength, phase, angle, choppy, detail, foam, reflect, speed, shore, spray, drop_size, drop_variation, .. } => {
             widgets::slider_log(ui, "Wave height", "Height of the largest waves", amplitude, 0.0..=10.0, 0.08);
             widgets::slider_log(ui, "Wave length", "Length of the largest waves (across the wind they are a bit shorter)", wavelength, 0.001..=100.0, 1.0);
             widgets::slider(ui, "Choppiness", "Shape of the crests: 0 = round swell, 1 = like the sea, 2 = very choppy", choppy, 0.0..=2.0, 1.0);
@@ -644,6 +649,23 @@ fn primitive_params(ui: &mut Ui, p: &mut Primitive) {
             widgets::slider(ui, "Speed", "How fast the waves move in animations (per second; 0 = still); long waves run faster than ripples, like on the sea", speed, 0.0..=5.0, 1.0);
             widgets::slider(ui, "Time", "The moment of the waves: change it to pick another wave pattern in a still image (animations add Speed per second)", phase, -100.0..=100.0, 0.0);
         }
+    });
+}
+
+/// The water as a medium (see-through, underwater view).
+fn water_medium_params(ui: &mut Ui, m: &mut rmb_core::compose::WaterMedium) {
+    let d = rmb_core::compose::WaterMedium::default();
+    widgets::grid(ui, "water-medium", |ui| {
+        widgets::checkbox(ui, "See-through", "Rays pass through the surface and bend (refraction), the camera can dive below it, and everything in the water fades into its color with distance and depth. Off: opaque, reflecting water. Only the first see-through water of a scene is a medium", &mut m.see_through);
+        if !m.see_through {
+            return;
+        }
+        widgets::slider(ui, "Refraction index", "How much rays bend at the surface (water 1.33; 1 = not at all). From below, beyond the critical angle the surface becomes a mirror", &mut m.ior, 1.0..=2.0, d.ior);
+        widgets::color(ui, "Water color", "Color of deep water near the surface: what distant things fade into (darker and bluer with depth)", &mut m.color);
+        widgets::color(ui, "Filter color", "Color white light keeps after the visibility distance in the water: darker channels fade faster (in real water red goes first, then green)", &mut m.filter);
+        widgets::slider_log(ui, "Visibility", "Distance (scene units) after which light is filtered down to the filter color", &mut m.visibility, 0.01..=1000.0, d.visibility);
+        widgets::slider(ui, "Murkiness", "Fading of all colors alike, like floating particles: 0 = clear, 1 = murky", &mut m.murk, 0.0..=2.0, d.murk);
+        widgets::slider(ui, "Depth darkening", "How much the light from above weakens with depth (1 = as much as the view through the water; 0 = equally bright at every depth)", &mut m.depth_dark, 0.0..=3.0, d.depth_dark);
     });
 }
 

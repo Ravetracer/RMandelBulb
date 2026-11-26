@@ -141,6 +141,9 @@ pub enum Primitive {
         /// How much the drop sizes vary (0 = all alike, 1 = from tiny to full size).
         #[serde(default = "water_drop_variation_default")]
         drop_variation: f64,
+        /// The water as a medium the camera and rays can enter (see-through, underwater view).
+        #[serde(default)]
+        medium: WaterMedium,
     },
     /// Upright pill: a cylinder with half-sphere ends, `height` from end to end.
     Capsule { radius: f64, height: f64 },
@@ -193,7 +196,30 @@ impl Primitive {
 
     /// Water with good start values (moving waves in animations).
     pub fn water() -> Primitive {
-        Primitive::Water { amplitude: 0.08, wavelength: 2.0, phase: 0.0, angle: 0.0, choppy: water_choppy(), detail: water_detail(), foam: 0.3, reflect: water_reflect(), speed: 1.0, shore: water_shore_default(), spray: water_spray_default(), drop_size: water_drop_size_default(), drop_variation: water_drop_variation_default() }
+        Primitive::Water {
+            amplitude: 0.08,
+            wavelength: 2.0,
+            phase: 0.0,
+            angle: 0.0,
+            choppy: water_choppy(),
+            detail: water_detail(),
+            foam: 0.3,
+            reflect: water_reflect(),
+            speed: 1.0,
+            shore: water_shore_default(),
+            spray: water_spray_default(),
+            drop_size: water_drop_size_default(),
+            drop_variation: water_drop_variation_default(),
+            medium: WaterMedium { see_through: true, ..WaterMedium::default() },
+        }
+    }
+
+    /// The medium settings of water (None for other primitives).
+    pub fn medium(&self) -> Option<&WaterMedium> {
+        match self {
+            Primitive::Water { medium, .. } => Some(medium),
+            _ => None,
+        }
     }
 
     /// The parameters in a fixed order (GPU buffer: `prim`, `prim2`, `prim3`).
@@ -216,6 +242,50 @@ impl Primitive {
     /// Signed distance from the local point `q` (negative inside).
     pub fn distance(&self, q: V3) -> f64 {
         primitive_distance(self.index(), self.params(), q)
+    }
+}
+
+/// Water as a medium (the first see-through water of a scene): rays refract into it, the camera
+/// can dive, and light and sight fade with the distance travelled in it, red first.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WaterMedium {
+    /// Rays pass through the surface (refraction) and the camera can go below it. Off: the
+    /// opaque, reflecting water of older scenes.
+    pub see_through: bool,
+    /// Refraction index (water 1.33).
+    pub ior: f64,
+    /// Color of deep water near the surface (what distant things fade into).
+    pub color: [f32; 3],
+    /// Color left of white light after `visibility` in the water (absorption per channel:
+    /// the darker a channel, the faster it fades; red goes first in real water).
+    pub filter: [f32; 3],
+    /// Distance (scene units) after which light is filtered down to `filter`.
+    pub visibility: f64,
+    /// Fading of every color alike (floating particles): 0 = clear, 1 = murky.
+    pub murk: f64,
+    /// How much light from above weakens with depth (1 = like the view through the water;
+    /// 0 = equally bright at every depth).
+    pub depth_dark: f64,
+}
+
+impl Default for WaterMedium {
+    fn default() -> Self {
+        WaterMedium { see_through: false, ior: 1.33, color: [0.03, 0.22, 0.3], filter: [0.12, 0.6, 0.78], visibility: 3.0, murk: 0.25, depth_dark: 1.0 }
+    }
+}
+
+impl WaterMedium {
+    /// Fading per scene unit of the view through the water, per channel: absorption from the
+    /// filter color plus the murk (the same for all channels).
+    pub fn extinction(&self) -> [f64; 3] {
+        let vis = self.visibility.max(1e-6);
+        self.filter.map(|f| -(f as f64).clamp(1e-4, 1.0).ln() / vis + self.murk.max(0.0) * 3.0 / vis)
+    }
+
+    /// Fading per unit of depth of the light from above.
+    pub fn depth_fade(&self) -> [f64; 3] {
+        self.extinction().map(|e| e * self.depth_dark.max(0.0))
     }
 }
 
@@ -442,27 +512,35 @@ fn water_shore_steepness(a: &[f64; 12]) -> f64 {
 /// crest the distance to the highest one, near the waves the height difference scaled down by
 /// the steepest slope (steeper near the coast, where the shore waves run), and the spray.
 pub fn water_distance(a: &[f64; 12], q: V3, s: f64) -> f64 {
+    water_body_distance(a, q, s).min(water_spray(a, q, s))
+}
+
+/// [`water_distance`] without the spray: the surface of the water body (seen from inside, the
+/// medium negates it).
+pub fn water_body_distance(a: &[f64; 12], q: V3, s: f64) -> f64 {
     let amp = a[0].abs();
     let above = q.z - amp;
-    let spray = water_spray(a, q, s);
     if above > amp {
-        return above.min(spray);
+        return above;
     }
     let range = a[1].max(1e-6) * SHORE_RANGE;
     let open = (1.0 + water_steepness(a).powi(2)).sqrt();
     let dz = q.z - water_height(a, q.x, q.y, s);
-    let mut d = dz / open;
+    // The same bound above and below the surface (by the height difference's size): the
+    // water medium seen from inside negates it.
+    let h = dz.abs();
+    let mut d = h / open;
     let x = s - range;
-    if a[8] > 0.0 && dz > x * open {
+    if a[8] > 0.0 && h > x * open {
         // Within the shore waves' reach their slope (also along the shore distance, which
         // changes by at most 1 per unit) adds to the open sea's. From x beyond the reach, the
         // first x of the way to the waves there still has the open sea's slope, so they are at
-        // least dz / steep + x (1 - open / steep) away.
+        // least |dz| / steep + x (1 - open / steep) away.
         let steep = open + water_shore_steepness(a);
-        d = dz / steep + x.max(0.0) * (1.0 - open / steep);
+        d = h / steep + x.max(0.0) * (1.0 - open / steep);
     }
-    let d = if above > 0.0 { d.max(above) } else { d };
-    d.min(spray)
+    let d = d.copysign(dz);
+    if above > 0.0 { d.max(above) } else { d }
 }
 
 /// Sideways drift of the spray at (`x`, `y`) (mirrors march.wgsl `water_spray_drift`): a
@@ -551,6 +629,21 @@ fn water_spray(a: &[f64; 12], q: V3, s: f64) -> f64 {
 pub fn water_fresnel(cos_i: f64, strength: f64) -> f64 {
     let x = (1.0 - cos_i.clamp(0.0, 1.0)).powi(5);
     ((0.02 + 0.98 * x) * strength.max(0.0)).min(1.0)
+}
+
+/// Share of light reflected by a smooth surface between refraction indices (`eta` = index on
+/// the ray's side / index beyond) at the cosine `cos_i` (exact Fresnel, unpolarized; 1 at total
+/// internal reflection; mirrors march.wgsl `fresnel_exact`).
+pub fn fresnel_exact(cos_i: f64, eta: f64) -> f64 {
+    let ci = cos_i.clamp(0.0, 1.0);
+    let k = 1.0 - eta * eta * (1.0 - ci * ci);
+    if k <= 0.0 {
+        return 1.0;
+    }
+    let ct = k.sqrt();
+    let rs = (ci - eta * ct) / (ci + eta * ct);
+    let rp = (ct - eta * ci) / (ct + eta * ci);
+    ((rs * rs + rp * rp) * 0.5).min(1.0)
 }
 
 /// Value noise 0..1 on the integer grid (mirrors march.wgsl `water_noise`).
@@ -911,7 +1004,7 @@ mod tests {
             }
         }
         // Water: never more than the vertical distance to the surface.
-        let w = Primitive::Water { amplitude: 0.05, wavelength: 0.3, phase: 0.4, angle: 20.0, choppy: 1.0, detail: 16.0, foam: 0.3, reflect: 1.0, speed: 0.0, shore: 1.0, spray: 1.0, drop_size: 1.0, drop_variation: 0.5 };
+        let w = Primitive::Water { amplitude: 0.05, wavelength: 0.3, phase: 0.4, angle: 20.0, choppy: 1.0, detail: 16.0, foam: 0.3, reflect: 1.0, speed: 0.0, shore: 1.0, spray: 1.0, drop_size: 1.0, drop_variation: 0.5, medium: WaterMedium::default() };
         let a = w.params();
         for i in 0..200 {
             let (x, y) = (i as f64 * 0.013, i as f64 * 0.007);

@@ -98,6 +98,9 @@ struct U {
     grid2: vec4<f32>,      // mesh export: slice index
     tile: vec4<u32>,       // rendered tile of a larger image: left, top, full width, full height
     dof2: vec4<f32>,       // aperture blades (0 = round), their rotation (radians)
+    // Water medium (cpu::MediumFrame): [0] extinction, w: refraction index; [1] depth fade,
+    // w: lights under the water (bits); [2] water color; [3] the water's up axis.
+    wmed: array<vec4<f32>, 4>,
 }
 
 @group(0) @binding(0) var<uniform> u: U;
@@ -119,6 +122,8 @@ struct U {
 var<private> aux_albedo: vec3<f32>;
 // Swaps inside and outside rendering (rays travelling inside glass; Evaluator::flip).
 var<private> flip: bool;
+// How the water medium takes part (Evaluator::water_mode): 0 solid, 1 inside, 2 ignored.
+var<private> water_mode: u32;
 
 fn inside_now() -> bool {
     return (u.scales.z > 0.5) != flip;
@@ -825,11 +830,15 @@ fn water_height(a: vec4<f32>, a2: vec4<f32>, a3: vec4<f32>, x: f32, y: f32, s: f
 
 // Mirrors compose::water_distance.
 fn water_distance(a: vec4<f32>, a2: vec4<f32>, a3: vec4<f32>, q: vec3<f32>, s: f32) -> f32 {
+    return min(water_body_distance(a, a2, a3, q, s), water_spray(a, a3, q, s));
+}
+
+// Mirrors compose::water_body_distance.
+fn water_body_distance(a: vec4<f32>, a2: vec4<f32>, a3: vec4<f32>, q: vec3<f32>, s: f32) -> f32 {
     let amp = abs(a.x);
     let above = q.z - amp;
-    let spray = water_spray(a, a3, q, s);
     if (above > amp) {
-        return min(above, spray);
+        return above;
     }
     let len = max(a.y, 1.0e-6);
     let range = len * 0.6;
@@ -837,16 +846,18 @@ fn water_distance(a: vec4<f32>, a2: vec4<f32>, a3: vec4<f32>, q: vec3<f32>, s: f
     let steep = amp * 6.283185307179586 / len * (1.6 + c * c * f32(clamp(i32(round(a2.y)), 4, 64)) / 40.0);
     let open = sqrt(1.0 + steep * steep);
     let dz = q.z - water_height(a, a2, a3, q.x, q.y, s);
-    var d = dz / open;
+    let hd = abs(dz);
+    var d = hd / open;
     let x = s - range;
-    if (a3.x > 0.0 && dz > x * open) {
+    if (a3.x > 0.0 && hd > x * open) {
         let steep_s = open + amp * clamp(a3.x, 0.0, 2.0) / len * 16.0;
-        d = dz / steep_s + max(x, 0.0) * (1.0 - open / steep_s);
+        d = hd / steep_s + max(x, 0.0) * (1.0 - open / steep_s);
     }
+    d = select(d, -d, dz < 0.0);
     if (above > 0.0) {
         d = max(d, above);
     }
-    return min(d, spray);
+    return d;
 }
 
 // Mirrors compose::water_spray_drift: xy the offset, zw the drift velocity.
@@ -919,6 +930,19 @@ fn water_spray(a: vec4<f32>, a3: vec4<f32>, q: vec3<f32>, s: f32) -> f32 {
 fn water_fresnel(cos_i: f32, strength: f32) -> f32 {
     let x = pow(1.0 - clamp(cos_i, 0.0, 1.0), 5.0);
     return min((0.02 + 0.98 * x) * max(strength, 0.0), 1.0);
+}
+
+// Mirrors compose::fresnel_exact.
+fn fresnel_exact(cos_i: f32, eta: f32) -> f32 {
+    let ci = clamp(cos_i, 0.0, 1.0);
+    let k = 1.0 - eta * eta * (1.0 - ci * ci);
+    if (k <= 0.0) {
+        return 1.0;
+    }
+    let ct = sqrt(k);
+    let rs = (ci - eta * ct) / (ci + eta * ct);
+    let rp = (ct - eta * ci) / (ct + eta * ci);
+    return min((rs * rs + rp * rp) * 0.5, 1.0);
 }
 
 // Mirrors compose::water_noise.
@@ -1632,6 +1656,11 @@ fn steam_density(p: vec3<f32>) -> f32 {
 // an ambient occlusion, emission or scatter ray (mirrors Shader::march_rough).
 // `camera`: a camera ray (Mandelbulb3D marching takes thresholds off its steps, at least 0.11
 // pixels per step).
+// Most threshold steps a ray takes to leave the water surface it passed through (mirrors
+// cpu::LEAVE_STEPS); `leave_steps` is set for one primary march.
+const LEAVE_STEPS: u32 = 8u;
+var<private> leave_steps: u32;
+
 fn march_ray(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, max_steps: u32, primary: bool, camera: bool) -> Hit {
     var h: Hit;
     h.hit = false;
@@ -1650,6 +1679,12 @@ fn march_ray(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, max_steps: u32, pr
     // The cap grows with the distance from the camera (rays that start at a surface too).
     let base = select(0.0, length(o - u.cam_pos.xyz), cap > 0.0);
     var last_de = 0.0;
+    // Leaving the surface the ray just passed through (mirrors Shader::march_ex).
+    var leave = 0u;
+    if (primary) {
+        leave = leave_steps;
+    }
+    var leaving = leave > 0u;
     loop {
         if (step >= max_steps) {
             break;
@@ -1657,6 +1692,12 @@ fn march_ray(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, max_steps: u32, pr
         let eps = eps_at(t);
         let ob = orbit(o + d * t, eps * 0.5);
         let glowing = glow_it == 0u || ob.n == glow_it;
+        if (leaving && ob.de < eps && step < leave) {
+            t += eps;
+            step++;
+            continue;
+        }
+        leaving = false;
         if (ob.de < eps) {
             var t_hit = t;
             var ob_hit = ob;
@@ -1858,7 +1899,19 @@ fn rough_diffuse(k: u32, ndl: f32) -> f32 {
 
 // Mirrors Shader::soft_shadow: light reaching `p` from `l` per color channel; glass lets light
 // through with GLASS_SHADOW (tinted by its color and the absorption on the way).
+// Mirrors Shader::soft_shadow: light passes through the water medium (its loss is
+// water_light).
 fn soft_shadow(p: vec3<f32>, l: vec3<f32>, eps: f32, softness: f32, max_t: f32, dist: f32) -> vec3<f32> {
+    let mode = water_mode;
+    if (MEDIUM) {
+        water_mode = 2u;
+    }
+    let r = soft_shadow_in(p, l, eps, softness, max_t, dist);
+    water_mode = mode;
+    return r;
+}
+
+fn soft_shadow_in(p: vec3<f32>, l: vec3<f32>, eps: f32, softness: f32, max_t: f32, dist: f32) -> vec3<f32> {
     var glass = 0.0;
     if (GLASS_SHADOW && u.glass.x > 0.5) {
         glass = u.glow3.w;
@@ -1947,7 +2000,18 @@ fn ao_curve(occ: f32) -> f32 {
 
 // Mirrors Shader::ambient_occlusion: x the occlusion factor, yzw the light of emissive colors
 // (one hemisphere ray serves both).
+// Mirrors Shader::ambient_occlusion: the water medium occludes nothing.
 fn ambient_occlusion(p: vec3<f32>, n: vec3<f32>, t: f32) -> vec4<f32> {
+    let mode = water_mode;
+    if (MEDIUM) {
+        water_mode = 2u;
+    }
+    let r = ambient_occlusion_in(p, n, t);
+    water_mode = mode;
+    return r;
+}
+
+fn ambient_occlusion_in(p: vec3<f32>, n: vec3<f32>, t: f32) -> vec4<f32> {
     let radius = u.ao.z * t;
     var mode = u32(u.ao.x);
     // Fast preview: no traced rays.
@@ -2729,6 +2793,69 @@ fn fog_amount(t: f32) -> f32 {
     return f;
 }
 
+// Mirrors MediumFrame::depth: depth below the water medium's surface (world units, negative
+// above), the open sea's height without the shore waves.
+fn water_depth(p: vec3<f32>) -> f32 {
+    let j = MEDIUM_OBJ;
+    let q = obj_local(j, p);
+    return (water_height(objs[j].prim, objs[j].prim2, objs[j].prim3, q.x, q.y, 1.0e30) - q.z) * objs[j].size.z;
+}
+
+// Mirrors Shader::water_light: share of light i (toward ldir, dist away) reaching a point
+// `depth` below the surface.
+fn water_light(i: u32, depth: f32, ldir: vec3<f32>, dist: f32) -> vec3<f32> {
+    if ((u32(u.wmed[1].w) & (1u << i)) != 0u) {
+        return exp(-u.wmed[0].xyz * dist);
+    }
+    let c = dot(ldir, u.wmed[3].xyz);
+    if (c <= 0.0) {
+        return vec3<f32>(0.0);
+    }
+    let through = 1.0 - fresnel_exact(c, 1.0 / max(u.wmed[0].w, 1.0));
+    return through * exp(-u.wmed[1].xyz * depth / c);
+}
+
+// Mirrors Shader::water_top: light from above that lights the water at its surface.
+fn water_top(a: vec3<f32>) -> vec3<f32> {
+    var top = u.sky.xyz * u.ao.w;
+    for (var i = 0u; i < u.size.w; i++) {
+        let ls = light_sample(i, a, vec2<f32>(0.5));
+        top += u.lights[i].color.xyz * (max(dot(ls.dir, u.wmed[3].xyz), 0.0) * ls.atten);
+    }
+    return top;
+}
+
+// Mirrors Shader::medium_path: the share of light that gets through a ray part in the water
+// from `a` along `d`, `len` long (xyz of the first), and the light the water adds.
+struct MediumPath {
+    keep: vec3<f32>,
+    add: vec3<f32>,
+}
+
+fn medium_path(a: vec3<f32>, d: vec3<f32>, len: f32) -> MediumPath {
+    let d0 = max(water_depth(a), 0.0);
+    let g = -dot(d, u.wmed[3].xyz);
+    let top = water_top(a);
+    var reach = len;
+    if (g < 0.0) {
+        reach = min(len, d0 / -g);
+    }
+    var r: MediumPath;
+    for (var k = 0; k < 3; k++) {
+        let e = u.wmed[0][k];
+        let f = u.wmed[1][k];
+        r.keep[k] = exp(-e * len);
+        let rate = e + f * g;
+        let x = rate * reach;
+        var integ = reach * exp(-f * d0);
+        if (abs(x) >= 1.0e-6) {
+            integ = (exp(-f * d0) - exp(-(f * d0 + x))) / rate;
+        }
+        r.add[k] = e * u.wmed[2][k] * top[k] * integ;
+    }
+    return r;
+}
+
 // Mirrors cpu.rs Traced / Surface.
 struct Traced {
     c: vec3<f32>,
@@ -2747,6 +2874,9 @@ struct Traced {
     fog: f32,
     // The surface's own reflection (water); negative: the material's reflection amount.
     mirror: f32,
+    // Share passing through the surface of the water medium, and whether this is that surface.
+    see: f32,
+    medium: bool,
 }
 
 // Foam on water crests and the sharpness of water highlights (mirror render::cpu).
@@ -2783,10 +2913,12 @@ fn path_specular_share(amount: f32, spec: vec3<f32>, trans: f32, glass: f32) -> 
     return clamp(max(s, g), 0.0, 0.9);
 }
 
-fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sx: f32, sy: f32, inside: bool, glass: f32, env: bool) -> Traced {
+fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sx: f32, sy: f32, inside: bool, glass: f32, env: bool, water: bool, leave: bool) -> Traced {
     var tr: Traced;
     tr.hit = false;
     tr.mirror = -1.0;
+    tr.see = 0.0;
+    tr.medium = false;
     // Glow and steam (mirrors Shader::trace): pick a point near the glowing surfaces, a random
     // ray from it finds the emitted light of the surface it came from.
     let steam_on = u.emis.z > 0.0 || u.emis2.y > 0.0;
@@ -2801,7 +2933,9 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sx: f32, 
     haze_on = hz;
     haze_light = vec3<f32>(0.0);
     haze_keep = 1.0;
+    leave_steps = select(0u, LEAVE_STEPS, leave);
     var h = march_ray(o, d, t0, max_t, u.band.z, true, t_base <= 0.0 && !inside);
+    leave_steps = 0u;
     pick_on = false;
     haze_on = false;
     if (steam_on) {
@@ -2849,8 +2983,12 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sx: f32, 
     tr.normal = vec3<f32>(0.0);
     if (!h.hit) {
         var f = 0.0;
-        if (!inside) {
+        if (!inside && !water) {
             f = fog_amount(u.cam_fwd.w);
+        }
+        // In the water no background.
+        if (water) {
+            bg = vec3<f32>(0.0);
         }
         var cover = 1.0;
         if (u.bg2.w > 0.5 && u.bg_rot[0].w > 0.5) {
@@ -2925,12 +3063,28 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sx: f32, 
         }
         // Water: foam on the crests, and its own (Fresnel) reflection.
         var mirror = -1.0;
+        var see = 0.0;
+        var medium = false;
         if (WATER && h.orbit.obj > 0u && is_water(h.orbit.obj - 1u)) {
             let j = h.orbit.obj - 1u;
             let look = water_look(objs[j].prim, objs[j].prim2, objs[j].prim3, obj_local(j, pos), h.orbit.shore);
-            let lifted = cols.base * (0.55 + 0.9 * look.x);
-            cols.base = lifted + (WATER_FOAM - lifted) * look.y;
-            mirror = water_fresnel(-dot(d, n), objs[j].prim2.w) * (1.0 - look.y);
+            if (MEDIUM && j == MEDIUM_OBJ) {
+                // See-through: only the foam has a color of its own; the body is the medium.
+                var r = water_fresnel(-dot(d, n), objs[j].prim2.w);
+                if (water) {
+                    r = fresnel_exact(-dot(d, n), u.wmed[0].w);
+                }
+                cols.base = WATER_FOAM;
+                mirror = r * (1.0 - look.y);
+                see = (1.0 - r) * (1.0 - look.y);
+                medium = true;
+                // The medium's surface is no glass.
+                cols.trans = 0.0;
+            } else {
+                let lifted = cols.base * (0.55 + 0.9 * look.x);
+                cols.base = lifted + (WATER_FOAM - lifted) * look.y;
+                mirror = water_fresnel(-dot(d, n), objs[j].prim2.w) * (1.0 - look.y);
+            }
         }
         let base = cols.base;
         let p = pos + n * (h.eps * select(1.5, 4.0, inside_now()));
@@ -2956,7 +3110,16 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sx: f32, 
         if (path_on()) {
             ambient = 0.0;
         }
-        var diffuse = amb * ambient * ao + aol.yzw;
+        // Under the water: less light from above with depth, red first.
+        var wet_depth = 0.0;
+        if (MEDIUM) {
+            wet_depth = water_depth(p);
+        }
+        var amb_keep = vec3<f32>(1.0);
+        if (wet_depth > 0.0) {
+            amb_keep = exp(-u.wmed[1].xyz * wet_depth);
+        }
+        var diffuse = amb * ambient * ao * amb_keep + aol.yzw;
         var spec = vec3<f32>(0.0);
         var shin = u.sky.w;
         // Water glints: a far sharper sun highlight than the scene's shininess.
@@ -3001,6 +3164,9 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sx: f32, 
             if (li.opts.x > 0.5 && u.dof.w < 0.5) {
                 sh = soft_shadow(p, ldir, h.eps, li.opts.y, max_l, h.t);
             }
+            if (wet_depth > 0.0) {
+                sh *= water_light(i, wet_depth, ldir, max_l);
+            }
             if (max(sh.x, max(sh.y, sh.z)) <= 0.0) {
                 continue;
             }
@@ -3013,12 +3179,13 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sx: f32, 
             diffuse += li.color.xyz * df * w * sh;
             spec += li.color.xyz * s * w * sh;
         }
-        // What the reflection takes (water) does not reach the surface color.
-        let keep = max(1.0 - cols.trans * glass, 0.0) * (1.0 - max(mirror, 0.0));
+        // What the reflection takes (water) and what passes into or out of the water medium
+        // does not reach the surface color.
+        let keep = max(1.0 - cols.trans * glass, 0.0) * max(1.0 - max(mirror, 0.0) - see, 0.0);
         // Emissive colors shine by themselves.
         let lit = base * (diffuse * keep + cols.emis) + spec * cols.spec + model_emis;
         var f = 0.0;
-        if (!inside) {
+        if (!inside && !water) {
             f = fog_amount(h.t - t_base);
         }
         c = lit * (1.0 - f) + fog_col * max(f, 0.0);
@@ -3036,11 +3203,13 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sx: f32, 
         tr.spec = cols.spec;
         tr.fog = f;
         tr.mirror = mirror;
+        tr.see = see;
+        tr.medium = medium;
     }
     // Glow and steam of the emissive colors the ray passed (strengths included).
     c += h.halo;
     // Light scattered by the fog (mirrors Shader::trace).
-    if (!inside && u.fog4.x > 0.0 && u.size.w > 0u) {
+    if (!inside && !water && u.fog4.x > 0.0 && u.size.w > 0u) {
         let ut = rnd();
         let ul = rnd();
         var r = vec2<f32>(rnd(), rnd());
@@ -3096,6 +3265,17 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sx: f32, 
         c = c * haze_keep + haze_light;
         tr.albedo = tr.albedo * haze_keep + (1.0 - haze_keep) * clamp(haze_light / max(1.0 - haze_keep, 1.0e-9), vec3<f32>(0.0), vec3<f32>(1.0));
     }
+    // In the water: faded by the way through it, plus the water's own light (mirrors
+    // Shader::trace).
+    if (MEDIUM && water) {
+        var len = u.cam_fwd.w;
+        if (h.hit) {
+            len = h.t - t_base;
+        }
+        let mp = medium_path(o + d * t_base, d, len);
+        c = c * mp.keep + mp.add;
+        tr.albedo = tr.albedo * mp.keep + (1.0 - mp.keep) * clamp(u.wmed[2].xyz, vec3<f32>(0.0), vec3<f32>(1.0));
+    }
     if (inside) {
         // Inside glass: no glow and no visible lights.
         tr.c = c;
@@ -3107,10 +3287,10 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sx: f32, 
     } else {
         c += glow_col * glow;
     }
-    // Visible light sources (seen from where this ray part starts).
+    // Visible light sources (seen from where this ray part starts; not through the water).
     let ray_from = o + d * t_base;
     for (var i = 0u; i < u.size.w; i++) {
-        if (u.lights[i].glow.x > 0.5) {
+        if (u.lights[i].glow.x > 0.5 && !water) {
             c = light_glow(i, ray_from, d, h.hit, h.t - t_base, fog_col, c);
         }
     }
@@ -3301,7 +3481,7 @@ fn sample_pixel(px: u32, py: u32, sample: u32, k: u32) -> vec3<f32> {
     }
     // Without reflections (most scenes) a single trace: compiles much faster.
     if (!REFLECT) {
-        let tr = trace(o, d, u.scales.w, u.cam_fwd.w, 0.0, sx, sy, false, 0.0, false);
+        let tr = trace(o, d, u.scales.w, u.cam_fwd.w, 0.0, sx, sy, false, 0.0, false, false, false);
         aux_albedo = tr.albedo;
         aux_normal = tr.normal;
         aux_depth = select(0.0, tr.t, tr.hit);
@@ -3335,13 +3515,20 @@ fn sample_pixel(px: u32, py: u32, sample: u32, k: u32) -> vec3<f32> {
     }
     let fov = 2.0 * atan(u.cam_pos.w);
     var inside = false;
+    // The camera under the water: the ray starts in the medium.
+    var in_water = false;
+    if (MEDIUM) {
+        in_water = water_depth(o) > 0.0;
+    }
+    water_mode = select(0u, 1u, in_water);
     var prev: Traced;
+    var crossed = false;
     for (var b = 0u; b <= bounces; b++) {
         var g = glass;
         if (b == bounces) {
             g = 0.0;
         }
-        let tr = trace(ro, rd, t0, max_t, t_base, sxr, syr, inside, g, path && b > 0u);
+        let tr = trace(ro, rd, t0, max_t, t_base, sxr, syr, inside, g, path && b > 0u, in_water, crossed);
         if (b == 0u) {
             aux_albedo = tr.albedo;
             aux_normal = tr.normal;
@@ -3377,22 +3564,27 @@ fn sample_pixel(px: u32, py: u32, sample: u32, k: u32) -> vec3<f32> {
         let vis = clamp(1.0 - tr.fog, 0.0, 1.0);
         var bn: Bounce;
         var diffuse = false;
-        // Water reflects by its own amount.
+        // Water reflects by its own amount (the medium's surface: reflection plus the share
+        // passing through).
         var amt = amount;
         if (tr.mirror >= 0.0) {
-            amt = tr.mirror;
+            amt = tr.mirror + tr.see;
         }
         if (path) {
             var ps = path_specular_share(amount, tr.spec, tr.trans, glass);
             if (tr.mirror >= 0.0) {
-                ps = tr.mirror;
+                ps = tr.mirror + tr.see;
             }
             var spec_lobe = false;
             if (ps > 0.0) {
                 spec_lobe = rnd() < ps;
             }
             if (spec_lobe) {
-                bn = bounce(tr, inside);
+                if (MEDIUM && tr.medium) {
+                    bn = water_bounce(tr, in_water);
+                } else {
+                    bn = bounce(tr, inside);
+                }
                 weight *= bn.f * amt / ps * vis;
             } else {
                 let u1 = rnd();
@@ -3400,7 +3592,7 @@ fn sample_pixel(px: u32, py: u32, sample: u32, k: u32) -> vec3<f32> {
                 bn.dir = cosine_dir(tr.n, u1, u2);
                 bn.refract = false;
                 diffuse = true;
-                let keep = max(1.0 - tr.trans * glass, 0.0) * (1.0 - max(tr.mirror, 0.0));
+                let keep = max(1.0 - tr.trans * glass, 0.0) * max(1.0 - max(tr.mirror + tr.see, 0.0), 0.0);
                 weight *= tr.base * keep / (1.0 - ps) * vis;
             }
             if (b >= 2u) {
@@ -3411,7 +3603,11 @@ fn sample_pixel(px: u32, py: u32, sample: u32, k: u32) -> vec3<f32> {
                 weight /= q;
             }
         } else {
-            bn = bounce(tr, inside);
+            if (MEDIUM && tr.medium) {
+                bn = water_bounce(tr, in_water);
+            } else {
+                bn = bounce(tr, inside);
+            }
             weight *= bn.f * amt * vis;
         }
         if (all(weight < vec3<f32>(1.0e-4))) {
@@ -3420,6 +3616,14 @@ fn sample_pixel(px: u32, py: u32, sample: u32, k: u32) -> vec3<f32> {
         var start = tr.pos;
         if (bn.refract) {
             start = tr.hit_pos - tr.n * tr.eps;
+        }
+        crossed = MEDIUM && bn.refract && tr.medium;
+        if (crossed) {
+            // Into or out of the water: the other side's surface is the solid now (the march
+            // first leaves the surface it starts on; mirrors Shader::sample_eye).
+            in_water = !in_water;
+            water_mode = select(0u, 1u, in_water);
+        } else if (bn.refract) {
             inside = !inside;
             flip = inside;
         }
@@ -3437,6 +3641,7 @@ fn sample_pixel(px: u32, py: u32, sample: u32, k: u32) -> vec3<f32> {
         sxr = clamp(atan2(dot(rd, u.cam_right.xyz), dot(rd, u.cam_fwd.xyz)) / atan(u.cam_pos.w * u.cam_right.w), -1.0, 1.0);
     }
     flip = false;
+    water_mode = 0u;
     return c;
 }
 
@@ -3519,6 +3724,34 @@ fn bounce(s_in: Traced, inside: bool) -> Bounce {
         r.refract = true;
     } else {
         r.f = wr / (1.0 - p);
+    }
+    return r;
+}
+
+// Mirrors Shader::water_bounce: reflection or passing through the water medium's surface,
+// picked by their shares; the weight is relative to their sum.
+fn water_bounce(s: Traced, in_water: bool) -> Bounce {
+    var r: Bounce;
+    r.dir = s.dir - s.n * (2.0 * dot(s.dir, s.n));
+    r.refract = false;
+    let total = max(s.mirror, 0.0) + s.see;
+    if (total <= 0.0) {
+        r.f = vec3<f32>(0.0);
+        return r;
+    }
+    r.f = s.spec;
+    if (s.see > 0.0 && rnd() * total < s.see) {
+        var eta = 1.0 / max(u.wmed[0].w, 1.0);
+        if (in_water) {
+            eta = u.wmed[0].w;
+        }
+        let ci = -dot(s.dir, s.n);
+        let k = 1.0 - eta * eta * (1.0 - ci * ci);
+        if (k > 0.0) {
+            r.dir = normalize(s.dir * eta + s.n * (eta * ci - sqrt(k)));
+            r.f = vec3<f32>(1.0);
+            r.refract = true;
+        }
     }
     return r;
 }
