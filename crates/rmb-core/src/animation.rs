@@ -752,6 +752,8 @@ fn color_speeds(s: &Scene) -> BTreeMap<String, f64> {
     for (k, o) in s.objects.iter().enumerate() {
         if let crate::compose::Shape::Primitive(crate::compose::Primitive::Water { speed, .. }) = o.shape {
             out.insert(format!("o{k}.water"), speed);
+            // The medium's clock (bubbles, particles) runs in seconds.
+            out.insert(format!("o{k}.medium"), 1.0);
         }
     }
     out
@@ -799,8 +801,9 @@ fn apply_phases(s: &mut Scene, phase: &BTreeMap<String, f64>) {
     for (k, o) in s.objects.iter_mut().enumerate() {
         let m = &mut o.material;
         turn(format!("o{k}"), &mut m.color_offset, &mut m.bands, &mut m.layers);
-        if let crate::compose::Shape::Primitive(crate::compose::Primitive::Water { phase: p, .. }) = &mut o.shape {
+        if let crate::compose::Shape::Primitive(crate::compose::Primitive::Water { phase: p, medium, .. }) = &mut o.shape {
             *p += phase.get(&format!("o{k}.water")).copied().unwrap_or(0.0);
+            medium.time += phase.get(&format!("o{k}.medium")).copied().unwrap_or(0.0);
         }
     }
 }
@@ -1259,6 +1262,12 @@ mod tests {
             _ => f64::NAN,
         };
         assert!((phase(25) - phase(0) - speed).abs() < 1e-9, "{} {}", phase(0), phase(25));
+        // The medium's clock (bubbles, particles) runs in seconds.
+        let time = |f: usize| match plan.scene_at(f).objects[0].shape {
+            Shape::Primitive(Primitive::Water { medium, .. }) => medium.time,
+            _ => f64::NAN,
+        };
+        assert!((time(50) - time(0) - 2.0).abs() < 1e-9, "{} {}", time(0), time(50));
     }
 
     #[test]

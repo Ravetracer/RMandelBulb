@@ -860,13 +860,18 @@ fn gpu_matches_cpu_under_water() {
     let p = |x: f64, y: f64, z: f64| rmb_core::v3(x, y, z);
     let two = |a: [f32; 3], b: [f32; 3]| vec![ColorStop::new(0.0, a), ColorStop::new(1.0, b)];
     scene.objects = vec![
-        SceneObject { name: "Ground".into(), shape: Shape::Primitive(Primitive::Plane), transform: Transform { position: p(0.0, 0.0, -1.3), ..Default::default() }, material: ObjectMaterial { gradient: two([0.85, 0.8, 0.65], [0.45, 0.4, 0.3]), pattern: Pattern::Checker, pattern_size: 0.5, repeat: false, ..Default::default() }, ..Default::default() },
+        SceneObject { name: "Ground".into(), shape: Shape::Primitive(Primitive::seabed()), transform: Transform { position: p(0.0, 0.0, -1.3), ..Default::default() }, material: ObjectMaterial { gradient: two([0.85, 0.8, 0.65], [0.45, 0.4, 0.3]), pattern: Pattern::Height, pattern_size: 0.5, repeat: false, ..Default::default() }, ..Default::default() },
         SceneObject { name: "Sea".into(), shape: Shape::Primitive(Primitive::water()), transform: Transform { position: p(0.0, 0.0, 0.2), rotation: [4.0, -3.0, 0.0], ..Default::default() }, ..Default::default() },
     ];
+    // Larger bubbles and particles, so they show at the test's size.
+    if let Shape::Primitive(Primitive::Water { medium, .. }) = &mut scene.objects[1].shape {
+        (medium.bubbles, medium.bubble_size, medium.particles, medium.particle_size, medium.time) = (1.0, 0.05, 1.0, 0.01, 1.3);
+    }
     let prog = Program::for_scene(&scene);
     assert_eq!(prog.medium.map(|m| m.0), Some(1));
     validate(&rmb_gpu::codegen::march_shader(&prog), "water medium");
-    for (pos, at) in [(p(3.0, -3.2, 1.6), p(0.0, 0.0, -0.3)), (p(2.4, -2.6, -0.6), p(0.0, 0.0, 0.1))] {
+    // From above, from below and at the waterline (half above, half below).
+    for (pos, at) in [(p(3.0, -3.2, 1.6), p(0.0, 0.0, -0.3)), (p(2.4, -2.6, -0.6), p(0.0, 0.0, 0.1)), (p(2.6, -2.8, 0.2), p(0.0, 0.0, 0.2))] {
         scene.camera.position = pos;
         scene.camera.look_at(at, p(0.0, 0.0, 1.0));
         parity(scene.clone());

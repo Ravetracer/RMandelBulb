@@ -398,6 +398,21 @@ cargo clippy -j 8 --workspace --all-targets
   the entry point (`shaft` argument: the pattern stays constant along the light → shafts)
   with `RAYS_CONTRAST`. Scattering `WaterMedium::scattering` (murk + a little), phase HG
   `RAYS_FORWARD`. Medium scenes compile in ~14 s (11 s without caustics and rays).
+- Bubbles and particles (`DropKind` in `MediumFrame::drops`, GPU `wmed[5..7]`):
+  `water_drop` walks a 3D grid (Amanatides-Woo, `DROP_CELLS`) in the water's rigid frame
+  (rotation + position, no scale: the GPU's deep zoom shifts world positions relative to
+  the camera, so a world-anchored grid did not match the CPU); `drop_sphere` = one sphere
+  per cell by `hash3` (well inside, so the first hit is the nearest; test against brute
+  force). The grid rises along the water's z by `time × speed`. Ray-sphere by the closest
+  approach (f32). `water_drops` composites after `medium_path` (farther first): bubbles by
+  `fresnel_exact` (TIR rim), light from above + glint; particles 0.7 opaque. No random
+  numbers. `WaterMedium::time` advances 1 per second in animations (phase `o{k}.medium`).
+- Waterline: the ray starts on the camera's front glass (`waterline_point`, `lens` wide),
+  in the water when that point is below the open sea; near the surface the first march
+  leaves it; `waterline_shade` darkens the meniscus.
+- `Primitive::Seabed` (`SEABED_KIND` 10, `seabed_height` / `seabed_distance`, GPU same):
+  4 octaves of value noise + warped sine ripples; bound by the measured slope
+  (`seabed_steepness`, test `seabed_stays_a_distance_bound`).
 
 ## Light through glass
 

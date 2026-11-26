@@ -40,7 +40,8 @@ The **+** button next to the SCENE title opens a menu:
 | Fractal | Another fractal with its own formulas, placement and colors. It starts as a small Amazing Box. |
 | Plane | A ground: everything below it is solid. Turn it for walls. It starts below the scene with a checker pattern. |
 | Box, Sphere, Cylinder, Capsule, Cone, Torus, Hexagonal prism, Triangular prism | Basic shapes. |
-| Water | An ocean surface: waves with foam that reflect the sky and the scene, break on the other objects with foam and spray, and move in animations. |
+| Water | An ocean surface: waves with foam that reflect the sky and the scene, break on the other objects with foam and spray, and move in animations. You can see into it and dive below it. |
+| Seabed | An ocean floor: rolling hills and sand ripples. Added with water in the scene, it goes 1.5 units below the water. |
 | 3D model… | A model file: OBJ (with its MTL materials), STL, PLY, glTF/GLB or FBX. |
 
 New objects appear in front of the camera (the plane and the water below the scene). The
@@ -124,6 +125,7 @@ stand upright along their own z axis.
 | Hexagonal prism | Radius (from the axis to the middle of a side), Height |
 | Triangular prism | Side, Height |
 | Water | See below. |
+| Seabed | Hills (height of the hills), Hill size (how far apart the largest are), Ripples (height of the sand ripples), Ripple length (their distance), Ripple direction (degrees; match the water's wave direction). Colored by height: lighter ripple crests. |
 
 ### Water
 
@@ -199,6 +201,17 @@ the objects in the water. They are brightest when you look toward the light.
 
 ![Light rays in the water, looking up toward the sun](images/water-rays.jpg)
 
+Air **bubbles** rise through the water: clear spheres with a bright rim (where the water
+reflects all light back) and the sun as a glint. Tiny **particles** float in it and catch the
+light. Both move in animations.
+
+With the camera right at the surface, the waterline crosses the camera's front glass (**Lens
+size**): the picture splits into the view above and below the water, along the waves, with a
+dark line where the water clings to the glass. The waves move the line up and down in
+animations.
+
+![Half above, half below the water](images/water-waterline.jpg)
+
 The **Underwater** section of the water object holds the settings:
 
 | Setting | What it does | Start value |
@@ -213,6 +226,13 @@ The **Underwater** section of the water object holds the settings:
 | Caustics | Light focused by the waves into moving bright lines on everything under the water (0 = none, 1 = natural, 2 = strong). Also shapes the light rays. | 1 |
 | Caustic sharpness | 0 = soft, wide patches; 1 = fine, sharp lines. | 0.5 |
 | Light rays | Sunlight scattered in the water: shafts from the waves and the shadows of objects, brightest looking toward the light (0 = none). | 0.4 |
+| Bubbles | Air bubbles rising in the water (0 = none, 1 = many). | 0.2 |
+| Bubble size | Size of the largest bubbles (scene units). | 0.012 |
+| Bubble speed | How fast the bubbles rise in animations (units per second). | 0.25 |
+| Particles | Tiny floating particles that catch the light (0 = none, 1 = many). | 0.15 |
+| Particle size | Size of the particles (scene units). | 0.0025 |
+| Time | The moment of the bubbles and particles; animations add one per second. | 0 |
+| Lens size | Size of the camera's front glass: with the camera at the surface the picture splits into the views above and below the water (0 = no split). | 0.2 |
 
 !!! note
     Only the first see-through water of a scene is a medium you can dive into; further

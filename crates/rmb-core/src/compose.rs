@@ -153,14 +153,17 @@ pub enum Primitive {
     HexPrism { radius: f64, height: f64 },
     /// Upright prism with an equilateral triangle as its section; `side` is its side length.
     TriPrism { side: f64, height: f64 },
+    /// An ocean floor at z = 0 (everything below is solid): rolling hills from noise and sand
+    /// ripples across `angle` (degrees), `ripple_length` apart (`seabed_height`).
+    Seabed { hills: f64, hill_size: f64, ripples: f64, ripple_length: f64, angle: f64 },
 }
 
 impl Primitive {
     /// Names by [`Primitive::index`].
-    pub const NAMES: [&'static str; 10] = ["Plane", "Box", "Sphere", "Cylinder", "Torus", "Water", "Capsule", "Cone", "Hexagonal prism", "Triangular prism"];
+    pub const NAMES: [&'static str; 11] = ["Plane", "Box", "Sphere", "Cylinder", "Torus", "Water", "Capsule", "Cone", "Hexagonal prism", "Triangular prism", "Seabed"];
 
     /// The primitives with sensible start values (in menu order).
-    pub fn defaults() -> [Primitive; 10] {
+    pub fn defaults() -> [Primitive; 11] {
         [
             Primitive::Plane,
             Primitive::Box { size: [1.0, 1.0, 1.0], rounding: 0.0 },
@@ -172,6 +175,7 @@ impl Primitive {
             Primitive::HexPrism { radius: 0.4, height: 1.0 },
             Primitive::TriPrism { side: 0.8, height: 1.0 },
             Primitive::water(),
+            Primitive::seabed(),
         ]
     }
 
@@ -187,6 +191,7 @@ impl Primitive {
             Primitive::Cone { .. } => 7,
             Primitive::HexPrism { .. } => 8,
             Primitive::TriPrism { .. } => 9,
+            Primitive::Seabed { .. } => SEABED_KIND,
         }
     }
 
@@ -214,6 +219,11 @@ impl Primitive {
         }
     }
 
+    /// An ocean floor with good start values.
+    pub fn seabed() -> Primitive {
+        Primitive::Seabed { hills: 0.25, hill_size: 2.5, ripples: 0.015, ripple_length: 0.12, angle: 0.0 }
+    }
+
     /// The medium settings of water (None for other primitives).
     pub fn medium(&self) -> Option<&WaterMedium> {
         match self {
@@ -236,6 +246,7 @@ impl Primitive {
             Primitive::Cone { bottom, top, height } => p4([bottom, top, height, 0.0]),
             Primitive::HexPrism { radius, height } => p4([radius, height, 0.0, 0.0]),
             Primitive::TriPrism { side, height } => p4([side, height, 0.0, 0.0]),
+            Primitive::Seabed { hills, hill_size, ripples, ripple_length, angle } => [hills, hill_size, ripples, ripple_length, angle, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
         }
     }
 
@@ -275,11 +286,25 @@ pub struct WaterMedium {
     /// Strength of the light rays (god rays) in the water: sunlight scattered by the water,
     /// broken into shafts by the waves and by the shadows of objects (0 = none).
     pub light_rays: f64,
+    /// Air bubbles rising in the water: how many (0 = none, 1 = many), their size (scene
+    /// units) and how fast they rise (units per second).
+    pub bubbles: f64,
+    pub bubble_size: f64,
+    pub bubble_speed: f64,
+    /// Tiny floating particles (marine snow): how many (0 = none, 1 = many) and their size.
+    pub particles: f64,
+    pub particle_size: f64,
+    /// Clock of the bubbles and particles (seconds; animations advance it).
+    pub time: f64,
+    /// Size of the camera's front glass (scene units): where the water surface crosses it,
+    /// the picture splits into the view above and below the water, with a dark line where
+    /// the water clings to the glass (0 = a point: no split).
+    pub lens: f64,
 }
 
 impl Default for WaterMedium {
     fn default() -> Self {
-        WaterMedium { see_through: false, ior: 1.33, color: [0.03, 0.22, 0.3], filter: [0.12, 0.6, 0.78], visibility: 3.0, murk: 0.25, depth_dark: 1.0, caustics: 1.0, caustic_sharpness: 0.5, light_rays: 0.4 }
+        WaterMedium { see_through: false, ior: 1.33, color: [0.03, 0.22, 0.3], filter: [0.12, 0.6, 0.78], visibility: 3.0, murk: 0.25, depth_dark: 1.0, caustics: 1.0, caustic_sharpness: 0.5, light_rays: 0.4, bubbles: 0.2, bubble_size: 0.012, bubble_speed: 0.25, particles: 0.15, particle_size: 0.0025, time: 0.0, lens: 0.2 }
     }
 }
 
@@ -441,8 +466,53 @@ pub fn primitive_distance(kind: u32, a: [f64; 12], q: V3) -> f64 {
             let dz = q.z.abs() - a[1] * 0.5;
             dx.max(dz).min(0.0) + (dx.max(0.0) * dx.max(0.0) + dz.max(0.0) * dz.max(0.0)).sqrt()
         }
+        SEABED_KIND => seabed_distance(&a, q),
         _ => water_distance(&a, q, NO_SHORE),
     }
+}
+
+/// `Primitive::index` of the seabed.
+pub const SEABED_KIND: u32 = 10;
+
+/// Height of the seabed at (`x`, `y`) (mirrors march.wgsl `seabed_height`): four octaves of
+/// value noise (`a[0]` high, the largest `a[1]` across) and sand ripples (`a[2]` high,
+/// `a[3]` apart, across the direction `a[4]`), whose crests bend with slow noise.
+pub fn seabed_height(a: &[f64; 12], x: f64, y: f64) -> f64 {
+    let size = a[1].abs().max(1e-6);
+    let (mut sum, mut amp, mut f) = (0.0, 1.0, 1.0 / size);
+    for o in 0..4 {
+        let off = o as f64 * 17.31;
+        sum += amp * (water_noise(x * f + off, y * f - off) * 2.0 - 1.0);
+        amp *= 0.5;
+        f *= 2.0;
+    }
+    let len = a[3].abs().max(1e-6);
+    let ang = a[4].to_radians();
+    let u = x * ang.cos() + y * ang.sin();
+    let warp = (water_noise(x / (len * 6.0) + 3.1, y / (len * 6.0) + 8.7) * 2.0 - 1.0) * len * 1.5;
+    let ripple = 0.5 + 0.5 * ((u + warp) * std::f64::consts::TAU / len).sin();
+    a[0] * sum / 1.875 + a[2] * ripple
+}
+
+/// Steepest slope of the seabed (mirrors march.wgsl `seabed_distance`): per noise octave
+/// 3 √2 × its height × its frequency (value noise with smoothstep), the ripples π × height /
+/// length × (1 + the warp's rate); 1.25 for safety (test `seabed_stays_a_distance_bound`).
+fn seabed_steepness(a: &[f64; 12]) -> f64 {
+    let hills = a[0].abs() * 3.0 * std::f64::consts::SQRT_2 / 1.875 * 4.0 / a[1].abs().max(1e-6);
+    let ripples = a[2].abs() * std::f64::consts::PI / a[3].abs().max(1e-6) * (1.0 + 0.75 * std::f64::consts::SQRT_2);
+    (hills + ripples) * 1.25
+}
+
+/// Distance bound of the seabed (negative below its surface).
+pub fn seabed_distance(a: &[f64; 12], q: V3) -> f64 {
+    let top = a[0].abs() + a[2].abs();
+    let above = q.z - top;
+    if above > top.max(1e-6) {
+        return above;
+    }
+    let steep = seabed_steepness(a);
+    let d = (q.z - seabed_height(a, q.x, q.y)) / (1.0 + steep * steep).sqrt();
+    if above > 0.0 { d.max(above) } else { d }
 }
 
 fn water_choppy() -> f64 {
@@ -1153,6 +1223,31 @@ mod tests {
         }
     }
 
+
+    #[test]
+    fn seabed_stays_a_distance_bound() {
+        // The bound divides by the steepest slope: measure the real slopes (and how close the
+        // bound comes, so it is not needlessly slow).
+        for (hills, size, ripples, len, angle) in [(0.25, 2.5, 0.015, 0.12, 0.0), (1.0, 1.0, 0.0, 0.1, 30.0), (0.0, 1.0, 0.05, 0.05, 70.0), (0.5, 4.0, 0.03, 0.3, -20.0)] {
+            let a = [hills, size, ripples, len, angle, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+            let steep = seabed_steepness(&a);
+            let e = 1e-6;
+            let mut worst: f64 = 0.0;
+            for i in 0..40000 {
+                let (x, y) = ((i as f64 * 0.6180339) % 1.0 * 20.0, (i as f64 * 0.7548776) % 1.0 * 20.0);
+                let gx = (seabed_height(&a, x + e, y) - seabed_height(&a, x - e, y)) / (2.0 * e);
+                let gy = (seabed_height(&a, x, y + e) - seabed_height(&a, x, y - e)) / (2.0 * e);
+                worst = worst.max((gx * gx + gy * gy).sqrt());
+            }
+            assert!(worst < steep && worst > steep * 0.3, "slope {worst}, bound {steep}");
+            let top = hills + ripples;
+            let range = (0..4000).map(|i| seabed_height(&a, i as f64 * 0.0137, i as f64 * 0.0071)).fold((f64::MAX, f64::MIN), |r, h| (r.0.min(h), r.1.max(h)));
+            assert!(range.0 >= -top - 1e-9 && range.1 <= top + 1e-9, "{range:?}");
+        }
+        // Below the surface negative, above positive.
+        let a = Primitive::seabed().params();
+        assert!(seabed_distance(&a, v3(0.3, 0.2, -1.0)) < 0.0 && seabed_distance(&a, v3(0.3, 0.2, 1.0)) > 0.0);
+    }
 
     #[test]
     fn water_with_a_shore_stays_a_distance_bound() {

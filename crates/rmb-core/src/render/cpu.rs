@@ -53,6 +53,17 @@ impl MediumFrame {
             caustic_step: m.caustic_step(len),
             rays: m.light_rays.max(0.0),
             scatter: m.scattering(),
+            drops: [
+                {
+                    let sz = m.bubble_size.max(1e-6);
+                    DropKind { cell: sz * 8.0, share: 0.35 * m.bubbles.clamp(0.0, 1.0), r_min: sz * 0.35, r_max: sz, rise: m.time * m.bubble_speed }
+                },
+                {
+                    let sz = m.particle_size.max(1e-6);
+                    DropKind { cell: sz * 25.0, share: 0.5 * m.particles.clamp(0.0, 1.0), r_min: sz * 0.5, r_max: sz, rise: -m.time * sz * 4.0 }
+                },
+            ],
+            lens: m.lens.max(0.0),
         };
         mf.wet_lights = lights.iter().map(|li| li.point.is_some_and(|lp| mf.depth(prog, lp) > 0.0)).collect();
         Some(mf)
@@ -103,6 +114,110 @@ pub struct MediumFrame {
     pub rays: f64,
     /// Light scattered per unit (`WaterMedium::scattering`).
     pub scatter: f64,
+    /// Floating drops: bubbles, particles.
+    pub drops: [DropKind; 2],
+    /// Size of the camera's front glass (`WaterMedium::lens`).
+    pub lens: f64,
+}
+
+/// The camera's front glass at the waterline (march.wgsl `waterline`): the point of the glass
+/// a pixel looks through (screen position `sx`, `sy`, camera axes `right`, `up`, image
+/// `aspect`) and the brightness factor of the line where the water clings to the glass, from
+/// the point's depth `depth` (dark band below the line, a thin bright edge above it).
+pub fn waterline_point(o: V3, right: V3, up: V3, sx: f64, sy: f64, aspect: f64, lens: f64) -> V3 {
+    o + (right * (sx * aspect) + up * sy) * (lens * 0.5)
+}
+
+pub fn waterline_shade(depth: f64, lens: f64) -> f64 {
+    if lens <= 0.0 {
+        return 1.0;
+    }
+    let band = lens * 0.03;
+    let x = depth / band;
+    let e = (depth + 1.6 * band) / (0.5 * band);
+    1.0 - 0.7 * (-x * x).exp() + 0.35 * (-e * e).exp()
+}
+
+/// One kind of things floating in the water (march.wgsl `u.wmed[5..8]`): grid cell size,
+/// share of cells holding one, smallest and largest radius, how far the grid has moved up.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DropKind {
+    pub cell: f64,
+    pub share: f64,
+    pub r_min: f64,
+    pub r_max: f64,
+    pub rise: f64,
+}
+
+/// Most grid cells a ray walks looking for bubbles and particles (march.wgsl `DROP_CELLS`).
+pub const DROP_CELLS: u32 = 64;
+
+/// The sphere in grid cell `cell` of drop kind `kind` (if any): center and radius (march.wgsl
+/// `water_drop`).
+fn drop_sphere(g: &DropKind, kind: i32, cell: [i32; 3]) -> Option<(V3, f64)> {
+    let salt = 41 + 12 * kind;
+    let h = |n: i32| super::hash3(cell[0].wrapping_add(n.wrapping_mul(977)).wrapping_add(salt), cell[1], cell[2]) as f64;
+    if h(0) >= g.share {
+        return None;
+    }
+    let c = g.cell;
+    let r = g.r_min + (g.r_max - g.r_min) * h(1);
+    let ph = g.rise / c * std::f64::consts::TAU + h(5) * std::f64::consts::TAU;
+    let ctr = v3(
+        (cell[0] as f64 + 0.5 + (h(2) - 0.5) * 0.4 + 0.06 * ph.sin()) * c,
+        (cell[1] as f64 + 0.5 + (h(3) - 0.5) * 0.4 + 0.06 * ph.cos()) * c,
+        (cell[2] as f64 + 0.5 + (h(4) - 0.5) * 0.4) * c,
+    );
+    Some((ctr, r))
+}
+
+/// Nearest bubble (`kind` 0) or particle (1) of the grid `g` along the ray from `p0` (in the
+/// grid's moving frame) along `d` within `len`: one sphere at most per cell, well inside it
+/// (so the first one met is the nearest), placed, sized and wobbling by hashes of the cell.
+/// Returns the distance and the sphere's center (moving frame) and radius (march.wgsl
+/// `water_drop`).
+fn water_drop(g: &DropKind, kind: i32, p0: V3, d: V3, len: f64) -> Option<(f64, V3, f64)> {
+    if g.share <= 0.0 || g.cell <= 0.0 {
+        return None;
+    }
+    let c = g.cell;
+    let (pa, dir) = ([p0.x, p0.y, p0.z], [d.x, d.y, d.z]);
+    let mut cell = [0i32; 3];
+    let (mut tmax, mut tdelta, mut step) = ([f64::INFINITY; 3], [f64::INFINITY; 3], [0i32; 3]);
+    for k in 0..3 {
+        cell[k] = (pa[k] / c).floor() as i32;
+        if dir[k] > 0.0 {
+            step[k] = 1;
+            tmax[k] = ((cell[k] + 1) as f64 * c - pa[k]) / dir[k];
+            tdelta[k] = c / dir[k];
+        } else if dir[k] < 0.0 {
+            step[k] = -1;
+            tmax[k] = (cell[k] as f64 * c - pa[k]) / dir[k];
+            tdelta[k] = -c / dir[k];
+        }
+    }
+    for _ in 0..DROP_CELLS {
+        if let Some((ctr, r)) = drop_sphere(g, kind, cell) {
+            // Ray-sphere by the closest approach (precise in f32 for tiny spheres far away).
+            let oc = p0 - ctr;
+            let b = oc.dot(d);
+            let q = oc - d * b;
+            let disc = r * r - q.dot(q);
+            if disc > 0.0 {
+                let t = -b - disc.sqrt();
+                if t > 0.0 && t < len {
+                    return Some((t, ctr, r));
+                }
+            }
+        }
+        let ax = if tmax[0] < tmax[1] { if tmax[0] < tmax[2] { 0 } else { 2 } } else if tmax[1] < tmax[2] { 1 } else { 2 };
+        if tmax[ax] > len {
+            break;
+        }
+        cell[ax] += step[ax];
+        tmax[ax] += tdelta[ax];
+    }
+    None
 }
 
 /// Distance of the light ray sample along a ray part `end` long in the water from the random
@@ -366,6 +481,67 @@ impl<'a> Shader<'a> {
         let phase = (1.0 - g * g) / (1.0 + g * g - 2.0 * g * ldir.dot(d)).max(1e-12).powf(1.5);
         let w = phase * m.rays * m.scatter * caustic;
         [0, 1, 2].map(|c| w * pass[c] * (-m.ext[c] * s).exp())
+    }
+
+    /// Bubbles and particles in front of what a ray part in the water (from `a` along `d`,
+    /// `len` long) sees: the farther one first, each covering the color `c` by its share
+    /// (bubbles: their Fresnel reflection, a mirror at the rim; particles: 0.7), faded by
+    /// the water in front of it (march.wgsl `water_drops`).
+    fn water_drops(&self, m: &MediumFrame, a: V3, d: V3, len: f64, c: &mut [f64; 3]) {
+        // The grids sit in the water's own frame (turned and moved, not scaled), so they move
+        // with it (and with the GPU's camera-relative deep zoom).
+        let ob = &self.prog.objects[m.obj];
+        let rot = |v: V3| crate::compose::rotate(&ob.inv, v);
+        let back = |v: V3| v3(ob.inv[0][0] * v.x + ob.inv[1][0] * v.y + ob.inv[2][0] * v.z, ob.inv[0][1] * v.x + ob.inv[1][1] * v.y + ob.inv[2][1] * v.z, ob.inv[0][2] * v.x + ob.inv[1][2] * v.y + ob.inv[2][2] * v.z);
+        let (la, ld) = (rot(a - ob.pos), rot(d));
+        let mut hits = [None, None];
+        for (k, hk) in hits.iter_mut().enumerate() {
+            let g = &m.drops[k];
+            let p0 = la - v3(0.0, 0.0, g.rise);
+            if let Some((t, ctr, r)) = water_drop(g, k as i32, p0, ld, len) {
+                let x = a + d * t;
+                if self.water_depth(x) > 0.0 {
+                    *hk = Some((t, back((p0 + ld * t - ctr) * (1.0 / r))));
+                }
+            }
+        }
+        let order = match (hits[0], hits[1]) {
+            (Some(b), Some(p)) if p.0 > b.0 => [1, 0],
+            _ => [0, 1],
+        };
+        for k in order {
+            let Some((t, n)) = hits[k] else { continue };
+            let x = a + d * t;
+            let depth = self.water_depth(x).max(0.0);
+            let top = self.water_top(m, x);
+            let amb: [f64; 3] = std::array::from_fn(|i| top[i] * (-m.fade[i] * depth).exp());
+            let (col, alpha) = if k == 0 {
+                // An air bubble: water to air, total reflection at the rim; it mirrors the
+                // light from above and shows the sun as a glint.
+                let r = d - n * (2.0 * d.dot(n));
+                let refl = crate::compose::fresnel_exact(-d.dot(n), m.ior);
+                let sky = 0.3 + 0.7 * r.dot(m.up).max(0.0);
+                let mut col: [f64; 3] = std::array::from_fn(|i| amb[i] * sky);
+                for (i, li) in self.frame.lights.iter().enumerate() {
+                    let (ldir, atten, max_l) = li.sample(x, 0.5, 0.5, self.scene.march.max_distance);
+                    let glint = r.dot(ldir).max(0.0).powi(64) * 4.0 * atten;
+                    if glint > 0.0 {
+                        let pass = self.water_light(m, i, depth, ldir, max_l);
+                        for j in 0..3 {
+                            col[j] += li.color[j] * glint * pass[j];
+                        }
+                    }
+                }
+                (col, refl)
+            } else {
+                let lit = 0.6 * (0.6 + 0.4 * n.dot(m.up).max(0.0));
+                (amb.map(|v| v * lit), 0.7)
+            };
+            for i in 0..3 {
+                let keep = alpha * (-m.ext[i] * t).exp();
+                c[i] = c[i] * (1.0 - keep) + keep * col[i];
+            }
+        }
     }
 
     /// The water along a ray part from `a` along `d`, `len` long: the share of the light behind
@@ -1128,10 +1304,22 @@ impl<'a> Shader<'a> {
         // Glass scales the diffuse light down by the transparency on every surface a path
         // continues from (Mandelbulb3D's bScaleAmbDiffDown).
         let glass = if m.transmission && amount > 0.0 { amount } else { 0.0 };
-        // The camera under the water: the ray starts in the medium.
-        let mut in_water = self.medium.is_some() && self.water_depth(o) > 0.0;
+        // The camera under the water: the ray starts in the medium. The point of the camera's
+        // front glass this pixel looks through decides (half above, half below the water).
+        // The ray starts on the glass (it may be on the other side of the surface than the
+        // camera's center) and first leaves the surface when it is near.
+        let mut line = 1.0;
+        let mut in_water = false;
+        let mut leave = false;
+        if let Some(m) = &self.medium {
+            o = waterline_point(o, cam.right, cam.up, sx, sy, fr.aspect, m.lens);
+            let depth = self.water_depth(o);
+            in_water = depth > 0.0;
+            leave = depth.abs() < m.lens;
+            line = waterline_shade(depth, m.lens);
+        }
         ev.water_mode = if in_water { crate::fractal::WATER_INSIDE } else { crate::fractal::WATER_SOLID };
-        let first = self.trace(ev, Seg { o, d, t0, max_t: sc.march.max_distance, t_base: 0.0, sx, sy, inside: false, glass, env: false, water: in_water, leave: false }, &mut rng);
+        let first = self.trace(ev, Seg { o, d, t0, max_t: sc.march.max_distance, t_base: 0.0, sx, sy, inside: false, glass, env: false, water: in_water, leave }, &mut rng);
         let mut c = first.color;
         // Reflections and transmission (Mandelbulb3D's CalcSR): each part of the path adds the
         // scene it sees, weighted by the reflectance or transmittance of the surfaces before it,
@@ -1242,7 +1430,7 @@ impl<'a> Shader<'a> {
         }
         ev.water_mode = crate::fractal::WATER_SOLID;
         let (depth, hit) = first.surface.map_or((0.0, 0.0), |s| (s.t, 1.0));
-        Sample { color: c, albedo: first.albedo, normal: first.normal, depth, hit }
+        Sample { color: c.map(|v| v * line), albedo: first.albedo, normal: first.normal, depth, hit }
     }
 
     /// Direction of the path after surface `s` (`inside`: the ray travels inside glass), the
@@ -1534,6 +1722,7 @@ impl<'a> Shader<'a> {
                 c[k] = c[k] * keep[k] + add[k];
                 albedo[k] = albedo[k] * keep[k] + (1.0 - keep[k]) * m.color[k].clamp(0.0, 1.0);
             }
+            self.water_drops(m, o + d * t_base, d, len, &mut c);
         }
         // Light scattered by the fog, or in the water the light rays: one random light, one
         // point along the ray (fog: positional lights by equiangular sampling around the
@@ -1982,6 +2171,24 @@ mod tests {
     }
 
     #[test]
+    fn camera_at_the_waterline_sees_both_sides() {
+        let mut s = underwater_scene();
+        // Level with the surface, looking along it: the glass's top is in the air, its
+        // bottom in the water, and the line in between is darkened.
+        s.camera.position = v3(2.6, -2.8, 0.2 + crate::compose::water_height(&Primitive::water().params(), 2.6, -2.8, crate::compose::NO_SHORE));
+        s.camera.look_at(v3(0.0, 0.0, s.camera.position.z), v3(0.0, 0.0, 1.0));
+        let prog = Program::for_scene(&s);
+        let sh = Shader::new(&s, &prog, 64, 36);
+        let m = sh.medium.as_ref().unwrap();
+        let cam = &s.camera;
+        let top = waterline_point(cam.position, cam.right, cam.up, 0.0, 1.0, sh.frame.aspect, m.lens);
+        let bottom = waterline_point(cam.position, cam.right, cam.up, 0.0, -1.0, sh.frame.aspect, m.lens);
+        assert!(sh.water_depth(top) < 0.0 && sh.water_depth(bottom) > 0.0);
+        assert!(waterline_shade(0.0, m.lens) < 0.5 && (waterline_shade(m.lens, m.lens) - 1.0).abs() < 1e-6);
+        assert_eq!(waterline_shade(0.0, 0.0), 1.0);
+    }
+
+    #[test]
     fn water_absorbs_red_first_and_light_fades_with_depth() {
         let m = crate::compose::WaterMedium::default();
         let e = m.extinction();
@@ -1999,5 +2206,51 @@ mod tests {
         // Total internal reflection beyond the critical angle (48.75° for 1.33).
         assert_eq!(crate::compose::fresnel_exact((50f64).to_radians().cos(), 1.33), 1.0);
         assert!(crate::compose::fresnel_exact(1.0, 1.0 / 1.33) < 0.03);
+    }
+}
+
+#[cfg(test)]
+mod drop_tests {
+    use super::*;
+
+    #[test]
+    fn bubble_grid_walk_finds_the_nearest_bubble() {
+        let g = DropKind { cell: 0.64, share: 0.35, r_min: 0.028, r_max: 0.08, rise: 0.37 };
+        let mut rng = Rng::new(3, 4, 5);
+        let mut found = 0;
+        for _ in 0..400 {
+            let p0 = v3(rng.next_f64() * 4.0 - 2.0, rng.next_f64() * 4.0 - 2.0, rng.next_f64() * 4.0 - 2.0);
+            let d = v3(rng.next_f64() - 0.5, rng.next_f64() - 0.5, rng.next_f64() - 0.5).normalize();
+            let len = 6.0;
+            let walk = water_drop(&g, 0, p0, d, len).map(|h| h.0);
+            // Brute force: every cell in the box around the ray.
+            let mut best: Option<f64> = None;
+            let c = g.cell;
+            let e = p0 + d * len;
+            for i in (p0.x.min(e.x) / c).floor() as i32 - 1..=(p0.x.max(e.x) / c).floor() as i32 + 1 {
+                for j in (p0.y.min(e.y) / c).floor() as i32 - 1..=(p0.y.max(e.y) / c).floor() as i32 + 1 {
+                    for k in (p0.z.min(e.z) / c).floor() as i32 - 1..=(p0.z.max(e.z) / c).floor() as i32 + 1 {
+                        let Some((ctr, r)) = drop_sphere(&g, 0, [i, j, k]) else { continue };
+                        let oc = p0 - ctr;
+                        let b = oc.dot(d);
+                        let q = oc - d * b;
+                        let disc = r * r - q.dot(q);
+                        let t = -b - disc.max(0.0).sqrt();
+                        if disc > 0.0 && t > 0.0 && t < len && best.is_none_or(|bb| t < bb) {
+                            best = Some(t);
+                        }
+                    }
+                }
+            }
+            if best.is_some() {
+                found += 1;
+            }
+            match (walk, best) {
+                (None, None) => {}
+                (Some(a), Some(b)) => assert!((a - b).abs() < 1e-9, "{a} {b}"),
+                _ => panic!("walk {walk:?} brute force {best:?}"),
+            }
+        }
+        assert!(found > 20, "{found}");
     }
 }

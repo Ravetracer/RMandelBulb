@@ -101,6 +101,7 @@ impl FormulasPanel {
                         for p in Primitive::defaults() {
                             let tip = match p {
                                 Primitive::Plane => "A ground: everything below it is solid",
+                                Primitive::Seabed { .. } => "An ocean floor: rolling hills and sand ripples; with water in the scene it goes below the water",
                                 Primitive::Water { .. } => "An ocean surface: choppy waves with foam, reflecting the sky and the scene; waves break on the other objects with foam and spray; the waves move in animations. See-through: the camera can dive, light bends and fades in the water (Underwater section)",
                                 _ => "A basic shape",
                             };
@@ -114,7 +115,13 @@ impl FormulasPanel {
                         {
                             add = Some(model_object(&p, ahead));
                         }
-                        if let Some(o) = add {
+                        if let Some(mut o) = add {
+                            // An ocean floor goes 1.5 units below the first water.
+                            if matches!(o.shape, Shape::Primitive(Primitive::Seabed { .. }))
+                                && let Some(w) = scene.objects.iter().find(|w| matches!(w.shape, Shape::Primitive(Primitive::Water { .. })))
+                            {
+                                o.transform.position = w.transform.position - rmb_core::v3(0.0, 0.0, 1.5);
+                            }
                             scene.objects.push(o);
                             *selected = Some(scene.objects.len() - 1);
                             ui.close();
@@ -582,6 +589,13 @@ fn primitive_object(p: Primitive, at: rmb_core::V3) -> SceneObject {
             material.pattern_size = 0.5;
             material.gradient = vec![rmb_core::scene::ColorStop::new(0.0, [0.8, 0.8, 0.78]), rmb_core::scene::ColorStop::new(1.0, [0.12, 0.12, 0.15])];
         }
+        Primitive::Seabed { .. } => {
+            pos = rmb_core::v3(0.0, 0.0, -2.5);
+            material.pattern = Pattern::Height;
+            material.pattern_size = 0.6;
+            material.color_offset = 0.5;
+            material.gradient = vec![rmb_core::scene::ColorStop::new(0.0, [0.4, 0.34, 0.24]), rmb_core::scene::ColorStop::new(1.0, [0.86, 0.8, 0.66])];
+        }
         Primitive::Water { .. } => {
             pos = rmb_core::v3(0.0, 0.0, -1.0);
             material.gradient = vec![rmb_core::scene::ColorStop::new(0.0, [0.0, 0.04, 0.09]), rmb_core::scene::ColorStop::new(1.0, [0.02, 0.1, 0.16])];
@@ -630,6 +644,13 @@ fn primitive_params(ui: &mut Ui, p: &mut Primitive) {
             widgets::slider_log(ui, "Radius", "Distance from the axis to the middle of a side", radius, 0.001..=100.0, 0.4);
             widgets::slider_log(ui, "Height", "Height of the prism (along its z axis)", height, 0.001..=100.0, 1.0);
         }
+        Primitive::Seabed { hills, hill_size, ripples, ripple_length, angle } => {
+            widgets::slider_log(ui, "Hills", "Height of the hills (up and down from the object's height)", hills, 0.0..=10.0, 0.25);
+            widgets::slider_log(ui, "Hill size", "How far apart the largest hills are", hill_size, 0.01..=100.0, 2.5);
+            widgets::slider_log(ui, "Ripples", "Height of the sand ripples", ripples, 0.0..=1.0, 0.015);
+            widgets::slider_log(ui, "Ripple length", "Distance between the sand ripples", ripple_length, 0.001..=10.0, 0.12);
+            widgets::slider(ui, "Ripple direction", "Direction (degrees) across which the ripples run; match the water's wave direction for a natural look", angle, -180.0..=180.0, 0.0);
+        }
         Primitive::TriPrism { side, height } => {
             widgets::slider_log(ui, "Side", "Side length of the triangle", side, 0.001..=100.0, 0.8);
             widgets::slider_log(ui, "Height", "Height of the prism (along its z axis)", height, 0.001..=100.0, 1.0);
@@ -669,6 +690,13 @@ fn water_medium_params(ui: &mut Ui, m: &mut rmb_core::compose::WaterMedium) {
         widgets::slider(ui, "Caustics", "Light focused by the waves into moving bright lines on everything under the water: fractals, objects, the ground (0 = none, 1 = natural, 2 = strong). Also shapes the light rays", &mut m.caustics, 0.0..=2.0, d.caustics);
         widgets::slider(ui, "Caustic sharpness", "0 = soft, wide patches; 1 = fine, sharp lines (follow smaller waves; can flicker in animations)", &mut m.caustic_sharpness, 0.0..=1.0, d.caustic_sharpness);
         widgets::slider(ui, "Light rays", "Sunlight scattered in the water: shafts from the waves and shadows of the objects in the water, brightest looking toward the light (0 = none). Costs a shadow ray per sample", &mut m.light_rays, 0.0..=3.0, d.light_rays);
+        widgets::slider(ui, "Bubbles", "Air bubbles rising in the water, clear with a bright rim and the sun as a glint (0 = none, 1 = many)", &mut m.bubbles, 0.0..=1.0, d.bubbles);
+        widgets::slider_log(ui, "Bubble size", "Size of the largest bubbles (scene units)", &mut m.bubble_size, 0.0005..=1.0, d.bubble_size);
+        widgets::slider_log(ui, "Bubble speed", "How fast the bubbles rise in animations (scene units per second)", &mut m.bubble_speed, 0.0..=10.0, d.bubble_speed);
+        widgets::slider(ui, "Particles", "Tiny floating particles that catch the light (0 = none, 1 = many); they need many samples to look smooth", &mut m.particles, 0.0..=1.0, d.particles);
+        widgets::slider_log(ui, "Particle size", "Size of the particles (scene units)", &mut m.particle_size, 0.0001..=0.1, d.particle_size);
+        widgets::slider(ui, "Time", "The moment of the bubbles and particles: another value shows them elsewhere in a still image (animations add one per second)", &mut m.time, -1000.0..=1000.0, 0.0);
+        widgets::slider_log(ui, "Lens size", "Size of the camera's front glass (scene units): with the camera at the surface, the water line crosses the glass and the picture splits into the views above and below the water, with a dark line where the water clings to the glass (0 = no split)", &mut m.lens, 0.0..=10.0, d.lens);
     });
 }
 

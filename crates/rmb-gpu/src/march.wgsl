@@ -100,8 +100,10 @@ struct U {
     dof2: vec4<f32>,       // aperture blades (0 = round), their rotation (radians)
     // Water medium (cpu::MediumFrame): [0] extinction, w: refraction index; [1] depth fade,
     // w: lights under the water (bits); [2] water color; [3] the water's up axis; [4] caustics
-    // (0 = off), their step (local units), light rays (0 = off), scattering per unit.
-    wmed: array<vec4<f32>, 5>,
+    // (0 = off), their step (local units), light rays (0 = off), scattering per unit;
+    // [5] bubbles, [6] particles: cell, share, smallest and largest radius; [7] their rise,
+    // z: the camera's front glass size.
+    wmed: array<vec4<f32>, 8>,
 }
 
 @group(0) @binding(0) var<uniform> u: U;
@@ -754,7 +756,47 @@ fn prim_de(kind: u32, a: vec4<f32>, a2: vec4<f32>, q: vec3<f32>) -> f32 {
         let dz = abs(q.z) - a.y * 0.5;
         return min(max(dx, dz), 0.0) + length(max(vec2<f32>(dx, dz), vec2<f32>(0.0)));
     }
+    if (kind == 10u) {
+        return seabed_distance(a, a2, q);
+    }
     return water_distance(a, a2, vec4<f32>(0.0), q, 1.0e30);
+}
+
+// Mirrors compose::seabed_height: hills from four octaves of value noise, sand ripples.
+fn seabed_height(a: vec4<f32>, a2: vec4<f32>, x: f32, y: f32) -> f32 {
+    let size = max(abs(a.y), 1.0e-6);
+    var sum = 0.0;
+    var amp = 1.0;
+    var f = 1.0 / size;
+    for (var o = 0; o < 4; o++) {
+        let off = f32(o) * 17.31;
+        sum += amp * (water_noise(x * f + off, y * f - off) * 2.0 - 1.0);
+        amp *= 0.5;
+        f *= 2.0;
+    }
+    let len = max(abs(a.w), 1.0e-6);
+    let ang = radians(a2.x);
+    let u = x * cos(ang) + y * sin(ang);
+    let warp = (water_noise(x / (len * 6.0) + 3.1, y / (len * 6.0) + 8.7) * 2.0 - 1.0) * len * 1.5;
+    let ripple = 0.5 + 0.5 * sin((u + warp) * 6.283185307179586 / len);
+    return a.x * sum / 1.875 + a.z * ripple;
+}
+
+// Mirrors compose::seabed_distance.
+fn seabed_distance(a: vec4<f32>, a2: vec4<f32>, q: vec3<f32>) -> f32 {
+    let top = abs(a.x) + abs(a.z);
+    let above = q.z - top;
+    if (above > max(top, 1.0e-6)) {
+        return above;
+    }
+    let hills = abs(a.x) * 3.0 * 1.4142135623730951 / 1.875 * 4.0 / max(abs(a.y), 1.0e-6);
+    let ripples = abs(a.z) * 3.141592653589793 / max(abs(a.w), 1.0e-6) * (1.0 + 0.75 * 1.4142135623730951);
+    let steep = (hills + ripples) * 1.25;
+    var d = (q.z - seabed_height(a, a2, q.x, q.y)) / sqrt(1.0 + steep * steep);
+    if (above > 0.0) {
+        d = max(d, above);
+    }
+    return d;
 }
 
 // Mirrors compose::water_sea01: waves exp(sin - 1) from swells to ripples, dragging the
@@ -2933,6 +2975,129 @@ fn water_ray_tint(i: u32, x: vec3<f32>, s: f32, ldir: vec3<f32>, max_l: f32, d: 
     return phase * u.wmed[4].z * u.wmed[4].w * caustic * through * exp(-u.wmed[0].xyz * s);
 }
 
+// Mirrors cpu::DROP_CELLS.
+const DROP_CELLS: u32 = 64u;
+
+// Mirrors cpu::water_drop: x distance (negative: none), yzw the sphere's center (moving
+// frame); the radius comes back through drop_radius.
+var<private> drop_radius: f32;
+
+fn water_drop(g: vec4<f32>, kind: i32, p0: vec3<f32>, d: vec3<f32>, len: f32) -> vec4<f32> {
+    if (g.y <= 0.0 || g.x <= 0.0) {
+        return vec4<f32>(-1.0);
+    }
+    let c = g.x;
+    var cell = vec3<i32>(floor(p0 / c));
+    var tmax = vec3<f32>(3.0e38);
+    var tdelta = vec3<f32>(3.0e38);
+    var step = vec3<i32>(0);
+    for (var k = 0; k < 3; k++) {
+        if (d[k] > 0.0) {
+            step[k] = 1;
+            tmax[k] = (f32(cell[k] + 1) * c - p0[k]) / d[k];
+            tdelta[k] = c / d[k];
+        } else if (d[k] < 0.0) {
+            step[k] = -1;
+            tmax[k] = (f32(cell[k]) * c - p0[k]) / d[k];
+            tdelta[k] = -c / d[k];
+        }
+    }
+    let salt = 41 + 12 * kind;
+    for (var n = 0u; n < DROP_CELLS; n++) {
+        if (hash3(cell.x + salt, cell.y, cell.z) < g.y) {
+            let r = g.z + (g.w - g.z) * hash3(cell.x + 977 + salt, cell.y, cell.z);
+            let ph = select(u.wmed[7].x, u.wmed[7].y, kind == 1) / c * 6.283185307179586 + hash3(cell.x + 977 * 5 + salt, cell.y, cell.z) * 6.283185307179586;
+            let ctr = vec3<f32>(
+                (f32(cell.x) + 0.5 + (hash3(cell.x + 977 * 2 + salt, cell.y, cell.z) - 0.5) * 0.4 + 0.06 * sin(ph)) * c,
+                (f32(cell.y) + 0.5 + (hash3(cell.x + 977 * 3 + salt, cell.y, cell.z) - 0.5) * 0.4 + 0.06 * cos(ph)) * c,
+                (f32(cell.z) + 0.5 + (hash3(cell.x + 977 * 4 + salt, cell.y, cell.z) - 0.5) * 0.4) * c,
+            );
+            let oc = p0 - ctr;
+            let b = dot(oc, d);
+            let q = oc - d * b;
+            let disc = r * r - dot(q, q);
+            if (disc > 0.0) {
+                let t = -b - sqrt(disc);
+                if (t > 0.0 && t < len) {
+                    drop_radius = r;
+                    return vec4<f32>(t, ctr);
+                }
+            }
+        }
+        var ax = 2;
+        if (tmax.x < tmax.y) {
+            if (tmax.x < tmax.z) {
+                ax = 0;
+            }
+        } else if (tmax.y < tmax.z) {
+            ax = 1;
+        }
+        if (tmax[ax] > len) {
+            break;
+        }
+        cell[ax] += step[ax];
+        tmax[ax] += tdelta[ax];
+    }
+    return vec4<f32>(-1.0);
+}
+
+// Mirrors Shader::water_drops: bubbles and particles in front of what a ray part in the
+// water sees, the farther one first.
+fn water_drops(a: vec3<f32>, d: vec3<f32>, len: f32, c_in: vec3<f32>) -> vec3<f32> {
+    var c = c_in;
+    var t_hit = vec2<f32>(-1.0);
+    var n_hit: array<vec3<f32>, 2>;
+    // The grids sit in the water's own frame (turned and moved, not scaled).
+    let ob = objs[MEDIUM_OBJ];
+    let ra = a - ob.pos.xyz;
+    let la = vec3<f32>(dot(ob.inv0.xyz, ra), dot(ob.inv1.xyz, ra), dot(ob.inv2.xyz, ra));
+    let ld = vec3<f32>(dot(ob.inv0.xyz, d), dot(ob.inv1.xyz, d), dot(ob.inv2.xyz, d));
+    for (var k = 0; k < 2; k++) {
+        let rise = select(u.wmed[7].x, u.wmed[7].y, k == 1);
+        let p0 = la - vec3<f32>(0.0, 0.0, rise);
+        let hit = water_drop(u.wmed[5 + k], k, p0, ld, len);
+        if (hit.x >= 0.0 && water_depth(a + d * hit.x) > 0.0) {
+            t_hit[k] = hit.x;
+            let nl = (p0 + ld * hit.x - hit.yzw) / drop_radius;
+            n_hit[k] = ob.inv0.xyz * nl.x + ob.inv1.xyz * nl.y + ob.inv2.xyz * nl.z;
+        }
+    }
+    var first = 0;
+    if (t_hit.x >= 0.0 && t_hit.y >= 0.0 && t_hit.y > t_hit.x) {
+        first = 1;
+    }
+    for (var o = 0; o < 2; o++) {
+        let k = select(1 - first, first, o == 0);
+        let t = t_hit[k];
+        if (t < 0.0) {
+            continue;
+        }
+        let n = n_hit[k];
+        let x = a + d * t;
+        let depth = max(water_depth(x), 0.0);
+        let amb = water_top(x) * exp(-u.wmed[1].xyz * depth);
+        var col = vec3<f32>(0.0);
+        var alpha = 0.7;
+        if (k == 0) {
+            let r = d - n * (2.0 * dot(d, n));
+            alpha = fresnel_exact(-dot(d, n), u.wmed[0].w);
+            col = amb * (0.3 + 0.7 * max(dot(r, u.wmed[3].xyz), 0.0));
+            for (var i = 0u; i < u.size.w; i++) {
+                let ls = light_sample(i, x, vec2<f32>(0.5));
+                let glint = pow(max(dot(r, ls.dir), 0.0), 64.0) * 4.0 * ls.atten;
+                if (glint > 0.0) {
+                    col += u.lights[i].color.xyz * glint * water_light(i, depth, ls.dir, ls.dist);
+                }
+            }
+        } else {
+            col = amb * (0.6 * (0.6 + 0.4 * max(dot(n, u.wmed[3].xyz), 0.0)));
+        }
+        let keep = alpha * exp(-u.wmed[0].xyz * t);
+        c = c * (1.0 - keep) + keep * col;
+    }
+    return c;
+}
+
 // Mirrors Shader::water_top: light from above that lights the water at its surface.
 fn water_top(a: vec3<f32>) -> vec3<f32> {
     var top = u.sky.xyz * u.ao.w;
@@ -3345,6 +3510,7 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sx: f32, 
         let mp = medium_path(o + d * t_base, d, len);
         c = c * mp.keep + mp.add;
         tr.albedo = tr.albedo * mp.keep + (1.0 - mp.keep) * clamp(u.wmed[2].xyz, vec3<f32>(0.0), vec3<f32>(1.0));
+        c = water_drops(o + d * t_base, d, len, c);
     }
     // Light scattered by the fog, or in the water the light rays, through one shadow call
     // (mirrors Shader::trace).
@@ -3660,14 +3826,21 @@ fn sample_pixel(px: u32, py: u32, sample: u32, k: u32) -> vec3<f32> {
     }
     let fov = 2.0 * atan(u.cam_pos.w);
     var inside = false;
-    // The camera under the water: the ray starts in the medium.
+    // The camera under the water: the ray starts in the medium; the point of the camera's
+    // front glass this pixel looks through decides (mirrors Shader::sample_eye).
     var in_water = false;
+    var line = 1.0;
+    var crossed = false;
     if (MEDIUM) {
-        in_water = water_depth(o) > 0.0;
+        let lens = u.wmed[7].z;
+        ro = o + (cr * (sx * u.cam_right.w) + cu * sy) * (lens * 0.5);
+        let depth = water_depth(ro);
+        in_water = depth > 0.0;
+        crossed = abs(depth) < lens;
+        line = waterline_shade(depth, lens);
     }
     water_mode = select(0u, 1u, in_water);
     var prev: Traced;
-    var crossed = false;
     for (var b = 0u; b <= bounces; b++) {
         var g = glass;
         if (b == bounces) {
@@ -3787,7 +3960,18 @@ fn sample_pixel(px: u32, py: u32, sample: u32, k: u32) -> vec3<f32> {
     }
     flip = false;
     water_mode = 0u;
-    return c;
+    return c * line;
+}
+
+// Mirrors cpu::waterline_shade: the line where the water clings to the camera's glass.
+fn waterline_shade(depth: f32, lens: f32) -> f32 {
+    if (lens <= 0.0) {
+        return 1.0;
+    }
+    let band = lens * 0.03;
+    let x = depth / band;
+    let e = (depth + 1.6 * band) / (0.5 * band);
+    return 1.0 - 0.7 * exp(-x * x) + 0.35 * exp(-e * e);
 }
 
 struct Bounce {
