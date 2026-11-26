@@ -166,6 +166,15 @@
       free CPU cores, new scene size, folders per file kind, quick save, explore batch size
   - [x] The top bar no longer overlaps: icons only when the labels do not fit, the document
         name only where there is room
+- [x] Underwater: see-through water medium (refraction, underwater camera, absorption and
+      color filtering, depth profile), caustics, light rays, bubbles, particles, seabed
+      object, waterline view, flat lens, lens drops
+  - [ ] Possible: bubble sources (bubbles rising from points on the seabed or from objects
+        instead of spread evenly)
+  - [ ] Possible: richer seabed (rocks, pebbles, seaweed)
+  - [ ] Possible: wet trails behind the lens drops running down
+  - [ ] Possible: faster underwater rendering (views from below are about twice as slow;
+        medium scenes compile about 3 s longer)
 
 ## Gaps to Mandelbulb3D and Mandelbulber 2 (analysis 2026-11-24)
 
