@@ -169,9 +169,14 @@
 - [x] Underwater: see-through water medium (refraction, underwater camera, absorption and
       color filtering, depth profile), caustics, light rays, bubbles, particles, seabed
       object, waterline view, flat lens, lens drops
-  - [ ] Possible: bubble sources (bubbles rising from points on the seabed or from objects
-        instead of spread evenly)
-  - [ ] Possible: richer seabed (rocks, pebbles, seaweed)
+  - [x] Bubble sources: plumes from random vents and from objects marked as bubble sources
+  - [x] Richer seabed: rocks, pebbles, swaying seaweed ribbons, "Sand, stones, seaweed"
+        color pattern
+  - [x] Plants grown by L-systems on the seabed: presets (kelp, sea fan, staghorn coral,
+        algae tuft, fern weed) and an editor (start string, stochastic rules, turtle
+        settings, preview)
+  - [ ] Possible: plants on other objects than the seabed (on fractal surfaces), parametric
+        L-systems
   - [ ] Possible: wet trails behind the lens drops running down
   - [ ] Possible: faster underwater rendering (views from below are about twice as slow;
         medium scenes compile about 3 s longer)

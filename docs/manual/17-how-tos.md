@@ -238,6 +238,22 @@ Example scene: `vr-panorama.rmb` (inside the Amazing Box).
 For planetarium domes, use *Fisheye circle* with a fisheye angle of 180° and a square image;
 for VR180, *Panorama 180°* with *Side by side*.
 
+## Grow your own plant with an L-system
+
+1. Select the seabed (add one with **+ › Seabed** if the scene has none) and open its
+   **Plants** section. Click **Add plant** and pick **Sea fan** as a start.
+2. Set **Start** to `A` and edit the rules so there is one: `A → F[+A][-A]`. The preview
+   shows a binary tree: every generation splits each tip into two.
+3. Set **Generations** to 6 and **Angle** to 20: a fan. Raise **Angle variation** to 10 so
+   it looks grown rather than drawn.
+4. Add a second rule for `A`: `A → F[+A]FA` with weight 0.5. Now the tips pick one of the
+   two rules at random; click **Variant** to see other plants of the same kind.
+5. Add leaves: change the first rule to `A → F[+A][-A]L`, raise **Leaf length** to 2 and
+   **Leaf width** to 0.3.
+6. Turn the plant into a drooping one with **Tropism** -0.1, or let it reach up with 0.1.
+7. Set **Height**, **Density** and **Clumping** for how it fills the ground, and its
+   **Branch colors** and **Leaf colors**.
+
 ## Render an animation on several computers
 
 1. Copy RMandelbulb3D (the same version) to the computers that should help and start

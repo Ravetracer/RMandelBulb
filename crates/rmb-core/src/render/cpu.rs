@@ -41,6 +41,17 @@ impl MediumFrame {
             crate::fractal::ObjectShape::Primitive(_, a) => a[1],
             _ => 1.0,
         };
+        let vents = m.bubble_source == crate::compose::BubbleSource::Vents;
+        let plumes = vents.then(|| {
+            let ob = &prog.objects[obj];
+            let mut pl = Plumes { spacing: m.vent_spacing.max(0.0), width: m.plume_width.max(1e-6), sources: [[0.0; 2]; crate::compose::MAX_BUBBLE_SOURCES], count: 0 };
+            for p in prog.bubble_sources.iter().take(crate::compose::MAX_BUBBLE_SOURCES) {
+                let l = crate::compose::rotate(&inv, *p - ob.pos);
+                pl.sources[pl.count] = [l.x, l.y];
+                pl.count += 1;
+            }
+            pl
+        });
         let mut mf = MediumFrame {
             obj,
             ext: m.extinction(),
@@ -56,7 +67,9 @@ impl MediumFrame {
             drops: [
                 {
                     let sz = m.bubble_size.max(1e-6);
-                    DropKind { cell: sz * 8.0, share: 0.35 * m.bubbles.clamp(0.0, 1.0), r_min: sz * 0.35, r_max: sz, rise: m.time * m.bubble_speed }
+                    // In plumes the bubbles crowd together (the plume thins them out).
+                    let share = if vents { (3.0 * m.bubbles).clamp(0.0, 1.0) } else { 0.35 * m.bubbles.clamp(0.0, 1.0) };
+                    DropKind { cell: sz * 8.0, share, r_min: sz * 0.35, r_max: sz, rise: m.time * m.bubble_speed }
                 },
                 {
                     let sz = m.particle_size.max(1e-6);
@@ -68,6 +81,7 @@ impl MediumFrame {
             lens_drops: m.lens_drops.clamp(0.0, 1.0) * m.lens_wet.clamp(0.0, 1.0),
             drop_focus: m.drop_focus.clamp(0.0, 1.0),
             time: m.time,
+            plumes,
         };
         mf.wet_lights = lights.iter().map(|li| li.point.is_some_and(|lp| mf.depth(prog, lp) > 0.0)).collect();
         Some(mf)
@@ -127,6 +141,49 @@ pub struct MediumFrame {
     pub lens_drops: f64,
     pub drop_focus: f64,
     pub time: f64,
+    /// Bubbles from vents (None: spread through the water).
+    pub plumes: Option<Plumes>,
+}
+
+/// Bubble plumes (march.wgsl `u.wmed[8..14]`): random vents `spacing` apart (0 = none) and
+/// the source objects, in the water's frame (x, y); plumes `width` wide.
+#[derive(Clone, Copy, Debug)]
+pub struct Plumes {
+    pub spacing: f64,
+    pub width: f64,
+    pub sources: [[f64; 2]; crate::compose::MAX_BUBBLE_SOURCES],
+    pub count: usize,
+}
+
+impl Plumes {
+    /// How much of the bubbles a plume holds at (`x`, `y`, `z`) in the water's frame (0..1):
+    /// the nearest plume axis, which winds slowly with the height.
+    pub fn density(&self, x: f64, y: f64, z: f64) -> f64 {
+        let w = self.width;
+        let mut best = f64::INFINITY;
+        let mut axis = |vx: f64, vy: f64, seed: f64| {
+            let ph = seed * std::f64::consts::TAU;
+            let ax = vx + w * 0.6 * (z / (w * 9.0) + ph).sin();
+            let ay = vy + w * 0.6 * (z / (w * 7.0) + ph * 1.7).cos();
+            best = best.min((x - ax).powi(2) + (y - ay).powi(2));
+        };
+        for (k, s) in self.sources.iter().take(self.count).enumerate() {
+            axis(s[0], s[1], k as f64 * 0.37);
+        }
+        let sp = self.spacing;
+        if sp > 0.0 {
+            let (ci, cj) = ((x / sp).floor() as i32, (y / sp).floor() as i32);
+            for k in 0..9 {
+                let (i, j) = (ci + k % 3 - 1, cj + k / 3 - 1);
+                if super::hash3(i, j, 81) < 0.6 {
+                    let vx = (i as f64 + 0.15 + 0.7 * super::hash3(i, j, 82) as f64) * sp;
+                    let vy = (j as f64 + 0.15 + 0.7 * super::hash3(i, j, 83) as f64) * sp;
+                    axis(vx, vy, super::hash3(i, j, 84) as f64);
+                }
+            }
+        }
+        (-best / (w * w)).exp()
+    }
 }
 
 /// A water drop on the camera's glass at the screen position (`u` = sx × aspect, `v` = sy)
@@ -239,12 +296,51 @@ fn drop_sphere(g: &DropKind, kind: i32, cell: [i32; 3]) -> Option<(V3, f64)> {
     Some((ctr, r))
 }
 
+/// Nearest bubble of a plume in grid cell `cell` along the ray from `p0` along `d` (march.wgsl
+/// `plume_cell_hit`): the cell splits into 2 × 2 × 2 sub-cells, each holding a bubble by
+/// the share × the plume's density there (dense streams; the axis stays put while the grid
+/// rises by `g.rise`). Each bubble stays inside its sub-cell. Distance, center, radius.
+fn plume_cell_hit(g: &DropKind, pl: &Plumes, cell: [i32; 3], p0: V3, d: V3, len: f64) -> Option<(f64, V3, f64)> {
+    let c = g.cell;
+    let s = c * 0.5;
+    // Cells away from every plume hold nothing (one density check per cell).
+    let mid = v3((cell[0] as f64 + 0.5) * c, (cell[1] as f64 + 0.5) * c, (cell[2] as f64 + 0.5) * c + g.rise);
+    if pl.density(mid.x, mid.y, mid.z) * g.share < 0.02 {
+        return None;
+    }
+    let mut best: Option<(f64, V3, f64)> = None;
+    for k in 0..8 {
+        let sub = [cell[0] * 2 + (k & 1), cell[1] * 2 + ((k >> 1) & 1), cell[2] * 2 + (k >> 2)];
+        let h = |n: i32| super::hash3(sub[0].wrapping_add(n.wrapping_mul(977)).wrapping_add(89), sub[1], sub[2]) as f64;
+        let (x, y, z) = ((sub[0] as f64 + 0.5) * s, (sub[1] as f64 + 0.5) * s, (sub[2] as f64 + 0.5) * s);
+        if h(0) >= g.share * pl.density(x, y, z + g.rise) {
+            continue;
+        }
+        let r = (g.r_min + (g.r_max - g.r_min) * h(1)).min(s * 0.25);
+        let ph = g.rise / s * std::f64::consts::TAU + h(5) * std::f64::consts::TAU;
+        // Placed anywhere the sub-cell leaves room (no lattice look).
+        let room = s * 0.44 - r;
+        let ctr = v3(x + (h(2) * 2.0 - 1.0) * room + 0.06 * s * ph.sin(), y + (h(3) * 2.0 - 1.0) * room + 0.06 * s * ph.cos(), z + (h(4) * 2.0 - 1.0) * (room + 0.06 * s));
+        let oc = p0 - ctr;
+        let b = oc.dot(d);
+        let q = oc - d * b;
+        let disc = r * r - q.dot(q);
+        if disc > 0.0 {
+            let t = -b - disc.sqrt();
+            if t > 0.0 && t < len && best.is_none_or(|bb| t < bb.0) {
+                best = Some((t, ctr, r));
+            }
+        }
+    }
+    best
+}
+
 /// Nearest bubble (`kind` 0) or particle (1) of the grid `g` along the ray from `p0` (in the
 /// grid's moving frame) along `d` within `len`: one sphere at most per cell, well inside it
 /// (so the first one met is the nearest), placed, sized and wobbling by hashes of the cell.
 /// Returns the distance and the sphere's center (moving frame) and radius (march.wgsl
 /// `water_drop`).
-fn water_drop(g: &DropKind, kind: i32, p0: V3, d: V3, len: f64) -> Option<(f64, V3, f64)> {
+fn water_drop(g: &DropKind, kind: i32, p0: V3, d: V3, len: f64, plumes: Option<&Plumes>) -> Option<(f64, V3, f64)> {
     if g.share <= 0.0 || g.cell <= 0.0 {
         return None;
     }
@@ -265,7 +361,11 @@ fn water_drop(g: &DropKind, kind: i32, p0: V3, d: V3, len: f64) -> Option<(f64, 
         }
     }
     for _ in 0..DROP_CELLS {
-        if let Some((ctr, r)) = drop_sphere(g, kind, cell) {
+        if let Some(pl) = plumes {
+            if let Some(hit) = plume_cell_hit(g, pl, cell, p0, d, len) {
+                return Some(hit);
+            }
+        } else if let Some((ctr, r)) = drop_sphere(g, kind, cell) {
             // Ray-sphere by the closest approach (precise in f32 for tiny spheres far away).
             let oc = p0 - ctr;
             let b = oc.dot(d);
@@ -566,7 +666,8 @@ impl<'a> Shader<'a> {
         for (k, hk) in hits.iter_mut().enumerate() {
             let g = &m.drops[k];
             let p0 = la - v3(0.0, 0.0, g.rise);
-            if let Some((t, ctr, r)) = water_drop(g, k as i32, p0, ld, len) {
+            let plumes = if k == 0 { m.plumes.as_ref() } else { None };
+            if let Some((t, ctr, r)) = water_drop(g, k as i32, p0, ld, len, plumes) {
                 let x = a + d * t;
                 if self.water_depth(x) > 0.0 {
                     *hk = Some((t, back((p0 + ld * t - ctr) * (1.0 / r))));
@@ -1184,6 +1285,18 @@ impl<'a> Shader<'a> {
         let mut bailout2 = self.prog.bailout2;
         if let Some(ob) = (o.object > 0).then(|| self.prog.objects.get(o.object as usize - 1)).flatten() {
             match &ob.shape {
+                crate::fractal::ObjectShape::Primitive(kind, a) if ob.plants.is_some() => {
+                    // The nearest plant, if it is nearer than the ground.
+                    let q = ob.local(hit.pos);
+                    let ground = crate::compose::primitive_distance(*kind, *a, q);
+                    if let Some(h) = ob.plants.as_ref().and_then(|f| f.nearest(a, q, a[11], ground)) {
+                        return h.color_value(o.object as usize - 1);
+                    }
+                    return if mat.pattern == crate::compose::Pattern::Seabed.index() { crate::compose::seabed_color(a, q, mat.pattern_size) } else { crate::compose::pattern_value(mat.pattern, mat.pattern_size, q) };
+                }
+                crate::fractal::ObjectShape::Primitive(_, a) if mat.pattern == crate::compose::Pattern::Seabed.index() => {
+                    return crate::compose::seabed_color(a, ob.local(hit.pos), mat.pattern_size);
+                }
                 crate::fractal::ObjectShape::Primitive(..) | crate::fractal::ObjectShape::Model(_) => {
                     let q = ob.local(hit.pos);
                     return crate::compose::pattern_value(mat.pattern, mat.pattern_size, q);
@@ -1300,6 +1413,12 @@ impl<'a> Shader<'a> {
     /// Surface color, highlight color and transparency for the color value `v` of a hit at
     /// distance `dist`.
     fn gradient(&self, mat: usize, v: f64, dist: f64) -> ([f64; 3], [f64; 3], f64, f64) {
+        // Plants: their own colors, the highlight of the material's first color.
+        if v >= crate::plants::PLANT_COLOR && self.prog.objects.iter().any(|o| o.plants.is_some()) {
+            let (obj, species, leaf, height) = crate::plants::decode_color(v);
+            let base = self.prog.objects.get(obj).and_then(|o| o.plants.as_ref()).map_or([0.5; 3], |f| f.color(species, leaf, height));
+            return (base, self.gradient(mat, 0.0, dist).1, 0.0, 0.0);
+        }
         let sm = &self.scene.material;
         let m = &self.materials[mat];
         let mut t = v * m.scale + m.offset + sm.depth_shift * (dist - sm.depth_reference);
@@ -2431,6 +2550,42 @@ mod drop_tests {
     use super::*;
 
     #[test]
+    fn plumes_hold_bubbles_near_their_vents_only() {
+        let mut pl = Plumes { spacing: 0.0, width: 0.1, sources: [[0.0; 2]; crate::compose::MAX_BUBBLE_SOURCES], count: 1 };
+        pl.sources[0] = [1.0, 2.0];
+        // Near the source's axis (it winds by up to 0.6 widths per axis), nothing far away.
+        assert!((0..20).all(|k| pl.density(1.0, 2.0, k as f64 * 0.3) > 0.45));
+        assert!(pl.density(1.5, 2.0, 0.0) < 1e-6);
+        // Random vents: about 60 % of the cells hold one.
+        pl.count = 0;
+        pl.spacing = 1.0;
+        let cells = (0..400).filter(|k| (0..100).any(|s| pl.density((k % 20) as f64 + (s % 10) as f64 * 0.1, (k / 20) as f64 + (s / 10) as f64 * 0.1, 0.0) > 0.5)).count();
+        assert!((150..350).contains(&cells), "{cells}");
+        // The bubble grid keeps only cells in plumes.
+        let g = DropKind { cell: 0.05, share: 1.0, r_min: 0.01, r_max: 0.02, rise: 0.0 };
+        pl.count = 1;
+        pl.spacing = 0.0;
+        // Rays straight down: through the plume they meet bubbles, beside it none.
+        let down = v3(0.0, 0.0, -1.0);
+        let hits = |x: f64| (0..64).filter(|k| water_drop(&g, 0, v3(x + (k % 8) as f64 * 0.004, 2.0 + (k / 8) as f64 * 0.004, 4.0), down, 8.0, Some(&pl)).is_some()).count();
+        assert!(hits(1.0) > 24, "{}", hits(1.0));
+        assert_eq!(hits(2.0), 0);
+        // The bubbles in a plume cell never leave their sub-cells (the walk takes the first
+        // cell's nearest as the nearest of all).
+        for k in 0..200 {
+            let cell = [20 + k % 3, 40 + k % 2, k];
+            let p0 = v3(1.0, 2.0, 30.0);
+            if let Some((_, ctr, r)) = plume_cell_hit(&g, &pl, cell, p0, (v3((cell[0] as f64 + 0.5) * 0.05, (cell[1] as f64 + 0.5) * 0.05, (cell[2] as f64 + 0.5) * 0.05) - p0).normalize(), 100.0) {
+                let s = 0.025;
+                let sub = |v: f64| (v / s).floor();
+                for (a, b) in [(ctr.x - r, ctr.x + r), (ctr.y - r, ctr.y + r), (ctr.z - r, ctr.z + r)] {
+                    assert_eq!(sub(a), sub(b));
+                }
+            }
+        }
+    }
+
+    #[test]
     fn bubble_grid_walk_finds_the_nearest_bubble() {
         let g = DropKind { cell: 0.64, share: 0.35, r_min: 0.028, r_max: 0.08, rise: 0.37 };
         let mut rng = Rng::new(3, 4, 5);
@@ -2439,7 +2594,7 @@ mod drop_tests {
             let p0 = v3(rng.next_f64() * 4.0 - 2.0, rng.next_f64() * 4.0 - 2.0, rng.next_f64() * 4.0 - 2.0);
             let d = v3(rng.next_f64() - 0.5, rng.next_f64() - 0.5, rng.next_f64() - 0.5).normalize();
             let len = 6.0;
-            let walk = water_drop(&g, 0, p0, d, len).map(|h| h.0);
+            let walk = water_drop(&g, 0, p0, d, len, None).map(|h| h.0);
             // Brute force: every cell in the box around the ray.
             let mut best: Option<f64> = None;
             let c = g.cell;

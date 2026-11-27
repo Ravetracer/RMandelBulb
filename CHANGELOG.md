@@ -12,6 +12,15 @@ and the release workflow uses it as the release notes.
 
 ## [Unreleased]
 
+- Water: bubbles can rise in winding plumes from random vents on the ground and from objects
+  marked as bubble sources (Underwater › Bubbles from, Vent spacing, Plume width; object
+  setting Bubble source).
+- Seabed: rocks, pebbles and swaying seaweed (ribbons in meadows), and a color pattern
+  "Sand, stones, seaweed" that colors each part from its own range of the gradient.
+- Seabed: plants grown by L-systems (Plants section): presets for kelp, sea fan, staghorn
+  coral, algae tuft and fern weed, and an editor for the start string, stochastic rules
+  and the turtle settings with a preview; plants sway and have their own colors.
+
 ## [1.2.1] - 2026-11-27
 
 - Water: the camera flies into see-through water like into air. The surface no longer slows

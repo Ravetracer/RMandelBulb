@@ -103,8 +103,10 @@ struct U {
     // w: lens drops; [4] caustics
     // (0 = off), their step (local units), light rays (0 = off), scattering per unit;
     // [5] bubbles, [6] particles: cell, share, smallest and largest radius; [7] their rise,
-    // z: the camera's front glass size, w: flat glass; [8] x: focus of the lens drops.
-    wmed: array<vec4<f32>, 9>,
+    // z: the camera's front glass size, w: flat glass; [8] x: focus of the lens drops, y:
+    // bubbles in plumes (1), z: vent spacing, w: plume width; [9] x: number of bubble
+    // sources; [10..14] their x, y in the water's frame (two per entry).
+    wmed: array<vec4<f32>, 14>,
 }
 
 @group(0) @binding(0) var<uniform> u: U;
@@ -692,7 +694,7 @@ fn obj_local(j: u32, p: vec3<f32>) -> vec3<f32> {
 }
 
 // Mirrors compose::primitive_distance.
-fn prim_de(kind: u32, a: vec4<f32>, a2: vec4<f32>, q: vec3<f32>) -> f32 {
+fn prim_de(kind: u32, a: vec4<f32>, a2: vec4<f32>, a3: vec4<f32>, q: vec3<f32>) -> f32 {
     if (kind == 0u) {
         return q.z;
     }
@@ -758,7 +760,7 @@ fn prim_de(kind: u32, a: vec4<f32>, a2: vec4<f32>, q: vec3<f32>) -> f32 {
         return min(max(dx, dz), 0.0) + length(max(vec2<f32>(dx, dz), vec2<f32>(0.0)));
     }
     if (kind == 10u) {
-        return seabed_distance(a, a2, q);
+        return seabed_distance(a, a2, a3, q);
     }
     return water_distance(a, a2, vec4<f32>(0.0), q, 1.0e30);
 }
@@ -783,9 +785,339 @@ fn seabed_height(a: vec4<f32>, a2: vec4<f32>, x: f32, y: f32) -> f32 {
     return a.x * sum / 1.875 + a.z * ripple;
 }
 
+// Mirrors compose::ROCK_CELL and the other seabed part constants.
+const ROCK_CELL: f32 = 3.0;
+const PEBBLE_SIZE: f32 = 0.12;
+const PEBBLE_CELL: f32 = 4.0;
+const WEED_CELL: f32 = 0.45;
+const WEED_WIDTH: f32 = 0.035;
+const WEED_THICK: f32 = 0.004;
+const ROCK_LUMPS: f32 = 0.1;
+
+// Mirrors compose::seabed_stones: x distance bound, y the stone's hash.
+fn seabed_stones(x: f32, y: f32, z: f32, size: f32, share: f32, cell: f32, flat: f32, lumps: f32, salt: i32) -> vec2<f32> {
+    if (share <= 0.0 || size <= 0.0) {
+        return vec2<f32>(1.0e30, 0.0);
+    }
+    let c = size * cell;
+    let rmax = size * 1.2 * (1.0 + lumps);
+    let above = z - size * (0.7 + lumps);
+    var best = vec2<f32>(max(max(1.25 * c - rmax, c * 0.05), above), 0.0);
+    let ci = i32(floor(x / c));
+    let cj = i32(floor(y / c));
+    for (var k = 0; k < 9; k++) {
+        let i = ci + k % 3 - 1;
+        let j = cj + k / 3 - 1;
+        if (hash3(i, j, salt) >= share) {
+            continue;
+        }
+        let r = size * (0.5 + 0.5 * hash3(i + 613, j, salt));
+        let cx = (f32(i) + 0.25 + 0.5 * hash3(i + 613 * 2, j, salt)) * c;
+        let cy = (f32(j) + 0.25 + 0.5 * hash3(i + 613 * 3, j, salt)) * c;
+        let ang = hash3(i + 613 * 4, j, salt) * 6.283185307179586;
+        let sn = sin(ang);
+        let cs = cos(ang);
+        let dx = x - cx;
+        let dy = y - cy;
+        let uu = dx * cs + dy * sn;
+        let vv = dy * cs - dx * sn;
+        let rr = vec3<f32>(r * (0.8 + 0.4 * hash3(i + 613 * 5, j, salt)), r * (0.7 + 0.3 * hash3(i + 613 * 6, j, salt)), r * flat * (0.7 + 0.3 * hash3(i + 613 * 7, j, salt)));
+        let w = z + rr.z * 0.3;
+        let e = length(vec3<f32>(uu, vv, w) / rr);
+        var d = (e - 1.0) * min(rr.x, min(rr.y, rr.z));
+        if (lumps > 0.0) {
+            let f = 3.0 / r;
+            let bump = sin(uu * f + hash3(i + 613 * 8, j, salt) * 6.0) * sin(vv * f + hash3(i + 613 * 9, j, salt) * 6.0) * sin(w * f + hash3(i + 613 * 10, j, salt) * 6.0);
+            d = (d + lumps * r * bump) / (1.0 + lumps * 3.0 * 1.7320508075688772);
+        }
+        if (d < best.x) {
+            best = vec2<f32>(max(d, above), hash3(i + 613 * 11, j, salt));
+        }
+    }
+    return best;
+}
+
+// Mirrors compose::seabed_weed: x distance bound, y how far up the blade (0..1).
+fn seabed_weed(x: f32, y: f32, z: f32, height: f32, share: f32, sway_in: f32, phase: f32) -> vec2<f32> {
+    if (share <= 0.0 || height <= 0.0) {
+        return vec2<f32>(1.0e30, 0.0);
+    }
+    let c = height * WEED_CELL;
+    let w0 = height * WEED_WIDTH;
+    let th = height * WEED_THICK;
+    let sway = clamp(sway_in, 0.0, 1.0);
+    let reach = height * (0.25 + 0.2 * sway) + w0 + th;
+    let kk = 0.5 + 0.9 * sway + 2.0 * (0.8 + 1.5) * WEED_WIDTH;
+    let norm = sqrt(1.0 + kk * kk);
+    let ci = i32(floor(x / c));
+    let cj = i32(floor(y / c));
+    let edge = min(min(x - f32(ci - 2) * c, f32(ci + 3) * c - x), min(y - f32(cj - 2) * c, f32(cj + 3) * c - y));
+    let above = z - height - th;
+    var best = vec2<f32>(max((edge - (reach - 0.2 * c)) / norm, above), 0.0);
+    for (var n = 0; n < 25; n++) {
+        let i = ci + n % 5 - 2;
+        let j = cj + n / 5 - 2;
+        let meadow = clamp(2.5 * water_noise(f32(i) * WEED_CELL / 5.0 + 5.3, f32(j) * WEED_CELL / 5.0 + 1.7) - 1.0, 0.0, 1.0);
+        if (meadow <= 0.0) {
+            continue;
+        }
+        for (var bl = 0; bl < 2; bl++) {
+            let salt = 120 + bl;
+            if (hash3(i, j, salt) >= share * meadow) {
+                continue;
+            }
+            let hh = height * (0.5 + 0.5 * hash3(i + 613, j, salt));
+            let rx = (f32(i) + 0.2 + 0.6 * hash3(i + 613 * 2, j, salt)) * c;
+            let ry = (f32(j) + 0.2 + 0.6 * hash3(i + 613 * 3, j, salt)) * c;
+            let h5 = hash3(i + 613 * 5, j, salt);
+            if ((length(vec2<f32>(x - rx, y - ry)) - hh * (0.25 * h5 + 0.2 * sway) - w0 - th) / norm >= best.x) {
+                continue;
+            }
+            let ang = hash3(i + 613 * 4, j, salt) * 6.283185307179586;
+            let t = clamp(z / hh, 0.0, 1.0);
+            let off = hh * t * t * (0.25 * h5 + 0.2 * sway * sin(phase + hash3(i + 613 * 6, j, salt) * 6.283185307179586 - 2.5 * t));
+            let dx = x - rx - cos(ang) * off;
+            let dy = y - ry - sin(ang) * off;
+            let tw = ang + 1.5 * t * (hash3(i + 613 * 7, j, salt) - 0.5) * 2.0;
+            let ts = sin(tw);
+            let tc = cos(tw);
+            let along = dx * tc + dy * ts;
+            let across = dy * tc - dx * ts;
+            let half = w0 * (1.0 - 0.8 * t);
+            let wide = max(abs(across) - half, 0.0);
+            var d = length(vec2<f32>(along, wide)) - th;
+            if (z > hh) {
+                d = length(vec3<f32>(along, wide, z - hh)) - th;
+            }
+            d /= norm;
+            if (d < best.x) {
+                best = vec2<f32>(d, t);
+            }
+        }
+    }
+    return best;
+}
+
+// Mirrors compose::seabed_feature_top.
+fn seabed_feature_top(a2: vec4<f32>, a3: vec4<f32>) -> f32 {
+    var top = 0.0;
+    if (a2.y > 0.0) {
+        top = max(top, abs(a2.z) * (0.7 + ROCK_LUMPS));
+    }
+    if (a2.w > 0.0) {
+        top = max(top, abs(a2.z) * PEBBLE_SIZE * 0.42);
+    }
+    if (a3.x > 0.0) {
+        top = max(top, abs(a3.y) * (1.0 + WEED_THICK));
+    }
+    return top;
+}
+
+// Mirrors compose::seabed_parts: per part (rocks, pebbles, seaweed) x distance bound, y color
+// value.
+fn seabed_parts(a2: vec4<f32>, a3: vec4<f32>, x: f32, y: f32, z: f32) -> array<vec2<f32>, 3> {
+    let size = abs(a2.z);
+    let r = seabed_stones(x, y, z, size, clamp(a2.y, 0.0, 1.0), ROCK_CELL, 1.0, ROCK_LUMPS, 101);
+    let p = seabed_stones(x, y, z, size * PEBBLE_SIZE, clamp(a2.w, 0.0, 1.0), PEBBLE_CELL, 0.6, 0.0, 102);
+    let w = seabed_weed(x, y, z, abs(a3.y), clamp(a3.x, 0.0, 1.0), a3.z, a3.w);
+    return array<vec2<f32>, 3>(vec2<f32>(r.x, 0.5 + 0.25 * r.y), vec2<f32>(p.x, 0.58 + 0.12 * p.y), vec2<f32>(w.x, 0.8 + 0.2 * w.y));
+}
+
+// Mirrors compose::seabed_color.
+fn seabed_color(a: vec4<f32>, a2: vec4<f32>, a3: vec4<f32>, q: vec3<f32>, size: f32) -> f32 {
+    let sand = 0.45 * clamp(0.5 + q.z / max(abs(size), 1.0e-9), 0.0, 1.0);
+    let top = seabed_feature_top(a2, a3);
+    if (top <= 0.0) {
+        return sand;
+    }
+    let z = q.z - seabed_height(a, a2, q.x, q.y);
+    if (z > top * 1.5) {
+        return sand;
+    }
+    var best = vec2<f32>(max(z, 0.0), sand);
+    let parts = seabed_parts(a2, a3, q.x, q.y, z);
+    for (var k = 0; k < 3; k++) {
+        if (parts[k].x < best.x) {
+            best = parts[k];
+        }
+    }
+    return best.y;
+}
+
+// Plants (plants.rs): a seabed object j with plants has its number of species at
+// vols[j * MODEL_HEADER] and the offset of their blocks at + 1. A block (PLANT_BLOCK words):
+// cell, share, clumping, height, variation, sway, salt (i32), radius, top, nodes, node count,
+// segments, branch colors (root, top), leaf colors (root, top), the largest divisor of the
+// segments' bounds (PlantTemplate::norm). A segment: a, leaf (1),
+// b, ra, side, rb (12 words); nodes as the models' (8 words).
+const PLANT_COLOR: f32 = 100000.0;
+const PLANT_SPECIES: u32 = 4u;
+const PLANT_BLOCK: u32 = 32u;
+const PLANT_SWAY: f32 = 0.15;
+const PLANT_STACK: u32 = 24u;
+
+// Mirrors plants::seg_distance.
+fn plant_seg(o: u32, p: vec3<f32>) -> f32 {
+    let a = vol_v3(o);
+    let b = vol_v3(o + 4u);
+    let ra = vol_f(o + 7u);
+    let rb = vol_f(o + 11u);
+    let ba = b - a;
+    let pa = p - a;
+    let len2 = max(dot(ba, ba), 1.0e-20);
+    let len = sqrt(len2);
+    if (vol_f(o + 3u) < 0.5) {
+        let h = clamp(dot(pa, ba) / len2, 0.0, 1.0);
+        let r = ra + (rb - ra) * h;
+        let k = (ra - rb) / len;
+        return (length(pa - ba * h) - r) / sqrt(1.0 + k * k);
+    }
+    let u = ba / len;
+    let side = vol_v3(o + 8u);
+    let n = cross(u, side);
+    let along = dot(pa, u);
+    let t = clamp(along / len, 0.0, 1.0);
+    let w = ra * 4.0 * t * (1.0 - t);
+    let outside = along - clamp(along, 0.0, len);
+    let wide = max(abs(dot(pa, side)) - w, 0.0);
+    let k = 4.0 * ra / len;
+    return (length(vec3<f32>(outside, wide, dot(pa, n))) - rb) / sqrt(1.0 + k * k);
+}
+
+// Mirrors PlantTemplate::distance: x the distance (limit when nothing is nearer), y the
+// segment (-1: none).
+fn plant_tpl(nodes: u32, count: u32, segs: u32, norm: f32, p: vec3<f32>, limit: f32) -> vec2<f32> {
+    var best = vec2<f32>(limit, -1.0);
+    if (count == 0u) {
+        return best;
+    }
+    var st_n: array<u32, PLANT_STACK>;
+    var st_d: array<f32, PLANT_STACK>;
+    st_n[0] = 0u;
+    st_d[0] = sqrt(node_d2(nodes, 0u, p)) / norm;
+    var sp = 1u;
+    loop {
+        if (sp == 0u) {
+            break;
+        }
+        sp -= 1u;
+        let ni = st_n[sp];
+        if (st_d[sp] >= best.x) {
+            continue;
+        }
+        let b = nodes + ni * 8u;
+        let start = vols[b + 6u];
+        let cnt = vols[b + 7u];
+        if (cnt > 0u) {
+            for (var i = start; i < start + cnt; i++) {
+                let d = plant_seg(segs + i * 12u, p);
+                if (d < best.x) {
+                    best = vec2<f32>(d, f32(i));
+                }
+            }
+            continue;
+        }
+        let dl = sqrt(node_d2(nodes, start, p)) / norm;
+        let dr = sqrt(node_d2(nodes, start + 1u, p)) / norm;
+        var near = start;
+        var far = start + 1u;
+        var dn = dl;
+        var df = dr;
+        if (dl > dr) {
+            near = start + 1u;
+            far = start;
+            dn = dr;
+            df = dl;
+        }
+        if (df < best.x && sp < PLANT_STACK) {
+            st_n[sp] = far;
+            st_d[sp] = df;
+            sp += 1u;
+        }
+        if (dn < best.x && sp < PLANT_STACK) {
+            st_n[sp] = near;
+            st_d[sp] = dn;
+            sp += 1u;
+        }
+    }
+    return best;
+}
+
+// Mirrors PlantField::nearest: x the distance bound (limit when nothing is nearer), y the
+// species, z 1 for a leaf, w the height up the plant (0..1).
+fn plant_de(j: u32, a: vec4<f32>, a2: vec4<f32>, q: vec3<f32>, phase: f32, limit: f32) -> vec4<f32> {
+    var best = vec4<f32>(limit, 0.0, 0.0, 0.0);
+    let n = vols[j * MODEL_HEADER];
+    let blocks = vols[j * MODEL_HEADER + 1u];
+    let ground_top = abs(a.x) + abs(a.z);
+    for (var k = 0u; k < n; k++) {
+        let s = blocks + k * PLANT_BLOCK;
+        let c = vol_f(s);
+        let share = vol_f(s + 1u);
+        let clumping = vol_f(s + 2u);
+        let height = vol_f(s + 3u);
+        let variation = vol_f(s + 4u);
+        let sway = vol_f(s + 5u);
+        let salt = bitcast<i32>(vols[s + 6u]);
+        let radius = vol_f(s + 7u);
+        let top = vol_f(s + 8u);
+        let nodes = vols[s + 9u];
+        let ncount = vols[s + 10u];
+        let segs = vols[s + 11u];
+        if (ncount == 0u) {
+            continue;
+        }
+        let above = q.z - ground_top - height * top;
+        if (above >= best.x) {
+            continue;
+        }
+        let ci = i32(floor(q.x / c));
+        let cj = i32(floor(q.y / c));
+        let edge = min(min(q.x - f32(ci - 2) * c, f32(ci + 3) * c - q.x), min(q.y - f32(cj - 2) * c, f32(cj + 3) * c - q.y));
+        let far = max(edge - 0.2 * c, above);
+        if (far < best.x) {
+            best = vec4<f32>(far, f32(k), 0.0, 0.0);
+        }
+        let warp = 1.0 + PLANT_SWAY * sway * (2.0 * top + 2.0 * top * top);
+        for (var m = 0; m < 25; m++) {
+            let i = ci + m % 5 - 2;
+            let jj = cj + m / 5 - 2;
+            let clump = clamp(2.5 * water_noise(f32(i) * c / 1.5 + 3.7, f32(jj) * c / 1.5 + 9.1) - 1.0, 0.0, 1.0);
+            if (hash3(i, jj, salt) >= share * (1.0 + (clump - 1.0) * clumping)) {
+                continue;
+            }
+            let size = height * (1.0 - variation * hash3(i + 613, jj, salt));
+            let rx = (f32(i) + 0.25 + 0.5 * hash3(i + 613 * 2, jj, salt)) * c;
+            let ry = (f32(jj) + 0.25 + 0.5 * hash3(i + 613 * 3, jj, salt)) * c;
+            let dx = q.x - rx;
+            let dy = q.y - ry;
+            let reach = size * (radius + PLANT_SWAY * sway * top * top);
+            if (max(length(vec2<f32>(dx, dy)) - reach, q.z - ground_top - size * top) >= best.x) {
+                continue;
+            }
+            let gz = seabed_height(a, a2, rx, ry);
+            let ang = hash3(i + 613 * 4, jj, salt) * 6.283185307179586;
+            let sn = sin(ang);
+            let cs = cos(ang);
+            var p = vec3<f32>((dx * cs + dy * sn) / size, (dy * cs - dx * sn) / size, (q.z - gz) / size);
+            let z = clamp(p.z, 0.0, top);
+            p.x -= PLANT_SWAY * sway * z * z * sin(phase + hash3(i + 613 * 5, jj, salt) * 6.283185307179586 - 2.0 * z);
+            let r = plant_tpl(nodes, ncount, segs, vol_f(s + 24u), p, best.x / size * warp);
+            if (r.y >= 0.0) {
+                let d = r.x * size / warp;
+                if (d < best.x) {
+                    best = vec4<f32>(d, f32(k), vol_f(segs + u32(r.y) * 12u + 3u), clamp(p.z / top, 0.0, 1.0));
+                }
+            }
+        }
+    }
+    return best;
+}
+
 // Mirrors compose::seabed_distance.
-fn seabed_distance(a: vec4<f32>, a2: vec4<f32>, q: vec3<f32>) -> f32 {
-    let top = abs(a.x) + abs(a.z);
+fn seabed_distance(a: vec4<f32>, a2: vec4<f32>, a3: vec4<f32>, q: vec3<f32>) -> f32 {
+    let parts = seabed_feature_top(a2, a3);
+    let top = abs(a.x) + abs(a.z) + parts;
     let above = q.z - top;
     if (above > max(top, 1.0e-6)) {
         return above;
@@ -793,7 +1125,16 @@ fn seabed_distance(a: vec4<f32>, a2: vec4<f32>, q: vec3<f32>) -> f32 {
     let hills = abs(a.x) * 3.0 * 1.4142135623730951 / 1.875 * 4.0 / max(abs(a.y), 1.0e-6);
     let ripples = abs(a.z) * 3.141592653589793 / max(abs(a.w), 1.0e-6) * (1.0 + 0.75 * 1.4142135623730951);
     let steep = (hills + ripples) * 1.25;
-    var d = (q.z - seabed_height(a, a2, q.x, q.y)) / sqrt(1.0 + steep * steep);
+    let z = q.z - seabed_height(a, a2, q.x, q.y);
+    var d = z / sqrt(1.0 + steep * steep);
+    if (parts > 0.0) {
+        var near = z - parts;
+        if (z <= parts * 1.5) {
+            let p = seabed_parts(a2, a3, q.x, q.y, z);
+            near = min(p[0].x, min(p[1].x, p[2].x));
+        }
+        d = min(d, near / (1.0 + steep));
+    }
     if (above > 0.0) {
         d = max(d, above);
     }
@@ -2151,6 +2492,19 @@ fn color_value(h: Hit, n: vec3<f32>, pos: vec3<f32>) -> f32 {
     if (o.obj > 0u) {
         let ob = objs[o.obj - 1u];
         if (ob.misc.w > 0.5) {
+            // The nearest plant of a seabed, if it is nearer than the ground (mirrors
+            // Shader::color_value).
+            if (PLANTS && ob.misc.w < 1.5 && vols[(o.obj - 1u) * MODEL_HEADER] > 0u) {
+                let q = obj_local(o.obj - 1u, pos);
+                let ground = seabed_distance(ob.prim, ob.prim2, ob.prim3, q);
+                let ph = plant_de(o.obj - 1u, ob.prim, ob.prim2, q, ob.prim3.w, ground);
+                if (ph.x < ground) {
+                    return PLANT_COLOR + 2.0 * f32((o.obj - 1u) * PLANT_SPECIES + u32(ph.y)) + ph.z + min(ph.w, 0.999);
+                }
+            }
+            if (ms.pattern == 5u && ob.misc.w < 1.5) {
+                return seabed_color(ob.prim, ob.prim2, ob.prim3, obj_local(o.obj - 1u, pos), ms.psize);
+            }
             return pattern_value(ms.pattern, ms.psize, obj_local(o.obj - 1u, pos));
         }
         bail2 = ob.misc.x;
@@ -2203,7 +2557,14 @@ struct Colors {
 }
 
 // Colors of the material of object `obj` (mirrors Shader::gradient).
-fn gradient(obj: u32, v: f32, dist: f32) -> Colors {
+fn gradient(obj: u32, v_in: f32, dist: f32) -> Colors {
+    // Plants (mirrors plants::decode_color): their own colors, the highlight of the
+    // material's first color.
+    var v = v_in;
+    let plant = PLANTS && v_in >= PLANT_COLOR;
+    if (plant) {
+        v = 0.0;
+    }
     let ms = mat_of(obj);
     var t = v * ms.scale + ms.offset + u.color2.z * (dist - u.color2.w);
     if (ms.rep) {
@@ -2246,6 +2607,15 @@ fn gradient(obj: u32, v: f32, dist: f32) -> Colors {
             c.base = c.base + (b1.xyz - c.base) * w;
             c.emis = c.emis + (b0.w - c.emis) * w;
         }
+    }
+    if (plant) {
+        let x = v_in - PLANT_COLOR;
+        let k = u32(floor(x));
+        let f = x - f32(k);
+        let s = vols[(k / 2u / PLANT_SPECIES) * MODEL_HEADER + 1u] + ((k / 2u) % PLANT_SPECIES) * PLANT_BLOCK + 12u + (k % 2u) * 6u;
+        c.base = mix(vol_v3(s), vol_v3(s + 3u), f);
+        c.trans = 0.0;
+        c.emis = 0.0;
     }
     return c;
 }
@@ -2983,6 +3353,84 @@ const DROP_CELLS: u32 = 64u;
 // frame); the radius comes back through drop_radius.
 var<private> drop_radius: f32;
 
+// Mirrors Plumes::density: how much of the bubbles a plume holds at p (water frame).
+fn plume_density(p: vec3<f32>) -> f32 {
+    let w = u.wmed[8].w;
+    var best = 3.0e38;
+    let n = i32(u.wmed[9].x);
+    let sp = u.wmed[8].z;
+    let ci = i32(floor(p.x / sp));
+    let cj = i32(floor(p.y / sp));
+    // The source objects first, then the random vents of the 3 x 3 cells around.
+    for (var k = 0; k < n + 9; k++) {
+        var v = vec2<f32>(0.0);
+        var seed = 0.0;
+        if (k < n) {
+            let e = u.wmed[10 + k / 2];
+            v = select(e.zw, e.xy, k % 2 == 0);
+            seed = f32(k) * 0.37;
+        } else {
+            if (sp <= 0.0) {
+                break;
+            }
+            let i = ci + (k - n) % 3 - 1;
+            let j = cj + (k - n) / 3 - 1;
+            if (hash3(i, j, 81) >= 0.6) {
+                continue;
+            }
+            v = vec2<f32>((f32(i) + 0.15 + 0.7 * hash3(i, j, 82)) * sp, (f32(j) + 0.15 + 0.7 * hash3(i, j, 83)) * sp);
+            seed = hash3(i, j, 84);
+        }
+        let ph = seed * 6.283185307179586;
+        let ax = v.x + w * 0.6 * sin(p.z / (w * 9.0) + ph);
+        let ay = v.y + w * 0.6 * cos(p.z / (w * 7.0) + ph * 1.7);
+        best = min(best, (p.x - ax) * (p.x - ax) + (p.y - ay) * (p.y - ay));
+    }
+    return exp(-best / (w * w));
+}
+
+// Mirrors cpu::plume_cell_hit: the nearest bubble of the 2 x 2 x 2 sub-cells of a plume
+// cell (t < 0: none; radius in drop_radius).
+fn plume_cell_hit(g: vec4<f32>, cell: vec3<i32>, p0: vec3<f32>, d: vec3<f32>, len: f32) -> vec4<f32> {
+    let c = g.x;
+    let s = c * 0.5;
+    let rise = u.wmed[7].x;
+    let mid = (vec3<f32>(cell) + 0.5) * c;
+    if (plume_density(mid + vec3<f32>(0.0, 0.0, rise)) * g.y < 0.02) {
+        return vec4<f32>(-1.0);
+    }
+    var best = vec4<f32>(-1.0);
+    var best_r = 0.0;
+    for (var k = 0; k < 8; k++) {
+        let sub = cell * 2 + vec3<i32>(k & 1, (k >> 1u) & 1, k >> 2u);
+        let x = (vec3<f32>(sub) + 0.5) * s;
+        if (hash3(sub.x + 89, sub.y, sub.z) >= g.y * plume_density(x + vec3<f32>(0.0, 0.0, rise))) {
+            continue;
+        }
+        let r = min(g.z + (g.w - g.z) * hash3(sub.x + 977 + 89, sub.y, sub.z), s * 0.25);
+        let ph = rise / s * 6.283185307179586 + hash3(sub.x + 977 * 5 + 89, sub.y, sub.z) * 6.283185307179586;
+        let room = s * 0.44 - r;
+        let ctr = vec3<f32>(
+            x.x + (hash3(sub.x + 977 * 2 + 89, sub.y, sub.z) * 2.0 - 1.0) * room + 0.06 * s * sin(ph),
+            x.y + (hash3(sub.x + 977 * 3 + 89, sub.y, sub.z) * 2.0 - 1.0) * room + 0.06 * s * cos(ph),
+            x.z + (hash3(sub.x + 977 * 4 + 89, sub.y, sub.z) * 2.0 - 1.0) * (room + 0.06 * s),
+        );
+        let oc = p0 - ctr;
+        let b = dot(oc, d);
+        let q = oc - d * b;
+        let disc = r * r - dot(q, q);
+        if (disc > 0.0) {
+            let t = -b - sqrt(disc);
+            if (t > 0.0 && t < len && (best.x < 0.0 || t < best.x)) {
+                best = vec4<f32>(t, ctr);
+                best_r = r;
+            }
+        }
+    }
+    drop_radius = best_r;
+    return best;
+}
+
 fn water_drop(g: vec4<f32>, kind: i32, p0: vec3<f32>, d: vec3<f32>, len: f32) -> vec4<f32> {
     if (g.y <= 0.0 || g.x <= 0.0) {
         return vec4<f32>(-1.0);
@@ -3005,7 +3453,12 @@ fn water_drop(g: vec4<f32>, kind: i32, p0: vec3<f32>, d: vec3<f32>, len: f32) ->
     }
     let salt = 41 + 12 * kind;
     for (var n = 0u; n < DROP_CELLS; n++) {
-        if (hash3(cell.x + salt, cell.y, cell.z) < g.y) {
+        if (kind == 0 && u.wmed[8].y > 0.5) {
+            let hit = plume_cell_hit(g, cell, p0, d, len);
+            if (hit.x >= 0.0) {
+                return hit;
+            }
+        } else if (hash3(cell.x + salt, cell.y, cell.z) < g.y) {
             let r = g.z + (g.w - g.z) * hash3(cell.x + 977 + salt, cell.y, cell.z);
             let ph = select(u.wmed[7].x, u.wmed[7].y, kind == 1) / c * 6.283185307179586 + hash3(cell.x + 977 * 5 + salt, cell.y, cell.z) * 6.283185307179586;
             let ctr = vec3<f32>(

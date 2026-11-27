@@ -220,6 +220,9 @@ impl FormulasPanel {
             ui.text_edit_singleline(&mut o.name);
             ui.end_row();
             widgets::checkbox(ui, "Visible", "Include this object in the scene", &mut o.enabled);
+            if !matches!(&o.shape, Shape::Primitive(Primitive::Water { .. })) {
+                widgets::checkbox(ui, "Bubble source", "Bubbles rise from this object in a plume (needs see-through water with Bubbles from: Vents and sources)", &mut o.bubble_source);
+            }
             widgets::label(ui, "Operation", "How the object is combined with everything above it in the list");
             egui::ComboBox::from_id_salt("obj-op").selected_text(o.op.label()).show_ui(ui, |ui| {
                 for op in BoolOp::ALL {
@@ -268,6 +271,9 @@ impl FormulasPanel {
                 {
                     water_medium_params(ui, medium);
                 }
+                if matches!(p, Primitive::Seabed { .. }) && widgets::section(ui, "Plants", false).open {
+                    crate::plants_editor::plants_editor(ui, &mut o.plants);
+                }
             }
             Shape::Fractal(f) => {
                 ui.separator();
@@ -282,6 +288,7 @@ impl FormulasPanel {
         }
         let patterns: &[Pattern] = match o.shape {
             Shape::Fractal(_) => &[],
+            Shape::Primitive(Primitive::Seabed { .. }) => &Pattern::FOR_SEABED,
             Shape::Primitive(_) => &Pattern::ALL,
             Shape::Model(_) => &Pattern::FOR_MODELS,
         };
@@ -591,10 +598,9 @@ fn primitive_object(p: Primitive, at: rmb_core::V3) -> SceneObject {
         }
         Primitive::Seabed { .. } => {
             pos = rmb_core::v3(0.0, 0.0, -2.5);
-            material.pattern = Pattern::Height;
+            material.pattern = Pattern::Seabed;
             material.pattern_size = 0.6;
-            material.color_offset = 0.5;
-            material.gradient = vec![rmb_core::scene::ColorStop::new(0.0, [0.4, 0.34, 0.24]), rmb_core::scene::ColorStop::new(1.0, [0.86, 0.8, 0.66])];
+            material.gradient = rmb_core::compose::seabed_gradient();
         }
         Primitive::Water { .. } => {
             pos = rmb_core::v3(0.0, 0.0, -1.0);
@@ -644,12 +650,20 @@ fn primitive_params(ui: &mut Ui, p: &mut Primitive) {
             widgets::slider_log(ui, "Radius", "Distance from the axis to the middle of a side", radius, 0.001..=100.0, 0.4);
             widgets::slider_log(ui, "Height", "Height of the prism (along its z axis)", height, 0.001..=100.0, 1.0);
         }
-        Primitive::Seabed { hills, hill_size, ripples, ripple_length, angle } => {
+        Primitive::Seabed { hills, hill_size, ripples, ripple_length, angle, rocks, rock_size, pebbles, seaweed, weed_height, sway, sway_speed, phase } => {
             widgets::slider_log(ui, "Hills", "Height of the hills (up and down from the object's height)", hills, 0.0..=10.0, 0.25);
             widgets::slider_log(ui, "Hill size", "How far apart the largest hills are", hill_size, 0.01..=100.0, 2.5);
             widgets::slider_log(ui, "Ripples", "Height of the sand ripples", ripples, 0.0..=1.0, 0.015);
             widgets::slider_log(ui, "Ripple length", "Distance between the sand ripples", ripple_length, 0.001..=10.0, 0.12);
             widgets::slider(ui, "Ripple direction", "Direction (degrees) across which the ripples run; match the water's wave direction for a natural look", angle, -180.0..=180.0, 0.0);
+            widgets::slider(ui, "Rocks", "Rocks on the ground, partly buried, with bumps (0 = none, 1 = many). Colored by the pattern 'Sand, stones, seaweed'", rocks, 0.0..=1.0, 0.35);
+            widgets::slider_log(ui, "Rock size", "Size of the largest rocks (the pebbles are an eighth of it)", rock_size, 0.001..=100.0, 0.25);
+            widgets::slider(ui, "Pebbles", "Small, flat stones (0 = none, 1 = many)", pebbles, 0.0..=1.0, 0.5);
+            widgets::slider(ui, "Seaweed", "Blades of seaweed growing in meadows (0 = none, 1 = dense). Rendering near the ground gets slower with seaweed", seaweed, 0.0..=1.0, 0.4);
+            widgets::slider_log(ui, "Seaweed height", "Height of the tallest seaweed", weed_height, 0.001..=100.0, 0.4);
+            widgets::slider(ui, "Sway", "How far the seaweed leans and sways in the current (0 = still, 1 = strongly)", sway, 0.0..=1.0, 0.5);
+            widgets::slider_log(ui, "Sway speed", "How fast the seaweed sways in animations", sway_speed, 0.0..=20.0, 1.0);
+            widgets::slider(ui, "Sway time", "The moment of the swaying: another value shows the seaweed in another position in a still image (animations advance it)", phase, -1000.0..=1000.0, 0.0);
         }
         Primitive::TriPrism { side, height } => {
             widgets::slider_log(ui, "Side", "Side length of the triangle", side, 0.001..=100.0, 0.8);
@@ -693,6 +707,17 @@ fn water_medium_params(ui: &mut Ui, m: &mut rmb_core::compose::WaterMedium) {
         widgets::slider(ui, "Bubbles", "Air bubbles rising in the water, clear with a bright rim and the sun as a glint (0 = none, 1 = many)", &mut m.bubbles, 0.0..=1.0, d.bubbles);
         widgets::slider_log(ui, "Bubble size", "Size of the largest bubbles (scene units)", &mut m.bubble_size, 0.0005..=1.0, d.bubble_size);
         widgets::slider_log(ui, "Bubble speed", "How fast the bubbles rise in animations (scene units per second)", &mut m.bubble_speed, 0.0..=10.0, d.bubble_speed);
+        widgets::label(ui, "Bubbles from", "Everywhere: spread evenly through the water. Vents and sources: in winding plumes that rise from random vents on the ground and from the objects marked as bubble sources");
+        egui::ComboBox::from_id_salt("bubble-source").selected_text(m.bubble_source.label()).show_ui(ui, |ui| {
+            for s in rmb_core::compose::BubbleSource::ALL {
+                ui.selectable_value(&mut m.bubble_source, s, s.label());
+            }
+        });
+        ui.end_row();
+        if m.bubble_source == rmb_core::compose::BubbleSource::Vents {
+            widgets::slider_log(ui, "Vent spacing", "Mean distance between the random vents (scene units; 0 = none, only the objects marked as bubble sources). The plumes rise from where they meet the ground", &mut m.vent_spacing, 0.0..=100.0, d.vent_spacing);
+            widgets::slider_log(ui, "Plume width", "Width of a bubble plume (scene units)", &mut m.plume_width, 0.001..=10.0, d.plume_width);
+        }
         widgets::slider(ui, "Particles", "Tiny floating particles that catch the light (0 = none, 1 = many); they need many samples to look smooth", &mut m.particles, 0.0..=1.0, d.particles);
         widgets::slider_log(ui, "Particle size", "Size of the particles (scene units)", &mut m.particle_size, 0.0001..=0.1, d.particle_size);
         widgets::slider(ui, "Time", "The moment of the bubbles and particles: another value shows them elsewhere in a still image (animations add one per second)", &mut m.time, -1000.0..=1000.0, 0.0);

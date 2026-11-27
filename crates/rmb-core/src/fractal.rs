@@ -118,6 +118,9 @@ pub struct Program {
     pub glass_shadows: bool,
     /// The water medium: index into `objects` of the first see-through water and its settings.
     pub medium: Option<(usize, crate::compose::WaterMedium)>,
+    /// World positions of the enabled objects marked as bubble sources (at most
+    /// `compose::MAX_BUBBLE_SOURCES`).
+    pub bubble_sources: Vec<V3>,
     /// Mandelbulb3D's second color choice (`SecondChoice::index`) and its multiplier.
     pub color2: (u32, f64),
     /// Mandelbulb3D's color on iteration (-1 off).
@@ -144,6 +147,8 @@ pub struct ObjectProgram {
     /// Repetition (`SceneObject::repeat`, `repeat_limit`).
     pub repeat: [f64; 3],
     pub repeat_limit: [u32; 3],
+    /// Seabed: its plants (`SceneObject::plants`).
+    pub plants: Option<Arc<crate::plants::PlantField>>,
 }
 
 impl ObjectProgram {
@@ -381,6 +386,7 @@ impl Program {
             bump: false,
             glass_shadows: false,
             medium: None,
+            bubble_sources: Vec::new(),
         }
     }
 
@@ -396,6 +402,9 @@ impl Program {
         for (i, o) in scene.objects.iter().enumerate().take(MAX_OBJECTS) {
             if !o.enabled {
                 continue;
+            }
+            if o.bubble_source && p.bubble_sources.len() < crate::compose::MAX_BUBBLE_SOURCES {
+                p.bubble_sources.push(o.transform.position);
             }
             let shape = match &o.shape {
                 Shape::Fractal(f) => {
@@ -435,6 +444,10 @@ impl Program {
                 material: if o.material.own { i + 1 } else { 0 },
                 repeat: o.repeat.map(|c| c.max(0.0)),
                 repeat_limit: o.repeat_limit,
+                plants: match &o.shape {
+                    Shape::Primitive(crate::compose::Primitive::Seabed { .. }) => crate::plants::PlantField::new(&o.plants).map(Arc::new),
+                    _ => None,
+                },
             });
         }
         let used = std::iter::once(&scene.material.layers).chain(p.objects.iter().filter(|o| o.material > 0).map(|o| &scene.objects[o.material - 1].material.layers));
@@ -525,7 +538,7 @@ impl Program {
                     s.push_str("|obj:");
                     s.push_str(&part(f));
                 }
-                ObjectShape::Primitive(k, _) => s.push_str(&format!("|prim:{k}")),
+                ObjectShape::Primitive(k, _) => s.push_str(&format!("|prim:{k}{}", if o.plants.is_some() { "p" } else { "" })),
                 ObjectShape::Model(_) => s.push_str("|model"),
             }
         }
@@ -984,7 +997,13 @@ impl Evaluator<'_> {
                     }
                     (d, oo)
                 }
-                ObjectShape::Primitive(kind, a) => (crate::compose::primitive_distance(*kind, *a, q) * ob.scale, Orbit { dr: 1.0, escaped: true, ..Orbit::default() }),
+                ObjectShape::Primitive(kind, a) => {
+                    let mut d = crate::compose::primitive_distance(*kind, *a, q);
+                    if let Some(h) = ob.plants.as_ref().and_then(|f| f.nearest(a, q, a[11], d)) {
+                        d = h.d;
+                    }
+                    (d * ob.scale, Orbit { dr: 1.0, escaped: true, ..Orbit::default() })
+                }
                 ObjectShape::Model(m) => (m.as_ref().map_or(crate::compose::NO_MODEL, |m| m.vol.distance(q.to_array())) * ob.scale, Orbit { dr: 1.0, escaped: true, ..Orbit::default() }),
             };
             let (nd, wins) = crate::compose::combine(ob.op, de, d, ob.smooth);

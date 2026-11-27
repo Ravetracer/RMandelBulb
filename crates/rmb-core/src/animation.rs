@@ -755,6 +755,10 @@ fn color_speeds(s: &Scene) -> BTreeMap<String, f64> {
             // The medium's clock (bubbles, particles) runs in seconds.
             out.insert(format!("o{k}.medium"), 1.0);
         }
+        // Seaweed sways.
+        if let crate::compose::Shape::Primitive(crate::compose::Primitive::Seabed { sway_speed, .. }) = o.shape {
+            out.insert(format!("o{k}.seabed"), sway_speed);
+        }
     }
     out
 }
@@ -804,6 +808,9 @@ fn apply_phases(s: &mut Scene, phase: &BTreeMap<String, f64>) {
         if let crate::compose::Shape::Primitive(crate::compose::Primitive::Water { phase: p, medium, .. }) = &mut o.shape {
             *p += phase.get(&format!("o{k}.water")).copied().unwrap_or(0.0);
             medium.time += phase.get(&format!("o{k}.medium")).copied().unwrap_or(0.0);
+        }
+        if let crate::compose::Shape::Primitive(crate::compose::Primitive::Seabed { phase: p, .. }) = &mut o.shape {
+            *p += phase.get(&format!("o{k}.seabed")).copied().unwrap_or(0.0);
         }
     }
 }

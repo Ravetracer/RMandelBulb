@@ -44,6 +44,7 @@ pub fn march_shader_baked(prog: &Program, baked: &[Option<f64>]) -> String {
     let _ = writeln!(s, "const MEDIUM: bool = {};\nconst MEDIUM_OBJ: u32 = {}u;", prog.medium.is_some(), prog.medium.map_or(0, |(j, _)| j));
     let _ = writeln!(s, "const COLOR_ON_IT: bool = {};", prog.color_on_it >= 0 && prog.part2.is_none() && !prog.slots.is_empty());
     let _ = writeln!(s, "const MODELS: bool = {};", prog.objects.iter().any(|o| matches!(o.shape, rmb_core::fractal::ObjectShape::Model(_))));
+    let _ = writeln!(s, "const PLANTS: bool = {};", prog.objects.iter().any(|o| o.plants.is_some()));
     // Deep zoom: the main fractal in double-float arithmetic (composed objects stay f32, they
     // are evaluated in local coordinates).
     let main_chain = if prog.deep.is_some() { chain_dd } else { chain };
@@ -345,8 +346,11 @@ fn objects(prog: &Program) -> String {
                     "        b = fractal_de_o{j}(q, h / sc);\n        b.de = max(b.de * ob.misc.z, 0.0) * sc;\n        // A fractal has no distance inside; cutting with it needs one.\n        if (b.de <= 0.0 && (op == 1u || op == 4u)) {{\n            b.de = -2.0 * h;\n        }}"
                 );
             }
+            ObjectShape::Primitive(kind, _) if o.plants.is_some() => {
+                let _ = writeln!(s, "        b.de = prim_de({kind}u, ob.prim, ob.prim2, ob.prim3, q);\n        b.de = plant_de({j}u, ob.prim, ob.prim2, q, ob.prim3.w, b.de).x * sc;\n        b.escaped = true;");
+            }
             ObjectShape::Primitive(kind, _) => {
-                let _ = writeln!(s, "        b.de = prim_de({kind}u, ob.prim, ob.prim2, q) * sc;\n        b.escaped = true;");
+                let _ = writeln!(s, "        b.de = prim_de({kind}u, ob.prim, ob.prim2, ob.prim3, q) * sc;\n        b.escaped = true;");
             }
             ObjectShape::Model(_) => {
                 let _ = writeln!(s, "        b.de = model_de({j}u, q) * sc;\n        b.escaped = true;");

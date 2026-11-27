@@ -202,7 +202,11 @@ the objects in the water. They are brightest when you look toward the light.
 ![Light rays in the water, looking up toward the sun](images/water-rays.jpg)
 
 Air **bubbles** rise through the water: clear spheres with a bright rim (where the water
-reflects all light back) and the sun as a glint. Tiny **particles** float in it and catch the
+reflects all light back) and the sun as a glint. They are spread evenly, or with **Bubbles
+from › Vents and sources** they rise in dense, slowly winding plumes: from random vents on
+the ground (**Vent spacing**) and from every object whose **Bubble source** box is ticked
+(an object's settings, next to Visible). A plume rises from wherever its column meets the
+ground or an object, so it never needs to know the height of the ground. Tiny **particles** float in it and catch the
 light. Both move in animations.
 
 With the camera right at the surface, the waterline crosses the camera's front glass (**Lens
@@ -221,6 +225,13 @@ through air. Only the fractal and the other objects set the flying speed.
 
 ![Half above, half below the water](images/water-waterline.jpg)
 
+The **Seabed** object is the ground under the water: rolling hills and sand ripples, with
+partly buried rocks, flat pebbles and meadows of seaweed that sway in animations (**Sway**,
+**Sway speed**; **Sway time** picks the moment in a still image). New seabeds use the color
+pattern **Sand, stones, seaweed**, which takes the parts' colors from ranges of the
+object's gradient: sand 0-0.45 (dark to light by height), stones 0.5-0.75, seaweed 0.8-1
+(root to tip). Edit those stretches of the gradient to recolor a part.
+
 The **Underwater** section of the water object holds the settings:
 
 | Setting | What it does | Start value |
@@ -238,6 +249,9 @@ The **Underwater** section of the water object holds the settings:
 | Bubbles | Air bubbles rising in the water (0 = none, 1 = many). | 0.2 |
 | Bubble size | Size of the largest bubbles (scene units). | 0.012 |
 | Bubble speed | How fast the bubbles rise in animations (units per second). | 0.25 |
+| Bubbles from | Everywhere: spread evenly. Vents and sources: plumes from random vents and from objects marked as bubble sources. | Everywhere |
+| Vent spacing | Mean distance between the random vents (0 = none, only the source objects). | 1 |
+| Plume width | Width of a bubble plume (scene units). | 0.08 |
 | Particles | Tiny floating particles that catch the light (0 = none, 1 = many). | 0.15 |
 | Particle size | Size of the particles (scene units). | 0.0025 |
 | Time | The moment of the bubbles and particles; animations add one per second. | 0 |
@@ -263,6 +277,59 @@ The **Underwater** section of the water object holds the settings:
     For a scale to start from: the visibility is the distance at which the red of an
     object is almost gone. A visibility of a few times the fractal's size gives clear
     tropical water; less than its size gives a murky lake.
+
+### Plants
+
+The seabed grows plants: **Plants › Add plant** offers kelp, sea fans, staghorn coral,
+algae tufts and fern weed. Each kind is grown by an **L-system**: a start string is
+rewritten by rules a number of times, then a turtle draws the result as branches and
+leaves. The seabed places copies of the plant on the ground, each turned, sized and
+swaying on its own, and colors them with the kind's own branch and leaf colors (root to
+top). Up to four kinds grow on one seabed.
+
+![Kelp, algae tufts and seaweed on the seabed](images/seabed-plants.jpg)
+
+| Setting | What it does |
+|---------|--------------|
+| Density | Share of the places on the ground with a plant. |
+| Clumping | 0 = spread evenly; 1 = only in patches. |
+| Spacing | Distance between neighbouring plants; raised automatically for wide plants. |
+| Height | Height of the tallest plants; Size variation makes some smaller. |
+| Sway | How far the plants sway; timed by the seabed's Sway speed and Sway time. |
+| Branch colors, Leaf colors | Colors at the root and at the top. |
+| Start, Rules, Generations | The L-system (see below). |
+| Angle, Angle variation | Turning angle of the turtle and its random change per turn. |
+| Branch length, Thinning | Length and radius of a side branch relative to its parent. |
+| Thickness | Radius of the stem relative to a segment's length. |
+| Leaf length, Leaf width | Size of the leaves relative to a segment. |
+| Tropism | Bends every segment up (like kelp held up by floats) or down (drooping). |
+| Variant | Another random variant of the same plant. |
+
+The turtle reads these symbols; all others (A, B, …) draw nothing and serve as growing
+tips in the rules:
+
+| Symbol | Meaning |
+|--------|---------|
+| `F` | Draw a branch segment forward. |
+| `f` | Move forward without drawing. |
+| `+` `-` | Turn left / right. |
+| `&` `^` | Pitch down / up. |
+| `\` `/` | Roll left / right. |
+| `[` `]` | Start / end a side branch (shorter and thinner). |
+| `!` | Make the branch thinner. |
+| `L` | Add a leaf. |
+
+The bar `|` turns the turtle around.
+
+Several rules for the same symbol make a **stochastic** L-system: each time one of them is
+picked at random by its weight, so every generation branches a little differently. The
+preview under the settings shows the plant from the side and from above, with its number
+of segments.
+
+!!! tip
+    Plants make renders near the ground slower: every segment counts. Keep the generations
+    low enough that the preview stays under a few hundred segments, and use Density and
+    Spacing for a full meadow rather than bigger plants.
 
 ## Fractal objects
 

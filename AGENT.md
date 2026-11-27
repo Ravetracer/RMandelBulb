@@ -405,7 +405,12 @@ cargo clippy -j 8 --workspace --all-targets
   (rotation + position, no scale: the GPU's deep zoom shifts world positions relative to
   the camera, so a world-anchored grid did not match the CPU); `drop_sphere` = one sphere
   per cell by `hash3` (well inside, so the first hit is the nearest; test against brute
-  force). The grid rises along the water's z by `time × speed`. Ray-sphere by the closest
+  force). The grid rises along the water's z by `time × speed`. Plumes
+  (`BubbleSource::Vents`, `MediumFrame::plumes`, GPU `wmed[8..14]`, `plume_density`):
+  random vents per `vent_spacing` cell (3 × 3 checked) plus `Program::bubble_sources`
+  (objects with `SceneObject::bubble_source`, in the water's frame), axes winding with the
+  water-frame height; `plume_cell_hit` splits a plume cell into 2 × 2 × 2 sub-cells with a
+  bubble each (inside its sub-cell, so the walk stays nearest-first). Ray-sphere by the closest
   approach (f32). `water_drops` composites after `medium_path` (farther first): bubbles by
   `fresnel_exact` (TIR rim), light from above + glint; particles 0.7 opaque. No random
   numbers. `WaterMedium::time` advances 1 per second in animations (phase `o{k}.medium`).
@@ -425,7 +430,33 @@ cargo clippy -j 8 --workspace --all-targets
   look through it by the edge share, blur jitter) and a bokeh-like brighter center.
 - `Primitive::Seabed` (`SEABED_KIND` 10, `seabed_height` / `seabed_distance`, GPU same):
   4 octaves of value noise + warped sine ripples; bound by the measured slope
-  (`seabed_steepness`, test `seabed_stays_a_distance_bound`).
+  (`seabed_steepness`, test `seabed_stays_a_distance_bound`). Parts (`seabed_parts`, params
+  a[5..12], GPU `prim2`/`prim3`, so `prim_de` takes `prim3`): in the ground-following frame
+  (x, y, height above the ground; the shear stretches distances by ≤ 1 + steepness):
+  `seabed_stones` (rocks and pebbles: one turned, partly buried ellipsoid per 2D cell, 3 × 3
+  cells, bumps by a sine product) and `seabed_weed` (two ribbon blades per cell in noise
+  meadows; exact strip distance divided by the axis/taper/twist rate). Far cells are covered
+  by a fallback bound from the cell size. `Pattern::Seabed` (index 5, `seabed_color`) maps
+  the nearest part to gradient ranges (`seabed_gradient`); `phase` += `sway_speed` per second
+  (`color_speeds` key `o{k}.seabed`). Test `seabed_parts_stay_a_distance_bound`.
+  Bounds must stay tight away from the parts: soft shadows read the estimate as the
+  distance to the nearest surface (`d / (softness t)`) and have 160 steps, so a small
+  fallback darkens and bands shadows. Each part's bound is at least its height gap
+  (`max`), seaweed searches 5 × 5 cells with a cylinder cull and an edge-based fallback.
+- Plants (`plants.rs`, `SceneObject::plants` on a seabed, `ObjectProgram::plants` =
+  `PlantField`): stochastic L-system `expand` → turtle `draw` (round-cone branches, flat
+  leaves) → `PlantTemplate` (height 1, BVH; cached by the growth settings, `template`) →
+  `PlantField::nearest` (per species 5 × 5 cells of the seabed's local x/y, root on the
+  ground under it, turn/size/sway per plant, cylinder cull, block-edge fallback; never the
+  bare height gap, which is a flat plane to the soft shadows). Box distances in the BVH are
+  divided by `PlantTemplate::norm` (the segments' bounds are divided by their slope).
+  Colors: `color_value` returns `PLANT_COLOR + …` (`decode_color`: object, species, leaf,
+  height), `Shader::gradient` / march.wgsl `gradient` decode it. GPU: `plant_de` /
+  `plant_tpl` / `plant_seg`, data in `vols` (`renderer::plants_gpu`: object header word 0
+  species count, 1 block offset; blocks of `PLANT_BLOCK` words), switch `PLANTS`, codegen
+  `plant_de` after `prim_de` for seabeds with plants. Editor `rmb-app/src/plants_editor.rs`.
+  Tests: `plants::tests`, `gpu_matches_cpu_under_water` (plants view). WGSL reserved words
+  bit again: `patch`.
 
 ## Light through glass
 

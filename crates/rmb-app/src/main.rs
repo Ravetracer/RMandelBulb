@@ -21,6 +21,7 @@ mod inspector;
 mod layers;
 mod manual;
 mod palette_editor;
+mod plants_editor;
 mod prefs;
 mod render_view;
 mod theme;

@@ -154,7 +154,7 @@ struct Uniforms {
     grid2: [f32; 4],
     tile: [u32; 4],
     dof2: [f32; 4],
-    wmed: [[f32; 4]; 9],
+    wmed: [[f32; 4]; 14],
 }
 
 /// Splits an f64 into the high and low f32 of a double-float.
@@ -166,12 +166,24 @@ fn split_dd(v: f64) -> (f32, f32) {
 /// The water medium (march.wgsl `u.wmed`): extinction and refraction index, depth fade and
 /// the lights under the water (bits), its color, its up axis; caustics, their step, light
 /// rays, scattering; bubbles and particles (cell, share, radii), their rise.
-fn medium_gpu(prog: &Program, lights: &[rmb_core::render::FrameLight]) -> [[f32; 4]; 9] {
-    let Some(m) = rmb_core::render::cpu::MediumFrame::new(prog, lights) else { return [[0.0; 4]; 9] };
+fn medium_gpu(prog: &Program, lights: &[rmb_core::render::FrameLight]) -> [[f32; 4]; 14] {
+    let Some(m) = rmb_core::render::cpu::MediumFrame::new(prog, lights) else { return [[0.0; 4]; 14] };
     let wet = m.wet_lights.iter().enumerate().filter(|(_, w)| **w).fold(0u32, |b, (i, _)| b | 1 << i);
     let f = |a: [f64; 3], w: f32| [a[0] as f32, a[1] as f32, a[2] as f32, w];
     let drop = |g: &rmb_core::render::cpu::DropKind| [g.cell as f32, g.share as f32, g.r_min as f32, g.r_max as f32];
-    [f(m.ext, m.ior as f32), f(m.fade, wet as f32), f(m.color, m.time as f32), f(m.up.to_array(), m.lens_drops as f32), [m.caustics as f32, m.caustic_step as f32, m.rays as f32, m.scatter as f32], drop(&m.drops[0]), drop(&m.drops[1]), [m.drops[0].rise as f32, m.drops[1].rise as f32, m.lens as f32, if m.flat_lens { 1.0 } else { 0.0 }], [m.drop_focus as f32, 0.0, 0.0, 0.0]]
+    let base = [f(m.ext, m.ior as f32), f(m.fade, wet as f32), f(m.color, m.time as f32), f(m.up.to_array(), m.lens_drops as f32), [m.caustics as f32, m.caustic_step as f32, m.rays as f32, m.scatter as f32], drop(&m.drops[0]), drop(&m.drops[1]), [m.drops[0].rise as f32, m.drops[1].rise as f32, m.lens as f32, if m.flat_lens { 1.0 } else { 0.0 }]];
+    let mut out = [[0.0f32; 4]; 14];
+    out[..8].copy_from_slice(&base);
+    let pl = m.plumes;
+    out[8] = [m.drop_focus as f32, if pl.is_some() { 1.0 } else { 0.0 }, pl.map_or(0.0, |p| p.spacing as f32), pl.map_or(1.0, |p| p.width as f32)];
+    if let Some(p) = pl {
+        out[9][0] = p.count as f32;
+        for (k, s) in p.sources.iter().take(p.count).enumerate() {
+            out[10 + k / 2][(k % 2) * 2] = s[0] as f32;
+            out[10 + k / 2][(k % 2) * 2 + 1] = s[1] as f32;
+        }
+    }
+    out
 }
 
 /// A composed object (march.wgsl `Obj`).
@@ -264,7 +276,68 @@ fn volumes_gpu(prog: &Program) -> Vec<u32> {
             out.extend(t.texels.iter().map(|p| p[0] as u32 | (p[1] as u32) << 8 | (p[2] as u32) << 16));
         }
     }
+    plants_gpu(prog, &mut out);
     out
+}
+
+/// A hash of the plants' settings and templates (the `vols` buffer is uploaded again when it
+/// changes).
+fn plants_key(p: &rmb_core::plants::PlantField) -> usize {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    for s in &p.species {
+        (std::sync::Arc::as_ptr(&s.template) as usize).hash(&mut h);
+        for v in [s.cell, s.share, s.clumping, s.height, s.variation, s.sway] {
+            v.to_bits().hash(&mut h);
+        }
+        for c in s.branch_colors.iter().chain(&s.leaf_colors).flatten() {
+            c.to_bits().hash(&mut h);
+        }
+    }
+    (h.finish() as usize) | 1
+}
+
+/// Words per plant species block (march.wgsl `PLANT_BLOCK`).
+const PLANT_BLOCK: usize = 32;
+
+/// The plants of the seabeds (march.wgsl `plant_de`): in the object's header the number of
+/// species and the offset of their blocks; each block points to its template's nodes and
+/// segments.
+fn plants_gpu(prog: &Program, out: &mut Vec<u32>) {
+    let f = |x: f64| (x as f32).to_bits();
+    for (j, o) in prog.objects.iter().enumerate() {
+        let Some(field) = &o.plants else { continue };
+        let h = MODEL_HEADER * j;
+        out[h] = field.species.len() as u32;
+        let blocks = out.len();
+        out[h + 1] = blocks as u32;
+        out.resize(blocks + PLANT_BLOCK * field.species.len(), 0);
+        for (k, s) in field.species.iter().enumerate() {
+            let t = &s.template;
+            let b = blocks + PLANT_BLOCK * k;
+            let nodes = out.len();
+            for n in &t.nodes {
+                out.extend(n.lo.iter().chain(&n.hi).map(|x| x.to_bits()));
+                out.extend([n.start, n.count]);
+            }
+            let segs = out.len();
+            for g in &t.segs {
+                out.extend(g.a.map(f32::to_bits));
+                out.push(if g.leaf { 1.0f32 } else { 0.0 }.to_bits());
+                out.extend(g.b.map(f32::to_bits));
+                out.push(g.ra.to_bits());
+                out.extend(g.side.map(f32::to_bits));
+                out.push(g.rb.to_bits());
+            }
+            let head = [f(s.cell), f(s.share), f(s.clumping), f(s.height), f(s.variation), f(s.sway), s.salt as u32, f(t.radius), f(t.top), nodes as u32, t.nodes.len() as u32, segs as u32];
+            out[b..b + head.len()].copy_from_slice(&head);
+            let colors = s.branch_colors.iter().chain(&s.leaf_colors).flatten().map(|c| c.to_bits());
+            for (i, c) in colors.enumerate() {
+                out[b + 12 + i] = c;
+            }
+            out[b + 24] = f(t.norm);
+        }
+    }
 }
 
 /// LUT entries before the material blocks of the objects.
@@ -1165,7 +1238,8 @@ impl GpuRenderer {
             .iter()
             .flat_map(|o| match &o.shape {
                 ObjectShape::Model(Some(m)) => [std::sync::Arc::as_ptr(&m.vol) as usize, std::sync::Arc::as_ptr(&m.look) as usize],
-                _ => [0, 0],
+                // Plants: their settings (the program is rebuilt with every change).
+                _ => [o.plants.as_ref().map_or(0, |p| plants_key(p)), 0],
             })
             .collect();
         if key == self.vols_key && self.vols.size() >= (4 * MODEL_HEADER * prog.objects.len().max(1)) as u64 {

@@ -19,6 +19,9 @@ use crate::scene::{ColorMode, ColorStop, Fractal};
 /// Most objects a scene can have besides the main fractal.
 pub const MAX_OBJECTS: usize = 8;
 
+/// Most objects that act as bubble sources (march.wgsl `u.wmed[10..14]`).
+pub const MAX_BUBBLE_SOURCES: usize = 8;
+
 /// Distance of a model that is not baked (yet): far away.
 pub const NO_MODEL: f64 = 1.0e10;
 
@@ -54,6 +57,10 @@ pub struct SceneObject {
     pub repeat: [f64; 3],
     /// Copies on each side along each axis (0: endless).
     pub repeat_limit: [u32; 3],
+    /// Bubbles rise from this object in a plume (water medium with bubbles from vents).
+    pub bubble_source: bool,
+    /// Seabed: plants grown by L-systems (at most `plants::MAX_SPECIES` enabled).
+    pub plants: Vec<crate::plants::PlantSpecies>,
 }
 
 impl Default for SceneObject {
@@ -68,6 +75,8 @@ impl Default for SceneObject {
             material: ObjectMaterial::default(),
             repeat: [0.0; 3],
             repeat_limit: [0; 3],
+            bubble_source: false,
+            plants: Vec::new(),
         }
     }
 }
@@ -159,8 +168,39 @@ pub enum Primitive {
     /// Upright prism with an equilateral triangle as its section; `side` is its side length.
     TriPrism { side: f64, height: f64 },
     /// An ocean floor at z = 0 (everything below is solid): rolling hills from noise and sand
-    /// ripples across `angle` (degrees), `ripple_length` apart (`seabed_height`).
-    Seabed { hills: f64, hill_size: f64, ripples: f64, ripple_length: f64, angle: f64 },
+    /// ripples across `angle` (degrees), `ripple_length` apart (`seabed_height`), with rocks,
+    /// pebbles and swaying seaweed on it (`seabed_parts`). `phase` is the time of the
+    /// swaying; animations add `sway_speed` per second.
+    Seabed {
+        hills: f64,
+        hill_size: f64,
+        ripples: f64,
+        ripple_length: f64,
+        angle: f64,
+        /// Share of the ground with a rock (0 = none, 1 = many).
+        #[serde(default)]
+        rocks: f64,
+        /// Size of the largest rocks (local units).
+        #[serde(default = "seabed_rock_size")]
+        rock_size: f64,
+        /// Small stones (0 = none, 1 = many).
+        #[serde(default)]
+        pebbles: f64,
+        /// Seaweed in meadows (0 = none, 1 = dense).
+        #[serde(default)]
+        seaweed: f64,
+        /// Height of the tallest seaweed (local units).
+        #[serde(default = "seabed_weed_height")]
+        weed_height: f64,
+        /// How far the seaweed sways (0 = still, 1 = strongly).
+        #[serde(default = "seabed_sway")]
+        sway: f64,
+        /// Swaying per second in animations.
+        #[serde(default = "seabed_sway_speed")]
+        sway_speed: f64,
+        #[serde(default)]
+        phase: f64,
+    },
 }
 
 impl Primitive {
@@ -226,7 +266,21 @@ impl Primitive {
 
     /// An ocean floor with good start values.
     pub fn seabed() -> Primitive {
-        Primitive::Seabed { hills: 0.25, hill_size: 2.5, ripples: 0.015, ripple_length: 0.12, angle: 0.0 }
+        Primitive::Seabed {
+            hills: 0.25,
+            hill_size: 2.5,
+            ripples: 0.015,
+            ripple_length: 0.12,
+            angle: 0.0,
+            rocks: 0.35,
+            rock_size: seabed_rock_size(),
+            pebbles: 0.5,
+            seaweed: 0.3,
+            weed_height: seabed_weed_height(),
+            sway: seabed_sway(),
+            sway_speed: seabed_sway_speed(),
+            phase: 0.0,
+        }
     }
 
     /// The medium settings of water (None for other primitives).
@@ -251,7 +305,7 @@ impl Primitive {
             Primitive::Cone { bottom, top, height } => p4([bottom, top, height, 0.0]),
             Primitive::HexPrism { radius, height } => p4([radius, height, 0.0, 0.0]),
             Primitive::TriPrism { side, height } => p4([side, height, 0.0, 0.0]),
-            Primitive::Seabed { hills, hill_size, ripples, ripple_length, angle } => [hills, hill_size, ripples, ripple_length, angle, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            Primitive::Seabed { hills, hill_size, ripples, ripple_length, angle, rocks, rock_size, pebbles, seaweed, weed_height, sway, phase, .. } => [hills, hill_size, ripples, ripple_length, angle, rocks, rock_size, pebbles, seaweed, weed_height, sway, phase],
         }
     }
 
@@ -296,6 +350,13 @@ pub struct WaterMedium {
     pub bubbles: f64,
     pub bubble_size: f64,
     pub bubble_speed: f64,
+    /// Where the bubbles rise: spread through the water, or in plumes from vents.
+    pub bubble_source: BubbleSource,
+    /// Vents: mean distance between the random vents on the ground (scene units; 0 = none,
+    /// only the objects marked as bubble sources).
+    pub vent_spacing: f64,
+    /// Vents: width of a bubble plume (scene units).
+    pub plume_width: f64,
     /// Tiny floating particles (marine snow): how many (0 = none, 1 = many) and their size.
     pub particles: f64,
     pub particle_size: f64,
@@ -324,9 +385,30 @@ pub struct WaterMedium {
     pub drop_focus: f64,
 }
 
+/// Where the bubbles of a water medium rise.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BubbleSource {
+    /// Spread evenly through the water.
+    #[default]
+    Everywhere,
+    /// In plumes from random vents on the ground and from objects marked as bubble sources.
+    Vents,
+}
+
+impl BubbleSource {
+    pub const ALL: [BubbleSource; 2] = [BubbleSource::Everywhere, BubbleSource::Vents];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            BubbleSource::Everywhere => "Everywhere",
+            BubbleSource::Vents => "Vents and sources",
+        }
+    }
+}
+
 impl Default for WaterMedium {
     fn default() -> Self {
-        WaterMedium { see_through: false, ior: 1.33, color: [0.03, 0.22, 0.3], filter: [0.12, 0.6, 0.78], visibility: 3.0, murk: 0.25, depth_dark: 1.0, caustics: 1.0, caustic_sharpness: 0.5, light_rays: 0.4, bubbles: 0.2, bubble_size: 0.012, bubble_speed: 0.25, particles: 0.15, particle_size: 0.0025, time: 0.0, lens: 0.2, flat_lens: true, lens_drops: 0.4, lens_wet: 0.0, dry_time: 5.0, drop_focus: 0.0 }
+        WaterMedium { see_through: false, ior: 1.33, color: [0.03, 0.22, 0.3], filter: [0.12, 0.6, 0.78], visibility: 3.0, murk: 0.25, depth_dark: 1.0, caustics: 1.0, caustic_sharpness: 0.5, light_rays: 0.4, bubbles: 0.2, bubble_size: 0.012, bubble_speed: 0.25, bubble_source: BubbleSource::Everywhere, vent_spacing: 1.0, plume_width: 0.08, particles: 0.15, particle_size: 0.0025, time: 0.0, lens: 0.2, flat_lens: true, lens_drops: 0.4, lens_wet: 0.0, dry_time: 5.0, drop_focus: 0.0 }
     }
 }
 
@@ -525,16 +607,229 @@ fn seabed_steepness(a: &[f64; 12]) -> f64 {
     (hills + ripples) * 1.25
 }
 
-/// Distance bound of the seabed (negative below its surface).
+/// Distance bound of the seabed (negative below its surface). Rocks, pebbles and seaweed
+/// sit in the ground-following frame (x, y, height above the ground): that shear stretches
+/// distances by at most 1 + the steepest slope.
 pub fn seabed_distance(a: &[f64; 12], q: V3) -> f64 {
-    let top = a[0].abs() + a[2].abs();
+    let parts = seabed_feature_top(a);
+    let top = a[0].abs() + a[2].abs() + parts;
     let above = q.z - top;
     if above > top.max(1e-6) {
         return above;
     }
     let steep = seabed_steepness(a);
-    let d = (q.z - seabed_height(a, q.x, q.y)) / (1.0 + steep * steep).sqrt();
+    let z = q.z - seabed_height(a, q.x, q.y);
+    let mut d = z / (1.0 + steep * steep).sqrt();
+    if parts > 0.0 {
+        let near = if z > parts * 1.5 { z - parts } else { seabed_parts(a, q.x, q.y, z).iter().fold(NO_SHORE, |m, p| m.min(p.0)) };
+        d = d.min(near / (1.0 + steep));
+    }
     if above > 0.0 { d.max(above) } else { d }
+}
+
+fn seabed_rock_size() -> f64 {
+    0.25
+}
+
+fn seabed_weed_height() -> f64 {
+    0.4
+}
+
+fn seabed_sway() -> f64 {
+    0.5
+}
+
+fn seabed_sway_speed() -> f64 {
+    1.0
+}
+
+/// Rock grid cell per rock size (march.wgsl `ROCK_CELL`).
+const ROCK_CELL: f64 = 3.0;
+/// Pebble size per rock size and pebble grid cell per pebble size.
+const PEBBLE_SIZE: f64 = 0.12;
+const PEBBLE_CELL: f64 = 4.0;
+/// Seaweed grid cell per seaweed height (two blades per cell).
+const WEED_CELL: f64 = 0.45;
+/// Seaweed blade half width at the root and thickness, per seaweed height.
+const WEED_WIDTH: f64 = 0.035;
+const WEED_THICK: f64 = 0.004;
+/// Bumps on the rocks (share of the rock size).
+const ROCK_LUMPS: f64 = 0.1;
+
+/// Stones on the ground (march.wgsl `seabed_stones`): at (`x`, `y`) and `z` above the ground,
+/// the nearest of the 3 × 3 grid cells around (cells `cell` × `size`, `share` of them with a
+/// stone): a turned ellipsoid `size` (largest), `flat` of it high, partly buried, with bumps
+/// (`lumps`). Returns a distance bound (in the ground-following frame) and the stone's hash.
+#[allow(clippy::too_many_arguments)]
+fn seabed_stones(x: f64, y: f64, z: f64, size: f64, share: f64, cell: f64, flat: f64, lumps: f64, salt: i32) -> (f64, f64) {
+    let c = size * cell;
+    let rmax = size * 1.2 * (1.0 + lumps);
+    // Stones of farther cells: one cell between, each reaching at most rmax - c/4 out of its
+    // own cell.
+    if share <= 0.0 || size <= 0.0 {
+        return (NO_SHORE, 0.0);
+    }
+    // Above the highest stone: at least that far (soft shadows read the bound as the distance
+    // to the nearest surface, so it must not stay at the cell bound high above the stones).
+    let above = z - size * (0.7 + lumps);
+    let mut best = ((1.25 * c - rmax).max(c * 0.05).max(above), 0.0);
+    let (ci, cj) = ((x / c).floor() as i32, (y / c).floor() as i32);
+    for k in 0..9 {
+        let (i, j) = (ci + k % 3 - 1, cj + k / 3 - 1);
+        let h = |n: i32| crate::render::hash3(i.wrapping_add(n.wrapping_mul(613)), j, salt) as f64;
+        if h(0) >= share {
+            continue;
+        }
+        let r = size * (0.5 + 0.5 * h(1));
+        let (cx, cy) = ((i as f64 + 0.25 + 0.5 * h(2)) * c, (j as f64 + 0.25 + 0.5 * h(3)) * c);
+        let (sn, cs) = (h(4) * std::f64::consts::TAU).sin_cos();
+        let (dx, dy) = (x - cx, y - cy);
+        let (u, v) = (dx * cs + dy * sn, dy * cs - dx * sn);
+        let rr = [r * (0.8 + 0.4 * h(5)), r * (0.7 + 0.3 * h(6)), r * flat * (0.7 + 0.3 * h(7))];
+        let w = z + rr[2] * 0.3;
+        let e = ((u / rr[0]).powi(2) + (v / rr[1]).powi(2) + (w / rr[2]).powi(2)).sqrt();
+        let mut d = (e - 1.0) * rr[0].min(rr[1]).min(rr[2]);
+        if lumps > 0.0 {
+            let f = 3.0 / r;
+            let bump = (u * f + h(8) * 6.0).sin() * (v * f + h(9) * 6.0).sin() * (w * f + h(10) * 6.0).sin();
+            d = (d + lumps * r * bump) / (1.0 + lumps * 3.0 * 3f64.sqrt());
+        }
+        if d < best.0 {
+            best = (d.max(above), h(11));
+        }
+    }
+    best
+}
+
+/// Seaweed (march.wgsl `seabed_weed`): two blades per grid cell (`WEED_CELL` × `height`) in
+/// meadows (noise), each up to `height` tall: a flat ribbon (half width `WEED_WIDTH` ×
+/// `height` at the root, tapering to a point; `WEED_THICK` thick) that leans and sways by
+/// `sway` at the time `phase` and twists along its length. Returns a distance bound
+/// (ground-following frame) and how far up the nearest blade the point is (0..1).
+fn seabed_weed(x: f64, y: f64, z: f64, height: f64, share: f64, sway: f64, phase: f64) -> (f64, f64) {
+    if share <= 0.0 || height <= 0.0 {
+        return (NO_SHORE, 0.0);
+    }
+    let c = height * WEED_CELL;
+    let (w0, th) = (height * WEED_WIDTH, height * WEED_THICK);
+    let sway = sway.clamp(0.0, 1.0);
+    let reach = height * (0.25 + 0.2 * sway) + w0 + th;
+    // Rate of change along the height: the axis's sideways offset (lean 0.5, sway 0.9 ×
+    // sway), the taper (0.8 of the half width per blade height) and the twist (up to 1.5
+    // radians per blade height moves the edge by the half width × that); the shortest blades
+    // are half the height.
+    let k = 0.5 + 0.9 * sway + 2.0 * (0.8 + 1.5) * WEED_WIDTH;
+    let norm = (1.0 + k * k).sqrt();
+    // Blades of cells outside the 5 × 5 block reach at most `reach` - 0.2 cells into it;
+    // above the tallest blade the height gap bounds them all.
+    let (ci, cj) = ((x / c).floor() as i32, (y / c).floor() as i32);
+    let edge = (x - (ci - 2) as f64 * c).min((ci + 3) as f64 * c - x).min(y - (cj - 2) as f64 * c).min((cj + 3) as f64 * c - y);
+    let above = z - height - th;
+    let mut best = (((edge - (reach - 0.2 * c)) / norm).max(above), 0.0);
+    for n in 0..25 {
+        let (i, j) = (ci + n % 5 - 2, cj + n / 5 - 2);
+        let meadow = (2.5 * water_noise(i as f64 * WEED_CELL / 5.0 + 5.3, j as f64 * WEED_CELL / 5.0 + 1.7) - 1.0).clamp(0.0, 1.0);
+        if meadow <= 0.0 {
+            continue;
+        }
+        for b in 0..2 {
+            let h = |m: i32| crate::render::hash3(i.wrapping_add(m.wrapping_mul(613)), j, 120 + b) as f64;
+            if h(0) >= share * meadow {
+                continue;
+            }
+            let hh = height * (0.5 + 0.5 * h(1));
+            let (rx, ry) = ((i as f64 + 0.2 + 0.6 * h(2)) * c, (j as f64 + 0.2 + 0.6 * h(3)) * c);
+            // Bounding cylinder of the blade (lean, sway, width).
+            let lean = 0.25 * h(5) + 0.2 * sway;
+            if (((x - rx).powi(2) + (y - ry).powi(2)).sqrt() - hh * lean - w0 - th) / norm >= best.0 {
+                continue;
+            }
+            let (sn, cs) = (h(4) * std::f64::consts::TAU).sin_cos();
+            let t = (z / hh).clamp(0.0, 1.0);
+            let off = hh * t * t * (0.25 * h(5) + 0.2 * sway * (phase + h(6) * std::f64::consts::TAU - 2.5 * t).sin());
+            let (dx, dy) = (x - rx - cs * off, y - ry - sn * off);
+            // The ribbon's wide side faces the bend, turning slowly up the blade.
+            let (ts, tc) = (h(4) * std::f64::consts::TAU + 1.5 * t * (h(7) - 0.5) * 2.0).sin_cos();
+            let (along, across) = (dx * tc + dy * ts, dy * tc - dx * ts);
+            let half = w0 * (1.0 - 0.8 * t);
+            let wide = (across.abs() - half).max(0.0);
+            let mut d = (along * along + wide * wide).sqrt() - th;
+            if z > hh {
+                d = (along * along + wide * wide + (z - hh) * (z - hh)).sqrt() - th;
+            }
+            d /= norm;
+            if d < best.0 {
+                best = (d, t);
+            }
+        }
+    }
+    best
+}
+
+/// Height of the tallest seabed part above the ground (rocks, pebbles, seaweed).
+fn seabed_feature_top(a: &[f64; 12]) -> f64 {
+    let mut top: f64 = 0.0;
+    if a[5] > 0.0 {
+        top = top.max(a[6].abs() * (0.7 + ROCK_LUMPS));
+    }
+    if a[7] > 0.0 {
+        top = top.max(a[6].abs() * PEBBLE_SIZE * 0.7 * 0.6);
+    }
+    if a[8] > 0.0 {
+        top = top.max(a[9].abs() * (1.0 + WEED_THICK));
+    }
+    top
+}
+
+/// The parts of the seabed at local (`x`, `y`) and `z` above the ground (mirrors march.wgsl
+/// `seabed_parts`): distance bounds in the ground-following frame of rocks, pebbles and
+/// seaweed, each with its color value (see [`seabed_color`]).
+pub fn seabed_parts(a: &[f64; 12], x: f64, y: f64, z: f64) -> [(f64, f64); 3] {
+    let size = a[6].abs();
+    let (rd, rh) = seabed_stones(x, y, z, size, a[5].clamp(0.0, 1.0), ROCK_CELL, 1.0, ROCK_LUMPS, 101);
+    let (pd, ph) = seabed_stones(x, y, z, size * PEBBLE_SIZE, a[7].clamp(0.0, 1.0), PEBBLE_CELL, 0.6, 0.0, 102);
+    let (wd, wt) = seabed_weed(x, y, z, a[9].abs(), a[8].clamp(0.0, 1.0), a[10], a[11]);
+    [(rd, 0.5 + 0.25 * rh), (pd, 0.58 + 0.12 * ph), (wd, 0.8 + 0.2 * wt)]
+}
+
+/// A gradient for `Pattern::Seabed`: sand from dark to light (0..0.45), stones from brown to
+/// gray (0.5..0.75), seaweed from dark green at the root to yellow green at the tip (0.8..1).
+pub fn seabed_gradient() -> Vec<ColorStop> {
+    [
+        (0.0, [0.4, 0.34, 0.24]),
+        (0.45, [0.86, 0.8, 0.66]),
+        (0.48, [0.34, 0.3, 0.26]),
+        (0.62, [0.5, 0.47, 0.42]),
+        (0.75, [0.32, 0.33, 0.33]),
+        (0.78, [0.05, 0.16, 0.06]),
+        (0.9, [0.16, 0.36, 0.1]),
+        (1.0, [0.45, 0.55, 0.18]),
+    ]
+    .into_iter()
+    .map(|(p, c)| ColorStop::new(p, c))
+    .collect()
+}
+
+/// Color value of the seabed's own pattern (`Pattern::Seabed`, march.wgsl `seabed_color`) at
+/// the local point `q`: sand 0..0.45 by height (`size` per range), rocks 0.5..0.75, pebbles
+/// 0.58..0.7, seaweed 0.8 (root) ..1 (tip).
+pub fn seabed_color(a: &[f64; 12], q: V3, size: f64) -> f64 {
+    let sand = 0.45 * (0.5 + q.z / size.abs().max(1e-9)).clamp(0.0, 1.0);
+    let top = seabed_feature_top(a);
+    if top <= 0.0 {
+        return sand;
+    }
+    let z = q.z - seabed_height(a, q.x, q.y);
+    if z > top * 1.5 {
+        return sand;
+    }
+    let mut best = (z.max(0.0), sand);
+    for (d, v) in seabed_parts(a, q.x, q.y, z) {
+        if d < best.0 {
+            best = (d, v);
+        }
+    }
+    best.1
 }
 
 fn water_choppy() -> f64 {
@@ -841,7 +1136,7 @@ pub fn fresnel_exact(cos_i: f64, eta: f64) -> f64 {
 }
 
 /// Value noise 0..1 on the integer grid (mirrors march.wgsl `water_noise`).
-fn water_noise(x: f64, y: f64) -> f64 {
+pub(crate) fn water_noise(x: f64, y: f64) -> f64 {
     let (ix, iy) = (x.floor(), y.floor());
     let (fx, fy) = (x - ix, y - iy);
     let (ux, uy) = (fx * fx * (3.0 - 2.0 * fx), fy * fy * (3.0 - 2.0 * fy));
@@ -1069,12 +1364,17 @@ pub enum Pattern {
     Radial,
     /// 3D models: the colors of the model file (vertex colors, material colors, textures).
     Model,
+    /// Seabed: sand, stones and seaweed from their own parts of the gradient
+    /// ([`seabed_color`]).
+    Seabed,
 }
 
 impl Pattern {
     pub const ALL: [Pattern; 4] = [Pattern::Solid, Pattern::Checker, Pattern::Height, Pattern::Radial];
     /// The patterns of 3D models.
     pub const FOR_MODELS: [Pattern; 5] = [Pattern::Model, Pattern::Solid, Pattern::Checker, Pattern::Height, Pattern::Radial];
+    /// The patterns of the seabed.
+    pub const FOR_SEABED: [Pattern; 5] = [Pattern::Seabed, Pattern::Solid, Pattern::Checker, Pattern::Height, Pattern::Radial];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -1083,6 +1383,7 @@ impl Pattern {
             Pattern::Height => "By height",
             Pattern::Radial => "From the center",
             Pattern::Model => "Model colors",
+            Pattern::Seabed => "Sand, stones, seaweed",
         }
     }
 
@@ -1284,6 +1585,44 @@ mod tests {
         // Below the surface negative, above positive.
         let a = Primitive::seabed().params();
         assert!(seabed_distance(&a, v3(0.3, 0.2, -1.0)) < 0.0 && seabed_distance(&a, v3(0.3, 0.2, 1.0)) > 0.0);
+    }
+
+    #[test]
+    fn seabed_parts_stay_a_distance_bound() {
+        // Rocks, pebbles and swaying seaweed on hills: no point within the bound of a point
+        // has the other sign (checked on rings of points around random points near the ground).
+        let a = Primitive::seabed().params();
+        let mut a2 = a;
+        (a2[5], a2[7], a2[8], a2[10], a2[11]) = (0.8, 1.0, 1.0, 1.0, 2.3);
+        for a in [a, a2] {
+            let mut checked = 0;
+            for i in 0..6000 {
+                let (x, y) = ((i as f64 * 0.6180339) % 1.0 * 6.0, (i as f64 * 0.7548776) % 1.0 * 6.0);
+                let z = seabed_height(&a, x, y) + ((i as f64 * 0.5698403) % 1.0) * 0.5 - 0.05;
+                let p = v3(x, y, z);
+                let d = seabed_distance(&a, p);
+                if d <= 1e-4 {
+                    continue;
+                }
+                checked += 1;
+                for k in 0..26 {
+                    let dir = v3(((k % 3) as f64) - 1.0, ((k / 3 % 3) as f64) - 1.0, ((k / 9) as f64) - 1.0 + if k == 13 { 1.0 } else { 0.0 });
+                    let q = p + dir.normalize() * (d * 0.98);
+                    assert!(seabed_distance(&a, q) > -1e-9, "bound {d} at {p:?} reaches inside at {q:?}");
+                }
+            }
+            assert!(checked > 3000);
+        }
+        // Parts show where they are: rock, pebble and seaweed colors occur, and sand.
+        let colors: Vec<f64> = (0..20000).filter_map(|i| {
+            let (x, y) = ((i as f64 * 0.6180339) % 1.0 * 8.0, (i as f64 * 0.7548776) % 1.0 * 8.0);
+            let z = seabed_height(&a2, x, y) + ((i as f64 * 0.5698403) % 1.0) * 0.3;
+            let q = v3(x, y, z);
+            (seabed_distance(&a2, q).abs() < 0.003).then(|| seabed_color(&a2, q, 0.6))
+        }).collect();
+        for (lo, hi) in [(0.0, 0.45), (0.5, 0.76), (0.8, 1.0)] {
+            assert!(colors.iter().any(|c| (lo..=hi).contains(c)), "no color in {lo}..{hi}");
+        }
     }
 
     #[test]

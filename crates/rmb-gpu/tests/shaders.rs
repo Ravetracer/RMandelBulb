@@ -881,6 +881,25 @@ fn gpu_matches_cpu_under_water() {
     light.kind = rmb_core::scene::LightKind::Point;
     light.position = p(1.2, -1.0, -0.8);
     scene.lighting.lights.push(light);
+    parity(scene.clone());
+    // Bubbles in plumes from random vents and from the ground as a source object; the ground
+    // colored by its parts (sand, stones, seaweed), looking along it.
+    scene.objects[0].bubble_source = true;
+    scene.objects[0].material.pattern = Pattern::Seabed;
+    scene.objects[0].material.gradient = rmb_core::compose::seabed_gradient();
+    parity(scene.clone());
+    scene.camera.position = p(1.6, -2.2, -1.05);
+    scene.camera.look_at(p(0.6, -0.6, -1.4), p(0.0, 0.0, 1.0));
+    parity(scene.clone());
+    // L-system plants on the ground (their own colors, swaying).
+    scene.objects[0].plants = rmb_core::plants::PlantSpecies::preset_names().iter().take(4).filter_map(|n| rmb_core::plants::PlantSpecies::preset(n)).collect();
+    validate(&rmb_gpu::codegen::march_shader(&Program::for_scene(&scene)), "plants");
+    parity(scene.clone());
+    if let Shape::Primitive(Primitive::Water { medium, .. }) = &mut scene.objects[1].shape {
+        (medium.bubble_source, medium.vent_spacing, medium.plume_width) = (rmb_core::compose::BubbleSource::Vents, 0.8, 0.25);
+    }
+    scene.camera.position = p(2.4, -2.6, -0.6);
+    scene.camera.look_at(p(0.0, 0.0, 0.1), p(0.0, 0.0, 1.0));
     parity(scene);
 }
 
