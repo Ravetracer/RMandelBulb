@@ -462,6 +462,12 @@ cargo clippy -j 8 --workspace --all-targets
   `plant_de` after `prim_de` for seabeds with plants. Editor `rmb-app/src/plants_editor.rs`.
   Tests: `plants::tests`, `gpu_matches_cpu_under_water` (plants view). WGSL reserved words
   bit again: `patch`.
+- Speed (bench example: `--only plants,seabed` toggles; 2026-11-27, 640 x 360, baked): the
+  searches skip cells by `cell_gap` before any hashing, scan `CELL_ORDER` nearest first,
+  test the share before the patch noise, stop at the ground's distance (`limit`); the sway
+  bound uses the rate at the highest reachable height. Underwater floor view 2040 → 1295 ms
+  per pass, plant garden 1113 → 660 ms; plants are still ~70 % of it (GPU threads wait for
+  the slowest lane in the BVH walks). `PLANT_STACK` 16 covers 4000 segments.
 
 ## Light through glass
 

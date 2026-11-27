@@ -978,7 +978,7 @@ const PLANT_COLOR: f32 = 100000.0;
 const PLANT_SPECIES: u32 = 4u;
 const PLANT_BLOCK: u32 = 32u;
 const PLANT_SWAY: f32 = 0.15;
-const PLANT_STACK: u32 = 24u;
+const PLANT_STACK: u32 = 16u;
 
 // Mirrors plants::seg_distance.
 fn plant_seg(o: u32, p: vec3<f32>) -> f32 {
@@ -1102,7 +1102,6 @@ fn plant_de(j: u32, a: vec4<f32>, a2: vec4<f32>, q: vec3<f32>, phase: f32, limit
         if (far < best.x) {
             best = vec4<f32>(far, f32(k), 0.0, 0.0);
         }
-        let warp = 1.0 + PLANT_SWAY * sway * (2.0 * top + 2.0 * top * top);
         let reach_max = height * (radius + PLANT_SWAY * sway * top * top);
         for (var m = 0; m < 25; m++) {
             let i = ci + CELL_ORDER[m].x;
@@ -1137,6 +1136,9 @@ fn plant_de(j: u32, a: vec4<f32>, a2: vec4<f32>, q: vec3<f32>, phase: f32, limit
             var p = vec3<f32>((dx * cs + dy * sn) / size, (dy * cs - dx * sn) / size, (q.z - gz) / size);
             let z = clamp(p.z, 0.0, top);
             p.x -= PLANT_SWAY * sway * z * z * sin(phase + hash3(i + 613 * 5, jj, salt) * 6.283185307179586 - 2.0 * z);
+            // Mirrors PlantField::nearest: the sway's rate at the highest reachable point.
+            let zt = clamp(p.z + best.x / size, 0.0, top);
+            let warp = 1.0 + PLANT_SWAY * sway * (2.0 * zt + 2.0 * zt * zt);
             let r = plant_tpl(nodes, ncount, segs, vol_f(s + 24u), p, best.x / size * warp);
             if (r.y >= 0.0) {
                 let d = r.x * size / warp;

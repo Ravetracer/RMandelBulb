@@ -178,8 +178,10 @@
   - [ ] Possible: plants on other objects than the seabed (on fractal surfaces), parametric
         L-systems
   - [x] Wet trails behind the lens drops running down (Drop trails)
-  - [ ] Possible: faster underwater rendering (views from below are about twice as slow;
-        medium scenes compile about 3 s longer)
+  - [x] Faster seabed parts and plants (cell skipping, nearest-first scan, local sway
+        bound): 1.6-1.7x on the GPU
+  - [ ] Possible: plants are still ~70 % of a plant scene's time: level of detail (skip
+        branches thinner than a pixel), fewer segments in the presets
 
 ## World: sky, weather, landscape (owner's wish 2026-11-27)
 

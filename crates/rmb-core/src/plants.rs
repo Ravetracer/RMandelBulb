@@ -741,8 +741,6 @@ impl PlantField {
             if far < best.d {
                 best = PlantHit { d: far, species: k, leaf: false, height: 0.0 };
             }
-            // The sway's warp stretches distances by at most 1 + its rate along the height.
-            let warp = 1.0 + PLANT_SWAY * s.sway * (2.0 * t.top + 2.0 * t.top * t.top);
             // Farthest sideways reach of the largest plant, and how far above all plants.
             let reach_max = s.height * (t.radius + PLANT_SWAY * s.sway * t.top * t.top);
             let up = q.z - ground_top - s.height * t.top;
@@ -774,6 +772,11 @@ impl PlantField {
                 let mut p = v3((dx * cs + dy * sn) / size, (dy * cs - dx * sn) / size, (q.z - gz) / size);
                 let z = p.z.clamp(0.0, t.top);
                 p.x -= PLANT_SWAY * s.sway * z * z * (phase + h(5) * std::f64::consts::TAU - 2.0 * z).sin();
+                // The sway's warp stretches distances by at most 1 + its rate along the height
+                // (growing with the height): the rate at the highest point a nearer result
+                // can reach (most steps happen low, near the ground).
+                let zt = (p.z + best.d / size).clamp(0.0, t.top);
+                let warp = 1.0 + PLANT_SWAY * s.sway * (2.0 * zt + 2.0 * zt * zt);
                 if let Some((d, seg)) = t.distance(p, best.d / size * warp) {
                     let d = d * size / warp;
                     if d < best.d {
