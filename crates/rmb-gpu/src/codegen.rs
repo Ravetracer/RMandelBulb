@@ -45,6 +45,7 @@ pub fn march_shader_baked(prog: &Program, baked: &[Option<f64>]) -> String {
     let _ = writeln!(s, "const COLOR_ON_IT: bool = {};", prog.color_on_it >= 0 && prog.part2.is_none() && !prog.slots.is_empty());
     let _ = writeln!(s, "const MODELS: bool = {};", prog.objects.iter().any(|o| matches!(o.shape, rmb_core::fractal::ObjectShape::Model(_))));
     let _ = writeln!(s, "const PLANTS: bool = {};", prog.objects.iter().any(|o| o.plants.is_some()));
+    let _ = writeln!(s, "const COVER: bool = {};", !prog.covers.is_empty());
     // Deep zoom: the main fractal in double-float arithmetic (composed objects stay f32, they
     // are evaluated in local coordinates).
     let main_chain = if prog.deep.is_some() { chain_dd } else { chain };
@@ -321,9 +322,12 @@ fn objects(prog: &Program) -> String {
     let is_water = |o: &rmb_core::fractal::ObjectProgram| matches!(o.shape, ObjectShape::Primitive(rmb_core::fractal::WATER_KIND, _));
     let order: Vec<usize> = (0..prog.objects.len()).filter(|&j| !is_water(&prog.objects[j])).chain((0..prog.objects.len()).filter(|&j| is_water(&prog.objects[j]))).collect();
     let mut dry = false;
+    // Baked plants after all objects but the water (one call site).
+    let cover = "    if (COVER) {\n        o = cover_union(p, o);\n    }\n";
     for j in order {
         let o = &prog.objects[j];
         if is_water(o) && !dry {
+            s.push_str(cover);
             s.push_str("    let dry = o.de;\n");
             dry = true;
         }
@@ -357,6 +361,9 @@ fn objects(prog: &Program) -> String {
             }
         }
         let _ = writeln!(s, "        let c = combine_op(op, o.de, b.de, ob.inv2.w);\n        if (c.y > 0.5) {{\n            o = b;\n            o.obj = {}u;\n        }}\n        o.de = c.x;\n    }}", j + 1);
+    }
+    if !dry {
+        s.push_str(cover);
     }
     s.push_str("    return o;\n}\n");
     s

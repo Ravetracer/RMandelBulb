@@ -26,7 +26,10 @@ impl FormulasPanel {
             *selected = None;
         }
         // Models that bake in the background show up when they are done.
-        let baking = scene.objects.iter().any(|o| matches!(&o.shape, Shape::Model(m) if matches!(rmb_core::mesh::request(&m.path, &m.options), rmb_core::mesh::Status::Baking(_))));
+        let baking = scene.objects.iter().any(|o| matches!(&o.shape, Shape::Model(m) if matches!(rmb_core::mesh::request(&m.path, &m.options), rmb_core::mesh::Status::Baking(_))))
+            || rmb_core::plant_cover::hosts(scene).into_iter().any(|h| matches!(rmb_core::plant_cover::request(scene, h), Some(rmb_core::plant_cover::Status::Baking(_))));
+        // The plants of the selected surface: their bake state.
+        let cover_status = rmb_core::plant_cover::request(scene, selected.map_or(0, |k| k + 1));
         if baking {
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(150));
         }
@@ -58,10 +61,13 @@ impl FormulasPanel {
                     if sec.open {
                         placement(ui, t, &cam, "main-place", false);
                     }
+                    if widgets::section(ui, "Plants", false).open {
+                        crate::plants_editor::cover_editor(ui, &mut scene.plant_cover, cover_status.as_ref(), "main");
+                    }
                 }
                 Some(k) => {
                     let glass = scene.material.transmission;
-                    self.object(ui, &mut scene.objects[k], &scene.camera, glass);
+                    self.object(ui, &mut scene.objects[k], &scene.camera, glass, cover_status.as_ref());
                 }
             }
         });
@@ -218,7 +224,7 @@ impl FormulasPanel {
     }
 
     /// Editor of a composed object.
-    fn object(&mut self, ui: &mut Ui, o: &mut SceneObject, cam: &rmb_core::scene::Camera, glass: bool) {
+    fn object(&mut self, ui: &mut Ui, o: &mut SceneObject, cam: &rmb_core::scene::Camera, glass: bool, cover: Option<&rmb_core::plant_cover::Status>) {
         widgets::grid(ui, "object", |ui| {
             widgets::label(ui, "Name", "Name of the object");
             ui.text_edit_singleline(&mut o.name);
@@ -276,7 +282,7 @@ impl FormulasPanel {
                     water_medium_params(ui, medium);
                 }
                 if matches!(p, Primitive::Seabed { .. }) && widgets::section(ui, "Plants", false).open {
-                    crate::plants_editor::plants_editor(ui, &mut o.plants);
+                    crate::plants_editor::plants_editor(ui, &mut o.plants, false);
                 }
             }
             Shape::Fractal(f) => {
@@ -289,6 +295,9 @@ impl FormulasPanel {
                 iteration(ui, f, false);
             }
             Shape::Model(m) => model_editor(ui, m),
+        }
+        if rmb_core::plant_cover::can_carry(&o.shape) && widgets::section(ui, "Plants", false).open {
+            crate::plants_editor::cover_editor(ui, &mut o.cover, cover, "obj");
         }
         let patterns: &[Pattern] = match o.shape {
             Shape::Fractal(_) => &[],

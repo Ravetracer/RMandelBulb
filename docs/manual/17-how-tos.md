@@ -254,6 +254,21 @@ for VR180, *Panorama 180°* with *Side by side*.
 7. Set **Height**, **Density** and **Clumping** for how it fills the ground, and its
    **Branch colors** and **Leaf colors**.
 
+## Overgrow a fractal with plants
+
+1. Select **Main fractal** and open its **Plants** section (below **Placement**).
+2. Click **Add plant** and pick **Algae tuft**. Open it and set **Height** to about a
+   twentieth of the fractal's size (0.06 for the default bulb) and **Spacing** to 0.035.
+   After a moment the section shows how many plants were placed, and they appear.
+3. Set **Steepest slope** to 40: the algae now grow only on the parts that face up, like
+   moss after rain. **Upright** 0.3 lets them grow mostly out of the surface.
+4. Add **Sea fan** with **Height** 0.12, **Spacing** 0.09 and **Density** 0.5 for a few
+   larger plants among them.
+5. Tune the colors (**Branch colors**, **Leaf colors**) to the fractal's palette, or the
+   other way round.
+6. For an animation, set **Sway** on the kinds and the section's **Sway speed**: the plants
+   move in the current while the camera flies past.
+
 ## Render an animation on several computers
 
 1. Copy RMandelbulb3D (the same version) to the computers that should help and start

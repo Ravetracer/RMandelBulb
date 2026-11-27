@@ -25,8 +25,8 @@ pub const MAX_BUBBLE_SOURCES: usize = 8;
 /// Distance of a model that is not baked (yet): far away.
 pub const NO_MODEL: f64 = 1.0e10;
 
-/// Bakes the 3D models of the scene and loads their textures (blocking; renders that must show
-/// them call this first).
+/// Bakes the 3D models of the scene and loads their textures, then bakes the plants on its
+/// surfaces (blocking; renders that must show them call this first).
 /// Returns the models that failed, with the reason.
 pub fn load_models(scene: &crate::Scene) -> Vec<String> {
     let mut failed = Vec::new();
@@ -38,6 +38,7 @@ pub fn load_models(scene: &crate::Scene) -> Vec<String> {
             }
         }
     }
+    failed.extend(crate::plant_cover::load(scene));
     failed
 }
 
@@ -61,6 +62,9 @@ pub struct SceneObject {
     pub bubble_source: bool,
     /// Seabed: plants grown by L-systems (at most `plants::MAX_SPECIES` enabled).
     pub plants: Vec<crate::plants::PlantSpecies>,
+    /// Plants growing on this object (any shape but the seabed and water; baked roots).
+    #[serde(skip_serializing_if = "crate::plant_cover::PlantCover::is_empty")]
+    pub cover: crate::plant_cover::PlantCover,
 }
 
 impl Default for SceneObject {
@@ -77,6 +81,7 @@ impl Default for SceneObject {
             repeat_limit: [0; 3],
             bubble_source: false,
             plants: Vec::new(),
+            cover: Default::default(),
         }
     }
 }

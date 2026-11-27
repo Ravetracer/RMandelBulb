@@ -62,6 +62,12 @@ impl V3 {
     }
 }
 
+impl From<[f64; 3]> for V3 {
+    fn from(a: [f64; 3]) -> V3 {
+        v3(a[0], a[1], a[2])
+    }
+}
+
 impl Add for V3 {
     type Output = V3;
     fn add(self, o: V3) -> V3 {

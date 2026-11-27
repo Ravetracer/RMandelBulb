@@ -1,18 +1,26 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
-//! Editor of a seabed's plants: species from presets, their placement and colors, and the
-//! L-system that grows them (start string, rules, turtle settings) with a preview.
+//! Editor of plants: on a seabed, or baked onto any other surface (main fractal, objects).
+//! Species from presets, their placement and colors, and the L-system that grows them (start
+//! string, rules, turtle settings) with a preview.
 
 use egui::{Color32, RichText, Ui, vec2};
+use rmb_core::plant_cover::{PlantCover, Status};
 use rmb_core::plants::{MAX_SEGMENTS, MAX_SPECIES, PlantRule, PlantSpecies};
 
 use crate::{icons, theme, widgets};
 
 const SYMBOLS: &str = "F draws a branch segment, f moves without drawing, + and - turn left and right, & and ^ pitch down and up, \\ and / roll, | turns around, [ starts a side branch (shorter and thinner by the level factors), ] ends it, ! thins the branch, L adds a leaf. Other letters (A, B, …) draw nothing: use them as growing tips in the rules.";
 
-/// The plants section of a seabed object.
-pub fn plants_editor(ui: &mut Ui, plants: &mut Vec<PlantSpecies>) {
-    ui.add(egui::Label::new(RichText::new("Plants grown by L-systems: a start string is rewritten by rules a number of times, then a turtle draws the result. Up to four kinds grow on the ground; each takes its colors from its own settings.").color(theme::TEXT_MUTED)).wrap());
+/// The plants section of a seabed object (`surface` false) or of a cover (`surface` true:
+/// growth direction and steepest slope too).
+pub fn plants_editor(ui: &mut Ui, plants: &mut Vec<PlantSpecies>, surface: bool) {
+    let intro = if surface {
+        "Plants grown by L-systems: a start string is rewritten by rules a number of times, then a turtle draws the result. Up to four kinds grow on this surface; each takes its colors from its own settings. Their places are baked once (again when the surface or the placement changes)."
+    } else {
+        "Plants grown by L-systems: a start string is rewritten by rules a number of times, then a turtle draws the result. Up to four kinds grow on the ground; each takes its colors from its own settings."
+    };
+    ui.add(egui::Label::new(RichText::new(intro).color(theme::TEXT_MUTED)).wrap());
     ui.horizontal(|ui| {
         ui.add_enabled_ui(plants.len() < 8, |ui| {
             ui.menu_button(format!("{}  Add plant", icons::PLUS), |ui| {
@@ -51,7 +59,7 @@ pub fn plants_editor(ui: &mut Ui, plants: &mut Vec<PlantSpecies>) {
                     remove = Some(i);
                 }
             });
-            species_editor(ui, p, i);
+            species_editor(ui, p, i, surface);
         });
     }
     if let Some((a, b)) = swap {
@@ -62,19 +70,30 @@ pub fn plants_editor(ui: &mut Ui, plants: &mut Vec<PlantSpecies>) {
     }
 }
 
-fn species_editor(ui: &mut Ui, p: &mut PlantSpecies, i: usize) {
+fn species_editor(ui: &mut Ui, p: &mut PlantSpecies, i: usize, surface: bool) {
     let d = PlantSpecies::preset(&p.name).unwrap_or_default();
+    let (place, units) = if surface { ("surface", "the object's own units") } else { ("ground", "seabed units") };
     widgets::grid(ui, &format!("plant-{i}"), |ui| {
         widgets::label(ui, "Name", "Name of this kind of plant");
         ui.text_edit_singleline(&mut p.name);
         ui.end_row();
         widgets::checkbox(ui, "Visible", "Grow this kind of plant", &mut p.enabled);
-        widgets::slider(ui, "Density", "Share of the places on the ground with a plant (0 = none, 1 = everywhere)", &mut p.density, 0.0..=1.0, d.density);
+        widgets::slider(ui, "Density", &format!("Share of the places on the {place} with a plant (0 = none, 1 = everywhere)"), &mut p.density, 0.0..=1.0, d.density);
         widgets::slider(ui, "Clumping", "0 = spread evenly; 1 = only in patches", &mut p.clumping, 0.0..=1.0, d.clumping);
-        widgets::slider_log(ui, "Spacing", "Distance between neighbouring plants (seabed units). Raised automatically so wide plants do not reach past their neighbours", &mut p.spacing, 0.001..=100.0, d.spacing);
-        widgets::slider_log(ui, "Height", "Height of the tallest plants (seabed units)", &mut p.height, 0.001..=100.0, d.height);
+        let spacing_tip = if surface {
+            "Distance between neighbouring plants (the object's own units). Small spacings on large surfaces make many plants: the bake raises it when there would be too many".to_string()
+        } else {
+            "Distance between neighbouring plants (seabed units). Raised automatically so wide plants do not reach past their neighbours".to_string()
+        };
+        widgets::slider_log(ui, "Spacing", &spacing_tip, &mut p.spacing, 0.0005..=100.0, d.spacing);
+        widgets::slider_log(ui, "Height", &format!("Height of the tallest plants ({units})"), &mut p.height, 0.0005..=100.0, d.height);
         widgets::slider(ui, "Size variation", "How much smaller some plants are (0 = all alike)", &mut p.size_variation, 0.0..=0.95, d.size_variation);
-        widgets::slider(ui, "Sway", "Swaying in the current, timed by the seabed's sway speed and time (0 = still)", &mut p.sway, 0.0..=1.0, d.sway);
+        let sway_tip = if surface { "Swaying, timed by the section's sway speed (0 = still)" } else { "Swaying in the current, timed by the seabed's sway speed and time (0 = still)" };
+        widgets::slider(ui, "Sway", sway_tip, &mut p.sway, 0.0..=1.0, d.sway);
+        if surface {
+            widgets::slider(ui, "Upright", "Direction of growth: 0 = straight out of the surface (along its normal), 1 = straight up (the object's own up axis). Plants never grow into the surface", &mut p.upright, 0.0..=1.0, d.upright);
+            widgets::slider(ui, "Steepest slope", "Plants grow only where the surface is at most this steep (degrees from facing up; 90 = up to vertical walls, 180 = everywhere, also under overhangs)", &mut p.max_slope, 0.0..=180.0, d.max_slope);
+        }
         widgets::label(ui, "Branch colors", "Colors of the stems and branches at the root and at the top");
         ui.horizontal(|ui| {
             widgets::color_button(ui, &mut p.branch_colors[0]).on_hover_text("At the root");
@@ -178,4 +197,54 @@ fn preview(ui: &mut Ui, p: &PlantSpecies) {
     let full = t.segs.len() >= MAX_SEGMENTS;
     let text = format!("{} segments{}", t.segs.len(), if full { " (limit reached: fewer generations)" } else { "" });
     ui.label(RichText::new(text).size(theme::fs(10.5)).color(if full { theme::WARN } else { theme::TEXT_MUTED })).on_hover_text("Side view (left) and from above (right). More segments make renders near the plants slower");
+}
+
+/// The plants of a surface (`PlantCover`): bake state, region, sway, and the species.
+pub fn cover_editor(ui: &mut Ui, cover: &mut PlantCover, status: Option<&Status>, id: &str) {
+    match status {
+        None => {
+            ui.label(RichText::new("No plants yet: add one below").color(theme::TEXT_MUTED));
+        }
+        Some(Status::Baking(f)) => {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(format!("Placing the plants… {:.0} %", f * 100.0)).on_hover_text("The roots are searched on the surface in the background; the plants appear when that is done");
+            });
+        }
+        Some(Status::Ready(set)) => {
+            ui.label(RichText::new(format!("{} plants", set.roots.len())).color(theme::TEXT_MUTED)).on_hover_text("Plants placed on this surface (baked: placed again when the surface or the placement settings change)");
+            for n in &set.notes {
+                ui.add(egui::Label::new(RichText::new(format!("{}  {n}", icons::WARNING)).color(theme::WARN)).wrap());
+            }
+        }
+        Some(Status::Failed(e)) => {
+            ui.add(egui::Label::new(RichText::new(format!("{}  Placing the plants failed: {e}", icons::WARNING)).color(theme::WARN)).wrap());
+        }
+    }
+    widgets::grid(ui, &format!("{id}-cover"), |ui| {
+        let mut fit = cover.region.is_none();
+        if widgets::checkbox(ui, "Fit to the surface", "Plants grow everywhere on the surface (within ±64 units). Off: only inside a box of the object's own coordinates", &mut fit).changed() {
+            cover.region = if fit {
+                None
+            } else {
+                Some(match status {
+                    Some(Status::Ready(set)) => set.region,
+                    _ => [[-1.0; 3], [1.0; 3]],
+                })
+            };
+        }
+        if let Some(r) = &mut cover.region {
+            for (k, (name, tip)) in [("From", "Lower corner of the box where plants grow (x, y, z in the object's own units)"), ("To", "Upper corner of the box where plants grow (x, y, z in the object's own units)")].iter().enumerate() {
+                widgets::label(ui, name, tip);
+                ui.horizontal(|ui| {
+                    for v in r[k].iter_mut() {
+                        ui.add(egui::DragValue::new(v).speed(0.01).max_decimals(4)).on_hover_text(*tip);
+                    }
+                });
+                ui.end_row();
+            }
+        }
+        widgets::slider(ui, "Sway speed", "How fast the plants sway in animations (phase per second)", &mut cover.sway_speed, 0.0..=10.0, 1.0);
+    });
+    plants_editor(ui, &mut cover.species, true);
 }

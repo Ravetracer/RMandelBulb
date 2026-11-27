@@ -35,6 +35,9 @@ pub struct Scene {
     pub notes: String,
     /// Objects combined with the main fractal (scene composition).
     pub objects: Vec<crate::compose::SceneObject>,
+    /// Plants growing on the main fractal.
+    #[serde(skip_serializing_if = "crate::plant_cover::PlantCover::is_empty")]
+    pub plant_cover: crate::plant_cover::PlantCover,
     /// Keyframe animation (keyframe scenes have none).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub animation: Option<crate::animation::Animation>,
@@ -68,6 +71,7 @@ impl Default for Scene {
             cut: Cutting::default(),
             notes: String::new(),
             objects: Vec::new(),
+            plant_cover: Default::default(),
             animation: None,
             motion_end: None,
             formulas: Default::default(),

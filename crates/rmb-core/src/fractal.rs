@@ -125,6 +125,8 @@ pub struct Program {
     pub color2: (u32, f64),
     /// Mandelbulb3D's color on iteration (-1 off).
     pub color_on_it: i32,
+    /// Plants baked onto the main fractal and objects (`plant_cover`), in order.
+    pub covers: Vec<crate::plant_cover::HostCover>,
 }
 
 /// `Primitive::index` of the water surface.
@@ -208,6 +210,8 @@ pub struct Orbit {
     pub object: u32,
     /// Water: its distance to the rest of the scene (local units; its shore).
     pub shore: f64,
+    /// A baked plant forms the surface here: its color value (`PlantHit::color_value`; 0 none).
+    pub plant: f64,
 }
 
 /// Mandelbulb3D's 4D start rotation: Z(Y(X)) with X in the xw, Y in the yw, Z in the zw plane.
@@ -387,6 +391,7 @@ impl Program {
             glass_shadows: false,
             medium: None,
             bubble_sources: Vec::new(),
+            covers: Vec::new(),
         }
     }
 
@@ -449,6 +454,15 @@ impl Program {
                     _ => None,
                 },
             });
+        }
+        // Plants baked onto the hosts (picked up when their bake is ready).
+        for host in crate::plant_cover::hosts(scene) {
+            let Some(crate::plant_cover::Status::Ready(set)) = crate::plant_cover::request(scene, host) else { continue };
+            let cover = crate::plant_cover::cover_of(scene, host).expect("host with plants");
+            let hp = if host == 0 { Some(0) } else { crate::plant_cover::program_index(scene, host - 1).map(|j| j + 1) };
+            if let (Some(hp), Some(field)) = (hp, crate::plant_cover::field(&set, cover)) {
+                p.covers.push(crate::plant_cover::HostCover { host: hp, field, phase: cover.phase });
+            }
         }
         let used = std::iter::once(&scene.material.layers).chain(p.objects.iter().filter(|o| o.material > 0).map(|o| &scene.objects[o.material - 1].material.layers));
         for l in used.flatten().filter(|l| l.enabled) {
@@ -532,6 +546,7 @@ impl Program {
         if let Some((j, _)) = self.medium {
             s.push_str(&format!("|med{j}"));
         }
+        s.push_str(if self.covers.is_empty() { "" } else { "|cover" });
         for o in &self.objects {
             match &o.shape {
                 ObjectShape::Fractal(f) => {
@@ -852,7 +867,7 @@ fn fractal_orbit(prog: &Program, regs: &mut [Vec<f64>], regs2: &mut [Vec<f64>], 
         let de = if prog.de_kind == DeKind::Linear && !prog.difs { d / a.dr.abs().max(1e-30) } else { d * prog.mix_pow.abs().max(1e-30).powf(-1.0 - a.n as f64) };
         let b_r2 = b.state.iter().map(|v| v * v).sum();
         let color2 = color2_value(prog.color2.0, prog.color2.1, b.state, b.c, b_r2, b.rold, b.trap);
-        return Orbit { de, iterations: b.n, r2: a.state.iter().map(|v| v * v).sum(), r2_old: a.rold, dr: a.dr, trap: b.trap, color2, escaped: true, object: 0, shore: 0.0 };
+        return Orbit { de, iterations: b.n, r2: a.state.iter().map(|v| v * v).sum(), r2_old: a.rold, dr: a.dr, trap: b.trap, color2, escaped: true, object: 0, shore: 0.0, plant: 0.0 };
     }
     let o = chain_orbit(prog, prog, regs, p, h);
     match prog.part2.as_deref() {
@@ -906,7 +921,7 @@ fn chain_orbit(top: &Program, prog: &Program, regs: &mut [Vec<f64>], p: V3, h: f
         de = if it.escaped { 1.0e-3 } else { 0.0 };
     }
     let color2 = color2_value(top.color2.0, top.color2.1, it.state, it.c, r2, it.rold, it.trap);
-    Orbit { de: de * prog.de_scale, iterations: it.n, r2, r2_old: it.rold, dr: it.dr, trap: it.trap, color2, escaped: it.escaped || prog.difs, object: 0, shore: 0.0 }
+    Orbit { de: de * prog.de_scale, iterations: it.n, r2, r2_old: it.rold, dr: it.dr, trap: it.trap, color2, escaped: it.escaped || prog.difs, object: 0, shore: 0.0, plant: 0.0 }
 }
 
 /// Combines the estimates of the two chains (Mandelbulb3D's DE combination).
@@ -1012,6 +1027,23 @@ impl Evaluator<'_> {
                 o = Orbit { object: k as u32 + 1, ..orbit };
             }
         }
+        // Baked plants (mirrors march.wgsl `cover_union`): each host's plants in its own
+        // coordinates, after all objects but the water.
+        for (c, hc) in prog.covers.iter().enumerate() {
+            let (q, sc) = if hc.host == 0 {
+                (prog.main_transform.as_ref().map_or(p, |t| t.local(p)), t_scale)
+            } else {
+                let ob = &prog.objects[hc.host - 1];
+                (ob.local(p), ob.scale)
+            };
+            if let Some(hit) = hc.field.nearest(q, hc.phase, de / sc) {
+                let d = hit.d * sc;
+                if d < de {
+                    de = d;
+                    o = Orbit { dr: 1.0, escaped: true, object: hc.host as u32, plant: hit.color_value(crate::compose::MAX_OBJECTS + c), ..Orbit::default() };
+                }
+            }
+        }
         let dry = de;
         let medium = prog.medium.map(|(j, _)| j);
         for (k, ob) in prog.objects.iter().enumerate() {
@@ -1046,6 +1078,25 @@ impl Evaluator<'_> {
 
     pub fn de(&mut self, p: V3, h: f64) -> f64 {
         self.orbit(p, h).de
+    }
+
+    /// Distance estimate of one host alone in its own coordinates (plant bakes): 0 the main
+    /// fractal (before its placement, without objects and cuts), j + 1 `Program::objects[j]`
+    /// (before its placement and repetition).
+    pub fn host_distance(&mut self, host: usize, q: V3, h: f64) -> f64 {
+        let prog = self.prog;
+        if host == 0 {
+            return (fractal_orbit(prog, &mut self.regs, &mut self.regs2, q, h).de * prog.scene_de_scale).max(0.0);
+        }
+        let k = host - 1;
+        match &prog.objects[k].shape {
+            ObjectShape::Fractal(f) => {
+                let (r1, r2) = &mut self.regs_obj[k];
+                (fractal_orbit(f, r1, r2, q, h).de * f.scene_de_scale).max(0.0)
+            }
+            ObjectShape::Primitive(kind, a) => crate::compose::primitive_distance(*kind, *a, q),
+            ObjectShape::Model(m) => m.as_ref().map_or(crate::compose::NO_MODEL, |m| m.vol.distance(q.to_array())),
+        }
     }
 
     /// Whether the estimate is the inside one (inside rendering, or a ray inside glass).

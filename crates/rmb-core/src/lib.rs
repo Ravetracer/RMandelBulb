@@ -19,6 +19,7 @@ pub mod mesh;
 pub mod mesh_export;
 pub mod mesh_simplify;
 pub mod paths;
+pub mod plant_cover;
 pub mod plants;
 pub mod palette;
 pub mod queue;

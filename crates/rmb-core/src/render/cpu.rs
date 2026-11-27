@@ -1330,6 +1330,10 @@ impl<'a> Shader<'a> {
 
     pub fn color_value(&self, hit: &Hit, n: V3) -> f64 {
         let o = &hit.orbit;
+        // A baked plant: its own color value.
+        if o.plant > 0.0 {
+            return o.plant;
+        }
         let mat = &self.materials[self.material_of(o)];
         // Objects: primitives by their pattern, fractals with their own bailout.
         let mut bailout2 = self.prog.bailout2;
@@ -1464,9 +1468,13 @@ impl<'a> Shader<'a> {
     /// distance `dist`.
     fn gradient(&self, mat: usize, v: f64, dist: f64) -> ([f64; 3], [f64; 3], f64, f64) {
         // Plants: their own colors, the highlight of the material's first color.
-        if v >= crate::plants::PLANT_COLOR && self.prog.objects.iter().any(|o| o.plants.is_some()) {
+        if v >= crate::plants::PLANT_COLOR && (!self.prog.covers.is_empty() || self.prog.objects.iter().any(|o| o.plants.is_some())) {
             let (obj, species, leaf, height) = crate::plants::decode_color(v);
-            let base = self.prog.objects.get(obj).and_then(|o| o.plants.as_ref()).map_or([0.5; 3], |f| f.color(species, leaf, height));
+            let base = match obj.checked_sub(crate::compose::MAX_OBJECTS) {
+                // Baked plants: the host's cover.
+                Some(c) => self.prog.covers.get(c).map_or([0.5; 3], |hc| hc.field.color(species, leaf, height)),
+                None => self.prog.objects.get(obj).and_then(|o| o.plants.as_ref()).map_or([0.5; 3], |f| f.color(species, leaf, height)),
+            };
             return (base, self.gradient(mat, 0.0, dist).1, 0.0, 0.0);
         }
         let sm = &self.scene.material;

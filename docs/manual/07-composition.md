@@ -336,6 +336,51 @@ of segments.
     low enough that the preview stays under a few hundred segments, and use Density and
     Spacing for a full meadow rather than bigger plants.
 
+### Plants on any surface
+
+The same plants grow on every other surface too: the main fractal (its **Plants** section
+below **Placement**) and every object except the seabed and the water (their **Plants**
+section). Algae on a Mandelbulb, coral on a Menger sponge, kelp on a sphere or on a 3D
+model: everything the seabed's plants can do, with the same presets, settings and editor.
+
+![Algae tufts and sea fans grown on the Mandelbulb](images/plants-cover.jpg)
+
+A fractal has no ground to stand on that can be looked up quickly, so the places of the
+plants are **baked**: once, in the background, RMandelbulb3D searches the surface for
+roots, one per **Spacing**, and remembers each root's position and direction. The section
+shows how many plants were placed, or the progress while it searches. It searches again
+when the surface or the placement settings (Density, Clumping, Spacing, Upright, Steepest
+slope, Variant) change; Height, colors, the L-system and the sway do not need a new search.
+Moving, turning or animating the object never does: the roots move with it.
+
+![The Plants section of the main fractal](images/plants-cover-panel.png){: .half}
+
+Two settings exist only here:
+
+| Setting | What it does |
+|---------|--------------|
+| Upright | Direction of growth: 0 = straight out of the surface, 1 = straight up (the object's own up axis). Plants never grow into the surface: under overhangs they lean out. |
+| Steepest slope | Plants grow only where the surface is at most this steep, in degrees from facing up: 30 for moss on the tops only, 90 up to vertical walls, 180 everywhere. |
+
+And for the whole section:
+
+| Setting | What it does |
+|---------|--------------|
+| Fit to the surface | Plants grow on the whole surface (within ±64 units). Off: only inside a box (**From**, **To**, in the object's own coordinates). Use the box for endless shapes such as the plane, or to keep plants to one part. |
+| Sway speed | How fast the plants sway in animations. |
+
+![Kelp and staghorn coral on a sphere next to the overgrown bulb](images/plants-cover-ball.jpg)
+
+!!! note
+    On large surfaces a small spacing makes very many plants. The search stops at 250 000
+    plants and raises the spacing instead; the section then says so. Plants on the main
+    fractal are not drawn in deep zooms (double precision). Plants grow on the object's own
+    surface: when a later object cuts that part away, its plants stay.
+
+!!! tip
+    Mesh exports include the plants. For a lush look, combine a dense low kind (algae tuft,
+    spacing about half its height) with a few tall ones (sea fan, kelp) at a larger spacing.
+
 ## Fractal objects
 
 A fractal object has the same hybrid chain, formula parameters, **Iteration** settings and

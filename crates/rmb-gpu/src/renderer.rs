@@ -155,6 +155,8 @@ struct Uniforms {
     tile: [u32; 4],
     dof2: [f32; 4],
     wmed: [[f32; 4]; 14],
+    /// Sway phases of the baked plants (`Program::covers`, four per entry).
+    cover: [[f32; 4]; 3],
 }
 
 /// Splits an f64 into the high and low f32 of a double-float.
@@ -305,7 +307,6 @@ const PLANT_BLOCK: usize = 32;
 /// species and the offset of their blocks; each block points to its template's nodes and
 /// segments.
 fn plants_gpu(prog: &Program, out: &mut Vec<u32>) {
-    let f = |x: f64| (x as f32).to_bits();
     for (j, o) in prog.objects.iter().enumerate() {
         let Some(field) = &o.plants else { continue };
         let h = MODEL_HEADER * j;
@@ -314,30 +315,76 @@ fn plants_gpu(prog: &Program, out: &mut Vec<u32>) {
         out[h + 1] = blocks as u32;
         out.resize(blocks + PLANT_BLOCK * field.species.len(), 0);
         for (k, s) in field.species.iter().enumerate() {
-            let t = &s.template;
-            let b = blocks + PLANT_BLOCK * k;
-            let nodes = out.len();
-            for n in &t.nodes {
-                out.extend(n.lo.iter().chain(&n.hi).map(|x| x.to_bits()));
-                out.extend([n.start, n.count]);
-            }
-            let segs = out.len();
-            for g in &t.segs {
-                out.extend(g.a.map(f32::to_bits));
-                out.push(if g.leaf { 1.0f32 } else { 0.0 }.to_bits());
-                out.extend(g.b.map(f32::to_bits));
-                out.push(g.ra.to_bits());
-                out.extend(g.side.map(f32::to_bits));
-                out.push(g.rb.to_bits());
-            }
-            let head = [f(s.cell), f(s.share), f(s.clumping), f(s.height), f(s.variation), f(s.sway), s.salt as u32, f(t.radius), f(t.top), nodes as u32, t.nodes.len() as u32, segs as u32];
-            out[b..b + head.len()].copy_from_slice(&head);
-            let colors = s.branch_colors.iter().chain(&s.leaf_colors).flatten().map(|c| c.to_bits());
-            for (i, c) in colors.enumerate() {
-                out[b + 12 + i] = c;
-            }
-            out[b + 24] = f(t.norm);
+            species_block(out, blocks + PLANT_BLOCK * k, s, 0.0);
         }
+    }
+    covers_gpu(prog, out);
+}
+
+/// Writes species `s` into the block at `b` (march.wgsl `PLANT_BLOCK`; its template's nodes
+/// and segments are appended): cell, share, clumping, height, variation, sway, salt, radius,
+/// top, nodes, node count, segments, colors at 12..23, norm at 24, reach at 25.
+fn species_block(out: &mut Vec<u32>, b: usize, s: &rmb_core::plants::PlacedSpecies, reach: f64) {
+    let f = |x: f64| (x as f32).to_bits();
+    let t = &s.template;
+    let nodes = out.len();
+    for n in &t.nodes {
+        out.extend(n.lo.iter().chain(&n.hi).map(|x| x.to_bits()));
+        out.extend([n.start, n.count]);
+    }
+    let segs = out.len();
+    for g in &t.segs {
+        out.extend(g.a.map(f32::to_bits));
+        out.push(if g.leaf { 1.0f32 } else { 0.0 }.to_bits());
+        out.extend(g.b.map(f32::to_bits));
+        out.push(g.ra.to_bits());
+        out.extend(g.side.map(f32::to_bits));
+        out.push(g.rb.to_bits());
+    }
+    let head = [f(s.cell), f(s.share), f(s.clumping), f(s.height), f(s.variation), f(s.sway), s.salt as u32, f(t.radius), f(t.top), nodes as u32, t.nodes.len() as u32, segs as u32];
+    out[b..b + head.len()].copy_from_slice(&head);
+    let colors = s.branch_colors.iter().chain(&s.leaf_colors).flatten().map(|c| c.to_bits());
+    for (i, c) in colors.enumerate() {
+        out[b + 12 + i] = c;
+    }
+    out[b + 24] = f(t.norm);
+    out[b + 25] = f(reach);
+}
+
+/// The baked plants (march.wgsl `cover_union`): word 31 of the first header points to a
+/// directory (count, then one host block offset per cover). A host block: host, species
+/// count, species blocks offset, grid corner (3), cell, cells per axis (3), cell starts
+/// offset, roots offset, largest reach; roots of 8 words (position, size, axis, bits).
+fn covers_gpu(prog: &Program, out: &mut Vec<u32>) {
+    if prog.covers.is_empty() {
+        return;
+    }
+    let f = |x: f64| (x as f32).to_bits();
+    let dir = out.len();
+    out[31] = dir as u32;
+    out.push(prog.covers.len() as u32);
+    out.resize(dir + 1 + prog.covers.len(), 0);
+    for (c, hc) in prog.covers.iter().enumerate() {
+        let field = &hc.field;
+        let hb = out.len();
+        out[dir + 1 + c] = hb as u32;
+        out.resize(hb + 16, 0);
+        let blocks = out.len();
+        out.resize(blocks + PLANT_BLOCK * field.species.len(), 0);
+        for (k, s) in field.species.iter().enumerate() {
+            species_block(out, blocks + PLANT_BLOCK * k, s, field.reach[k]);
+        }
+        let starts = out.len();
+        out.extend(&field.starts);
+        let roots = out.len();
+        for r in &field.roots {
+            out.extend(r.pos.map(f32::to_bits));
+            out.push(r.size.to_bits());
+            out.extend(r.axis.map(f32::to_bits));
+            out.push(r.bits);
+        }
+        let head = [hc.host as u32, field.species.len() as u32, blocks as u32, f(field.origin.x), f(field.origin.y), f(field.origin.z), f(field.cell), field.n[0] as u32, field.n[1] as u32, field.n[2] as u32, starts as u32, roots as u32, f(field.r_max)];
+        out[hb..hb + head.len()].copy_from_slice(&head);
     }
 }
 
@@ -761,6 +808,13 @@ fn uniforms(scene: &Scene, prog: &Program, w: u32, h: u32, fast: bool, tile: Opt
         tile,
         dof2: [scene.dof.blades.min(9) as f32, scene.dof.blade_rotation.to_radians() as f32, 0.0, 0.0],
         wmed: medium_gpu(prog, &fr.lights),
+        cover: {
+            let mut c = [[0.0f32; 4]; 3];
+            for (i, hc) in prog.covers.iter().enumerate().take(12) {
+                c[i / 4][i % 4] = hc.phase as f32;
+            }
+            c
+        },
         haze2: [if scene.fog.haze_shape == rmb_core::scene::HazeShape::Iterations { 1.0 } else { 0.0 }, scene.fog.haze_size as f32, 0.0, 0.0],
     }
 }
@@ -817,6 +871,8 @@ fn render_program(scene: &Scene, mut prog: Program, deep: bool) -> (Option<Scene
         // A placed main fractal iterates from the camera in its own coordinates; the shader then
         // only turns and scales the local position (uniforms: no offset).
         prog.deep = Some(prog.main_transform.map_or(r, |t| t.local(rmb_core::V3::ZERO)).to_array());
+        // Plants on the main fractal are not drawn in deep zooms (f32 roots).
+        prog.covers.retain(|c| c.host != 0);
         shifted = Some(s);
     }
     let s = shifted.as_ref().unwrap_or(scene);
@@ -1025,7 +1081,7 @@ impl GpuRenderer {
             objs: uniform("objs", std::mem::size_of::<ObjGpu>() * rmb_core::compose::MAX_OBJECTS),
             vols: storage_buffer(device, "vols", 80),
             vols_key: Vec::new(),
-            mesh_generation: rmb_core::mesh::generation(),
+            mesh_generation: rmb_core::mesh::generation() + rmb_core::plant_cover::generation(),
             flare: storage_buffer(device, "flare", 16),
             flare_size: (0, 0),
             map_numbers: Vec::new(),
@@ -1160,8 +1216,9 @@ impl GpuRenderer {
             self.dirty_display = true;
         }
         // A model finished baking: build the program again (it picks the model up).
-        if self.mesh_generation != rmb_core::mesh::generation() {
-            self.mesh_generation = rmb_core::mesh::generation();
+        let generation = rmb_core::mesh::generation() + rmb_core::plant_cover::generation();
+        if self.mesh_generation != generation {
+            self.mesh_generation = generation;
             self.key = None;
         }
         if self.key.as_ref() == Some(&key) {
@@ -1242,6 +1299,7 @@ impl GpuRenderer {
                 // Plants: their settings (the program is rebuilt with every change).
                 _ => [o.plants.as_ref().map_or(0, |p| plants_key(p)), 0],
             })
+            .chain(prog.covers.iter().map(|c| std::sync::Arc::as_ptr(&c.field) as usize ^ c.host))
             .collect();
         if key == self.vols_key && self.vols.size() >= (4 * MODEL_HEADER * prog.objects.len().max(1)) as u64 {
             return;
@@ -2309,5 +2367,30 @@ impl rmb_core::mesh_export::Field for GridField {
         let v = read_buffer_f32(&r.ctx, &accum, nx * ny).ok_or("reading the distances back failed")?;
         out.copy_from_slice(&v);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod cover_layout_tests {
+    use super::*;
+
+    #[test]
+    fn cover_colors_are_where_the_shader_reads_them() {
+        let mut scene = Scene::default();
+        let mut k = rmb_core::plants::PlantSpecies::preset("Kelp").unwrap();
+        (k.spacing, k.height) = (0.08, 0.12);
+        scene.plant_cover.species = vec![k];
+        assert!(rmb_core::compose::load_models(&scene).is_empty());
+        let prog = Program::for_scene(&scene);
+        let out = volumes_gpu(&prog);
+        let dir = out[31] as usize;
+        assert_eq!(out[dir], 1);
+        let hb = out[dir + 1] as usize;
+        assert_eq!(out[hb], 0);
+        let blocks = out[hb + 2] as usize;
+        let c: Vec<f32> = out[blocks + 12..blocks + 24].iter().map(|w| f32::from_bits(*w)).collect();
+        let s = &prog.covers[0].field.species[0];
+        let want: Vec<f32> = s.branch_colors.iter().chain(&s.leaf_colors).flatten().copied().collect();
+        assert_eq!(c, want);
     }
 }

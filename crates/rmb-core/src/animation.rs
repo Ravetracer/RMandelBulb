@@ -759,6 +759,13 @@ fn color_speeds(s: &Scene) -> BTreeMap<String, f64> {
         if let crate::compose::Shape::Primitive(crate::compose::Primitive::Seabed { sway_speed, .. }) = o.shape {
             out.insert(format!("o{k}.seabed"), sway_speed);
         }
+        if o.cover.active() {
+            out.insert(format!("o{k}.plants"), o.cover.sway_speed);
+        }
+    }
+    // Plants on the main fractal sway.
+    if s.plant_cover.active() {
+        out.insert("plants".into(), s.plant_cover.sway_speed);
     }
     out
 }
@@ -812,7 +819,9 @@ fn apply_phases(s: &mut Scene, phase: &BTreeMap<String, f64>) {
         if let crate::compose::Shape::Primitive(crate::compose::Primitive::Seabed { phase: p, .. }) = &mut o.shape {
             *p += phase.get(&format!("o{k}.seabed")).copied().unwrap_or(0.0);
         }
+        o.cover.phase += phase.get(&format!("o{k}.plants")).copied().unwrap_or(0.0);
     }
+    s.plant_cover.phase += phase.get("plants").copied().unwrap_or(0.0);
 }
 
 impl AnimationPlan {

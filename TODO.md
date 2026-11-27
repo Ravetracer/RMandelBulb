@@ -175,8 +175,9 @@
   - [x] Plants grown by L-systems on the seabed: presets (kelp, sea fan, staghorn coral,
         algae tuft, fern weed) and an editor (start string, stochastic rules, turtle
         settings, preview)
-  - [ ] Possible: plants on other objects than the seabed (on fractal surfaces), parametric
-        L-systems
+  - [x] Plants on other surfaces than the seabed: main fractal and all objects (baked
+        roots, `plant_cover.rs`)
+  - [ ] Possible: parametric L-systems
   - [x] Wet trails behind the lens drops running down (Drop trails)
   - [x] Faster seabed parts and plants (cell skipping, nearest-first scan, local sway
         bound): 1.6-1.7x on the GPU

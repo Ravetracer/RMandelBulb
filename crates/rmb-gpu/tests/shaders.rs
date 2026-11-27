@@ -56,6 +56,15 @@ fn gpu_cpu_difference(scene: Scene) -> Option<(f64, usize, usize)> {
     let mut cpu = rmb_core::render::cpu::CpuRenderer::new(scene, w, h);
     cpu.render_pass();
     let cpu = cpu.rgba8();
+    if let Ok(dir) = std::env::var("RMB_PARITY_DUMP") {
+        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        for (name, img) in [("gpu", &gpu), ("cpu", &cpu)] {
+            let mut ppm = format!("P6 {w} {h} 255\n").into_bytes();
+            ppm.extend(img.chunks(4).flat_map(|c| [c[0], c[1], c[2]]));
+            std::fs::write(format!("{dir}/{n}-{name}.ppm"), ppm).unwrap();
+        }
+    }
     let diff: Vec<i32> = gpu.iter().zip(&cpu).map(|(a, b)| (*a as i32 - *b as i32).abs()).collect();
     let mean = diff.iter().sum::<i32>() as f64 / diff.len() as f64;
     let big = diff.iter().filter(|d| **d > 40).count();
@@ -908,6 +917,41 @@ fn gpu_matches_cpu_under_water() {
     }
     scene.camera.position = p(2.4, -2.6, -0.6);
     scene.camera.look_at(p(0.0, 0.0, 0.1), p(0.0, 0.0, 1.0));
+    parity(scene);
+}
+
+/// Plants baked onto the main fractal (placed, so its own coordinates differ from the world)
+/// and onto a repeated, turned sphere object, with water in the scene (the plants join before
+/// it).
+#[test]
+fn gpu_matches_cpu_with_plant_cover() {
+    use rmb_core::compose::{Primitive, SceneObject, Shape, Transform};
+    use rmb_core::plants::PlantSpecies;
+    let p = |x: f64, y: f64, z: f64| rmb_core::v3(x, y, z);
+    let mut scene = Scene::default();
+    scene.lighting.ao_mode = rmb_core::scene::AoMode::Fast;
+    scene.fractal.transform = Transform { position: p(0.1, 0.0, 0.0), rotation: [0.0, 0.0, 20.0], ..Default::default() };
+    let species = |name: &str, spacing: f64, height: f64| {
+        let mut s = PlantSpecies::preset(name).unwrap();
+        (s.spacing, s.height, s.density, s.clumping) = (spacing, height, 0.8, 0.3);
+        s
+    };
+    let names = PlantSpecies::preset_names();
+    scene.plant_cover.species = vec![species(names[0], 0.08, 0.12), species(names[1], 0.12, 0.1)];
+    scene.plant_cover.phase = 0.7;
+    let mut ball = SceneObject { name: "Ball".into(), shape: Shape::Primitive(Primitive::Sphere { radius: 0.35 }), transform: Transform { position: p(0.0, -1.6, 0.3), rotation: [30.0, 0.0, 10.0], ..Default::default() }, repeat: [0.0, 0.0, 1.2], repeat_limit: [0, 0, 1], ..Default::default() };
+    ball.cover.species = vec![species(names[2], 0.06, 0.1)];
+    scene.objects = vec![ball, SceneObject { name: "Sea".into(), shape: Shape::Primitive(Primitive::water()), transform: Transform { position: p(0.0, 0.0, -1.0), ..Default::default() }, ..Default::default() }];
+    assert!(rmb_core::compose::load_models(&scene).is_empty());
+    let prog = Program::for_scene(&scene);
+    assert_eq!(prog.covers.iter().map(|c| c.host).collect::<Vec<_>>(), vec![0, 1]);
+    validate(&rmb_gpu::codegen::march_shader(&prog), "plant cover");
+    scene.camera.position = p(1.6, -2.9, 1.0);
+    scene.camera.look_at(p(0.0, -0.6, 0.1), p(0.0, 0.0, 1.0));
+    parity(scene.clone());
+    // Close to the bulb's plants.
+    scene.camera.position = p(0.9, -0.9, 0.9);
+    scene.camera.look_at(p(0.2, -0.2, 0.3), p(0.0, 0.0, 1.0));
     parity(scene);
 }
 

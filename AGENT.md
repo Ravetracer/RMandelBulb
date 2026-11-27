@@ -462,6 +462,24 @@ cargo clippy -j 8 --workspace --all-targets
   `plant_de` after `prim_de` for seabeds with plants. Editor `rmb-app/src/plants_editor.rs`.
   Tests: `plants::tests`, `gpu_matches_cpu_under_water` (plants view). WGSL reserved words
   bit again: `patch`.
+- Plants on any surface (`plant_cover.rs`; `Scene::plant_cover`, `SceneObject::cover`):
+  roots baked per host (0 main fractal in its own coordinates, i + 1 object i in local
+  coordinates) by an octree over the region (cells kept while `host_distance` < half
+  diagonal), one candidate per spacing cell (share, 3D-noise patches), moved onto the
+  surface along the gradient, kept when it stays in its cell (even density) and passes
+  `max_slope`; axis = normal blended to up by `upright`, never closer than `MIN_OUT` to the
+  surface. Background bakes like `mesh::request` (`request`/`get`/`generation`, key =
+  host shape JSON + placement fields; a newer request for the same host cancels the older
+  bake); `compose::load_models` also bakes plants. `CoverField` sorts roots into a CSR grid
+  (cell ≥ 2 × largest reach, 3 × 3 × 3 search `CELL27`, block-edge fallback);
+  `Program::covers` (`HostCover`); `Evaluator::orbit` joins them after the objects, before
+  the water; a winning plant sets `Orbit::plant` (its color value, object
+  `MAX_OBJECTS + cover`) and the host as `object`. GPU: `covers_gpu` (directory at
+  `vols[31]`), `cover_union` / `cover_de` (one call site in `compose_objects`), switch
+  `COVER`, uniform `cover` (sway phases). Deep mode drops main-fractal covers. Tests:
+  `plant_cover::tests`, `gpu_matches_cpu_with_plant_cover`; demo scenes: example
+  `plants_demo`. Plant color values keep the height below `PLANT_HEIGHT_MAX` (0.98): f32
+  near 1e5 has steps of 1/128, 0.999 rounded up to the next species.
 - Speed (bench example: `--only plants,seabed` toggles; 2026-11-27, 640 x 360, baked): the
   searches skip cells by `cell_gap` before any hashing, scan `CELL_ORDER` nearest first,
   test the share before the patch noise, stop at the ground's distance (`limit`); the sway

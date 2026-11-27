@@ -107,6 +107,8 @@ struct U {
     // bubbles in plumes (1), z: vent spacing, w: plume width; [9] x: number of bubble
     // sources, y: drop trails; [10..14] their x, y in the water's frame (two per entry).
     wmed: array<vec4<f32>, 14>,
+    // Sway phases of the baked plants (Program::covers), four per entry.
+    cover: array<vec4<f32>, 3>,
 }
 
 @group(0) @binding(0) var<uniform> u: U;
@@ -152,6 +154,8 @@ struct Orbit {
     obj: u32,
     // Water: its distance to the rest of the scene (local units).
     shore: f32,
+    // A baked plant forms the surface: its color value (Orbit::plant; 0 none).
+    pc: f32,
 }
 
 // A composed object (rmb-core compose.rs, filled by renderer.rs).
@@ -975,6 +979,8 @@ fn seabed_color(a: vec4<f32>, a2: vec4<f32>, a3: vec4<f32>, q: vec3<f32>, size: 
 // segments' bounds (PlantTemplate::norm). A segment: a, leaf (1),
 // b, ra, side, rb (12 words); nodes as the models' (8 words).
 const PLANT_COLOR: f32 = 100000.0;
+// Mirrors plants::PLANT_HEIGHT_MAX (f32 steps are 1/128 near PLANT_COLOR).
+const PLANT_HEIGHT_MAX: f32 = 0.98;
 const PLANT_SPECIES: u32 = 4u;
 const PLANT_BLOCK: u32 = 32u;
 const PLANT_SWAY: f32 = 0.15;
@@ -1149,6 +1155,140 @@ fn plant_de(j: u32, a: vec4<f32>, a2: vec4<f32>, q: vec3<f32>, phase: f32, limit
         }
     }
     return best;
+}
+
+// Baked plants (mirrors plant_cover.rs; renderer.rs covers_gpu): vols[31] points to a
+// directory (count, host block offsets). Colors of cover c use object COVER_BASE + c.
+const COVER_BASE: u32 = 8u;
+const CELL27 = array<vec3<i32>, 27>(
+    vec3<i32>(0, 0, 0),
+    vec3<i32>(0, 0, -1), vec3<i32>(0, -1, 0), vec3<i32>(-1, 0, 0), vec3<i32>(1, 0, 0), vec3<i32>(0, 1, 0), vec3<i32>(0, 0, 1),
+    vec3<i32>(0, -1, -1), vec3<i32>(-1, 0, -1), vec3<i32>(1, 0, -1), vec3<i32>(0, 1, -1), vec3<i32>(-1, -1, 0), vec3<i32>(1, -1, 0),
+    vec3<i32>(-1, 1, 0), vec3<i32>(1, 1, 0), vec3<i32>(0, -1, 1), vec3<i32>(-1, 0, 1), vec3<i32>(1, 0, 1), vec3<i32>(0, 1, 1),
+    vec3<i32>(-1, -1, -1), vec3<i32>(1, -1, -1), vec3<i32>(-1, 1, -1), vec3<i32>(1, 1, -1),
+    vec3<i32>(-1, -1, 1), vec3<i32>(1, -1, 1), vec3<i32>(-1, 1, 1), vec3<i32>(1, 1, 1),
+);
+
+// Mirrors CoverField::nearest: x the distance bound (limit when nothing is nearer), y the
+// species, z 1 for a leaf, w the height up the plant (0..1).
+fn cover_de(hb: u32, q: vec3<f32>, phase: f32, limit: f32) -> vec4<f32> {
+    var best = vec4<f32>(limit, 0.0, 0.0, 0.0);
+    let sb = vols[hb + 2u];
+    let o = vol_v3(hb + 3u);
+    let c = vol_f(hb + 6u);
+    let n = vec3<i32>(i32(vols[hb + 7u]), i32(vols[hb + 8u]), i32(vols[hb + 9u]));
+    let starts = vols[hb + 10u];
+    let roots = vols[hb + 11u];
+    let r_max = vol_f(hb + 12u);
+    let hi = o + vec3<f32>(n) * c;
+    let out = length(max(max(o - q, q - hi), vec3<f32>(0.0)));
+    if (out >= best.x) {
+        return best;
+    }
+    if (out > c) {
+        return vec4<f32>(out, 0.0, 0.0, 0.0);
+    }
+    let ci = clamp(vec3<i32>(floor((q - o) / c)), vec3<i32>(0), n - vec3<i32>(1));
+    // Roots beyond the searched block are at least its edge away (sides with cells beyond).
+    var edge = 3.0e38;
+    for (var k = 0; k < 3; k++) {
+        if (ci[k] >= 2) {
+            edge = min(edge, q[k] - (o[k] + f32(ci[k] - 1) * c));
+        }
+        if (ci[k] + 2 < n[k]) {
+            edge = min(edge, o[k] + f32(ci[k] + 2) * c - q[k]);
+        }
+    }
+    let far = max(edge - r_max, out);
+    if (far < best.x) {
+        best.x = far;
+    }
+    for (var m = 0; m < 27; m++) {
+        let cc = ci + CELL27[m];
+        if (any(cc < vec3<i32>(0)) || any(cc >= n)) {
+            continue;
+        }
+        let a = o + vec3<f32>(cc) * c;
+        if (length(max(max(a - q, q - a - vec3<f32>(c)), vec3<f32>(0.0))) - r_max >= best.x) {
+            continue;
+        }
+        let idx = u32(cc.x + n.x * (cc.y + n.y * cc.z));
+        let r1 = vols[starts + idx + 1u];
+        for (var ri = vols[starts + idx]; ri < r1; ri++) {
+            let rb = roots + ri * 8u;
+            let bits = vols[rb + 7u];
+            let k = bits & 3u;
+            let s = sb + k * PLANT_BLOCK;
+            let top = vol_f(s + 8u);
+            let sway = vol_f(s + 5u);
+            let size = vol_f(s + 3u) * (1.0 - vol_f(s + 4u) * vol_f(rb + 3u));
+            let d = q - vol_v3(rb);
+            if (length(d) - size * vol_f(s + 25u) >= best.x) {
+                continue;
+            }
+            // Mirrors plant_cover::cover_frame.
+            let ax = vol_v3(rb + 4u);
+            let sign = select(-1.0, 1.0, ax.z >= 0.0);
+            let kk = -1.0 / (sign + ax.z);
+            let b = ax.x * ax.y * kk;
+            let t1 = vec3<f32>(1.0 + sign * ax.x * ax.x * kk, sign * b, -sign * ax.x);
+            let t2 = vec3<f32>(b, sign + ax.y * ax.y * kk, -ax.y);
+            let turn = f32((bits >> 2u) & 0x7fffu) / 32768.0 * 6.283185307179586;
+            let ph = f32((bits >> 17u) & 0x7fffu) / 32768.0 * 6.283185307179586;
+            let sn = sin(turn);
+            let cs = cos(turn);
+            let x = t1 * cs + t2 * sn;
+            let y = t2 * cs - t1 * sn;
+            var p = vec3<f32>(dot(d, x), dot(d, y), dot(d, ax)) / size;
+            let z = clamp(p.z, 0.0, top);
+            p.x -= PLANT_SWAY * sway * z * z * sin(phase + ph - 2.0 * z);
+            let zt = clamp(p.z + best.x / size, 0.0, top);
+            let warp = 1.0 + PLANT_SWAY * sway * (2.0 * zt + 2.0 * zt * zt);
+            let segs = vols[s + 11u];
+            let r = plant_tpl(vols[s + 9u], vols[s + 10u], segs, vol_f(s + 24u), p, best.x / size * warp);
+            if (r.y >= 0.0) {
+                let dd = r.x * size / warp;
+                if (dd < best.x) {
+                    best = vec4<f32>(dd, f32(k), vol_f(segs + u32(r.y) * 12u + 3u), clamp(p.z / top, 0.0, 1.0));
+                }
+            }
+        }
+    }
+    return best;
+}
+
+// The baked plants of every host joined to the scene (mirrors Evaluator::orbit; one call
+// site of cover_de).
+fn cover_union(p: vec3<f32>, o_in: Orbit) -> Orbit {
+    var o = o_in;
+    let dir = vols[31u];
+    let nc = vols[dir];
+    for (var c = 0u; c < nc; c++) {
+        let hb = vols[dir + 1u + c];
+        let host = vols[hb];
+        var q = p;
+        var sc = 1.0;
+        if (host == 0u) {
+            if (MAIN_T) {
+                q = main_local(p);
+                sc = u.mt0.w;
+            }
+        } else {
+            q = obj_local(host - 1u, p);
+            sc = objs[host - 1u].inv0.w;
+        }
+        let r = cover_de(hb, q, u.cover[c / 4u][c % 4u], o.de / sc);
+        let d = r.x * sc;
+        if (d < o.de) {
+            var b: Orbit;
+            b.de = d;
+            b.escaped = true;
+            b.obj = host;
+            b.pc = PLANT_COLOR + 2.0 * f32((COVER_BASE + c) * PLANT_SPECIES + u32(r.y)) + r.z + min(r.w, PLANT_HEIGHT_MAX);
+            o = b;
+        }
+    }
+    return o;
 }
 
 // Mirrors compose::seabed_distance.
@@ -2522,6 +2662,10 @@ fn background(d: vec3<f32>, sy: f32) -> vec3<f32> {
 
 fn color_value(h: Hit, n: vec3<f32>, pos: vec3<f32>) -> f32 {
     let o = h.orbit;
+    // A baked plant: its own color value.
+    if (COVER && o.pc > 0.0) {
+        return o.pc;
+    }
     let ms = mat_of(o.obj);
     let mode = ms.mode;
     // Objects: primitives by their pattern, fractals with their own bailout.
@@ -2536,7 +2680,7 @@ fn color_value(h: Hit, n: vec3<f32>, pos: vec3<f32>) -> f32 {
                 let ground = seabed_distance(ob.prim, ob.prim2, ob.prim3, q);
                 let ph = plant_de(o.obj - 1u, ob.prim, ob.prim2, q, ob.prim3.w, ground);
                 if (ph.x < ground) {
-                    return PLANT_COLOR + 2.0 * f32((o.obj - 1u) * PLANT_SPECIES + u32(ph.y)) + ph.z + min(ph.w, 0.999);
+                    return PLANT_COLOR + 2.0 * f32((o.obj - 1u) * PLANT_SPECIES + u32(ph.y)) + ph.z + min(ph.w, PLANT_HEIGHT_MAX);
                 }
             }
             if (ms.pattern == 5u && ob.misc.w < 1.5) {
@@ -2598,7 +2742,7 @@ fn gradient(obj: u32, v_in: f32, dist: f32) -> Colors {
     // Plants (mirrors plants::decode_color): their own colors, the highlight of the
     // material's first color.
     var v = v_in;
-    let plant = PLANTS && v_in >= PLANT_COLOR;
+    let plant = (PLANTS || COVER) && v_in >= PLANT_COLOR;
     if (plant) {
         v = 0.0;
     }
@@ -2649,7 +2793,14 @@ fn gradient(obj: u32, v_in: f32, dist: f32) -> Colors {
         let x = v_in - PLANT_COLOR;
         let k = u32(floor(x));
         let f = x - f32(k);
-        let s = vols[(k / 2u / PLANT_SPECIES) * MODEL_HEADER + 1u] + ((k / 2u) % PLANT_SPECIES) * PLANT_BLOCK + 12u + (k % 2u) * 6u;
+        let obj = k / 2u / PLANT_SPECIES;
+        var blocks = 0u;
+        if (obj >= COVER_BASE) {
+            blocks = vols[vols[vols[31u] + 1u + obj - COVER_BASE] + 2u];
+        } else {
+            blocks = vols[obj * MODEL_HEADER + 1u];
+        }
+        let s = blocks + ((k / 2u) % PLANT_SPECIES) * PLANT_BLOCK + 12u + (k % 2u) * 6u;
         c.base = mix(vol_v3(s), vol_v3(s + 3u), f);
         c.trans = 0.0;
         c.emis = 0.0;

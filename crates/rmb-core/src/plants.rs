@@ -73,6 +73,11 @@ pub struct PlantSpecies {
     pub size_variation: f64,
     /// Swaying in the current (0 = still, 1 = strongly), timed by the seabed's sway.
     pub sway: f64,
+    /// Plants on other surfaces ([`crate::plant_cover`]): direction of growth between the
+    /// surface normal (0) and straight up (1, the host's own z axis), and the steepest surface
+    /// they grow on (degrees from up; 180 = anywhere).
+    pub upright: f64,
+    pub max_slope: f64,
     /// Colors of the branches and of the leaves, at the root and at the top.
     pub branch_colors: [[f32; 3]; 2],
     pub leaf_colors: [[f32; 3]; 2],
@@ -101,6 +106,8 @@ impl Default for PlantSpecies {
             height: 0.5,
             size_variation: 0.4,
             sway: 0.5,
+            upright: 0.6,
+            max_slope: 180.0,
             branch_colors: [[0.2, 0.25, 0.1], [0.3, 0.4, 0.15]],
             leaf_colors: [[0.2, 0.35, 0.1], [0.45, 0.55, 0.2]],
         })
@@ -189,6 +196,8 @@ impl PlantSpecies {
             density: p[2],
             clumping: p[3],
             sway: p[4],
+            upright: 0.6,
+            max_slope: 180.0,
             size_variation: 0.4,
             branch_colors: [c[0], c[1]],
             leaf_colors: [c[2], c[3]],
@@ -309,6 +318,8 @@ pub struct PlantTemplate {
     /// radii).
     pub radius: f64,
     pub top: f64,
+    /// Farthest reach from the root in any direction (with the radii).
+    pub extent: f64,
     /// Largest divisor of the segments' distance bounds (see [`seg_norm`]): box distances
     /// divided by it never exceed a segment's bound, so the search may skip boxes by them.
     pub norm: f64,
@@ -426,17 +437,18 @@ impl PlantTemplate {
             s.ra *= scale as f32;
             s.rb *= scale as f32;
         }
-        let (mut radius, mut top) = (0.0f64, 0.0f64);
+        let (mut radius, mut top, mut extent) = (0.0f64, 0.0f64, 0.0f64);
         for s in &segs {
             let r = s.ra.max(s.rb) as f64;
             for p in [s.a, s.b] {
                 radius = radius.max(((p[0] * p[0] + p[1] * p[1]) as f64).sqrt() + r);
                 top = top.max(p[2] as f64 + r);
+                extent = extent.max(f3(p).length() + r);
             }
         }
         let nodes = build_bvh(&mut segs);
         let norm = segs.iter().map(seg_norm).fold(1.0, f64::max);
-        PlantTemplate { segs, nodes, radius, top: top.max(1e-3), norm }
+        PlantTemplate { segs, nodes, radius, top: top.max(1e-3), extent: extent.max(1e-3), norm }
     }
 
     /// Distance from `p` (template units) to the plant, if below `limit`: distance and the
@@ -681,11 +693,16 @@ pub struct PlantHit {
 /// (object × MAX_SPECIES + species) + leaf + height` ([`decode_color`]). Far above the color
 /// values of fractals (iteration counts) and patterns.
 pub const PLANT_COLOR: f64 = 100_000.0;
+/// Largest height part of a plant color value (march.wgsl `PLANT_HEIGHT_MAX`); f32 steps are
+/// 1/128 there.
+pub const PLANT_HEIGHT_MAX: f64 = 0.98;
 
 impl PlantHit {
-    /// The color value of this plant on the `object`-th composed object (0-based).
+    /// The color value of this plant on the `object`-th composed object (0-based). The height
+    /// stays below `PLANT_HEIGHT_MAX`: in f32 near 1e5 a value closer to the next integer rounds
+    /// up to it (the GPU then decoded the next species).
     pub fn color_value(&self, object: usize) -> f64 {
-        PLANT_COLOR + 2.0 * (object * MAX_SPECIES + self.species) as f64 + if self.leaf { 1.0 } else { 0.0 } + self.height.clamp(0.0, 0.999)
+        PLANT_COLOR + 2.0 * (object * MAX_SPECIES + self.species) as f64 + if self.leaf { 1.0 } else { 0.0 } + self.height.clamp(0.0, PLANT_HEIGHT_MAX)
     }
 }
 
