@@ -12,6 +12,8 @@ and the release workflow uses it as the release notes.
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-11-27
+
 - Water: the camera flies into see-through water like into air. The surface no longer slows
   the flight down, and under the water navigation keeps working (no "camera inside the
   fractal" message, no switch to double precision).
