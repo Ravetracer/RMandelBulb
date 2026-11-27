@@ -876,6 +876,14 @@ fn gpu_matches_cpu_under_water() {
         scene.camera.look_at(at, p(0.0, 0.0, 1.0));
         parity(scene.clone());
     }
+    // Wet glass just above the water: drops and their trails.
+    let mut wet = scene.clone();
+    if let Shape::Primitive(Primitive::Water { medium, .. }) = &mut wet.objects[1].shape {
+        (medium.lens_wet, medium.lens_drops, medium.time) = (1.0, 1.0, 4.0);
+    }
+    wet.camera.position = p(2.6, -2.8, 0.45);
+    wet.camera.look_at(p(0.0, 0.0, 0.1), p(0.0, 0.0, 1.0));
+    parity(wet);
     // A point light under the water.
     let mut light = scene.lighting.lights[0].clone();
     light.kind = rmb_core::scene::LightKind::Point;

@@ -428,6 +428,9 @@ cargo clippy -j 8 --workspace --all-targets
   the rim and adds a sky-colored highlight after the bounce loop. `lens_drop_look` with
   `drop_focus`: out of focus a soft edge (three random numbers per sample inside a drop:
   look through it by the edge share, blur jitter) and a bokeh-like brighter center.
+  Trails (`lens_trail`, GPU same, `wmed[9].y`): above each drop (in its column's sliding
+  frame) up to the way it came (`time × speed`, at most most of a cell), narrower and
+  fading upward; outside drops only, the same three random numbers for a small smear.
 - `Primitive::Seabed` (`SEABED_KIND` 10, `seabed_height` / `seabed_distance`, GPU same):
   4 octaves of value noise + warped sine ripples; bound by the measured slope
   (`seabed_steepness`, test `seabed_stays_a_distance_bound`). Parts (`seabed_parts`, params

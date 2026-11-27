@@ -216,8 +216,9 @@ animations. A **flat lens** magnifies the part under the water, as with real und
 cameras. When the camera comes out of the water, drops cling to the glass: each one a tiny
 lens that shows the view upside down, sliding down the glass. Within the **Drying time** they
 shrink and vanish one by one; flying close to a shore where spray flies leaves a few as well.
-Animations and the preview work this out from the camera's path; for a still image set
-**Wet lens**. Drops on a camera lens are out of focus (soft, bright blobs); **Drop focus**
+Running down, a drop leaves a thin wet trail above it (**Drop trails**) that smears the
+view a little. Animations and the preview work this out from the camera's path; for a still
+image set **Wet lens**. Drops on a camera lens are out of focus (soft, bright blobs); **Drop focus**
 makes them sharp, like rain on a window.
 
 The see-through water does not slow the camera down: fly into it from above and dive like
@@ -258,6 +259,7 @@ The **Underwater** section of the water object holds the settings:
 | Lens size | Size of the camera's front glass: with the camera at the surface the picture splits into the views above and below the water (0 = no split). | 0.2 |
 | Flat lens | The front glass is flat, like most underwater cameras: everything under the water looks 1.33 times larger. Off: a dome glass. | on |
 | Lens drops | Water drops on the glass after the camera comes out of the water (and a few from spray near a shore), each showing the view upside down; they run down the glass and dry up (0 = none, 1 = many). | 0.4 |
+| Drop trails | Wet streaks the drops leave above them as they run down; they smear the view a little (0 = none). | 0.6 |
 | Drying time | Seconds the drops take to dry up after the camera left the water. | 5 |
 | Wet lens | How wet the glass is in still images (0 = dry, 1 = just out of the water); animations and the preview add the drops from the camera's path. | 0 |
 | Drop focus | 0 = soft, bright blobs (drops on a camera lens are out of focus); 1 = sharp drops with dark rims and highlights, like rain on a window. | 0 |

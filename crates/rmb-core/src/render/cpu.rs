@@ -79,6 +79,7 @@ impl MediumFrame {
             lens: m.lens.max(0.0),
             flat_lens: m.flat_lens,
             lens_drops: m.lens_drops.clamp(0.0, 1.0) * m.lens_wet.clamp(0.0, 1.0),
+            drop_trails: m.drop_trails.clamp(0.0, 1.0),
             drop_focus: m.drop_focus.clamp(0.0, 1.0),
             time: m.time,
             plumes,
@@ -139,6 +140,7 @@ pub struct MediumFrame {
     pub lens: f64,
     pub flat_lens: bool,
     pub lens_drops: f64,
+    pub drop_trails: f64,
     pub drop_focus: f64,
     pub time: f64,
     /// Bubbles from vents (None: spread through the water).
@@ -219,6 +221,54 @@ pub fn lens_drop(u: f64, v: f64, time: f64, share: f64) -> Option<(f64, f64)> {
         }
     }
     None
+}
+
+/// The wet trail a lens drop leaves above it as it runs down (march.wgsl `lens_trail`): a
+/// streak narrower than the drop, wobbling a little and fading upward, as long as the way
+/// the drop came (at most most of a cell), thinner while the drop dries. Returns the position
+/// across the trail (-1..1) and how wet it is there (0..1), the wettest trail at (`u`, `v`).
+pub fn lens_trail(u: f64, v: f64, time: f64, share: f64) -> Option<(f64, f64)> {
+    if share <= 0.0 {
+        return None;
+    }
+    let s = LENS_DROP_CELL;
+    let ci = (u / s).floor() as i32;
+    let mut best: Option<(f64, f64)> = None;
+    for di in -1..=1 {
+        let i = ci + di;
+        let speed = 0.02 + 0.08 * super::hash3(i, 0, 71) as f64;
+        let vv = v + time * speed;
+        let cj = (vv / s).floor() as i32;
+        for dj in -1..=1 {
+            let j = cj + dj;
+            let h = |n: i32| super::hash3(i, j, n) as f64;
+            let life = (share - h(72)) * LENS_DROP_SHRINK;
+            if life <= 0.0 {
+                continue;
+            }
+            let r = s * (0.1 + 0.35 * h(73) * h(73)) * life.min(1.0).sqrt();
+            let cx = (i as f64 + 0.5 + (h(74) - 0.5) * 0.5) * s;
+            let cy = (j as f64 + 0.5 + (h(75) - 0.5) * 0.5) * s;
+            let wide = 0.75 + 0.6 * h(76);
+            let up = vv - cy;
+            let len = (time * speed).min(s * (0.4 + 0.6 * h(77)));
+            if up <= 0.0 || up >= len {
+                continue;
+            }
+            let f = up / len;
+            let w = r * wide * 0.6 * (1.0 - 0.5 * f);
+            let x = cx + r * 0.2 * (up / r * 1.7 + h(78) * std::f64::consts::TAU).sin();
+            let across = (u - x) / w;
+            if across.abs() >= 1.0 {
+                continue;
+            }
+            let wet = (1.0 - f) * (1.0 - across * across) * life.min(1.0);
+            if best.is_none_or(|b| wet > b.1) {
+                best = Some((across, wet));
+            }
+        }
+    }
+    best
 }
 
 /// Grid of the lens drops in screen units (march.wgsl `LENS_DROP_CELL`).
@@ -1525,6 +1575,18 @@ impl<'a> Shader<'a> {
                         line *= f;
                         glint = g;
                     }
+                } else if m.drop_trails > 0.0
+                    && let Some((across, wet)) = lens_trail(sx * fr.aspect, sy, m.time, m.lens_drops)
+                {
+                    // A wet trail: a thin film that smears and bends the view a little and
+                    // catches some light.
+                    let (_, u2, u3) = (rng.next_f64(), rng.next_f64(), rng.next_f64());
+                    let wet = wet * m.drop_trails;
+                    // Smeared mostly along the way the drop ran.
+                    let blur = 0.04 * wet * u2.sqrt();
+                    let ang = u3 * std::f64::consts::TAU;
+                    d = (d - cam.right * (across * 0.03 * wet + 0.3 * blur * ang.cos()) - cam.up * (blur * ang.sin())).normalize();
+                    line *= 1.0 + 0.15 * wet;
                 }
             }
         }
@@ -2522,6 +2584,15 @@ mod tests {
         // The drops show by the wetness, shrinking and vanishing as it falls.
         let count = |share: f64| (0..4000).filter(|i| lens_drop((i % 80) as f64 * 0.025 - 1.0, (i / 80) as f64 * 0.04 - 1.0, 0.0, share).is_some()).count();
         assert!(count(0.4) > count(0.2) && count(0.2) > count(0.05) && count(0.0) == 0);
+        // Trails: none on fresh drops, after a while above the drops (never inside one).
+        let grid = |time: f64| (0..20000).map(move |i| ((i % 200) as f64 * 0.01 - 1.0, (i / 200) as f64 * 0.02 - 1.0, time));
+        assert!(grid(0.0).all(|(u, v, t)| lens_trail(u, v, t, 0.5).is_none()));
+        let trails: Vec<(f64, f64)> = grid(3.0).filter(|&(u, v, t)| lens_trail(u, v, t, 0.5).is_some() && lens_drop(u, v, t, 0.5).is_none()).map(|(u, v, _)| (u, v)).collect();
+        assert!(trails.len() > 200, "{}", trails.len());
+        // Below a trail point (within the trail's width) a drop follows somewhere down the
+        // column: the trail lies above its drop.
+        let below = trails.iter().filter(|(u, v)| (1..40).any(|k| lens_drop(*u, v - k as f64 * 0.01, 3.0, 0.5).is_some())).count();
+        assert!(below * 10 > trails.len() * 8, "{below} of {}", trails.len());
     }
 
     #[test]

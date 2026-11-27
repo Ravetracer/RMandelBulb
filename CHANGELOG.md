@@ -12,6 +12,8 @@ and the release workflow uses it as the release notes.
 
 ## [Unreleased]
 
+- Water: lens drops leave wet trails on the glass as they run down (Underwater › Drop
+  trails).
 - Water: bubbles can rise in winding plumes from random vents on the ground and from objects
   marked as bubble sources (Underwater › Bubbles from, Vent spacing, Plume width; object
   setting Bubble source).

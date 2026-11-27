@@ -105,7 +105,7 @@ struct U {
     // [5] bubbles, [6] particles: cell, share, smallest and largest radius; [7] their rise,
     // z: the camera's front glass size, w: flat glass; [8] x: focus of the lens drops, y:
     // bubbles in plumes (1), z: vent spacing, w: plume width; [9] x: number of bubble
-    // sources; [10..14] their x, y in the water's frame (two per entry).
+    // sources, y: drop trails; [10..14] their x, y in the water's frame (two per entry).
     wmed: array<vec4<f32>, 14>,
 }
 
@@ -4324,6 +4324,19 @@ fn sample_pixel(px: u32, py: u32, sample: u32, k: u32) -> vec3<f32> {
                     let hy = ld.y - 0.35;
                     glint = 0.5 * focus * exp(-(hx * hx + hy * hy) / 0.03);
                 }
+            } else if (u.wmed[9].y > 0.0) {
+                // A wet trail (mirrors Shader::sample_eye).
+                let tr = lens_trail(sx * u.cam_right.w, sy, u.wmed[2].w, u.wmed[3].w);
+                if (tr.y > 0.0) {
+                    let u1 = rnd();
+                    let u2 = rnd();
+                    let u3 = rnd();
+                    let wet = tr.y * u.wmed[9].y;
+                    let blur = 0.04 * wet * sqrt(u2);
+                    let ang = u3 * 6.283185307179586;
+                    rd = normalize(rd - cr * (tr.x * 0.03 * wet + 0.3 * blur * cos(ang)) - cu * (blur * sin(ang)));
+                    line *= 1.0 + 0.15 * wet;
+                }
             }
         }
     }
@@ -4485,6 +4498,50 @@ fn lens_drop(u_: f32, v: f32, time: f32, share: f32) -> vec3<f32> {
         }
     }
     return vec3<f32>(0.0);
+}
+
+// Mirrors cpu::lens_trail: x the position across the wettest trail, y its wetness (0: none).
+fn lens_trail(u_: f32, v: f32, time: f32, share: f32) -> vec2<f32> {
+    var best = vec2<f32>(0.0);
+    if (share <= 0.0) {
+        return best;
+    }
+    let s = LENS_DROP_CELL;
+    let ci = i32(floor(u_ / s));
+    for (var di = -1; di <= 1; di++) {
+        let i = ci + di;
+        let speed = 0.02 + 0.08 * hash3(i, 0, 71);
+        let vv = v + time * speed;
+        let cj = i32(floor(vv / s));
+        for (var dj = -1; dj <= 1; dj++) {
+            let j = cj + dj;
+            let life = (share - hash3(i, j, 72)) * LENS_DROP_SHRINK;
+            if (life <= 0.0) {
+                continue;
+            }
+            let r = s * (0.1 + 0.35 * hash3(i, j, 73) * hash3(i, j, 73)) * sqrt(min(life, 1.0));
+            let cx = (f32(i) + 0.5 + (hash3(i, j, 74) - 0.5) * 0.5) * s;
+            let cy = (f32(j) + 0.5 + (hash3(i, j, 75) - 0.5) * 0.5) * s;
+            let wide = 0.75 + 0.6 * hash3(i, j, 76);
+            let up = vv - cy;
+            let len = min(time * speed, s * (0.4 + 0.6 * hash3(i, j, 77)));
+            if (up <= 0.0 || up >= len) {
+                continue;
+            }
+            let f = up / len;
+            let w = r * wide * 0.6 * (1.0 - 0.5 * f);
+            let x = cx + r * 0.2 * sin(up / r * 1.7 + hash3(i, j, 78) * 6.283185307179586);
+            let across = (u_ - x) / w;
+            if (abs(across) >= 1.0) {
+                continue;
+            }
+            let wet = (1.0 - f) * (1.0 - across * across) * min(life, 1.0);
+            if (wet > best.y) {
+                best = vec2<f32>(across, wet);
+            }
+        }
+    }
+    return best;
 }
 
 // Mirrors cpu::waterline_shade: the line where the water clings to the camera's glass.

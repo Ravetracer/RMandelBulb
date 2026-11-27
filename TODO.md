@@ -177,7 +177,7 @@
         settings, preview)
   - [ ] Possible: plants on other objects than the seabed (on fractal surfaces), parametric
         L-systems
-  - [ ] Possible: wet trails behind the lens drops running down
+  - [x] Wet trails behind the lens drops running down (Drop trails)
   - [ ] Possible: faster underwater rendering (views from below are about twice as slow;
         medium scenes compile about 3 s longer)
 

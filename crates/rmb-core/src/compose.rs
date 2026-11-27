@@ -380,6 +380,8 @@ pub struct WaterMedium {
     pub lens_wet: f64,
     /// Seconds the lens drops take to dry up after the camera left the water.
     pub dry_time: f64,
+    /// Wet trails the drops leave on the glass as they run down (0 = none, 1 = strong).
+    pub drop_trails: f64,
     /// Focus of the lens drops: 0 = soft, blurred blobs (drops on a camera lens are out of
     /// focus), 1 = sharp drops with dark rims (like a window in focus).
     pub drop_focus: f64,
@@ -408,7 +410,7 @@ impl BubbleSource {
 
 impl Default for WaterMedium {
     fn default() -> Self {
-        WaterMedium { see_through: false, ior: 1.33, color: [0.03, 0.22, 0.3], filter: [0.12, 0.6, 0.78], visibility: 3.0, murk: 0.25, depth_dark: 1.0, caustics: 1.0, caustic_sharpness: 0.5, light_rays: 0.4, bubbles: 0.2, bubble_size: 0.012, bubble_speed: 0.25, bubble_source: BubbleSource::Everywhere, vent_spacing: 1.0, plume_width: 0.08, particles: 0.15, particle_size: 0.0025, time: 0.0, lens: 0.2, flat_lens: true, lens_drops: 0.4, lens_wet: 0.0, dry_time: 5.0, drop_focus: 0.0 }
+        WaterMedium { see_through: false, ior: 1.33, color: [0.03, 0.22, 0.3], filter: [0.12, 0.6, 0.78], visibility: 3.0, murk: 0.25, depth_dark: 1.0, caustics: 1.0, caustic_sharpness: 0.5, light_rays: 0.4, bubbles: 0.2, bubble_size: 0.012, bubble_speed: 0.25, bubble_source: BubbleSource::Everywhere, vent_spacing: 1.0, plume_width: 0.08, particles: 0.15, particle_size: 0.0025, time: 0.0, lens: 0.2, flat_lens: true, lens_drops: 0.4, lens_wet: 0.0, dry_time: 5.0, drop_trails: 0.6, drop_focus: 0.0 }
     }
 }
 

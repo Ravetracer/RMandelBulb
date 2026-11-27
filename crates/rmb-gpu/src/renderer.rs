@@ -174,6 +174,7 @@ fn medium_gpu(prog: &Program, lights: &[rmb_core::render::FrameLight]) -> [[f32;
     let base = [f(m.ext, m.ior as f32), f(m.fade, wet as f32), f(m.color, m.time as f32), f(m.up.to_array(), m.lens_drops as f32), [m.caustics as f32, m.caustic_step as f32, m.rays as f32, m.scatter as f32], drop(&m.drops[0]), drop(&m.drops[1]), [m.drops[0].rise as f32, m.drops[1].rise as f32, m.lens as f32, if m.flat_lens { 1.0 } else { 0.0 }]];
     let mut out = [[0.0f32; 4]; 14];
     out[..8].copy_from_slice(&base);
+    out[9][1] = m.drop_trails as f32;
     let pl = m.plumes;
     out[8] = [m.drop_focus as f32, if pl.is_some() { 1.0 } else { 0.0 }, pl.map_or(0.0, |p| p.spacing as f32), pl.map_or(1.0, |p| p.width as f32)];
     if let Some(p) = pl {
