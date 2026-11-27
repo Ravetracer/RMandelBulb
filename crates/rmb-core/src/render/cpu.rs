@@ -65,7 +65,7 @@ impl MediumFrame {
             ],
             lens: m.lens.max(0.0),
             flat_lens: m.flat_lens,
-            lens_drops: m.lens_drops.clamp(0.0, 1.0),
+            lens_drops: m.lens_drops.clamp(0.0, 1.0) * m.lens_wet.clamp(0.0, 1.0),
             drop_focus: m.drop_focus.clamp(0.0, 1.0),
             time: m.time,
         };
@@ -132,8 +132,8 @@ pub struct MediumFrame {
 /// A water drop on the camera's glass at the screen position (`u` = sx × aspect, `v` = sy)
 /// at time `time` (march.wgsl `lens_drop`): drops sit in a grid of `LENS_DROP_CELL`, `share`
 /// of the cells hold one, each column of cells slides down at its own speed; sizes from tiny
-/// to large (few), each with its own width to height. Returns the position in the drop (x,
-/// y; length below 1).
+/// to large (few), each with its own width to height. As `share` falls (the glass dries) the
+/// drops shrink and vanish one by one. Returns the position in the drop (x, y; length below 1).
 pub fn lens_drop(u: f64, v: f64, time: f64, share: f64) -> Option<(f64, f64)> {
     if share <= 0.0 {
         return None;
@@ -147,10 +147,11 @@ pub fn lens_drop(u: f64, v: f64, time: f64, share: f64) -> Option<(f64, f64)> {
         for dj in -1..=1 {
             let j = cj + dj;
             let h = |n: i32| super::hash3(i, j, n) as f64;
-            if h(72) >= share {
+            let life = (share - h(72)) * LENS_DROP_SHRINK;
+            if life <= 0.0 {
                 continue;
             }
-            let r = s * (0.1 + 0.35 * h(73) * h(73));
+            let r = s * (0.1 + 0.35 * h(73) * h(73)) * life.min(1.0).sqrt();
             let cx = (i as f64 + 0.5 + (h(74) - 0.5) * 0.5) * s;
             let cy = (j as f64 + 0.5 + (h(75) - 0.5) * 0.5) * s;
             let wide = 0.75 + 0.6 * h(76);
@@ -165,6 +166,10 @@ pub fn lens_drop(u: f64, v: f64, time: f64, share: f64) -> Option<(f64, f64)> {
 
 /// Grid of the lens drops in screen units (march.wgsl `LENS_DROP_CELL`).
 pub const LENS_DROP_CELL: f64 = 0.22;
+
+/// A lens drop shrinks while the drop share is within 1 / this of its own threshold
+/// (march.wgsl `LENS_DROP_SHRINK`).
+pub const LENS_DROP_SHRINK: f64 = 8.0;
 
 /// A lens drop at (`dx`, `dy`) in it with `focus` (march.wgsl `lens_drop_look`): the share of
 /// samples that look through the drop (soft edge out of focus), the brightness factor
@@ -1387,10 +1392,9 @@ impl<'a> Shader<'a> {
                     d = t;
                 }
             } else if !in_water && m.lens_drops > 0.0 && m.lens > 0.0 {
-                // Drops on the glass above the water, fewer higher up: each a tiny lens that
-                // shows the view turned around.
-                let share = m.lens_drops * (1.0 + depth / (m.lens * 5.0)).clamp(0.0, 1.0);
-                if let Some((dx, dy)) = lens_drop(sx * fr.aspect, sy, m.time, share) {
+                // Drops on the wet glass above the water: each a tiny lens that shows the view
+                // turned around.
+                if let Some((dx, dy)) = lens_drop(sx * fr.aspect, sy, m.time, m.lens_drops) {
                     // Out of focus: a soft edge (a share of the samples look past the drop)
                     // and a blurred view through it.
                     let (u1, u2, u3) = (rng.next_f64(), rng.next_f64(), rng.next_f64());
@@ -2152,7 +2156,7 @@ fn screen_ray(scene: &Scene, sx: f64, sy: f64, width: u32, height: u32) -> Optio
 pub fn pick(scene: &Scene, sx: f64, sy: f64, width: u32, height: u32) -> Option<(f64, V3)> {
     let prog = Program::for_scene(scene);
     let shader = Shader::new(scene, &prog, width, height);
-    let mut ev = prog.evaluator();
+    let mut ev = pick_evaluator(&prog, &shader, scene);
     let (o, d) = screen_ray(scene, sx, sy, width, height)?;
     let (hit, _, _) = shader.march(&mut ev, o, d, super::start_distance(scene), scene.march.max_distance, scene.march.max_steps);
     hit.map(|h| ((h.pos - scene.camera.position).length(), h.pos))
@@ -2198,7 +2202,7 @@ pub fn light_visibility(scene: &Scene, p: V3, directional: bool, radius: f64) ->
 pub fn pick_center(scene: &Scene) -> Option<(f64, V3)> {
     let prog = Program::for_scene(scene);
     let shader = Shader::new(scene, &prog, 256, 256);
-    let mut ev = prog.evaluator();
+    let mut ev = pick_evaluator(&prog, &shader, scene);
     let cam = &scene.camera;
     let (hit, _, _) = shader.march(&mut ev, cam.position, cam.forward, super::start_distance(scene), scene.march.max_distance, scene.march.max_steps);
     hit.map(|h| (h.t, h.pos))
@@ -2209,17 +2213,88 @@ pub fn pick_center(scene: &Scene) -> Option<(f64, V3)> {
 pub fn pick_object(scene: &Scene, sx: f64, sy: f64, width: u32, height: u32) -> Option<u32> {
     let prog = Program::for_scene(scene);
     let shader = Shader::new(scene, &prog, width, height);
-    let mut ev = prog.evaluator();
+    let mut ev = pick_evaluator(&prog, &shader, scene);
     let (o, d) = screen_ray(scene, sx, sy, width, height)?;
     let (hit, _, _) = shader.march(&mut ev, o, d, super::start_distance(scene), scene.march.max_distance, scene.march.max_steps);
     hit.map(|h| h.orbit.object)
 }
 
-/// Distance estimate at the camera position (navigation speed).
+/// An evaluator for rays from the camera: under the see-through water they stop at its
+/// surface from below, above it at the surface from above.
+fn pick_evaluator<'a>(prog: &'a Program, shader: &Shader, scene: &Scene) -> Evaluator<'a> {
+    let mut ev = prog.evaluator();
+    if shader.water_depth(scene.camera.position) > 0.0 {
+        ev.water_mode = crate::fractal::WATER_INSIDE;
+    }
+    ev
+}
+
+/// Distance estimate at the camera position (navigation speed). The see-through water does
+/// not count: the camera flies into it like into air.
 pub fn distance_at_camera(scene: &Scene) -> f64 {
     let prog = Program::for_scene(scene);
     let mut ev = prog.evaluator();
+    ev.water_mode = crate::fractal::WATER_IGNORED;
     ev.de(scene.camera.position, 1e-6)
+}
+
+/// Time between two chances of spray hitting the camera's glass (seconds).
+const SPRAY_TICK: f64 = 0.25;
+
+/// How wet the camera's glass is at time `now` (seconds; 0 = dry, 1 = just out of the water),
+/// from the camera positions before: `cam_at(t)` gives the position at time `t`. Leaving the
+/// see-through water wets it fully, spray near a shore partly (by chance, every
+/// `SPRAY_TICK`); it dries linearly within `WaterMedium::dry_time`. 0 without lens drops.
+pub fn lens_wetness(scene: &Scene, now: f64, cam_at: &dyn Fn(f64) -> V3) -> f64 {
+    let Some(m) = scene.objects.iter().find_map(|o| match &o.shape {
+        crate::compose::Shape::Primitive(p) => p.medium().filter(|m| m.see_through),
+        _ => None,
+    }) else {
+        return 0.0;
+    };
+    if m.lens_drops <= 0.0 || m.lens <= 0.0 {
+        return 0.0;
+    }
+    let prog = Program::for_scene(scene);
+    let Some((obj, _)) = prog.medium else { return 0.0 };
+    let ob = &prog.objects[obj];
+    let crate::fractal::ObjectShape::Primitive(_, a) = &ob.shape else { return 0.0 };
+    let dry = m.dry_time.max(0.05);
+    let depth = |p: V3| {
+        let q = ob.local(p);
+        (crate::compose::water_height(a, q.x, q.y, crate::compose::NO_SHORE) - q.z) * ob.size.z
+    };
+    // The last time the camera was under the water, looked up in steps of 1/30 s.
+    let step = (1.0 / 30.0f64).min(dry / 4.0);
+    let mut wet = 0.0f64;
+    let steps = (dry / step).ceil() as i32;
+    for k in 0..=steps {
+        let age = k as f64 * step;
+        if depth(cam_at(now - age)) > 0.0 {
+            wet = 1.0 - age / dry;
+            break;
+        }
+    }
+    // Spray: a chance per tick by how far into the spray zone the camera was, half wet.
+    if a[9] > 0.0 && a[8] > 0.0 {
+        let mut ev = prog.evaluator();
+        ev.water_mode = crate::fractal::WATER_IGNORED;
+        let last = (now / SPRAY_TICK).floor() as i64;
+        for i in 0..=(dry / SPRAY_TICK).ceil() as i64 {
+            let tick = last - i;
+            let age = now - tick as f64 * SPRAY_TICK;
+            let left = 0.5 * (1.0 - age / dry);
+            if left <= wet || age < 0.0 {
+                continue;
+            }
+            let p = cam_at(tick as f64 * SPRAY_TICK);
+            let zone = crate::compose::water_spray_zone(a, ob.local(p), ev.de(p, 1e-6) / ob.scale);
+            if zone > 0.0 && (super::hash3(tick as i32, (tick >> 31) as i32, 77) as f64) < zone * 0.5 {
+                wet = left;
+            }
+        }
+    }
+    wet.clamp(0.0, 1.0)
 }
 
 #[cfg(test)]
@@ -2286,6 +2361,48 @@ mod tests {
         assert!(wet(0.0) > 100);
         let at = |time: f64| (0..4000).map(|i| lens_drop((i % 80) as f64 * 0.025 - 1.0, (i / 80) as f64 * 0.04 - 1.0, time, 0.5).is_some()).collect::<Vec<_>>();
         assert_ne!(at(0.0), at(3.0));
+    }
+
+    #[test]
+    fn the_camera_flies_into_see_through_water_like_into_air() {
+        let s = underwater_scene();
+        let dry = {
+            let mut d = s.clone();
+            d.objects.clear();
+            distance_at_camera(&d)
+        };
+        // Under the water: the distance to the fractal, not "inside the solid".
+        assert!((distance_at_camera(&s) - dry).abs() < 1e-9);
+        // Just above the surface: the surface does not slow the camera down.
+        let mut above = s.clone();
+        above.camera.position = v3(2.4, -2.6, 0.2 + 0.25);
+        let mut above_dry = above.clone();
+        above_dry.objects.clear();
+        assert!((distance_at_camera(&above) - distance_at_camera(&above_dry)).abs() < 1e-9);
+        // The precision does not switch to double under the water.
+        let prog = Program::for_scene(&s);
+        assert!(super::super::zoom_ratio(&s, &prog, 720) > super::super::DEEP_ZOOM_RATIO);
+        // Picks under the water find the fractal ahead, not the water at the camera.
+        let (t, _) = pick_center(&s).expect("the fractal ahead");
+        assert!(t > 0.5, "{t}");
+    }
+
+    #[test]
+    fn lens_drops_come_after_leaving_the_water_and_dry_up() {
+        let s = underwater_scene();
+        let under = s.camera.position;
+        let above = under + v3(0.0, 0.0, 2.5);
+        // Surfaced at t = 10 s, drying time 5 s.
+        let path = |t: f64| if t < 10.0 { under } else { above };
+        let wet = |now: f64| lens_wetness(&s, now, &path);
+        assert!(wet(10.0) > 0.95, "{}", wet(10.0));
+        assert!((wet(12.5) - 0.5).abs() < 0.05, "{}", wet(12.5));
+        assert_eq!(wet(16.0), 0.0);
+        // Never under the water, far from any shore: dry.
+        assert_eq!(lens_wetness(&s, 10.0, &|_| above), 0.0);
+        // The drops show by the wetness, shrinking and vanishing as it falls.
+        let count = |share: f64| (0..4000).filter(|i| lens_drop((i % 80) as f64 * 0.025 - 1.0, (i / 80) as f64 * 0.04 - 1.0, 0.0, share).is_some()).count();
+        assert!(count(0.4) > count(0.2) && count(0.2) > count(0.05) && count(0.0) == 0);
     }
 
     #[test]

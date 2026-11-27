@@ -914,7 +914,35 @@ impl AnimationPlan {
         }
         let audio = self.audio.as_ref().map_or([0.0; 4], |(l, off)| l.at(off + t / self.fps.max(1e-9)));
         apply_drivers(&mut scene, &self.drivers, DriverTime { frame: t, frames: self.frames.len(), fps: self.fps, key: fc.u, audio });
+        self.wet_lens(&mut scene, t);
         scene
+    }
+
+    /// Lens drops after the camera left the water (or met spray) on the path before frame
+    /// time `t`: raises the medium's `lens_wet` (see [`crate::render::cpu::lens_wetness`]).
+    fn wet_lens(&self, scene: &mut Scene, t: f64) {
+        let fps = self.fps.max(1e-9);
+        let frames = &self.frames;
+        let cam_at = |s: f64| {
+            let f = (s * fps).clamp(0.0, (frames.len() - 1) as f64);
+            let i = (f.floor() as usize).min(frames.len().saturating_sub(2));
+            match frames.get(i + 1) {
+                Some(b) => frames[i].pos + (b.pos - frames[i].pos) * (f - i as f64),
+                None => frames[i].pos,
+            }
+        };
+        let wet = crate::render::cpu::lens_wetness(scene, t / fps, &cam_at);
+        if wet <= 0.0 {
+            return;
+        }
+        for o in &mut scene.objects {
+            if let crate::compose::Shape::Primitive(crate::compose::Primitive::Water { medium, .. }) = &mut o.shape
+                && medium.see_through
+            {
+                medium.lens_wet = medium.lens_wet.max(wet);
+                break;
+            }
+        }
     }
 }
 

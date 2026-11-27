@@ -374,7 +374,9 @@ cargo clippy -j 8 --workspace --all-targets
   the first see-through water, part of the signature; GPU `MEDIUM`, `MEDIUM_OBJ`, uniform
   `wmed` from `renderer::medium_gpu`): `Evaluator::water_mode` / private `water_mode`
   (`WATER_SOLID`, `WATER_INSIDE`: the negated `water_body_distance` without spray, the air is
-  the solid; `WATER_IGNORED`: 3e38, used by `soft_shadow` / `ambient_occlusion`). The bounce
+  the solid; `WATER_IGNORED`: 3e38, used by `soft_shadow` / `ambient_occlusion`, and by
+  `distance_at_camera` / `zoom_ratio`, so navigation speed and Auto precision ignore the
+  medium; picks start in `WATER_INSIDE` when the camera is under the water). The bounce
   loop keeps `in_water` (camera: `MediumFrame::depth` > 0, open sea without shore waves) and
   passes it to `trace` (`Seg::water`); at the medium's surface `water_at` gives reflection
   (`water_fresnel` above, `fresnel_exact` with TIR below) and `see` (passing share; foam is
@@ -412,8 +414,12 @@ cargo clippy -j 8 --workspace --all-targets
   leaves it; `waterline_shade` darkens the meniscus. `flat_lens`: rays starting in the water
   refract at the glass (normal = -forward, 1/ior) before the first trace. Lens drops
   (`lens_drop`, `lens_drop_shade`): screen-space grid (`LENS_DROP_CELL`, 3 × 3 cells, each
-  column sliding down by its own speed × `time`) on glass points above the water, share
-  fading over five lens sizes of height; the drop bends the ray (inverted view), darkens
+  column sliding down by its own speed × `time`) on glass points above the water, share =
+  `lens_drops` × `lens_wet` (drops shrink near their own threshold, `LENS_DROP_SHRINK`, so
+  they vanish one by one while drying). `cpu::lens_wetness` (1 when the camera left the
+  water, linear to 0 over `dry_time`; spray ticks by `compose::water_spray_zone`) raises
+  `lens_wet` in `AnimationPlan::scene_of` (from the frames' path) and in the preview
+  (`viewport.rs` `LensWet`, camera history; quantized, as each change restarts the samples); the drop bends the ray (inverted view), darkens
   the rim and adds a sky-colored highlight after the bounce loop. `lens_drop_look` with
   `drop_focus`: out of focus a soft edge (three random numbers per sample inside a drop:
   look through it by the edge share, blur jitter) and a bokeh-like brighter center.

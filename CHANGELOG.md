@@ -12,6 +12,13 @@ and the release workflow uses it as the release notes.
 
 ## [Unreleased]
 
+- Water: the camera flies into see-through water like into air. The surface no longer slows
+  the flight down, and under the water navigation keeps working (no "camera inside the
+  fractal" message, no switch to double precision).
+- Water: lens drops appear when the camera comes out of the water and dry up within the new
+  **Drying time** (shrinking and vanishing one by one); spray near a shore leaves a few.
+  **Wet lens** sets them for still images.
+
 ## [1.2.0] - 2026-11-26
 
 - Water: new Underwater settings. See-through water bends rays into it (refraction) and the

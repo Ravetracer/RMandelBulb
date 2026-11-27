@@ -698,7 +698,9 @@ fn water_medium_params(ui: &mut Ui, m: &mut rmb_core::compose::WaterMedium) {
         widgets::slider(ui, "Time", "The moment of the bubbles and particles: another value shows them elsewhere in a still image (animations add one per second)", &mut m.time, -1000.0..=1000.0, 0.0);
         widgets::slider_log(ui, "Lens size", "Size of the camera's front glass (scene units): with the camera at the surface, the water line crosses the glass and the picture splits into the views above and below the water, with a dark line where the water clings to the glass (0 = no split)", &mut m.lens, 0.0..=10.0, d.lens);
         widgets::checkbox(ui, "Flat lens", "The camera's front glass is flat, like most underwater cameras: rays bend where they leave it into the water, so everything under the water looks 1.33 times larger (and the half below the waterline is magnified). Off: a dome glass (no bending)", &mut m.flat_lens);
-        widgets::slider(ui, "Lens drops", "Water drops on the camera's glass above the water, more near the surface (within five lens sizes); each shows the view upside down, and they run down the glass in animations (0 = none, 1 = many)", &mut m.lens_drops, 0.0..=1.0, d.lens_drops);
+        widgets::slider(ui, "Lens drops", "Water drops on the camera's glass after it comes out of the water (and a few from spray near a shore); each shows the view upside down, they run down the glass and dry up (0 = none, 1 = many)", &mut m.lens_drops, 0.0..=1.0, d.lens_drops);
+        widgets::slider(ui, "Drying time", "Seconds the lens drops take to dry up after the camera left the water (they shrink and vanish one by one)", &mut m.dry_time, 0.1..=60.0, d.dry_time);
+        widgets::slider(ui, "Wet lens", "How wet the glass is in still images (0 = dry, 1 = just out of the water). Animations and the preview add the drops from the camera's path by themselves", &mut m.lens_wet, 0.0..=1.0, d.lens_wet);
         widgets::slider(ui, "Drop focus", "0 = soft, blurred blobs (drops on a camera lens are out of focus); 1 = sharp drops with dark rims and highlights, like rain on a window in focus", &mut m.drop_focus, 0.0..=1.0, d.drop_focus);
     });
 }

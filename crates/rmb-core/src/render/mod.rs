@@ -600,7 +600,10 @@ pub fn zoom_ratio(scene: &Scene, prog: &crate::Program, height: u32) -> f64 {
     let m = &scene.march;
     let pixel = 2.0 * scene.camera.tan_half_fov() / height.max(1) as f64 * m.detail;
     let (o, d) = (scene.camera.position, scene.camera.forward);
+    // The see-through water is smooth and never needs double precision; under it the march
+    // would stop at the camera.
     let mut ev = prog.evaluator();
+    ev.water_mode = crate::fractal::WATER_IGNORED;
     let mut t = start_distance(scene);
     for _ in 0..m.max_steps.min(1000) {
         let p = o + d * t;

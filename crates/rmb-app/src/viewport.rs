@@ -70,6 +70,8 @@ pub struct Viewport {
     nav_scale: f64,
     /// Fly speed multiplier (wheel in fly mode).
     pub fly_speed: f64,
+    /// Recent camera positions for the lens drops after leaving the water.
+    lens: LensWet,
     /// Rendered size of the last frame.
     pub render_size: (u32, u32),
     pass_start: Instant,
@@ -157,6 +159,7 @@ impl Viewport {
             pivot: None,
             nav_scale: 0.1,
             fly_speed: 1.0,
+            lens: LensWet::default(),
             render_size: (0, 0),
             pass_start: Instant::now(),
             timed: None,
@@ -339,7 +342,13 @@ impl Viewport {
         };
         self.render_size = size;
         let preview = self.preview.take();
-        let shown = preview.as_ref().map(|p| &p.0).unwrap_or(&doc.scene);
+        // The glass gets wet when the camera leaves the water (animations compute it from the
+        // path themselves).
+        let wet = if preview.is_none() { self.lens.update(&doc.scene) } else { None };
+        if self.lens.drying() {
+            ui.ctx().request_repaint();
+        }
+        let shown = preview.as_ref().map(|p| &p.0).or(wet.as_ref()).unwrap_or(&doc.scene);
         self.update_flare(ui.ctx(), shown, size);
         let mut texture = if self.gpu.is_some() { self.update_gpu(frame, shown, size, fast, prefs) } else { self.update_cpu(ui.ctx(), shown, size) };
         if self.show_denoised
@@ -841,5 +850,73 @@ impl Viewport {
             p.rect_filled(r, 6.0, Color32::from_black_alpha(150));
             p.galley(r.min + vec2(8.0, 4.0), galley, theme::TEXT);
         }
+    }
+}
+
+/// The camera's recent path in the preview and how wet its glass is
+/// (`rmb_core::render::cpu::lens_wetness`).
+struct LensWet {
+    clock: Instant,
+    /// (seconds on `clock`, camera position) whenever the camera moved; oldest first.
+    history: std::collections::VecDeque<(f64, V3)>,
+    wet: f64,
+}
+
+impl Default for LensWet {
+    fn default() -> Self {
+        LensWet { clock: Instant::now(), history: Default::default(), wet: 0.0 }
+    }
+}
+
+impl LensWet {
+    /// Steps of the wetness shown (each change restarts the preview's samples).
+    const STEPS: f64 = 40.0;
+
+    /// Records the camera and returns `scene` with its glass wet, or None when it is dry.
+    fn update(&mut self, scene: &Scene) -> Option<Scene> {
+        let now = self.clock.elapsed().as_secs_f64();
+        let pos = scene.camera.position;
+        if self.history.back().is_none_or(|(_, p)| *p != pos) {
+            self.history.push_back((now, pos));
+        }
+        let medium = scene.objects.iter().find_map(|o| match &o.shape {
+            rmb_core::compose::Shape::Primitive(p) => p.medium().filter(|m| m.see_through && m.lens_drops > 0.0),
+            _ => None,
+        });
+        let Some(m) = medium else {
+            self.wet = 0.0;
+            return None;
+        };
+        let keep = m.dry_time.max(0.05) + 1.0;
+        while self.history.len() > 1 && self.history[1].0 < now - keep {
+            self.history.pop_front();
+        }
+        // Nothing moved within the drying time and the glass is dry: nothing to compute.
+        let moved = self.history.back().is_some_and(|(t, _)| *t >= now - keep);
+        self.wet = if moved || self.wet > 0.0 {
+            let h = &self.history;
+            let cam_at = |t: f64| h.iter().rev().find(|(ht, _)| *ht <= t).or(h.front()).map_or(pos, |(_, p)| *p);
+            (rmb_core::render::cpu::lens_wetness(scene, now, &cam_at) * Self::STEPS).ceil() / Self::STEPS
+        } else {
+            0.0
+        };
+        if self.wet <= m.lens_wet {
+            return None;
+        }
+        let mut wet = scene.clone();
+        for o in &mut wet.objects {
+            if let rmb_core::compose::Shape::Primitive(rmb_core::compose::Primitive::Water { medium, .. }) = &mut o.shape
+                && medium.see_through
+            {
+                medium.lens_wet = self.wet;
+                break;
+            }
+        }
+        Some(wet)
+    }
+
+    /// The drops are drying (the preview must keep updating).
+    fn drying(&self) -> bool {
+        self.wet > 0.0
     }
 }

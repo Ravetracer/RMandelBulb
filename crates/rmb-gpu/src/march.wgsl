@@ -3847,9 +3847,8 @@ fn sample_pixel(px: u32, py: u32, sample: u32, k: u32) -> vec3<f32> {
                 rd = t;
             }
         } else if (!in_water && u.wmed[3].w > 0.0 && lens > 0.0) {
-            // Drops on the glass above the water.
-            let share = u.wmed[3].w * clamp(1.0 + depth / (lens * 5.0), 0.0, 1.0);
-            let ld = lens_drop(sx * u.cam_right.w, sy, u.wmed[2].w, share);
+            // Drops on the wet glass above the water.
+            let ld = lens_drop(sx * u.cam_right.w, sy, u.wmed[2].w, u.wmed[3].w);
             if (ld.z > 0.5) {
                 // Out of focus: a soft edge and a blurred view (mirrors Shader::sample_eye).
                 let u1 = rnd();
@@ -4001,6 +4000,8 @@ fn sample_pixel(px: u32, py: u32, sample: u32, k: u32) -> vec3<f32> {
 
 // Mirrors cpu::LENS_DROP_CELL.
 const LENS_DROP_CELL: f32 = 0.22;
+// Mirrors cpu::LENS_DROP_SHRINK.
+const LENS_DROP_SHRINK: f32 = 8.0;
 
 // Mirrors cpu::lens_drop: xy the position in the drop, z 1 when the point is in one.
 fn lens_drop(u_: f32, v: f32, time: f32, share: f32) -> vec3<f32> {
@@ -4015,10 +4016,11 @@ fn lens_drop(u_: f32, v: f32, time: f32, share: f32) -> vec3<f32> {
         let cj = i32(floor(vv / s));
         for (var dj = -1; dj <= 1; dj++) {
             let j = cj + dj;
-            if (hash3(i, j, 72) >= share) {
+            let life = (share - hash3(i, j, 72)) * LENS_DROP_SHRINK;
+            if (life <= 0.0) {
                 continue;
             }
-            let r = s * (0.1 + 0.35 * hash3(i, j, 73) * hash3(i, j, 73));
+            let r = s * (0.1 + 0.35 * hash3(i, j, 73) * hash3(i, j, 73)) * sqrt(min(life, 1.0));
             let cx = (f32(i) + 0.5 + (hash3(i, j, 74) - 0.5) * 0.5) * s;
             let cy = (f32(j) + 0.5 + (hash3(i, j, 75) - 0.5) * 0.5) * s;
             let wide = 0.75 + 0.6 * hash3(i, j, 76);

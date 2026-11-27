@@ -72,6 +72,8 @@ impl Default for SceneObject {
     }
 }
 
+// Scenes hold a handful of objects: the water's settings inline cost nothing worth a box.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Shape {
     Fractal(Box<Fractal>),
@@ -307,9 +309,16 @@ pub struct WaterMedium {
     /// everything under the water looks 1.33 times larger (like most underwater cameras);
     /// off: a dome (no bending).
     pub flat_lens: bool,
-    /// Water drops on the part of the glass above the water near the surface (0 = none, 1 =
-    /// many); they run down the glass with the clock.
+    /// Water drops on the part of the glass above the water after the camera left the water
+    /// (0 = none, 1 = many); they run down the glass with the clock and dry up within
+    /// `dry_time`. Spray near a shore leaves a few as well.
     pub lens_drops: f64,
+    /// How wet the glass is (0 = dry, 1 = just out of the water): the share of the lens drops
+    /// shown in stills. Animations and the preview raise it from the camera's path (diving
+    /// out, spray).
+    pub lens_wet: f64,
+    /// Seconds the lens drops take to dry up after the camera left the water.
+    pub dry_time: f64,
     /// Focus of the lens drops: 0 = soft, blurred blobs (drops on a camera lens are out of
     /// focus), 1 = sharp drops with dark rims (like a window in focus).
     pub drop_focus: f64,
@@ -317,7 +326,7 @@ pub struct WaterMedium {
 
 impl Default for WaterMedium {
     fn default() -> Self {
-        WaterMedium { see_through: false, ior: 1.33, color: [0.03, 0.22, 0.3], filter: [0.12, 0.6, 0.78], visibility: 3.0, murk: 0.25, depth_dark: 1.0, caustics: 1.0, caustic_sharpness: 0.5, light_rays: 0.4, bubbles: 0.2, bubble_size: 0.012, bubble_speed: 0.25, particles: 0.15, particle_size: 0.0025, time: 0.0, lens: 0.2, flat_lens: true, lens_drops: 0.4, drop_focus: 0.0 }
+        WaterMedium { see_through: false, ior: 1.33, color: [0.03, 0.22, 0.3], filter: [0.12, 0.6, 0.78], visibility: 3.0, murk: 0.25, depth_dark: 1.0, caustics: 1.0, caustic_sharpness: 0.5, light_rays: 0.4, bubbles: 0.2, bubble_size: 0.012, bubble_speed: 0.25, particles: 0.15, particle_size: 0.0025, time: 0.0, lens: 0.2, flat_lens: true, lens_drops: 0.4, lens_wet: 0.0, dry_time: 5.0, drop_focus: 0.0 }
     }
 }
 
@@ -646,6 +655,21 @@ fn water_shore(a: &[f64; 12], x: f64, y: f64, s: f64) -> (f64, f64) {
     // Higher and lower stretches along the coast.
     let height = 0.6 + 0.4 * water_noise(x / len * 1.3 + 8.1, y / len * 1.3 + 2.3);
     (strength * 0.22 * env * height * (wave - 0.2), near * near * wave)
+}
+
+/// How strongly spray reaches the local point `q` of a water `s` away from the shore (0..1):
+/// 1 at the coast within the height the drops fly, falling to 0 at the edge of their zone
+/// (the zone of [`water_spray`]).
+pub fn water_spray_zone(a: &[f64; 12], q: V3, s: f64) -> f64 {
+    let (amp, len, amount) = (a[0].abs().max(1e-9), a[1].max(1e-6), a[9].clamp(0.0, 2.0));
+    if amount <= 0.0 || a[8] <= 0.0 || s >= NO_SHORE {
+        return 0.0;
+    }
+    let top = amp * 3.0 * amount;
+    let range = len * SPRAY_RANGE + top * 0.6;
+    let along = (1.0 - s.max(0.0) / range).clamp(0.0, 1.0);
+    let up = (1.0 - (q.z - amp) / (top * 1.5)).clamp(0.0, 1.0);
+    along * up * amount.min(1.0)
 }
 
 /// Height of the water at (`x`, `y`) in 0..1, `s` away from the shore (mirrors march.wgsl

@@ -209,9 +209,15 @@ With the camera right at the surface, the waterline crosses the camera's front g
 size**): the picture splits into the view above and below the water, along the waves, with a
 dark line where the water clings to the glass. The waves move the line up and down in
 animations. A **flat lens** magnifies the part under the water, as with real underwater
-cameras, and drops cling to the glass above the water: each one a tiny lens that shows the
-view upside down, sliding down the glass in animations. Drops on a camera lens are out of
-focus (soft, bright blobs); **Drop focus** makes them sharp, like rain on a window.
+cameras. When the camera comes out of the water, drops cling to the glass: each one a tiny
+lens that shows the view upside down, sliding down the glass. Within the **Drying time** they
+shrink and vanish one by one; flying close to a shore where spray flies leaves a few as well.
+Animations and the preview work this out from the camera's path; for a still image set
+**Wet lens**. Drops on a camera lens are out of focus (soft, bright blobs); **Drop focus**
+makes them sharp, like rain on a window.
+
+The see-through water does not slow the camera down: fly into it from above and dive like
+through air. Only the fractal and the other objects set the flying speed.
 
 ![Half above, half below the water](images/water-waterline.jpg)
 
@@ -237,7 +243,9 @@ The **Underwater** section of the water object holds the settings:
 | Time | The moment of the bubbles and particles; animations add one per second. | 0 |
 | Lens size | Size of the camera's front glass: with the camera at the surface the picture splits into the views above and below the water (0 = no split). | 0.2 |
 | Flat lens | The front glass is flat, like most underwater cameras: everything under the water looks 1.33 times larger. Off: a dome glass. | on |
-| Lens drops | Water drops on the glass above the water near the surface, each showing the view upside down; they run down in animations (0 = none, 1 = many). | 0.4 |
+| Lens drops | Water drops on the glass after the camera comes out of the water (and a few from spray near a shore), each showing the view upside down; they run down the glass and dry up (0 = none, 1 = many). | 0.4 |
+| Drying time | Seconds the drops take to dry up after the camera left the water. | 5 |
+| Wet lens | How wet the glass is in still images (0 = dry, 1 = just out of the water); animations and the preview add the drops from the camera's path. | 0 |
 | Drop focus | 0 = soft, bright blobs (drops on a camera lens are out of focus); 1 = sharp drops with dark rims and highlights, like rain on a window. | 0 |
 
 !!! note
