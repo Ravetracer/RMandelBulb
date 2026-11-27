@@ -4323,7 +4323,9 @@ fn sample_pixel(px: u32, py: u32, sample: u32, k: u32) -> vec3<f32> {
     var glint = 0.0;
     if (MEDIUM) {
         let lens = u.wmed[7].z;
-        ro = o + (cr * (sx * u.cam_right.w) + cu * sy) * (lens * 0.5);
+        // Rays start on the glass only near the surface (mirrors Shader::sample_eye).
+        let near = clamp(2.0 - abs(water_depth(o)) / max(lens, 1.0e-12), 0.0, 1.0);
+        ro = o + (cr * (sx * u.cam_right.w) + cu * sy) * (lens * 0.5 * near);
         let depth = water_depth(ro);
         in_water = depth > 0.0;
         crossed = abs(depth) < lens;

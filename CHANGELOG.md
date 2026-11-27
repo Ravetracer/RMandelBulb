@@ -12,6 +12,9 @@ and the release workflow uses it as the release notes.
 
 ## [Unreleased]
 
+- Fixed: with see-through water in the scene the whole view was shifted and slightly
+  magnified (rays started on the camera's front glass even far from the water); now they
+  start there only near the surface, so the fractal looks the same with and without water.
 - A scene has one water and one seabed: the add menu offers no second one and they cannot
   be duplicated.
 - Faster seabed parts and plants (the search skips grid cells that cannot be nearer and

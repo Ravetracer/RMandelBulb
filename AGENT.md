@@ -414,8 +414,10 @@ cargo clippy -j 8 --workspace --all-targets
   approach (f32). `water_drops` composites after `medium_path` (farther first): bubbles by
   `fresnel_exact` (TIR rim), light from above + glint; particles 0.7 opaque. No random
   numbers. `WaterMedium::time` advances 1 per second in animations (phase `o{k}.medium`).
-- Waterline: the ray starts on the camera's front glass (`waterline_point`, `lens` wide),
-  in the water when that point is below the open sea; near the surface the first march
+- Waterline: the ray starts on the camera's front glass (`waterline_point`, `lens` wide;
+  only within two glass sizes of the surface, blended in over one, as its width shifts the
+  view; test `water_far_below_leaves_the_fractal_alone`), in the water when that point is
+  below the open sea; near the surface the first march
   leaves it; `waterline_shade` darkens the meniscus. `flat_lens`: rays starting in the water
   refract at the glass (normal = -forward, 1/ior) before the first trace. Lens drops
   (`lens_drop`, `lens_drop_shade`): screen-space grid (`LENS_DROP_CELL`, 3 × 3 cells, each

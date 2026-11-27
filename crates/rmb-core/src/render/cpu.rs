@@ -1550,7 +1550,10 @@ impl<'a> Shader<'a> {
         let mut in_water = false;
         let mut leave = false;
         if let Some(m) = &self.medium {
-            o = waterline_point(o, cam.right, cam.up, sx, sy, fr.aspect, m.lens);
+            // Rays start on the glass only near the surface (blended in over one glass size),
+            // else from the camera as without water: the glass's width would shift the view.
+            let near = (2.0 - self.water_depth(o).abs() / m.lens.max(1e-12)).clamp(0.0, 1.0);
+            o = o + (waterline_point(o, cam.right, cam.up, sx, sy, fr.aspect, m.lens) - o) * near;
             let depth = self.water_depth(o);
             in_water = depth > 0.0;
             leave = depth.abs() < m.lens;
@@ -2542,6 +2545,30 @@ mod tests {
         assert!(wet(0.0) > 100);
         let at = |time: f64| (0..4000).map(|i| lens_drop((i % 80) as f64 * 0.025 - 1.0, (i / 80) as f64 * 0.04 - 1.0, time, 0.5).is_some()).collect::<Vec<_>>();
         assert_ne!(at(0.0), at(3.0));
+    }
+
+    #[test]
+    fn water_far_below_leaves_the_fractal_alone() {
+        // The camera's front glass only matters near the surface: far above it, the fractal's
+        // pixels are the same with and without see-through water in the scene.
+        let plain = Scene::default();
+        let mut wet = plain.clone();
+        wet.objects = vec![SceneObject { name: "Sea".into(), shape: Shape::Primitive(Primitive::water()), transform: Transform { position: v3(0.0, 0.0, -3.0), ..Default::default() }, ..Default::default() }];
+        let (pa, pb) = (Program::for_scene(&plain), Program::for_scene(&wet));
+        let (sa, sb) = (Shader::new(&plain, &pa, 64, 36), Shader::new(&wet, &pb, 64, 36));
+        let (mut ea, mut eb) = (pa.evaluator(), pb.evaluator());
+        let mut hits = 0;
+        for (x, y) in [(32, 18), (28, 14), (36, 22), (30, 20), (34, 15)] {
+            let (a, b) = (sa.sample_aux(&mut ea, x, y, 0), sb.sample_aux(&mut eb, x, y, 0));
+            if a.hit == 1.0 {
+                hits += 1;
+                assert_eq!(b.hit, 1.0);
+                for k in 0..3 {
+                    assert!((a.color[k] - b.color[k]).abs() < 1e-6, "pixel {x},{y}: {:?} vs {:?}", a.color, b.color);
+                }
+            }
+        }
+        assert!(hits >= 3);
     }
 
     #[test]
