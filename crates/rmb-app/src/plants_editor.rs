@@ -107,7 +107,7 @@ fn species_editor(ui: &mut Ui, p: &mut PlantSpecies, i: usize) {
             {
                 r.symbol = c;
             }
-            ui.label("→");
+            ui.label("->");
             ui.add(egui::TextEdit::singleline(&mut r.replacement).font(egui::TextStyle::Monospace).desired_width(ui.available_width() - 90.0)).on_hover_text(SYMBOLS);
             ui.add(egui::DragValue::new(&mut r.weight).speed(0.01).range(0.0..=100.0).max_decimals(2)).on_hover_text("Weight: how often this rule is picked among the rules of its symbol");
             if widgets::icon_button(ui, icons::X, "Remove this rule").clicked() {
@@ -162,9 +162,17 @@ fn preview(ui: &mut Ui, p: &PlantSpecies) {
         let h = ((g.a[2] + g.b[2]) * 0.5 / t.top as f32).clamp(0.0, 1.0);
         let pair = if g.leaf { p.leaf_colors } else { p.branch_colors };
         let c = col([0, 1, 2].map(|k| pair[0][k] + (pair[1][k] - pair[0][k]) * h));
-        let w_side = if g.leaf { (g.ra * scale_side).max(1.0) } else { (g.ra * 2.0 * scale_side).max(1.0) };
-        painter.line_segment([to_side(g.a), to_side(g.b)], egui::Stroke::new(w_side, c));
-        painter.line_segment([to_top(g.a), to_top(g.b)], egui::Stroke::new((g.ra * scale_top).max(1.0), c));
+        if g.leaf {
+            // A leaf: the diamond through its tips and its widest points (in the middle).
+            let mid = [0, 1, 2].map(|k| (g.a[k] + g.b[k]) * 0.5);
+            let (l, r) = ([0, 1, 2].map(|k| mid[k] + g.side[k] * g.ra), [0, 1, 2].map(|k| mid[k] - g.side[k] * g.ra));
+            for to in [&to_side as &dyn Fn([f32; 3]) -> egui::Pos2, &to_top] {
+                painter.add(egui::Shape::convex_polygon(vec![to(g.a), to(l), to(g.b), to(r)], c, egui::Stroke::new(0.5, c)));
+            }
+        } else {
+            painter.line_segment([to_side(g.a), to_side(g.b)], egui::Stroke::new((g.ra * 2.0 * scale_side).max(1.0), c));
+            painter.line_segment([to_top(g.a), to_top(g.b)], egui::Stroke::new((g.ra * 2.0 * scale_top).max(1.0), c));
+        }
     }
     painter.line_segment([egui::pos2(side.left(), side.bottom()), egui::pos2(side.right(), side.bottom())], egui::Stroke::new(1.0, Color32::from_gray(90)));
     let full = t.segs.len() >= MAX_SEGMENTS;

@@ -321,6 +321,8 @@ tips in the rules:
 
 The bar `|` turns the turtle around.
 
+![The sea fan's L-system: start string, rules with weights, turtle settings and the preview from the side and from above](images/plants-editor.png){: .half}
+
 Several rules for the same symbol make a **stochastic** L-system: each time one of them is
 picked at random by its weight, so every generation branches a little differently. The
 preview under the settings shows the plant from the side and from above, with its number
