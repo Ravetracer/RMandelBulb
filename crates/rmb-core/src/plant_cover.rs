@@ -584,56 +584,33 @@ pub fn load(scene: &crate::Scene) -> Vec<String> {
 // ---------------------------------------------------------------------------------------------
 // Field
 
-/// The 3 × 3 × 3 cells around a point, nearest first (march.wgsl `CELL27`).
-pub const CELL27: [[i32; 3]; 27] = [
-    [0, 0, 0],
-    [0, 0, -1],
-    [0, -1, 0],
-    [-1, 0, 0],
-    [1, 0, 0],
-    [0, 1, 0],
-    [0, 0, 1],
-    [0, -1, -1],
-    [-1, 0, -1],
-    [1, 0, -1],
-    [0, 1, -1],
-    [-1, -1, 0],
-    [1, -1, 0],
-    [-1, 1, 0],
-    [1, 1, 0],
-    [0, -1, 1],
-    [-1, 0, 1],
-    [1, 0, 1],
-    [0, 1, 1],
-    [-1, -1, -1],
-    [1, -1, -1],
-    [-1, 1, -1],
-    [1, 1, -1],
-    [-1, -1, 1],
-    [1, -1, 1],
-    [-1, 1, 1],
-    [1, 1, 1],
-];
 
-/// The roots of one host sorted into a grid, with its species.
+/// The roots of one species sorted into a grid: corner, cell size, cells per axis; the roots
+/// of cell c are `roots[starts[c]..starts[c + 1]]` (cells x fastest).
 #[derive(Clone, Debug)]
-pub struct CoverField {
-    pub species: Vec<PlacedSpecies>,
-    /// Reach of each species around its root in template units (extent plus the sway).
-    pub reach: Vec<f64>,
-    /// Grid: corner, cell size, cells per axis; the roots of cell c are
-    /// `roots[starts[c]..starts[c + 1]]` (cells x fastest).
+pub struct SpeciesGrid {
     pub origin: V3,
     pub cell: f64,
     pub n: [usize; 3],
     pub starts: Vec<u32>,
     pub roots: Vec<CoverRoot>,
-    /// Farthest reach of any plant from its root (host units).
+    /// Farthest reach of its plants from their roots (host units).
     pub r_max: f64,
 }
 
-/// Most grid cells of a field.
+/// The roots of one host, one grid per species (cells twice the species' reach).
+#[derive(Clone, Debug)]
+pub struct CoverField {
+    pub species: Vec<PlacedSpecies>,
+    /// Reach of each species around its root in template units (extent plus the sway).
+    pub reach: Vec<f64>,
+    pub grids: Vec<SpeciesGrid>,
+}
+
+/// Most grid cells per species.
 const MAX_GRID: usize = 1 << 21;
+/// The scan reaches at most this many cells beyond the point's cell (march.wgsl `COVER_SPAN`).
+pub const COVER_SPAN: i64 = 1;
 
 /// Turned frame around a unit axis (mirrors march.wgsl `cover_frame`): branch-free
 /// orthonormal basis (Duff et al. 2017), turned by `turn`.
@@ -647,15 +624,8 @@ pub fn cover_frame(a: V3, turn: f64) -> (V3, V3) {
     (t1 * cs + t2 * sn, t2 * cs - t1 * sn)
 }
 
-impl CoverField {
-    pub fn new(set: &RootSet, cover: &PlantCover) -> Option<CoverField> {
-        let species: Vec<PlacedSpecies> = cover.growing().into_iter().enumerate().map(|(i, s)| PlacedSpecies::new(s, i)).collect();
-        if species.is_empty() || set.roots.is_empty() {
-            return None;
-        }
-        let reach: Vec<f64> = species.iter().map(|s| s.template.extent + PLANT_SWAY * s.sway * s.template.top * s.template.top).collect();
-        let r_max = species.iter().zip(&reach).map(|(s, r)| s.height * r).fold(0.0, f64::max).max(1e-9);
-        let roots: Vec<CoverRoot> = set.roots.iter().filter(|r| r.species() < species.len()).copied().collect();
+impl SpeciesGrid {
+    fn new(roots: Vec<CoverRoot>, r_max: f64) -> Option<SpeciesGrid> {
         if roots.is_empty() {
             return None;
         }
@@ -693,7 +663,24 @@ impl CoverField {
             sorted[fill[c] as usize] = *r;
             fill[c] += 1;
         }
-        Some(CoverField { species, reach, origin: lo, cell, n, starts, roots: sorted, r_max })
+        Some(SpeciesGrid { origin: lo, cell, n, starts, roots: sorted, r_max })
+    }
+}
+
+impl CoverField {
+    pub fn new(set: &RootSet, cover: &PlantCover) -> Option<CoverField> {
+        let species: Vec<PlacedSpecies> = cover.growing().into_iter().enumerate().map(|(i, s)| PlacedSpecies::new(s, i)).collect();
+        if species.is_empty() || set.roots.is_empty() {
+            return None;
+        }
+        let reach: Vec<f64> = species.iter().map(|s| s.template.extent + PLANT_SWAY * s.sway * s.template.top * s.template.top).collect();
+        let grids: Vec<SpeciesGrid> = (0..species.len())
+            .filter_map(|k| {
+                let roots: Vec<CoverRoot> = set.roots.iter().filter(|r| r.species() == k).copied().collect();
+                SpeciesGrid::new(roots, (species[k].height * reach[k]).max(1e-9))
+            })
+            .collect();
+        (!grids.is_empty()).then_some(CoverField { species, reach, grids })
     }
 
     /// The color of a species' branches or leaves at `height` (0 root .. 1 top).
@@ -705,83 +692,98 @@ impl CoverField {
 
     /// Nearest plant to the host point `q` within `limit` (mirrors march.wgsl `cover_de`): a
     /// distance bound, with the species, leaf and height of the plant when one is nearest.
-    /// Far from every root the bound is the distance to the grid's box, or to the edge of the
-    /// 3 × 3 × 3 cells searched minus the largest reach.
-    pub fn nearest(&self, q: V3, phase: f64, limit: f64) -> Option<PlantHit> {
-        let o = [self.origin.x, self.origin.y, self.origin.z];
+    /// Per species: far from its roots the bound is the distance to its grid's box; else the
+    /// cells within reach of the bound so far are scanned (at most `COVER_SPAN` beyond the
+    /// point's cell), and the roots beyond them are bounded by the scanned block's edge.
+    /// `min_size`: level of detail, the thinnest branch drawn (host units; 0 all).
+    pub fn nearest(&self, q: V3, phase: f64, limit: f64, min_size: f64) -> Option<PlantHit> {
         let p = [q.x, q.y, q.z];
-        let c = self.cell;
-        let mut out2 = 0.0;
-        for k in 0..3 {
-            let hi = o[k] + self.n[k] as f64 * c;
-            let d = (o[k] - p[k]).max(p[k] - hi).max(0.0);
-            out2 += d * d;
-        }
-        let out = out2.sqrt();
         let mut best = PlantHit { d: limit, species: 0, leaf: false, height: 0.0 };
-        if out >= best.d {
-            return None;
-        }
-        if out > c {
-            return Some(PlantHit { d: out, ..best });
-        }
-        let ci = [0, 1, 2].map(|k| (((p[k] - o[k]) / c).floor() as i64).clamp(0, self.n[k] as i64 - 1));
-        // Roots beyond the searched block are at least its edge away (sides with cells beyond).
-        let mut edge = f64::MAX;
-        for k in 0..3 {
-            if ci[k] >= 2 {
-                edge = edge.min(p[k] - (o[k] + (ci[k] - 1) as f64 * c));
-            }
-            if ci[k] + 2 < self.n[k] as i64 {
-                edge = edge.min(o[k] + (ci[k] + 2) as f64 * c - p[k]);
-            }
-        }
-        let far = (edge - self.r_max).max(out);
-        if far < best.d {
-            best.d = far;
-        }
-        for off in &CELL27 {
-            let cc = [0, 1, 2].map(|k| ci[k] + off[k] as i64);
-            if (0..3).any(|k| cc[k] < 0 || cc[k] >= self.n[k] as i64) {
-                continue;
-            }
-            // Gap to the cell's box: its plants reach at most r_max beyond it.
-            let mut g2 = 0.0;
+        for g in &self.grids {
+            let o = [g.origin.x, g.origin.y, g.origin.z];
+            let c = g.cell;
+            let mut out2 = 0.0;
             for k in 0..3 {
-                let a = o[k] + cc[k] as f64 * c;
-                let d = (a - p[k]).max(p[k] - a - c).max(0.0);
-                g2 += d * d;
+                let hi = o[k] + g.n[k] as f64 * c;
+                let d = (o[k] - p[k]).max(p[k] - hi).max(0.0);
+                out2 += d * d;
             }
-            if g2.sqrt() - self.r_max >= best.d {
+            let out = out2.sqrt();
+            if out >= best.d {
                 continue;
             }
-            let idx = cc[0] as usize + self.n[0] * (cc[1] as usize + self.n[1] * cc[2] as usize);
-            for r in &self.roots[self.starts[idx] as usize..self.starts[idx + 1] as usize] {
-                let k = r.species();
-                let s = &self.species[k];
-                let t = &s.template;
-                let size = s.height * (1.0 - s.variation * r.size as f64);
-                let d = q - V3::from(r.pos.map(|v| v as f64));
-                if d.length() - size * self.reach[k] >= best.d {
-                    continue;
+            if out > 2.0 * c {
+                best.d = out;
+                continue;
+            }
+            let ci = [0, 1, 2].map(|k| (((p[k] - o[k]) / c).floor() as i64).clamp(0, g.n[k] as i64 - 1));
+            // The cells within reach of the bound, at most COVER_SPAN beyond the point's cell.
+            let r = best.d + g.r_max;
+            let lo = [0, 1, 2].map(|k| (((p[k] - r - o[k]) / c).floor() as i64).max(ci[k] - COVER_SPAN).max(0));
+            let hi = [0, 1, 2].map(|k| (((p[k] + r - o[k]) / c).floor() as i64).min(ci[k] + COVER_SPAN).min(g.n[k] as i64 - 1));
+            // Roots beyond the scanned block are at least its edge away (sides with cells beyond).
+            let mut edge = f64::MAX;
+            for k in 0..3 {
+                if lo[k] > 0 {
+                    edge = edge.min(p[k] - (o[k] + lo[k] as f64 * c));
                 }
-                let axis = V3::from(r.axis.map(|v| v as f64));
-                let (turn, ph) = r.angles();
-                let (x, y) = cover_frame(axis, turn);
-                let mut lp = v3(d.dot(x), d.dot(y), d.dot(axis)) * (1.0 / size);
-                let z = lp.z.clamp(0.0, t.top);
-                lp.x -= PLANT_SWAY * s.sway * z * z * (phase + ph - 2.0 * z).sin();
-                let zt = (lp.z + best.d / size).clamp(0.0, t.top);
-                let warp = 1.0 + PLANT_SWAY * s.sway * (2.0 * zt + 2.0 * zt * zt);
-                if let Some((dd, seg)) = t.distance(lp, best.d / size * warp) {
-                    let dd = dd * size / warp;
-                    if dd < best.d {
-                        best = PlantHit { d: dd, species: k, leaf: t.segs[seg].leaf, height: (lp.z / t.top).clamp(0.0, 1.0) };
+                if hi[k] < g.n[k] as i64 - 1 {
+                    edge = edge.min(o[k] + (hi[k] + 1) as f64 * c - p[k]);
+                }
+            }
+            let far = (edge - g.r_max).max(out);
+            if far < best.d {
+                best = PlantHit { d: far, species: 0, leaf: false, height: 0.0 };
+            }
+            for z in lo[2]..=hi[2] {
+                for y in lo[1]..=hi[1] {
+                    for x in lo[0]..=hi[0] {
+                        let cc = [x, y, z];
+                        // Gap to the cell's box: its plants reach at most r_max beyond it.
+                        let mut g2 = 0.0;
+                        for k in 0..3 {
+                            let a = o[k] + cc[k] as f64 * c;
+                            let d = (a - p[k]).max(p[k] - a - c).max(0.0);
+                            g2 += d * d;
+                        }
+                        if g2.sqrt() - g.r_max >= best.d {
+                            continue;
+                        }
+                        let idx = x as usize + g.n[0] * (y as usize + g.n[1] * z as usize);
+                        for root in &g.roots[g.starts[idx] as usize..g.starts[idx + 1] as usize] {
+                            self.root_distance(root, q, phase, min_size, &mut best);
+                        }
                     }
                 }
             }
         }
         (best.d < limit).then_some(best)
+    }
+
+    /// The plant of `r` if it is nearer than `best`.
+    fn root_distance(&self, r: &CoverRoot, q: V3, phase: f64, min_size: f64, best: &mut PlantHit) {
+        let k = r.species();
+        let s = &self.species[k];
+        let t = &s.template;
+        let size = s.height * (1.0 - s.variation * r.size as f64);
+        let d = q - V3::from(r.pos.map(|v| v as f64));
+        if d.length() - size * self.reach[k] >= best.d {
+            return;
+        }
+        let axis = V3::from(r.axis.map(|v| v as f64));
+        let (turn, ph) = r.angles();
+        let (x, y) = cover_frame(axis, turn);
+        let mut lp = v3(d.dot(x), d.dot(y), d.dot(axis)) * (1.0 / size);
+        let z = lp.z.clamp(0.0, t.top);
+        lp.x -= PLANT_SWAY * s.sway * z * z * (phase + ph - 2.0 * z).sin();
+        let zt = (lp.z + best.d / size).clamp(0.0, t.top);
+        let warp = 1.0 + PLANT_SWAY * s.sway * (2.0 * zt + 2.0 * zt * zt);
+        if let Some((dd, seg)) = t.distance(lp, best.d / size * warp, min_size / size) {
+            let dd = dd * size / warp;
+            if dd < best.d {
+                *best = PlantHit { d: dd, species: k, leaf: t.segs[seg].leaf, height: (lp.z / t.top).clamp(0.0, 1.0) };
+            }
+        }
     }
 }
 
@@ -889,7 +891,7 @@ mod tests {
         for i in 0..3000 {
             let f = |a: f64| (i as f64 * a) % 1.0 * 2.0 - 1.0;
             let p = v3(f(0.6180339), f(0.7548776), f(0.5698403)) * 0.62;
-            let Some(h) = field.nearest(p, 1.3, 1e9) else { continue };
+            let Some(h) = field.nearest(p, 1.3, 1e9, 0.0) else { continue };
             if h.d <= 1e-4 {
                 continue;
             }
@@ -897,7 +899,7 @@ mod tests {
             for k in 0..26 {
                 let dir = v3(((k % 3) as f64) - 1.0, ((k / 3 % 3) as f64) - 1.0, ((k / 9) as f64) - 1.0 + if k == 13 { 1.0 } else { 0.0 });
                 let q = p + dir.normalize() * (h.d * 0.98);
-                let inside = field.nearest(q, 1.3, 1e9).is_some_and(|g| g.d < -1e-9);
+                let inside = field.nearest(q, 1.3, 1e9, 0.0).is_some_and(|g| g.d < -1e-9);
                 assert!(!inside, "bound {} at {p:?} reaches into a plant at {q:?}", h.d);
             }
         }
@@ -927,19 +929,12 @@ mod tests {
         assert_eq!(prog.covers.len(), 1);
         assert_eq!(prog.covers[0].host, 1);
         // Just above a root: the plant is nearer than the sphere and colors the hit.
-        let r = *prog.covers[0].field.roots.iter().max_by(|a, b| a.pos[2].total_cmp(&b.pos[2])).unwrap();
+        let r = *prog.covers[0].field.grids[0].roots.iter().max_by(|a, b| a.pos[2].total_cmp(&b.pos[2])).unwrap();
         let p = v3(5.0, 0.0, 0.0) + V3::from(r.pos.map(|v| v as f64)) + V3::from(r.axis.map(|v| v as f64)) * 0.01;
         let o = prog.evaluator().orbit(p, 1e-5);
         assert!(o.plant >= crate::plants::PLANT_COLOR, "{o:?}");
         assert_eq!(o.object, 1);
         let (obj, ..) = crate::plants::decode_color(o.plant);
         assert_eq!(obj, crate::compose::MAX_OBJECTS);
-    }
-
-    #[test]
-    fn cell_order_is_nearest_first() {
-        let r = |c: &[i32; 3]| c[0] * c[0] + c[1] * c[1] + c[2] * c[2];
-        assert_eq!(CELL27[0], [0, 0, 0]);
-        assert!(CELL27.windows(2).all(|w| r(&w[0]) <= r(&w[1])));
     }
 }

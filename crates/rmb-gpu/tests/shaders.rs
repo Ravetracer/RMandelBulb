@@ -949,6 +949,10 @@ fn gpu_matches_cpu_with_plant_cover() {
     scene.camera.position = p(1.6, -2.9, 1.0);
     scene.camera.look_at(p(0.0, -0.6, 0.1), p(0.0, 0.0, 1.0));
     parity(scene.clone());
+    // Level of detail: thin branches left out the same way.
+    let mut lod = scene.clone();
+    lod.march.plant_detail = 0.5;
+    parity(lod);
     // Close to the bulb's plants.
     scene.camera.position = p(0.9, -0.9, 0.9);
     scene.camera.look_at(p(0.2, -0.2, 0.3), p(0.0, 0.0, 1.0));

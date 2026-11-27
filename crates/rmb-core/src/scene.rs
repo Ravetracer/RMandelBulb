@@ -448,6 +448,9 @@ pub struct March {
     /// Rays step by the estimate minus most of the threshold, with a smaller step factor near
     /// 1 (Mandelbulb3D's "step sub DEstop"): more, shorter steps close to the surface.
     pub step_sub: bool,
+    /// Plants: branches and leaves thinner than this many pixels (radius, at their distance)
+    /// are left out (level of detail; 0 = all are drawn).
+    pub plant_detail: f64,
     /// Smoothed normals (Mandelbulb3D): the estimate is averaged over this many steps to each
     /// side along the surface; also measures the roughness (0 = off, 1..8).
     pub smooth_normals: u32,
@@ -457,7 +460,7 @@ pub struct March {
 
 impl Default for March {
     fn default() -> Self {
-        March { detail: 1.0, step: 0.8, max_steps: 400, max_distance: 40.0, refine_steps: 4, near: 0.0, step_limit: 0.0, step_sub: false, smooth_normals: 0, precision: Precision::Auto }
+        March { detail: 1.0, step: 0.8, max_steps: 400, max_distance: 40.0, refine_steps: 4, near: 0.0, step_limit: 0.0, step_sub: false, plant_detail: 0.0, smooth_normals: 0, precision: Precision::Auto }
     }
 }
 

@@ -26,6 +26,7 @@ everywhere in the program, a double-click on a single slider resets just that sl
 | **Refinement** | Binary search steps at the surface for an exact hit. | 0–12, default 4 |
 | **Near** | Rays start at this distance from the camera, so everything closer is hidden. Mandelbulb3D imports set it. | 0–10, default 0 |
 | **Smooth normals** | Averages the surface direction along the surface (steps to each side; 0 = off) and measures the roughness for the lighting. | 0–8, default 0 |
+| **Plant detail** | Level of detail of plants: branches and leaves thinner than this many pixels (radius) are left out. Faster with many plants in wide views (0.1: about 1.2x, 0.25: about 1.3x), but thin twigs vanish. For previews; 0 for final renders. Mesh exports always draw every branch. | 0–1, default 0 |
 | **Precision** | Number precision of the GPU renderer: *Auto*, *Single* or *Double* (see below). | default *Auto* |
 
 ### Detail

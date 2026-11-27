@@ -351,7 +351,7 @@ fn objects(prog: &Program) -> String {
                 );
             }
             ObjectShape::Primitive(kind, _) if o.plants.is_some() => {
-                let _ = writeln!(s, "        b.de = prim_de({kind}u, ob.prim, ob.prim2, ob.prim3, q);\n        b.de = plant_de({j}u, ob.prim, ob.prim2, q, ob.prim3.w, b.de).x * sc;\n        b.escaped = true;");
+                let _ = writeln!(s, "        b.de = prim_de({kind}u, ob.prim, ob.prim2, ob.prim3, q);\n        b.de = plant_de({j}u, ob.prim, ob.prim2, q, ob.prim3.w, b.de, plant_lod(p, sc)).x * sc;\n        b.escaped = true;");
             }
             ObjectShape::Primitive(kind, _) => {
                 let _ = writeln!(s, "        b.de = prim_de({kind}u, ob.prim, ob.prim2, ob.prim3, q) * sc;\n        b.escaped = true;");

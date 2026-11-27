@@ -181,8 +181,13 @@
   - [x] Wet trails behind the lens drops running down (Drop trails)
   - [x] Faster seabed parts and plants (cell skipping, nearest-first scan, local sway
         bound): 1.6-1.7x on the GPU
-  - [ ] Possible: plants are still ~70 % of a plant scene's time: level of detail (skip
-        branches thinner than a pixel), fewer segments in the presets
+  - [x] Faster plant covers: one grid per species, scan limited to the reach of the bound
+        (dense covers 1247 → 584 ms per pass); level of detail (Ray marching › Plant detail,
+        off by default: 0.25 px gives 1.3x on wide views but thin twigs vanish visibly).
+        Presets kept: the segment count is not the cost (BVH walks are logarithmic); AO and
+        shadow rays are ~45 % each of a plant scene's time.
+  - [ ] Possible: cheaper plants in AO and soft shadows (coarser stand-in shapes for
+        secondary rays)
 
 ## World: sky, weather, landscape (owner's wish 2026-11-27)
 

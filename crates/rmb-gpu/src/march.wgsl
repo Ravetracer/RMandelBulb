@@ -107,7 +107,8 @@ struct U {
     // bubbles in plumes (1), z: vent spacing, w: plume width; [9] x: number of bubble
     // sources, y: drop trails; [10..14] their x, y in the water's frame (two per entry).
     wmed: array<vec4<f32>, 14>,
-    // Sway phases of the baked plants (Program::covers), four per entry.
+    // Sway phases of the baked plants (Program::covers), four per entry; [2].w: level of
+    // detail of plants (March::plant_detail × pixel angle; 0 in mesh exports).
     cover: array<vec4<f32>, 3>,
 }
 
@@ -1016,15 +1017,29 @@ fn plant_seg(o: u32, p: vec3<f32>) -> f32 {
 
 // Mirrors PlantTemplate::distance: x the distance (limit when nothing is nearer), y the
 // segment (-1: none).
-fn plant_tpl(nodes: u32, count: u32, segs: u32, norm: f32, p: vec3<f32>, limit: f32) -> vec2<f32> {
+// Plant BVH nodes (renderer.rs species_block): lo, hi, start, count, thickest segment.
+const PLANT_NODE: u32 = 9u;
+
+// Squared distance to plant node i's box, or a huge value when the node is thinner than the
+// level of detail (mirrors PlantTemplate::distance).
+fn pnode_d2(nodes: u32, i: u32, q: vec3<f32>, min_size: f32) -> f32 {
+    let b = nodes + i * PLANT_NODE;
+    if (vol_f(b + 8u) < min_size) {
+        return 3.0e38;
+    }
+    return box_d2(q, vol_v3(b), vol_v3(b + 3u));
+}
+
+// Mirrors PlantTemplate::distance: x the distance, y the segment (-1: none below limit).
+fn plant_tpl(nodes: u32, count: u32, segs: u32, norm: f32, p: vec3<f32>, limit: f32, min_size: f32) -> vec2<f32> {
     var best = vec2<f32>(limit, -1.0);
-    if (count == 0u) {
+    if (count == 0u || vol_f(nodes + 8u) < min_size) {
         return best;
     }
     var st_n: array<u32, PLANT_STACK>;
     var st_d: array<f32, PLANT_STACK>;
     st_n[0] = 0u;
-    st_d[0] = sqrt(node_d2(nodes, 0u, p)) / norm;
+    st_d[0] = sqrt(pnode_d2(nodes, 0u, p, min_size)) / norm;
     var sp = 1u;
     loop {
         if (sp == 0u) {
@@ -1035,20 +1050,29 @@ fn plant_tpl(nodes: u32, count: u32, segs: u32, norm: f32, p: vec3<f32>, limit: 
         if (st_d[sp] >= best.x) {
             continue;
         }
-        let b = nodes + ni * 8u;
+        let b = nodes + ni * PLANT_NODE;
         let start = vols[b + 6u];
         let cnt = vols[b + 7u];
         if (cnt > 0u) {
             for (var i = start; i < start + cnt; i++) {
-                let d = plant_seg(segs + i * 12u, p);
+                let g = segs + i * 12u;
+                // Mirrors plants::seg_size.
+                var size = vol_f(g + 7u);
+                if (vol_f(g + 3u) < 0.5) {
+                    size = max(size, vol_f(g + 11u));
+                }
+                if (size < min_size) {
+                    continue;
+                }
+                let d = plant_seg(g, p);
                 if (d < best.x) {
                     best = vec2<f32>(d, f32(i));
                 }
             }
             continue;
         }
-        let dl = sqrt(node_d2(nodes, start, p)) / norm;
-        let dr = sqrt(node_d2(nodes, start + 1u, p)) / norm;
+        let dl = sqrt(pnode_d2(nodes, start, p, min_size)) / norm;
+        let dr = sqrt(pnode_d2(nodes, start + 1u, p, min_size)) / norm;
         var near = start;
         var far = start + 1u;
         var dn = dl;
@@ -1073,9 +1097,15 @@ fn plant_tpl(nodes: u32, count: u32, segs: u32, norm: f32, p: vec3<f32>, limit: 
     return best;
 }
 
+// Level of detail of plants (mirrors Program::plant_min_size): the thinnest branch drawn at
+// world point p in units of a host with scale sc (u.cover[2].w: detail × pixel angle).
+fn plant_lod(p: vec3<f32>, sc: f32) -> f32 {
+    return u.cover[2].w * length(p - u.cam_pos.xyz) / sc;
+}
+
 // Mirrors PlantField::nearest: x the distance bound (limit when nothing is nearer), y the
 // species, z 1 for a leaf, w the height up the plant (0..1).
-fn plant_de(j: u32, a: vec4<f32>, a2: vec4<f32>, q: vec3<f32>, phase: f32, limit: f32) -> vec4<f32> {
+fn plant_de(j: u32, a: vec4<f32>, a2: vec4<f32>, q: vec3<f32>, phase: f32, limit: f32, min_size: f32) -> vec4<f32> {
     var best = vec4<f32>(limit, 0.0, 0.0, 0.0);
     let n = vols[j * MODEL_HEADER];
     let blocks = vols[j * MODEL_HEADER + 1u];
@@ -1145,7 +1175,7 @@ fn plant_de(j: u32, a: vec4<f32>, a2: vec4<f32>, q: vec3<f32>, phase: f32, limit
             // Mirrors PlantField::nearest: the sway's rate at the highest reachable point.
             let zt = clamp(p.z + best.x / size, 0.0, top);
             let warp = 1.0 + PLANT_SWAY * sway * (2.0 * zt + 2.0 * zt * zt);
-            let r = plant_tpl(nodes, ncount, segs, vol_f(s + 24u), p, best.x / size * warp);
+            let r = plant_tpl(nodes, ncount, segs, vol_f(s + 24u), p, best.x / size * warp, min_size / size);
             if (r.y >= 0.0) {
                 let d = r.x * size / warp;
                 if (d < best.x) {
@@ -1160,96 +1190,105 @@ fn plant_de(j: u32, a: vec4<f32>, a2: vec4<f32>, q: vec3<f32>, phase: f32, limit
 // Baked plants (mirrors plant_cover.rs; renderer.rs covers_gpu): vols[31] points to a
 // directory (count, host block offsets). Colors of cover c use object COVER_BASE + c.
 const COVER_BASE: u32 = 8u;
-const CELL27 = array<vec3<i32>, 27>(
-    vec3<i32>(0, 0, 0),
-    vec3<i32>(0, 0, -1), vec3<i32>(0, -1, 0), vec3<i32>(-1, 0, 0), vec3<i32>(1, 0, 0), vec3<i32>(0, 1, 0), vec3<i32>(0, 0, 1),
-    vec3<i32>(0, -1, -1), vec3<i32>(-1, 0, -1), vec3<i32>(1, 0, -1), vec3<i32>(0, 1, -1), vec3<i32>(-1, -1, 0), vec3<i32>(1, -1, 0),
-    vec3<i32>(-1, 1, 0), vec3<i32>(1, 1, 0), vec3<i32>(0, -1, 1), vec3<i32>(-1, 0, 1), vec3<i32>(1, 0, 1), vec3<i32>(0, 1, 1),
-    vec3<i32>(-1, -1, -1), vec3<i32>(1, -1, -1), vec3<i32>(-1, 1, -1), vec3<i32>(1, 1, -1),
-    vec3<i32>(-1, -1, 1), vec3<i32>(1, -1, 1), vec3<i32>(-1, 1, 1), vec3<i32>(1, 1, 1),
-);
+// Mirrors plant_cover::COVER_SPAN: cells scanned beyond the point's cell at most.
+const COVER_SPAN: i32 = 1;
+
+// Mirrors CoverField::root_distance: the plant of the root at rb if nearer than best.
+fn cover_root(sb: u32, rb: u32, q: vec3<f32>, phase: f32, min_size: f32, best_in: vec4<f32>) -> vec4<f32> {
+    var best = best_in;
+    let bits = vols[rb + 7u];
+    let k = bits & 3u;
+    let s = sb + k * PLANT_BLOCK;
+    let top = vol_f(s + 8u);
+    let sway = vol_f(s + 5u);
+    let size = vol_f(s + 3u) * (1.0 - vol_f(s + 4u) * vol_f(rb + 3u));
+    let d = q - vol_v3(rb);
+    if (length(d) - size * vol_f(s + 25u) >= best.x) {
+        return best;
+    }
+    // Mirrors plant_cover::cover_frame.
+    let ax = vol_v3(rb + 4u);
+    let sign = select(-1.0, 1.0, ax.z >= 0.0);
+    let kk = -1.0 / (sign + ax.z);
+    let b = ax.x * ax.y * kk;
+    let t1 = vec3<f32>(1.0 + sign * ax.x * ax.x * kk, sign * b, -sign * ax.x);
+    let t2 = vec3<f32>(b, sign + ax.y * ax.y * kk, -ax.y);
+    let turn = f32((bits >> 2u) & 0x7fffu) / 32768.0 * 6.283185307179586;
+    let ph = f32((bits >> 17u) & 0x7fffu) / 32768.0 * 6.283185307179586;
+    let sn = sin(turn);
+    let cs = cos(turn);
+    let x = t1 * cs + t2 * sn;
+    let y = t2 * cs - t1 * sn;
+    var p = vec3<f32>(dot(d, x), dot(d, y), dot(d, ax)) / size;
+    let z = clamp(p.z, 0.0, top);
+    p.x -= PLANT_SWAY * sway * z * z * sin(phase + ph - 2.0 * z);
+    let zt = clamp(p.z + best.x / size, 0.0, top);
+    let warp = 1.0 + PLANT_SWAY * sway * (2.0 * zt + 2.0 * zt * zt);
+    let segs = vols[s + 11u];
+    let r = plant_tpl(vols[s + 9u], vols[s + 10u], segs, vol_f(s + 24u), p, best.x / size * warp, min_size / size);
+    if (r.y >= 0.0) {
+        let dd = r.x * size / warp;
+        if (dd < best.x) {
+            best = vec4<f32>(dd, f32(k), vol_f(segs + u32(r.y) * 12u + 3u), clamp(p.z / top, 0.0, 1.0));
+        }
+    }
+    return best;
+}
 
 // Mirrors CoverField::nearest: x the distance bound (limit when nothing is nearer), y the
 // species, z 1 for a leaf, w the height up the plant (0..1).
-fn cover_de(hb: u32, q: vec3<f32>, phase: f32, limit: f32) -> vec4<f32> {
+fn cover_de(hb: u32, q: vec3<f32>, phase: f32, limit: f32, min_size: f32) -> vec4<f32> {
     var best = vec4<f32>(limit, 0.0, 0.0, 0.0);
     let sb = vols[hb + 2u];
-    let o = vol_v3(hb + 3u);
-    let c = vol_f(hb + 6u);
-    let n = vec3<i32>(i32(vols[hb + 7u]), i32(vols[hb + 8u]), i32(vols[hb + 9u]));
-    let starts = vols[hb + 10u];
-    let roots = vols[hb + 11u];
-    let r_max = vol_f(hb + 12u);
-    let hi = o + vec3<f32>(n) * c;
-    let out = length(max(max(o - q, q - hi), vec3<f32>(0.0)));
-    if (out >= best.x) {
-        return best;
-    }
-    if (out > c) {
-        return vec4<f32>(out, 0.0, 0.0, 0.0);
-    }
-    let ci = clamp(vec3<i32>(floor((q - o) / c)), vec3<i32>(0), n - vec3<i32>(1));
-    // Roots beyond the searched block are at least its edge away (sides with cells beyond).
-    var edge = 3.0e38;
-    for (var k = 0; k < 3; k++) {
-        if (ci[k] >= 2) {
-            edge = min(edge, q[k] - (o[k] + f32(ci[k] - 1) * c));
-        }
-        if (ci[k] + 2 < n[k]) {
-            edge = min(edge, o[k] + f32(ci[k] + 2) * c - q[k]);
-        }
-    }
-    let far = max(edge - r_max, out);
-    if (far < best.x) {
-        best.x = far;
-    }
-    for (var m = 0; m < 27; m++) {
-        let cc = ci + CELL27[m];
-        if (any(cc < vec3<i32>(0)) || any(cc >= n)) {
+    let ng = vols[hb + 3u];
+    for (var gi = 0u; gi < ng; gi++) {
+        let gb = hb + 4u + 12u * gi;
+        let o = vol_v3(gb);
+        let c = vol_f(gb + 3u);
+        let n = vec3<i32>(i32(vols[gb + 4u]), i32(vols[gb + 5u]), i32(vols[gb + 6u]));
+        let starts = vols[gb + 7u];
+        let roots = vols[gb + 8u];
+        let r_max = vol_f(gb + 9u);
+        let hi_box = o + vec3<f32>(n) * c;
+        let out = length(max(max(o - q, q - hi_box), vec3<f32>(0.0)));
+        if (out >= best.x) {
             continue;
         }
-        let a = o + vec3<f32>(cc) * c;
-        if (length(max(max(a - q, q - a - vec3<f32>(c)), vec3<f32>(0.0))) - r_max >= best.x) {
+        if (out > 2.0 * c) {
+            best.x = out;
             continue;
         }
-        let idx = u32(cc.x + n.x * (cc.y + n.y * cc.z));
-        let r1 = vols[starts + idx + 1u];
-        for (var ri = vols[starts + idx]; ri < r1; ri++) {
-            let rb = roots + ri * 8u;
-            let bits = vols[rb + 7u];
-            let k = bits & 3u;
-            let s = sb + k * PLANT_BLOCK;
-            let top = vol_f(s + 8u);
-            let sway = vol_f(s + 5u);
-            let size = vol_f(s + 3u) * (1.0 - vol_f(s + 4u) * vol_f(rb + 3u));
-            let d = q - vol_v3(rb);
-            if (length(d) - size * vol_f(s + 25u) >= best.x) {
-                continue;
+        let ci = clamp(vec3<i32>(floor((q - o) / c)), vec3<i32>(0), n - vec3<i32>(1));
+        // The cells within reach of the bound, at most COVER_SPAN beyond the point's cell.
+        let r = best.x + r_max;
+        let lo = max(max(vec3<i32>(floor((q - r - o) / c)), ci - vec3<i32>(COVER_SPAN)), vec3<i32>(0));
+        let hi = min(min(vec3<i32>(floor((q + r - o) / c)), ci + vec3<i32>(COVER_SPAN)), n - vec3<i32>(1));
+        // Roots beyond the scanned block are at least its edge away (sides with cells beyond).
+        var edge = 3.0e38;
+        for (var k = 0; k < 3; k++) {
+            if (lo[k] > 0) {
+                edge = min(edge, q[k] - (o[k] + f32(lo[k]) * c));
             }
-            // Mirrors plant_cover::cover_frame.
-            let ax = vol_v3(rb + 4u);
-            let sign = select(-1.0, 1.0, ax.z >= 0.0);
-            let kk = -1.0 / (sign + ax.z);
-            let b = ax.x * ax.y * kk;
-            let t1 = vec3<f32>(1.0 + sign * ax.x * ax.x * kk, sign * b, -sign * ax.x);
-            let t2 = vec3<f32>(b, sign + ax.y * ax.y * kk, -ax.y);
-            let turn = f32((bits >> 2u) & 0x7fffu) / 32768.0 * 6.283185307179586;
-            let ph = f32((bits >> 17u) & 0x7fffu) / 32768.0 * 6.283185307179586;
-            let sn = sin(turn);
-            let cs = cos(turn);
-            let x = t1 * cs + t2 * sn;
-            let y = t2 * cs - t1 * sn;
-            var p = vec3<f32>(dot(d, x), dot(d, y), dot(d, ax)) / size;
-            let z = clamp(p.z, 0.0, top);
-            p.x -= PLANT_SWAY * sway * z * z * sin(phase + ph - 2.0 * z);
-            let zt = clamp(p.z + best.x / size, 0.0, top);
-            let warp = 1.0 + PLANT_SWAY * sway * (2.0 * zt + 2.0 * zt * zt);
-            let segs = vols[s + 11u];
-            let r = plant_tpl(vols[s + 9u], vols[s + 10u], segs, vol_f(s + 24u), p, best.x / size * warp);
-            if (r.y >= 0.0) {
-                let dd = r.x * size / warp;
-                if (dd < best.x) {
-                    best = vec4<f32>(dd, f32(k), vol_f(segs + u32(r.y) * 12u + 3u), clamp(p.z / top, 0.0, 1.0));
+            if (hi[k] < n[k] - 1) {
+                edge = min(edge, o[k] + f32(hi[k] + 1) * c - q[k]);
+            }
+        }
+        let far = max(edge - r_max, out);
+        if (far < best.x) {
+            best = vec4<f32>(far, 0.0, 0.0, 0.0);
+        }
+        for (var z = lo.z; z <= hi.z; z++) {
+            for (var y = lo.y; y <= hi.y; y++) {
+                for (var x = lo.x; x <= hi.x; x++) {
+                    let a = o + vec3<f32>(f32(x), f32(y), f32(z)) * c;
+                    if (length(max(max(a - q, q - a - vec3<f32>(c)), vec3<f32>(0.0))) - r_max >= best.x) {
+                        continue;
+                    }
+                    let idx = u32(x + n.x * (y + n.y * z));
+                    let r1 = vols[starts + idx + 1u];
+                    for (var ri = vols[starts + idx]; ri < r1; ri++) {
+                        best = cover_root(sb, roots + ri * 8u, q, phase, min_size, best);
+                    }
                 }
             }
         }
@@ -1277,7 +1316,7 @@ fn cover_union(p: vec3<f32>, o_in: Orbit) -> Orbit {
             q = obj_local(host - 1u, p);
             sc = objs[host - 1u].inv0.w;
         }
-        let r = cover_de(hb, q, u.cover[c / 4u][c % 4u], o.de / sc);
+        let r = cover_de(hb, q, u.cover[c / 4u][c % 4u], o.de / sc, plant_lod(p, sc));
         let d = r.x * sc;
         if (d < o.de) {
             var b: Orbit;
@@ -2678,7 +2717,7 @@ fn color_value(h: Hit, n: vec3<f32>, pos: vec3<f32>) -> f32 {
             if (PLANTS && ob.misc.w < 1.5 && vols[(o.obj - 1u) * MODEL_HEADER] > 0u) {
                 let q = obj_local(o.obj - 1u, pos);
                 let ground = seabed_distance(ob.prim, ob.prim2, ob.prim3, q);
-                let ph = plant_de(o.obj - 1u, ob.prim, ob.prim2, q, ob.prim3.w, ground);
+                let ph = plant_de(o.obj - 1u, ob.prim, ob.prim2, q, ob.prim3.w, ground, plant_lod(pos, ob.inv0.w));
                 if (ph.x < ground) {
                     return PLANT_COLOR + 2.0 * f32((o.obj - 1u) * PLANT_SPECIES + u32(ph.y)) + ph.z + min(ph.w, PLANT_HEIGHT_MAX);
                 }

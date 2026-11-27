@@ -127,6 +127,9 @@ pub struct Program {
     pub color_on_it: i32,
     /// Plants baked onto the main fractal and objects (`plant_cover`), in order.
     pub covers: Vec<crate::plant_cover::HostCover>,
+    /// Level of detail of plants (set by renderers): the camera position and the thinnest
+    /// branch radius drawn per unit of distance from it (`March::plant_detail` × pixel angle).
+    pub plant_lod: Option<(V3, f64)>,
 }
 
 /// `Primitive::index` of the water surface.
@@ -392,6 +395,7 @@ impl Program {
             medium: None,
             bubble_sources: Vec::new(),
             covers: Vec::new(),
+            plant_lod: None,
         }
     }
 
@@ -558,6 +562,12 @@ impl Program {
             }
         }
         s
+    }
+
+    /// The thinnest plant branch drawn at world point `p` in units of a host with `scale`
+    /// (level of detail; mirrors march.wgsl `plant_lod`).
+    pub fn plant_min_size(&self, p: V3, scale: f64) -> f64 {
+        self.plant_lod.map_or(0.0, |(cam, k)| k * (p - cam).length() / scale)
     }
 
     pub fn evaluator(&self) -> Evaluator<'_> {
@@ -1014,7 +1024,7 @@ impl Evaluator<'_> {
                 }
                 ObjectShape::Primitive(kind, a) => {
                     let mut d = crate::compose::primitive_distance(*kind, *a, q);
-                    if let Some(h) = ob.plants.as_ref().and_then(|f| f.nearest(a, q, a[11], d)) {
+                    if let Some(h) = ob.plants.as_ref().and_then(|f| f.nearest(a, q, a[11], d, prog.plant_min_size(p, ob.scale))) {
                         d = h.d;
                     }
                     (d * ob.scale, Orbit { dr: 1.0, escaped: true, ..Orbit::default() })
@@ -1036,7 +1046,7 @@ impl Evaluator<'_> {
                 let ob = &prog.objects[hc.host - 1];
                 (ob.local(p), ob.scale)
             };
-            if let Some(hit) = hc.field.nearest(q, hc.phase, de / sc) {
+            if let Some(hit) = hc.field.nearest(q, hc.phase, de / sc, prog.plant_min_size(p, sc)) {
                 let d = hit.d * sc;
                 if d < de {
                     de = d;

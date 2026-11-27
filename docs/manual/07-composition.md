@@ -410,6 +410,12 @@ And for the whole section:
     surface: when a later object cuts that part away, its plants stay.
 
 !!! tip
+    Many plants make renders slower, mostly where many small ones grow close together and
+    in the shadows and ambient occlusion around them. **Ray marching › Plant detail**
+    leaves out branches thinner than a fraction of a pixel: a faster preview, at the cost of
+    the finest twigs.
+
+!!! tip
     Mesh exports include the plants. For a lush look, combine a dense low kind (algae tuft,
     spacing about half its height) with a few tall ones (sea fan, kelp) at a larger spacing.
 

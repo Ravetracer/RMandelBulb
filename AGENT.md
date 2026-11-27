@@ -488,6 +488,15 @@ cargo clippy -j 8 --workspace --all-targets
   `plant_cover::tests`, `gpu_matches_cpu_with_plant_cover`; demo scenes: example
   `plants_demo`. Plant color values keep the height below `PLANT_HEIGHT_MAX` (0.98): f32
   near 1e5 has steps of 1/128, 0.999 rounded up to the next species.
+  Speed: one `SpeciesGrid` per species (cell 2 × its reach), the scan covers only the cells
+  within best + reach (at most `COVER_SPAN` 1 beyond the point's cell); a shared grid sized
+  by the largest species scanned hundreds of small roots per estimate (bulb close-up 1247 →
+  562 ms). Level of detail `March::plant_detail` (pixels; `Program::plant_lod` = camera and
+  detail × pixel angle, set by `CpuRenderer` incl. tiles; GPU uniform `cover[2].w`, 0 in mesh
+  exports): `PlantNode::size` (thickest segment, `seg_size`), walks skip thinner nodes and
+  segments; node stride 9 on the GPU (`PLANT_NODE`, `pnode_d2`; models keep `node_d2`).
+  Measured 2026-11-27: 0.25 px 1.3x on the trees demo but twigs vanish (mean diff 2.7), so
+  off by default.
 - Speed (bench example: `--only plants,seabed` toggles; 2026-11-27, 640 x 360, baked): the
   searches skip cells by `cell_gap` before any hashing, scan `CELL_ORDER` nearest first,
   test the share before the patch noise, stop at the ground's distance (`limit`); the sway

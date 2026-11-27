@@ -489,6 +489,8 @@ pub struct PlantNode {
     pub hi: [f32; 3],
     pub start: u32,
     pub count: u32,
+    /// Thickest segment below the node (`seg_size`): level of detail skips thinner nodes.
+    pub size: f32,
 }
 
 /// A drawn plant, normalized to height 1 with its root at the origin.
@@ -637,9 +639,13 @@ impl PlantTemplate {
     }
 
     /// Distance from `p` (template units) to the plant, if below `limit`: distance and the
-    /// segment.
-    pub fn distance(&self, p: V3, limit: f64) -> Option<(f64, usize)> {
+    /// segment. Level of detail: nodes and segments thinner than `min_size` are left out.
+    pub fn distance(&self, p: V3, limit: f64, min_size: f64) -> Option<(f64, usize)> {
         let root = self.nodes.first()?;
+        let min_size = min_size as f32;
+        if root.size < min_size {
+            return None;
+        }
         let mut best = (limit, usize::MAX);
         let box_d = |n: &PlantNode| box_distance(p, n) / self.norm;
         let mut stack: Vec<(u32, f64)> = vec![(0, box_d(root))];
@@ -650,6 +656,9 @@ impl PlantTemplate {
             let n = &self.nodes[ni as usize];
             if n.count > 0 {
                 for i in n.start..n.start + n.count {
+                    if seg_size(&self.segs[i as usize]) < min_size {
+                        continue;
+                    }
                     let d = seg_distance(&self.segs[i as usize], p);
                     if d < best.0 {
                         best = (d, i as usize);
@@ -658,7 +667,9 @@ impl PlantTemplate {
                 continue;
             }
             let (l, r) = (n.start, n.start + 1);
-            let (dl, dr) = (box_d(&self.nodes[l as usize]), box_d(&self.nodes[r as usize]));
+            let (nl, nr) = (&self.nodes[l as usize], &self.nodes[r as usize]);
+            // Thinner than the level of detail: as far as can be (never taken).
+            let (dl, dr) = (if nl.size < min_size { f64::MAX } else { box_d(nl) }, if nr.size < min_size { f64::MAX } else { box_d(nr) });
             let (near, far) = if dl <= dr { ((l, dl), (r, dr)) } else { ((r, dr), (l, dl)) };
             if far.1 < best.0 {
                 stack.push(far);
@@ -718,6 +729,12 @@ pub fn seg_distance(s: &PlantSeg, p: V3) -> f64 {
     ((out * out + wide * wide + nrm * nrm).sqrt() - s.rb as f64) / (1.0 + k * k).sqrt()
 }
 
+/// Thickness of a segment for the level of detail: a branch's larger radius, a leaf's half
+/// width (march.wgsl `plant_tpl`).
+pub fn seg_size(s: &PlantSeg) -> f32 {
+    if s.leaf { s.ra } else { s.ra.max(s.rb) }
+}
+
 /// Bounding box of a segment (with its radius or half width).
 fn seg_box(s: &PlantSeg) -> ([f32; 3], [f32; 3]) {
     let r = s.ra.max(s.rb);
@@ -732,11 +749,12 @@ fn build_bvh(segs: &mut [PlantSeg]) -> Vec<PlantNode> {
         return nodes;
     }
     let centroid = |s: &PlantSeg| -> [f32; 3] { std::array::from_fn(|k| (s.a[k] + s.b[k]) * 0.5) };
-    nodes.push(PlantNode { lo: [0.0; 3], hi: [0.0; 3], start: 0, count: 0 });
+    nodes.push(PlantNode { lo: [0.0; 3], hi: [0.0; 3], start: 0, count: 0, size: 0.0 });
     let mut stack = vec![(0usize, 0usize, segs.len())];
     while let Some((ni, s, e)) = stack.pop() {
         let (mut lo, mut hi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
         let (mut clo, mut chi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
+        nodes[ni].size = segs[s..e].iter().map(seg_size).fold(0.0, f32::max);
         for sg in &segs[s..e] {
             let (a, b) = seg_box(sg);
             let c = centroid(sg);
@@ -921,7 +939,8 @@ impl PlantField {
     /// 0.2 cells into the block, so the distance to the block's edge minus that covers them
     /// (a tight bound matters: soft shadows and occlusion read it as the distance to the
     /// nearest surface).
-    pub fn nearest(&self, a: &[f64; 12], q: V3, phase: f64, limit: f64) -> Option<PlantHit> {
+    /// `min_size`: level of detail, the thinnest branch drawn (local units; 0 all).
+    pub fn nearest(&self, a: &[f64; 12], q: V3, phase: f64, limit: f64, min_size: f64) -> Option<PlantHit> {
         let mut best = PlantHit { d: limit, species: 0, leaf: false, height: 0.0 };
         let ground_top = a[0].abs() + a[2].abs();
         for (k, s) in self.species.iter().enumerate() {
@@ -979,7 +998,7 @@ impl PlantField {
                 // can reach (most steps happen low, near the ground).
                 let zt = (p.z + best.d / size).clamp(0.0, t.top);
                 let warp = 1.0 + PLANT_SWAY * s.sway * (2.0 * zt + 2.0 * zt * zt);
-                if let Some((d, seg)) = t.distance(p, best.d / size * warp) {
+                if let Some((d, seg)) = t.distance(p, best.d / size * warp, min_size / size) {
                     let d = d * size / warp;
                     if d < best.d {
                         best = PlantHit { d, species: k, leaf: t.segs[seg].leaf, height: (p.z / t.top).clamp(0.0, 1.0) };
@@ -1007,7 +1026,7 @@ mod tests {
             for i in 0..200 {
                 let p = v3((i as f64 * 0.618) % 1.0 - 0.5, (i as f64 * 0.755) % 1.0 - 0.5, (i as f64 * 0.569) % 1.0 * 1.2);
                 let brute = t.segs.iter().map(|sg| seg_distance(sg, p)).fold(f64::INFINITY, f64::min);
-                let found = t.distance(p, 1e9).map_or(f64::INFINITY, |h| h.0);
+                let found = t.distance(p, 1e9, 0.0).map_or(f64::INFINITY, |h| h.0);
                 assert!((brute - found).abs() < 1e-9, "{name}: {brute} vs {found}");
             }
         }
@@ -1053,6 +1072,25 @@ mod tests {
     }
 
     #[test]
+    fn level_of_detail_leaves_out_thin_branches() {
+        let t = PlantTemplate::grow(&PlantSpecies::preset("Sea fan").unwrap());
+        let thin = t.segs.iter().map(seg_size).fold(f32::MAX, f32::min) as f64;
+        let thick = t.segs.iter().map(seg_size).fold(0.0, f32::max) as f64;
+        assert!(thin < thick);
+        // Exactly the segments at least min_size thick count.
+        let cut = (thin + thick) * 0.5;
+        for i in 0..200 {
+            let f = |a: f64| (i as f64 * a) % 1.0 * 2.0 - 1.0;
+            let p = v3(f(0.618) * 0.4, f(0.755) * 0.4, (f(0.57) + 1.0) * 0.5);
+            let want = t.segs.iter().filter(|g| seg_size(g) as f64 >= cut).map(|g| seg_distance(g, p)).fold(f64::MAX, f64::min);
+            let got = t.distance(p, 1e9, cut).map_or(f64::MAX, |h| h.0);
+            assert!((want - got).abs() < 1e-9, "{want} {got}");
+            assert_eq!(t.distance(p, 1e9, 0.0).map(|h| h.0), t.distance(p, 1e9, -1.0).map(|h| h.0));
+        }
+        assert!(t.distance(v3(0.0, 0.0, 0.5), 1e9, thick * 2.0).is_none());
+    }
+
+    #[test]
     fn parametric_rules_compute_their_arguments() {
         // A(l): while l > 0.3 a segment of length l and a shorter tip; else a leaf.
         let s = PlantSpecies {
@@ -1094,7 +1132,7 @@ mod tests {
             let (x, y) = ((i as f64 * 0.6180339) % 1.0 * 4.0, (i as f64 * 0.7548776) % 1.0 * 4.0);
             let z = crate::compose::seabed_height(&a, x, y) + ((i as f64 * 0.5698403) % 1.0) * 1.0;
             let p = v3(x, y, z);
-            let Some(h) = field.nearest(&a, p, 1.3, 1e9) else { continue };
+            let Some(h) = field.nearest(&a, p, 1.3, 1e9, 0.0) else { continue };
             if h.d <= 1e-4 {
                 continue;
             }
@@ -1102,7 +1140,7 @@ mod tests {
             for k in 0..26 {
                 let dir = v3(((k % 3) as f64) - 1.0, ((k / 3 % 3) as f64) - 1.0, ((k / 9) as f64) - 1.0 + if k == 13 { 1.0 } else { 0.0 });
                 let q = p + dir.normalize() * (h.d * 0.98);
-                let inside = field.nearest(&a, q, 1.3, 1e9).is_some_and(|g| g.d < -1e-9);
+                let inside = field.nearest(&a, q, 1.3, 1e9, 0.0).is_some_and(|g| g.d < -1e-9);
                 assert!(!inside, "bound {} at {p:?} reaches into a plant at {q:?}", h.d);
             }
         }

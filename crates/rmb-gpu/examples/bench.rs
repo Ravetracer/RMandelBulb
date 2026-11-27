@@ -72,6 +72,10 @@ fn main() {
             ("no bubbles/part.", Box::new(|s| medium(s, |m| (m.bubbles, m.particles) = (0.0, 0.0)))),
             ("opaque water", Box::new(|s| medium(s, |m| m.see_through = false))),
             ("no plants", Box::new(|s| seabed(s, |o| o.plants.clear()))),
+            ("no cover plants", Box::new(|s| {
+                s.plant_cover.species.clear();
+                s.objects.iter_mut().for_each(|o| o.cover.species.clear());
+            })),
             ("plants, no rocks", Box::new(|s| seabed(s, |o| if let rmb_core::compose::Shape::Primitive(rmb_core::compose::Primitive::Seabed { rocks, .. }) = &mut o.shape { *rocks = 0.0 }))),
             ("plants, no pebbles", Box::new(|s| seabed(s, |o| if let rmb_core::compose::Shape::Primitive(rmb_core::compose::Primitive::Seabed { pebbles, .. }) = &mut o.shape { *pebbles = 0.0 }))),
             ("plants, no seaweed", Box::new(|s| seabed(s, |o| if let rmb_core::compose::Shape::Primitive(rmb_core::compose::Primitive::Seabed { seaweed, .. }) = &mut o.shape { *seaweed = 0.0 }))),

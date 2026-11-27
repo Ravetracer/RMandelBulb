@@ -330,7 +330,7 @@ fn species_block(out: &mut Vec<u32>, b: usize, s: &rmb_core::plants::PlacedSpeci
     let nodes = out.len();
     for n in &t.nodes {
         out.extend(n.lo.iter().chain(&n.hi).map(|x| x.to_bits()));
-        out.extend([n.start, n.count]);
+        out.extend([n.start, n.count, n.size.to_bits()]);
     }
     let segs = out.len();
     for g in &t.segs {
@@ -353,8 +353,9 @@ fn species_block(out: &mut Vec<u32>, b: usize, s: &rmb_core::plants::PlacedSpeci
 
 /// The baked plants (march.wgsl `cover_union`): word 31 of the first header points to a
 /// directory (count, then one host block offset per cover). A host block: host, species
-/// count, species blocks offset, grid corner (3), cell, cells per axis (3), cell starts
-/// offset, roots offset, largest reach; roots of 8 words (position, size, axis, bits).
+/// count, species blocks offset, grid count, then per grid (one per species, 12 words) its
+/// corner (3), cell, cells per axis (3), cell starts offset, roots offset, largest reach;
+/// roots of 8 words (position, size, axis, bits).
 fn covers_gpu(prog: &Program, out: &mut Vec<u32>) {
     if prog.covers.is_empty() {
         return;
@@ -368,23 +369,27 @@ fn covers_gpu(prog: &Program, out: &mut Vec<u32>) {
         let field = &hc.field;
         let hb = out.len();
         out[dir + 1 + c] = hb as u32;
-        out.resize(hb + 16, 0);
+        out.resize(hb + 4 + 12 * field.grids.len(), 0);
         let blocks = out.len();
         out.resize(blocks + PLANT_BLOCK * field.species.len(), 0);
         for (k, s) in field.species.iter().enumerate() {
             species_block(out, blocks + PLANT_BLOCK * k, s, field.reach[k]);
         }
-        let starts = out.len();
-        out.extend(&field.starts);
-        let roots = out.len();
-        for r in &field.roots {
-            out.extend(r.pos.map(f32::to_bits));
-            out.push(r.size.to_bits());
-            out.extend(r.axis.map(f32::to_bits));
-            out.push(r.bits);
+        out[hb..hb + 4].copy_from_slice(&[hc.host as u32, field.species.len() as u32, blocks as u32, field.grids.len() as u32]);
+        for (gi, g) in field.grids.iter().enumerate() {
+            let starts = out.len();
+            out.extend(&g.starts);
+            let roots = out.len();
+            for r in &g.roots {
+                out.extend(r.pos.map(f32::to_bits));
+                out.push(r.size.to_bits());
+                out.extend(r.axis.map(f32::to_bits));
+                out.push(r.bits);
+            }
+            let head = [f(g.origin.x), f(g.origin.y), f(g.origin.z), f(g.cell), g.n[0] as u32, g.n[1] as u32, g.n[2] as u32, starts as u32, roots as u32, f(g.r_max)];
+            let gb = hb + 4 + 12 * gi;
+            out[gb..gb + head.len()].copy_from_slice(&head);
         }
-        let head = [hc.host as u32, field.species.len() as u32, blocks as u32, f(field.origin.x), f(field.origin.y), f(field.origin.z), f(field.cell), field.n[0] as u32, field.n[1] as u32, field.n[2] as u32, starts as u32, roots as u32, f(field.r_max)];
-        out[hb..hb + head.len()].copy_from_slice(&head);
     }
 }
 
@@ -810,9 +815,11 @@ fn uniforms(scene: &Scene, prog: &Program, w: u32, h: u32, fast: bool, tile: Opt
         wmed: medium_gpu(prog, &fr.lights),
         cover: {
             let mut c = [[0.0f32; 4]; 3];
-            for (i, hc) in prog.covers.iter().enumerate().take(12) {
+            for (i, hc) in prog.covers.iter().enumerate().take(11) {
                 c[i / 4][i % 4] = hc.phase as f32;
             }
+            // Level of detail of plants (mirrors cpu::plant_lod): detail × pixel angle.
+            c[2][3] = (scene.march.plant_detail.max(0.0) * fr.pixel_angle) as f32;
             c
         },
         haze2: [if scene.fog.haze_shape == rmb_core::scene::HazeShape::Iterations { 1.0 } else { 0.0 }, scene.fog.haze_size as f32, 0.0, 0.0],
@@ -2339,6 +2346,8 @@ impl rmb_core::mesh_export::Field for GridField {
         un.size[0] = nx as u32;
         un.size[1] = ny as u32;
         un.grid = [g.origin.x as f32, g.origin.y as f32, g.origin.z as f32, g.step as f32];
+        // Mesh exports: every branch, whatever the camera.
+        un.cover[2][3] = 0.0;
         un.grid2 = [z as f32, 0.0, 0.0, 0.0];
         let (width, height) = (nx as u32, ny as u32);
         let mut row = 0;

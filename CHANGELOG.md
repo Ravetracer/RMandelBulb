@@ -16,6 +16,10 @@ and the release workflow uses it as the release notes.
   have a Plants section with the seabed's L-system plants. Their places are baked onto the
   surface in the background (spacing, density, patches, growth direction "Upright", "Steepest
   slope", optional region box); moving or animating the object keeps them.
+- Faster plants on surfaces: one grid per kind of plant, scanned only within reach (dense
+  covers about 2x faster).
+- Ray marching › Plant detail: level of detail of plants (branches thinner than a fraction
+  of a pixel are left out; off by default).
 - Parametric L-systems: symbols with arguments (`F(0.5)`, `+(30)`, `A(l*0.7, w)`), rules
   with parameter names and conditions, errors shown under the rules; presets "Monopodial
   tree" and "Ternary tree".

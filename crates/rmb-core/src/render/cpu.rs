@@ -1343,7 +1343,7 @@ impl<'a> Shader<'a> {
                     // The nearest plant, if it is nearer than the ground.
                     let q = ob.local(hit.pos);
                     let ground = crate::compose::primitive_distance(*kind, *a, q);
-                    if let Some(h) = ob.plants.as_ref().and_then(|f| f.nearest(a, q, a[11], ground)) {
+                    if let Some(h) = ob.plants.as_ref().and_then(|f| f.nearest(a, q, a[11], ground, self.prog.plant_min_size(hit.pos, ob.scale))) {
                         return h.color_value(o.object as usize - 1);
                     }
                     return if mat.pattern == crate::compose::Pattern::Seabed.index() { crate::compose::seabed_color(a, q, mat.pattern_size) } else { crate::compose::pattern_value(mat.pattern, mat.pattern_size, q) };
@@ -2211,6 +2211,13 @@ pub fn ggx_normal(n: V3, alpha: f64, u1: f64, u2: f64) -> V3 {
 }
 
 /// Progressive CPU renderer: each `render_pass` adds one sample per pixel.
+/// The level of detail of plants for a render of `scene` at `width` × `height`
+/// (`Program::plant_lod`; GPU: renderer.rs, uniform `cover[2].w`).
+pub fn plant_lod(scene: &Scene, width: u32, height: u32) -> Option<(V3, f64)> {
+    let k = scene.march.plant_detail.max(0.0) * crate::render::Frame::new(scene, width, height).pixel_angle;
+    (k > 0.0).then_some((scene.camera.position, k))
+}
+
 pub struct CpuRenderer {
     pub scene: Scene,
     prog: Program,
@@ -2230,7 +2237,8 @@ pub struct CpuRenderer {
 impl CpuRenderer {
     pub fn new(scene: Scene, width: u32, height: u32) -> Self {
         let scene = crate::animation::still_scene(&scene).unwrap_or(scene);
-        let prog = Program::for_scene(&scene);
+        let mut prog = Program::for_scene(&scene);
+        prog.plant_lod = plant_lod(&scene, width, height);
         let n = (width * height) as usize;
         CpuRenderer { scene, prog, width, height, accum: vec![[0.0; 3]; n], aux: vec![[0.0; 8]; n], samples: 0, first: 0, tile: None }
     }
@@ -2252,6 +2260,8 @@ impl CpuRenderer {
     /// `[full width, full height]` (None: the whole image). Starts again.
     pub fn set_tile(&mut self, tile: Option<[u32; 4]>) {
         self.tile = tile;
+        let (w, h) = tile.map_or((self.width, self.height), |t| (t[2], t[3]));
+        self.prog.plant_lod = plant_lod(&self.scene, w, h);
         self.start_at_sample(0);
     }
 
@@ -2260,6 +2270,8 @@ impl CpuRenderer {
     pub fn set_scene_keep(&mut self, scene: Scene) {
         let scene = crate::animation::still_scene(&scene).unwrap_or(scene);
         self.prog = Program::for_scene(&scene);
+        let (w, h) = self.tile.map_or((self.width, self.height), |t| (t[2], t[3]));
+        self.prog.plant_lod = plant_lod(&scene, w, h);
         self.scene = scene;
     }
 
