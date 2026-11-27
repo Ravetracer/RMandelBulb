@@ -298,7 +298,7 @@ fn scatter(prog: &Program, hp: usize, region: [[f64; 3]; 2], sp: &PlantSpecies, 
                     }
                     // Inside the region, and the surface may pass the cell.
                     let cl = lo + v3(c[0] as f64, c[1] as f64, c[2] as f64) * s;
-                    if cl.x > lo.x + ext.x || cl.y > lo.y + ext.y || cl.z > lo.z + ext.z {
+                    if cl.x >= lo.x + ext.x || cl.y >= lo.y + ext.y || cl.z >= lo.z + ext.z {
                         return None;
                     }
                     let center = cl + v3(0.5, 0.5, 0.5) * s;
@@ -362,14 +362,16 @@ fn scatter(prog: &Program, hp: usize, region: [[f64; 3]; 2], sp: &PlantSpecies, 
                 if d <= 0.0 {
                     return None;
                 }
-                // Onto the surface: steps of the estimate along the gradient stay outside.
+                // Onto the surface: steps of the estimate along the gradient stay outside; they
+                // aim half a tolerance above it (exact estimates would land on 0, which counts
+                // as inside).
                 let e = spacing * 0.01;
                 for _ in 0..64 {
                     if d < tol {
                         break;
                     }
                     let n = gradient(ev, hp, p, e, tol)?;
-                    p = p - n * d;
+                    p = p - n * (d - 0.5 * tol);
                     d = ev.host_distance(hp, p, tol);
                 }
                 if d >= tol || d <= 0.0 {
@@ -377,6 +379,11 @@ fn scatter(prog: &Program, hp: usize, region: [[f64; 3]; 2], sp: &PlantSpecies, 
                 }
                 let inside = |v: f64, a: f64| v >= a && v < a + spacing;
                 if !(inside(p.x, cl.x) && inside(p.y, cl.y) && inside(p.z, cl.z)) {
+                    return None;
+                }
+                // Cells on the region's edge reach beyond it.
+                let rel = p - lo;
+                if rel.x > ext.x || rel.y > ext.y || rel.z > ext.z {
                     return None;
                 }
                 let n = gradient(ev, hp, p, e, tol)?;
@@ -895,6 +902,21 @@ mod tests {
             }
         }
         assert!(checked > 500, "{checked}");
+    }
+
+    #[test]
+    fn cover_grows_on_exact_surfaces() {
+        // A plane (exact distance) in a region box.
+        let mut s = crate::Scene::default();
+        let mut o = SceneObject { shape: Shape::Primitive(Primitive::Plane), ..Default::default() };
+        let mut k = PlantSpecies::preset("Kelp").unwrap();
+        (k.spacing, k.density, k.clumping) = (0.2, 1.0, 0.0);
+        o.cover.species.push(k);
+        o.cover.region = Some([[-1.0, -1.0, -0.1], [1.0, 1.0, 0.1]]);
+        s.objects.push(o);
+        let set = bake(&s, 1, &|_| {}).unwrap();
+        assert!(set.roots.len() > 60, "{}", set.roots.len());
+        assert!(set.roots.iter().all(|r| r.pos[2] > 0.0 && r.pos[2] < 0.001 && r.pos[0].abs() <= 1.0));
     }
 
     #[test]

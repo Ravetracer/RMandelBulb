@@ -331,6 +331,38 @@ picked at random by its weight, so every generation branches a little differentl
 preview under the settings shows the plant from the side and from above, with its number
 of segments.
 
+### Parametric L-systems
+
+Symbols can carry **arguments**: `F(0.5)` draws a segment of length 0.5, `+(30)` turns by
+30° (also `-`, `&`, `^`, `\`, `/`), `!(0.02)` sets the branch radius and `L(0.1)` adds a
+leaf of that length. An argument replaces the setting the turtle would use otherwise
+(Angle variation still applies to the angles).
+
+A rule names the arguments of its symbol in the field between the brackets, for example
+`l, w`, and computes the arguments of its replacement from them:
+
+| Symbol | ( ) | if | → |
+|--------|-----|----|---|
+| `A` | `l, w` | | `!(w)F(l)[&(45)B(l*0.6, w*0.7)]/(137.5)A(l*0.9, w*0.7)` |
+| `B` | `l, w` | `l >= 0.08` | `!(w)F(l)[-(45)B(l*0.6, w*0.7)]B(l*0.9, w*0.7)` |
+| `B` | `l, w` | `l < 0.08` | `L(0.12)` |
+
+Every generation the branches get shorter and thinner by the factors; once they are shorter
+than 0.08 the second rule for `B` no longer applies and the third turns the tip into a leaf.
+The **condition** (the *if* field) may use comparisons (`< <= > >= == !=`), arithmetic and
+functions such as `min`, `max` and `sin`; only the rules whose condition holds are picked
+among. A rule without names replaces its symbol whatever its arguments, so the classic and
+the parametric style mix. The start string may carry arguments too (`A(1, 0.06)`).
+
+The presets **Monopodial tree** and **Ternary tree** are parametric: the first grows a stem
+with alternating side branches, the second three branches per node, its old branches
+growing longer (`F(l) → F(l*1.109)`) and thicker (`!(w) → !(w*1.732)`) every generation.
+
+![The parametric trees on a ground plane (Plants on the plane, in a region box)](images/plants-trees.jpg)
+
+When something in the start string or a rule cannot be read (a bracket not closed, an
+unknown name), a warning under the rules names the rule.
+
 !!! tip
     Plants make renders near the ground slower: every segment counts. Keep the generations
     low enough that the preview stays under a few hundred segments, and use Density and

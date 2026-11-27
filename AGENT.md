@@ -462,6 +462,14 @@ cargo clippy -j 8 --workspace --all-targets
   `plant_de` after `prim_de` for seabeds with plants. Editor `rmb-app/src/plants_editor.rs`.
   Tests: `plants::tests`, `gpu_matches_cpu_under_water` (plants view). WGSL reserved words
   bit again: `patch`.
+- Parametric L-systems: `expand` returns `Vec<Module>` (symbol + f64 arguments) or an error;
+  `parse_modules` reads `F(l*0.8)`, arguments are `expr::Expr`; `PlantRule::params` /
+  `condition`; a rule applies when its parameter count fits (or it has none) and its
+  condition holds; the random pick draws only when some rule applies (classic systems keep
+  their random sequence: test `classic_presets_grow_as_before` checks segment fingerprints,
+  example `plant_fingerprint`). `draw`: an argument replaces the default length, angle
+  (degrees, variation still added), radius (`!`) or leaf length. Templates only (CPU), so
+  the GPU is unchanged. `PlantSpecies::check` (cached) for editor errors.
 - Plants on any surface (`plant_cover.rs`; `Scene::plant_cover`, `SceneObject::cover`):
   roots baked per host (0 main fractal in its own coordinates, i + 1 object i in local
   coordinates) by an octree over the region (cells kept while `host_distance` < half

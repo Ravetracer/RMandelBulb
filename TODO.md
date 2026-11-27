@@ -177,7 +177,7 @@
         settings, preview)
   - [x] Plants on other surfaces than the seabed: main fractal and all objects (baked
         roots, `plant_cover.rs`)
-  - [ ] Possible: parametric L-systems
+  - [x] Parametric L-systems (arguments, parameter names, conditions; two tree presets)
   - [x] Wet trails behind the lens drops running down (Drop trails)
   - [x] Faster seabed parts and plants (cell skipping, nearest-first scan, local sway
         bound): 1.6-1.7x on the GPU

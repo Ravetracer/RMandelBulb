@@ -10,7 +10,7 @@ use rmb_core::plants::{MAX_SEGMENTS, MAX_SPECIES, PlantRule, PlantSpecies};
 
 use crate::{icons, theme, widgets};
 
-const SYMBOLS: &str = "F draws a branch segment, f moves without drawing, + and - turn left and right, & and ^ pitch down and up, \\ and / roll, | turns around, [ starts a side branch (shorter and thinner by the level factors), ] ends it, ! thins the branch, L adds a leaf. Other letters (A, B, …) draw nothing: use them as growing tips in the rules.";
+const SYMBOLS: &str = "F draws a branch segment, f moves without drawing, + and - turn left and right, & and ^ pitch down and up, \\ and / roll, | turns around, [ starts a side branch (shorter and thinner by the level factors), ] ends it, ! thins the branch, L adds a leaf. Other letters (A, B, …) draw nothing: use them as growing tips in the rules. Parametric: a symbol may carry arguments, F(0.5) draws a segment of that length, + - & ^ \\ / take an angle in degrees, !(w) sets the radius, L(x) a leaf of that length.";
 
 /// The plants section of a seabed object (`surface` false) or of a cover (`surface` true:
 /// growth direction and steepest slope too).
@@ -115,30 +115,43 @@ fn species_editor(ui: &mut Ui, p: &mut PlantSpecies, i: usize, surface: bool) {
         ui.end_row();
         widgets::slider_u32(ui, "Generations", "How often the rules rewrite the string (more = bigger, finer plants; the drawing stops at 4000 segments)", &mut p.iterations, 0..=10, d.iterations);
     });
-    ui.label(RichText::new("Rules").color(theme::TEXT_MUTED)).on_hover_text("Each rule replaces a symbol by a string in every generation. Several rules for one symbol are picked at random by their weights");
+    ui.label(RichText::new("Rules").color(theme::TEXT_MUTED)).on_hover_text(
+        "Each rule replaces a symbol by a string in every generation. Several rules for one symbol are picked at random by their weights. Parametric rules name the symbol's arguments, (l, w), may have a condition, l > 0.1, and compute the arguments of their replacement, F(l)A(l*0.7, w)",
+    );
     let mut remove = None;
+    let mono = egui::TextStyle::Monospace;
     for (k, r) in p.rules.iter_mut().enumerate() {
         ui.horizontal(|ui| {
             let mut sym = r.symbol.to_string();
-            let resp = ui.add(egui::TextEdit::singleline(&mut sym).font(egui::TextStyle::Monospace).desired_width(18.0)).on_hover_text("The symbol this rule replaces");
+            let resp = ui.add(egui::TextEdit::singleline(&mut sym).font(mono.clone()).desired_width(18.0)).on_hover_text("The symbol this rule replaces");
             if resp.changed()
                 && let Some(c) = sym.chars().last()
             {
                 r.symbol = c;
             }
-            ui.label("->");
-            ui.add(egui::TextEdit::singleline(&mut r.replacement).font(egui::TextStyle::Monospace).desired_width(ui.available_width() - 90.0)).on_hover_text(SYMBOLS);
-            ui.add(egui::DragValue::new(&mut r.weight).speed(0.01).range(0.0..=100.0).max_decimals(2)).on_hover_text("Weight: how often this rule is picked among the rules of its symbol");
+            ui.label("(");
+            ui.add(egui::TextEdit::singleline(&mut r.params).font(mono.clone()).desired_width(48.0).hint_text("l, w")).on_hover_text("Parametric rule: names of the symbol's arguments, separated by commas (empty: the rule replaces the symbol whatever its arguments)");
+            ui.label(")  if");
+            ui.add(egui::TextEdit::singleline(&mut r.condition).font(mono.clone()).desired_width((ui.available_width() - 44.0).max(40.0)).hint_text("always")).on_hover_text("Condition over the arguments, for example l > 0.1 (comparisons < <= > >= == !=, arithmetic, functions like min, max, sin). Empty: always");
             if widgets::icon_button(ui, icons::X, "Remove this rule").clicked() {
                 remove = Some(k);
             }
         });
+        ui.horizontal(|ui| {
+            ui.add_space(22.0);
+            ui.label("->");
+            ui.add(egui::TextEdit::singleline(&mut r.replacement).font(mono.clone()).desired_width((ui.available_width() - 80.0).max(60.0))).on_hover_text(SYMBOLS);
+            ui.add(egui::DragValue::new(&mut r.weight).speed(0.01).range(0.0..=100.0).max_decimals(2)).on_hover_text("Weight: how often this rule is picked among the rules of its symbol whose condition holds");
+        });
+    }
+    if let Some(e) = p.check() {
+        ui.add(egui::Label::new(RichText::new(format!("{}  {e}", icons::WARNING)).color(theme::WARN)).wrap());
     }
     if let Some(k) = remove {
         p.rules.remove(k);
     }
     if ui.button(format!("{}  Add rule", icons::PLUS)).on_hover_text("Add a rule (symbol → replacement)").clicked() {
-        p.rules.push(PlantRule { symbol: 'A', replacement: "F[+A][-A]".into(), weight: 1.0 });
+        p.rules.push(PlantRule::new('A', "F[+A][-A]", 1.0));
     }
     widgets::grid(ui, &format!("plant-turtle-{i}"), |ui| {
         widgets::slider(ui, "Angle", "Turning angle of + - & ^ \\ / (degrees)", &mut p.angle, 0.0..=180.0, d.angle);

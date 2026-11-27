@@ -16,6 +16,9 @@ and the release workflow uses it as the release notes.
   have a Plants section with the seabed's L-system plants. Their places are baked onto the
   surface in the background (spacing, density, patches, growth direction "Upright", "Steepest
   slope", optional region box); moving or animating the object keeps them.
+- Parametric L-systems: symbols with arguments (`F(0.5)`, `+(30)`, `A(l*0.7, w)`), rules
+  with parameter names and conditions, errors shown under the rules; presets "Monopodial
+  tree" and "Ternary tree".
 - Fixed: the tops of seabed plants could take the colors of the next kind of plant (an f32
   rounding of the color value on the GPU).
 

@@ -1,6 +1,6 @@
 //! Writes demo scenes with plants baked onto surfaces (.rmb) into a folder: the bulb overgrown
 //! with algae and sea fans (`bulb.rmb`, `bulb_close.rmb`) and a ball with kelp next to it
-//! (`ball.rmb`).
+//! (`ball.rmb`), and parametric L-system trees on a ground plane (`trees.rmb`).
 use rmb_core::compose::{Primitive, SceneObject, Shape, Transform};
 use rmb_core::plants::PlantSpecies;
 use rmb_core::{Scene, v3};
@@ -27,4 +27,14 @@ fn main() {
     s.camera.position = v3(2.6, -4.2, 1.2);
     s.camera.look_at(v3(0.0, -1.4, 0.0), v3(0.0, 0.0, 1.0));
     rmb_core::io::save(&s, &dir.join("ball.rmb")).unwrap();
+    // Trees on a ground in a box (the plane is endless).
+    let mut t = Scene::default();
+    t.fractal.transform = Transform { position: v3(0.0, 0.0, 0.3), scale: 0.6, ..Default::default() };
+    let mut ground = SceneObject { name: "Ground".into(), shape: Shape::Primitive(Primitive::Plane), transform: Transform { position: v3(0.0, 0.0, -0.4), ..Default::default() }, ..Default::default() };
+    ground.cover.species = vec![species("Monopodial tree", 0.9, 0.9, 0.5, 1.0), species("Ternary tree", 1.1, 0.8, 0.5, 1.0)];
+    ground.cover.region = Some([[-4.0, -4.0, -0.1], [4.0, 4.0, 0.1]]);
+    t.objects.push(ground);
+    t.camera.position = v3(4.2, -4.6, 1.3);
+    t.camera.look_at(v3(0.0, 0.0, 0.0), v3(0.0, 0.0, 1.0));
+    rmb_core::io::save(&t, &dir.join("trees.rmb")).unwrap();
 }

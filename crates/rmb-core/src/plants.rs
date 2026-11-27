@@ -4,7 +4,11 @@
 //! generations) and how a turtle draws its result: `F` draws a branch segment, `f` moves
 //! without drawing, `+`/`-` turn left/right, `&`/`^` pitch down/up, `\`/`/` roll, `|` turns
 //! around, `[`/`]` start and end a side branch (shorter and thinner by the level factors),
-//! `!` thins the branch, `L` adds a leaf. The drawn plant ([`PlantTemplate`]) is normalized to
+//! `!` thins the branch, `L` adds a leaf. Parametric L-systems give symbols arguments
+//! (`F(0.5)`, `+(30)`, `A(l*0.7, w)`): a rule with parameters (`A(l,w)`) and an optional
+//! condition (`l > 0.1`) computes its replacement's arguments from them, and an argument
+//! replaces the turtle's default (segment length, angle in degrees, radius, leaf length).
+//! The drawn plant ([`PlantTemplate`]) is normalized to
 //! height 1 and kept with a bounding volume hierarchy over its segments; the seabed places
 //! copies of it on a grid (turned, sized and swaying per copy, [`PlantField`]). The GPU mirrors
 //! the distance and the placement in march.wgsl (`plant_de`), with the templates in the
@@ -25,11 +29,27 @@ pub struct PlantRule {
     pub symbol: char,
     pub replacement: String,
     pub weight: f64,
+    /// Parametric rules: names of the symbol's arguments ("l, w"; empty: any symbol `symbol`,
+    /// its arguments unused) and a condition over them ("l > 0.1"; empty: always).
+    pub params: String,
+    pub condition: String,
 }
 
 impl Default for PlantRule {
     fn default() -> Self {
-        PlantRule { symbol: 'F', replacement: "F".into(), weight: 1.0 }
+        PlantRule { symbol: 'F', replacement: "F".into(), weight: 1.0, params: String::new(), condition: String::new() }
+    }
+}
+
+impl PlantRule {
+    /// A classic rule (no parameters, no condition).
+    pub fn new(symbol: char, replacement: &str, weight: f64) -> PlantRule {
+        PlantRule { symbol, replacement: replacement.into(), weight, ..PlantRule::default() }
+    }
+
+    /// The parameter names.
+    pub fn param_names(&self) -> Vec<String> {
+        self.params.split(',').map(|p| p.trim().to_string()).filter(|p| !p.is_empty()).collect()
     }
 }
 
@@ -117,13 +137,13 @@ impl Default for PlantSpecies {
 /// The preset plants: name, start string, rules (symbol, replacement, weight), generations,
 /// angle, angle variation, length scale, thickness, thinning, leaf length, leaf width,
 /// tropism, height, spacing, density, clumping, sway, branch colors, leaf colors.
-type PresetRow = (&'static str, &'static str, &'static [(char, &'static str, f64)], u32, [f64; 9], [f64; 5], [[f32; 3]; 4]);
+type PresetRow = (&'static str, &'static str, &'static [(&'static str, &'static str, f64)], u32, [f64; 9], [f64; 5], [[f32; 3]; 4]);
 
 const PRESETS: &[PresetRow] = &[
     (
         "Kelp",
         "FFFA",
-        &[('A', "F[&&L]///F[^^L]///A", 0.6), ('A', "F[&&L]//F[&L]//A", 0.4)],
+        &[("A", "F[&&L]///F[^^L]///A", 0.6), ("A", "F[&&L]//F[&L]//A", 0.4)],
         7,
         [22.0, 8.0, 0.8, 0.03, 0.8, 3.0, 0.22, 0.1, 0.0],
         [0.9, 0.7, 0.45, 0.7, 0.8],
@@ -132,7 +152,7 @@ const PRESETS: &[PresetRow] = &[
     (
         "Sea fan",
         "FA",
-        &[('A', "F[+A][-A]", 0.6), ('A', "F[+A]A", 0.2), ('A', "F[-A]A", 0.2)],
+        &[("A", "F[+A][-A]", 0.6), ("A", "F[+A]A", 0.2), ("A", "F[-A]A", 0.2)],
         8,
         [22.0, 8.0, 0.88, 0.06, 0.75, 0.0, 0.3, 0.04, 0.0],
         [0.5, 0.9, 0.3, 0.4, 0.15],
@@ -141,7 +161,7 @@ const PRESETS: &[PresetRow] = &[
     (
         "Staghorn coral",
         "[&A]///[&A]///[&A]///[A]",
-        &[('A', "F[&+A]F[&-A]A", 0.5), ('A', "F[^/A]FA", 0.3), ('A', "FA", 0.2)],
+        &[("A", "F[&+A]F[&-A]A", 0.5), ("A", "F[^/A]FA", 0.3), ("A", "FA", 0.2)],
         5,
         [30.0, 10.0, 0.72, 0.1, 0.85, 0.0, 0.3, 0.1, 0.0],
         [0.35, 0.6, 0.4, 0.6, 0.0],
@@ -150,7 +170,7 @@ const PRESETS: &[PresetRow] = &[
     (
         "Algae tuft",
         "[A]//[A]//[A]//[A]//[A]",
-        &[('A', "F&A", 0.5), ('A', "F^A", 0.3), ('A', "FL", 0.2)],
+        &[("A", "F&A", 0.5), ("A", "F^A", 0.3), ("A", "FL", 0.2)],
         6,
         [14.0, 10.0, 0.9, 0.035, 0.9, 1.4, 0.35, -0.04, 0.0],
         [0.25, 0.25, 0.5, 0.8, 1.0],
@@ -159,13 +179,54 @@ const PRESETS: &[PresetRow] = &[
     (
         "Fern weed",
         "A",
-        &[('A', "F[+L][-L]F[+L][-L]A", 0.7), ('A', "F[+A][-A]", 0.3)],
+        &[("A", "F[+L][-L]F[+L][-L]A", 0.7), ("A", "F[+A][-A]", 0.3)],
         5,
         [55.0, 8.0, 0.65, 0.025, 0.7, 1.6, 0.3, 0.05, 0.0],
         [0.3, 0.35, 0.6, 0.6, 0.7],
         [[0.15, 0.2, 0.05], [0.25, 0.35, 0.08], [0.15, 0.32, 0.1], [0.4, 0.55, 0.15]],
     ),
+    // Parametric: a stem with alternating side branches (lengths and widths shrink by the
+    // arguments); tips shorter than 0.08 turn into leaves.
+    (
+        "Monopodial tree",
+        "A(1, 0.06)",
+        &[
+            ("A(l, w)", "!(w)F(l)[&(45)B(l*0.6, w*0.707)]/(137.5)A(l*0.9, w*0.707)", 1.0),
+            ("B(l, w) : l >= 0.08", "!(w)F(l)[-(45)C(l*0.6, w*0.707)]C(l*0.9, w*0.707)", 1.0),
+            ("C(l, w) : l >= 0.08", "!(w)F(l)[+(45)B(l*0.6, w*0.707)]B(l*0.9, w*0.707)", 1.0),
+            ("B(l, w) : l < 0.08", "L(0.12)", 1.0),
+            ("C(l, w) : l < 0.08", "L(0.12)", 1.0),
+        ],
+        10,
+        [0.0, 4.0, 1.0, 0.06, 1.0, 1.0, 0.45, 0.0, 0.0],
+        [0.8, 1.0, 0.4, 0.2, 0.1],
+        [[0.3, 0.2, 0.12], [0.42, 0.3, 0.18], [0.15, 0.35, 0.08], [0.35, 0.55, 0.12]],
+    ),
+    // Parametric: three branches per node; old branches grow longer (F) and thicker (!) every
+    // generation.
+    (
+        "Ternary tree",
+        "!(1)F(200)/(45)A",
+        &[
+            ("A", "!(1.732)F(50)[&(18.95)F(50)AL(35)]/(94.74)[&(18.95)F(50)AL(35)]/(132.63)[&(18.95)F(50)AL(35)]", 1.0),
+            ("F(l)", "F(l*1.109)", 1.0),
+            ("!(w)", "!(w*1.732)", 1.0),
+        ],
+        5,
+        [0.0, 5.0, 1.0, 0.06, 1.0, 1.0, 0.4, -0.05, 0.0],
+        [0.6, 0.8, 0.4, 0.3, 0.15],
+        [[0.28, 0.2, 0.13], [0.4, 0.3, 0.2], [0.2, 0.4, 0.1], [0.45, 0.6, 0.15]],
+    ),
 ];
+
+/// A preset rule from its head ("A", "A(l,w)" or "A(l,w) : condition").
+fn preset_rule(head: &str, replacement: &str, weight: f64) -> PlantRule {
+    let (sym_params, condition) = head.split_once(':').unwrap_or((head, ""));
+    let sym_params = sym_params.trim();
+    let symbol = sym_params.chars().next().unwrap_or('A');
+    let params = sym_params[symbol.len_utf8()..].trim().trim_start_matches('(').trim_end_matches(')').to_string();
+    PlantRule { symbol, replacement: replacement.into(), weight, params, condition: condition.trim().into() }
+}
 
 impl PlantSpecies {
     /// Names of the presets.
@@ -180,7 +241,7 @@ impl PlantSpecies {
             name: n.to_string(),
             enabled: true,
             axiom: axiom.to_string(),
-            rules: rules.iter().map(|(s, r, w)| PlantRule { symbol: *s, replacement: r.to_string(), weight: *w }).collect(),
+            rules: rules.iter().map(|(head, r, w)| preset_rule(head, r, *w)).collect(),
             iterations: *iterations,
             angle: g[0],
             angle_variation: g[1],
@@ -204,9 +265,26 @@ impl PlantSpecies {
         })
     }
 
+    /// What is wrong with the start string or the rules (None: they grow), cached by the
+    /// growth settings (editors ask every frame).
+    pub fn check(&self) -> Option<String> {
+        static CHECKED: OnceLock<Mutex<HashMap<String, Option<String>>>> = OnceLock::new();
+        let key = self.growth_key();
+        let mut map = CHECKED.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(e) = map.get(&key) {
+            return e.clone();
+        }
+        let e = expand(self).err();
+        if map.len() > 64 {
+            map.clear();
+        }
+        map.insert(key, e.clone());
+        e
+    }
+
     /// The fields that shape the template (not placement or colors), as a cache key.
     fn growth_key(&self) -> String {
-        let rules: Vec<String> = self.rules.iter().map(|r| format!("{}>{}:{}", r.symbol, r.replacement, r.weight)).collect();
+        let rules: Vec<String> = self.rules.iter().map(|r| format!("{}({}):{}>{}:{}", r.symbol, r.params, r.condition, r.replacement, r.weight)).collect();
         format!(
             "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
             self.axiom,
@@ -246,32 +324,136 @@ impl Rng {
     }
 }
 
-/// The L-system string after `species.iterations` generations (at most `MAX_SYMBOLS`).
-pub fn expand(species: &PlantSpecies) -> String {
-    let mut rng = Rng(species.seed as u64 * 0x9e37_79b9 + 17);
-    let mut by_symbol: HashMap<char, Vec<(&str, f64)>> = HashMap::new();
-    for r in &species.rules {
-        by_symbol.entry(r.symbol).or_default().push((r.replacement.as_str(), r.weight.max(0.0)));
-    }
-    let mut s = species.axiom.clone();
-    for _ in 0..species.iterations.min(12) {
-        let mut out = String::with_capacity(s.len() * 2);
-        for c in s.chars() {
-            match by_symbol.get(&c) {
-                Some(options) => {
-                    let total: f64 = options.iter().map(|o| o.1).sum();
-                    let mut pick = rng.next() * total;
-                    let mut chosen = options[0].0;
-                    for o in options {
-                        if pick < o.1 {
-                            chosen = o.0;
+/// One symbol of an expanded L-system with its arguments.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Module {
+    pub sym: char,
+    pub args: Vec<f64>,
+}
+
+/// A symbol with argument expressions (start string, rule replacements).
+struct ModuleExpr {
+    sym: char,
+    args: Vec<crate::expr::Expr>,
+}
+
+/// Parses symbols with optional arguments: `F(l*0.8)[+(30)A(l, w)]`.
+fn parse_modules(s: &str) -> Result<Vec<ModuleExpr>, String> {
+    let chars: Vec<char> = s.chars().collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        i += 1;
+        if c.is_whitespace() {
+            continue;
+        }
+        if c == '(' || c == ')' || c == ',' {
+            return Err(format!("unexpected '{c}'"));
+        }
+        let mut args = Vec::new();
+        let mut j = i;
+        while j < chars.len() && chars[j].is_whitespace() {
+            j += 1;
+        }
+        if j < chars.len() && chars[j] == '(' {
+            let mut depth = 0;
+            let mut cur = String::new();
+            let mut parts = Vec::new();
+            let mut k = j;
+            loop {
+                let Some(&d) = chars.get(k) else { return Err(format!("'{c}(' is not closed")) };
+                k += 1;
+                match d {
+                    '(' => {
+                        depth += 1;
+                        if depth > 1 {
+                            cur.push(d);
+                        }
+                    }
+                    ')' => {
+                        depth -= 1;
+                        if depth == 0 {
                             break;
                         }
-                        pick -= o.1;
+                        cur.push(d);
                     }
-                    out.push_str(chosen);
+                    ',' if depth == 1 => parts.push(std::mem::take(&mut cur)),
+                    _ => cur.push(d),
                 }
-                None => out.push(c),
+            }
+            if !(parts.is_empty() && cur.trim().is_empty()) {
+                parts.push(cur);
+            }
+            for part in parts {
+                args.push(crate::expr::Expr::parse(part.trim()).map_err(|e| format!("{c}({}): {e}", part.trim()))?);
+            }
+            i = k;
+        }
+        out.push(ModuleExpr { sym: c, args });
+    }
+    Ok(out)
+}
+
+/// Evaluates the arguments of `m` with `vars`.
+fn eval_module(m: &ModuleExpr, vars: &dyn Fn(&str) -> Option<f64>) -> Result<Module, String> {
+    let args = m.args.iter().map(|e| e.eval(vars, &|_| None).map_err(|err| format!("{}(…): {err}", m.sym))).collect::<Result<Vec<f64>, String>>()?;
+    Ok(Module { sym: m.sym, args })
+}
+
+/// The expanded L-system after `species.iterations` generations (at most `MAX_SYMBOLS`
+/// symbols), or what is wrong with the start string or a rule.
+pub fn expand(species: &PlantSpecies) -> Result<Vec<Module>, String> {
+    struct Rule {
+        params: Vec<String>,
+        condition: Option<crate::expr::Expr>,
+        replacement: Vec<ModuleExpr>,
+        weight: f64,
+    }
+    let mut rng = Rng(species.seed as u64 * 0x9e37_79b9 + 17);
+    let mut by_symbol: HashMap<char, Vec<Rule>> = HashMap::new();
+    for (k, r) in species.rules.iter().enumerate() {
+        let name = format!("rule {} ({})", k + 1, r.symbol);
+        let condition = if r.condition.trim().is_empty() { None } else { Some(crate::expr::Expr::parse(r.condition.trim()).map_err(|e| format!("{name}, condition: {e}"))?) };
+        let replacement = parse_modules(&r.replacement).map_err(|e| format!("{name}: {e}"))?;
+        by_symbol.entry(r.symbol).or_default().push(Rule { params: r.param_names(), condition, replacement, weight: r.weight.max(0.0) });
+    }
+    let mut s: Vec<Module> = parse_modules(&species.axiom).map_err(|e| format!("start: {e}"))?.iter().map(|m| eval_module(m, &|_| None)).collect::<Result<_, _>>().map_err(|e| format!("start: {e}"))?;
+    for _ in 0..species.iterations.min(12) {
+        let mut out = Vec::with_capacity(s.len() * 2);
+        for m in &s {
+            let rules = by_symbol.get(&m.sym);
+            // The rules that apply: the parameter count fits and the condition holds.
+            let mut options: Vec<&Rule> = Vec::new();
+            for r in rules.into_iter().flatten() {
+                if !r.params.is_empty() && r.params.len() != m.args.len() {
+                    continue;
+                }
+                let vars = |n: &str| r.params.iter().position(|p| p == n).map(|i| m.args[i]);
+                if let Some(c) = &r.condition
+                    && c.eval(&vars, &|_| None).map_err(|e| format!("rule for {}, condition: {e}", m.sym))? == 0.0
+                {
+                    continue;
+                }
+                options.push(r);
+            }
+            if options.is_empty() {
+                out.push(m.clone());
+            } else {
+                let total: f64 = options.iter().map(|o| o.weight).sum();
+                let mut pick = rng.next() * total;
+                let mut chosen = options[0];
+                for o in &options {
+                    if pick < o.weight {
+                        chosen = o;
+                        break;
+                    }
+                    pick -= o.weight;
+                }
+                let vars = |n: &str| chosen.params.iter().position(|p| p == n).map(|i| m.args[i]);
+                for r in &chosen.replacement {
+                    out.push(eval_module(r, &vars).map_err(|e| format!("rule for {}: {e}", m.sym))?);
+                }
             }
             if out.len() > MAX_SYMBOLS {
                 break;
@@ -283,7 +465,7 @@ pub fn expand(species: &PlantSpecies) -> String {
             break;
         }
     }
-    s
+    Ok(s)
 }
 
 /// A drawn piece of a plant: a branch (round cone from `a` with radius `ra` to `b` with
@@ -326,7 +508,7 @@ pub struct PlantTemplate {
 }
 
 /// Draws the expanded string with the turtle (see the module documentation). Heading +z.
-pub fn draw(species: &PlantSpecies, s: &str) -> Vec<PlantSeg> {
+pub fn draw(species: &PlantSpecies, s: &[Module]) -> Vec<PlantSeg> {
     #[derive(Clone, Copy)]
     struct Turtle {
         pos: V3,
@@ -343,14 +525,17 @@ pub fn draw(species: &PlantSpecies, s: &str) -> Vec<PlantSeg> {
     let mut stack: Vec<Turtle> = Vec::new();
     let mut segs = Vec::new();
     let up = v3(0.0, 0.0, 1.0);
-    for c in s.chars() {
+    for m in s {
         if segs.len() >= MAX_SEGMENTS {
             break;
         }
-        let mut angle = || base + (rng.next() * 2.0 - 1.0) * vary;
+        let c = m.sym;
+        let arg = m.args.first().copied();
+        // An argument replaces the default angle (degrees); the variation applies to both.
+        let mut angle = || arg.map_or(base, f64::to_radians) + (rng.next() * 2.0 - 1.0) * vary;
         match c {
             'F' | 'f' => {
-                let end = t.pos + t.h * t.len;
+                let end = t.pos + t.h * arg.unwrap_or(t.len);
                 if c == 'F' {
                     // Slight taper along every branch.
                     let rb = t.radius * 0.96;
@@ -403,9 +588,9 @@ pub fn draw(species: &PlantSpecies, s: &str) -> Vec<PlantSeg> {
                     t = o;
                 }
             }
-            '!' => t.radius *= species.thinning.max(0.0),
+            '!' => t.radius = arg.map_or(t.radius * species.thinning.max(0.0), |w| w.max(0.0)),
             'L' => {
-                let len = t.len * species.leaf_length.max(0.0);
+                let len = arg.unwrap_or(t.len * species.leaf_length.max(0.0)).max(0.0);
                 if len > 0.0 {
                     let end = t.pos + t.h * len;
                     let half = len * species.leaf_width.max(0.0) * 0.5;
@@ -421,7 +606,7 @@ pub fn draw(species: &PlantSpecies, s: &str) -> Vec<PlantSeg> {
 impl PlantTemplate {
     /// Grows, draws and normalizes `species` (see [`template`] for the cached version).
     pub fn grow(species: &PlantSpecies) -> PlantTemplate {
-        let mut segs = draw(species, &expand(species));
+        let mut segs = draw(species, &expand(species).unwrap_or_default());
         // Height 1 from the root at the origin (or the largest extent for plants that hang).
         let (mut top, mut ext) = (0.0f64, 0.0f64);
         for s in &segs {
@@ -830,24 +1015,73 @@ mod tests {
 
     #[test]
     fn rules_rewrite_by_weight_and_the_turtle_branches() {
-        let mut s = PlantSpecies { axiom: "A".into(), rules: vec![PlantRule { symbol: 'A', replacement: "F[+A][-A]".into(), weight: 1.0 }], iterations: 3, ..PlantSpecies::default() };
-        let e = expand(&s);
-        assert_eq!(e.matches('F').count(), 7);
+        let mut s = PlantSpecies { axiom: "A".into(), rules: vec![PlantRule::new('A', "F[+A][-A]", 1.0)], iterations: 3, ..PlantSpecies::default() };
+        let e = expand(&s).unwrap();
+        let count = |e: &[Module], c: char| e.iter().filter(|m| m.sym == c).count();
+        assert_eq!(count(&e, 'F'), 7);
         let segs = draw(&s, &e);
         assert_eq!(segs.len(), 7);
         // Side branches are shorter and thinner.
         let len = |g: &PlantSeg| (f3(g.b) - f3(g.a)).length();
         assert!(len(&segs[1]) < len(&segs[0]) && segs[1].ra < segs[0].ra);
         // Two rules for one symbol: both are used.
-        s.rules.push(PlantRule { symbol: 'A', replacement: "FL".into(), weight: 1.0 });
+        s.rules.push(PlantRule::new('A', "FL", 1.0));
         s.iterations = 6;
-        let e = expand(&s);
-        assert!(e.contains('L') && e.contains('['));
+        let e = expand(&s).unwrap();
+        assert!(count(&e, 'L') > 0 && count(&e, '[') > 0);
         // Leaves are flat: thin across, wide along their side.
         let leaf = draw(&s, &e).into_iter().find(|g| g.leaf).unwrap();
         let mid = (f3(leaf.a) + f3(leaf.b)) * 0.5;
         assert!(seg_distance(&leaf, mid + f3(leaf.side) * (leaf.ra as f64 * 0.9)) < 0.0);
         assert!(seg_distance(&leaf, mid + f3(leaf.side).cross((f3(leaf.b) - f3(leaf.a)).normalize()) * (leaf.ra as f64 * 0.9)) > 0.0);
+    }
+
+    #[test]
+    fn classic_presets_grow_as_before() {
+        // Fingerprints of the drawn segments before parametric L-systems (examples/plant_fingerprint).
+        let want = [("Kelp", 31, 0x18ac124102f694d7u64), ("Sea fan", 256, 0xaebc9682f02c5ada), ("Staghorn coral", 357, 0xcf9d80d70fbb7c21), ("Algae tuft", 23, 0x950736c0f2cbccfe), ("Fern weed", 44, 0x4e3eaf6fb2463595)];
+        for (name, n, fp) in want {
+            let t = PlantTemplate::grow(&PlantSpecies::preset(name).unwrap());
+            let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+            for s in &t.segs {
+                for v in s.a.iter().chain(&s.b).chain(&s.side).chain([&s.ra, &s.rb]) {
+                    h = (h ^ v.to_bits() as u64).wrapping_mul(0x100_0000_01b3);
+                }
+            }
+            assert_eq!((t.segs.len(), h), (n, fp), "{name}");
+        }
+    }
+
+    #[test]
+    fn parametric_rules_compute_their_arguments() {
+        // A(l): while l > 0.3 a segment of length l and a shorter tip; else a leaf.
+        let s = PlantSpecies {
+            axiom: "A(1)".into(),
+            rules: vec![
+                PlantRule { symbol: 'A', params: "l".into(), condition: "l > 0.3".into(), replacement: "F(l)[+(40)A(l*0.5)]A(l * 0.5)".into(), weight: 1.0 },
+                PlantRule { symbol: 'A', params: "l".into(), condition: "l <= 0.3".into(), replacement: "L(l)".into(), weight: 1.0 },
+            ],
+            iterations: 4,
+            angle_variation: 0.0,
+            ..PlantSpecies::default()
+        };
+        let e = expand(&s).unwrap();
+        let f: Vec<f64> = e.iter().filter(|m| m.sym == 'F').map(|m| m.args[0]).collect();
+        assert_eq!(f, vec![1.0, 0.5, 0.5]);
+        assert!(e.iter().filter(|m| m.sym == 'L').all(|m| m.args == vec![0.25]));
+        assert_eq!(e.iter().filter(|m| m.sym == 'L').count(), 4);
+        // The turtle takes the arguments: segment lengths and the turn angle.
+        let segs = draw(&s, &e);
+        let len = |g: &PlantSeg| (f3(g.b) - f3(g.a)).length();
+        assert!((len(&segs[0]) - 1.0).abs() < 1e-6 && (len(&segs[1]) - 0.5).abs() < 1e-6);
+        let a = (f3(segs[1].b) - f3(segs[1].a)).normalize();
+        assert!((a.z.acos().to_degrees() - 40.0).abs() < 1e-3, "{a:?}");
+        // Errors name the rule.
+        let mut bad = s.clone();
+        bad.rules[0].replacement = "F(l*)".into();
+        assert!(expand(&bad).unwrap_err().contains("rule 1"));
+        bad.rules[0].replacement = "F(q)".into();
+        assert!(expand(&bad).unwrap_err().contains("q"));
     }
 
     #[test]
