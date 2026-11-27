@@ -12,6 +12,11 @@ and the release workflow uses it as the release notes.
 
 ## [Unreleased]
 
+- A scene has one water and one seabed: the add menu offers no second one and they cannot
+  be duplicated.
+- Faster seabed parts and plants (the search skips grid cells that cannot be nearer and
+  looks at the nearest cells first): plants about 3x, the seabed parts about 2x less work
+  per distance estimate.
 - Water: lens drops leave wet trails on the glass as they run down (Underwater › Drop
   trails).
 - Water: bubbles can rise in winding plumes from random vents on the ground and from objects

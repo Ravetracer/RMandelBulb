@@ -795,19 +795,40 @@ const WEED_THICK: f32 = 0.004;
 const ROCK_LUMPS: f32 = 0.1;
 
 // Mirrors compose::seabed_stones: x distance bound, y the stone's hash.
-fn seabed_stones(x: f32, y: f32, z: f32, size: f32, share: f32, cell: f32, flat: f32, lumps: f32, salt: i32) -> vec2<f32> {
+// Mirrors plants::CELL_ORDER: the 5 x 5 cells around a point, nearest first.
+const CELL_ORDER = array<vec2<i32>, 25>(
+    vec2<i32>(0, 0), vec2<i32>(-1, 0), vec2<i32>(1, 0), vec2<i32>(0, -1), vec2<i32>(0, 1),
+    vec2<i32>(-1, -1), vec2<i32>(1, -1), vec2<i32>(-1, 1), vec2<i32>(1, 1),
+    vec2<i32>(-2, 0), vec2<i32>(2, 0), vec2<i32>(0, -2), vec2<i32>(0, 2),
+    vec2<i32>(-2, -1), vec2<i32>(2, -1), vec2<i32>(-2, 1), vec2<i32>(2, 1),
+    vec2<i32>(-1, -2), vec2<i32>(1, -2), vec2<i32>(-1, 2), vec2<i32>(1, 2),
+    vec2<i32>(-2, -2), vec2<i32>(2, -2), vec2<i32>(-2, 2), vec2<i32>(2, 2),
+);
+
+// Lower bound of the distance from (x, y) to anything rooted in the middle of cell (i, j)
+// (`margin` cells inside its edges) reaching `reach` sideways.
+fn cell_gap(x: f32, y: f32, i: i32, j: i32, c: f32, margin: f32, reach: f32) -> f32 {
+    let gx = max(abs(x - (f32(i) + 0.5) * c) - (0.5 - margin) * c, 0.0);
+    let gy = max(abs(y - (f32(j) + 0.5) * c) - (0.5 - margin) * c, 0.0);
+    return sqrt(gx * gx + gy * gy) - reach;
+}
+
+fn seabed_stones(x: f32, y: f32, z: f32, size: f32, share: f32, cell: f32, flat: f32, lumps: f32, salt: i32, limit: f32) -> vec2<f32> {
     if (share <= 0.0 || size <= 0.0) {
         return vec2<f32>(1.0e30, 0.0);
     }
     let c = size * cell;
     let rmax = size * 1.2 * (1.0 + lumps);
     let above = z - size * (0.7 + lumps);
-    var best = vec2<f32>(max(max(1.25 * c - rmax, c * 0.05), above), 0.0);
+    var best = vec2<f32>(min(max(max(1.25 * c - rmax, c * 0.05), above), limit), 0.0);
     let ci = i32(floor(x / c));
     let cj = i32(floor(y / c));
     for (var k = 0; k < 9; k++) {
-        let i = ci + k % 3 - 1;
-        let j = cj + k / 3 - 1;
+        let i = ci + CELL_ORDER[k].x;
+        let j = cj + CELL_ORDER[k].y;
+        if (max(cell_gap(x, y, i, j, c, 0.25, rmax), above) >= best.x) {
+            continue;
+        }
         if (hash3(i, j, salt) >= share) {
             continue;
         }
@@ -838,7 +859,7 @@ fn seabed_stones(x: f32, y: f32, z: f32, size: f32, share: f32, cell: f32, flat:
 }
 
 // Mirrors compose::seabed_weed: x distance bound, y how far up the blade (0..1).
-fn seabed_weed(x: f32, y: f32, z: f32, height: f32, share: f32, sway_in: f32, phase: f32) -> vec2<f32> {
+fn seabed_weed(x: f32, y: f32, z: f32, height: f32, share: f32, sway_in: f32, phase: f32, limit: f32) -> vec2<f32> {
     if (share <= 0.0 || height <= 0.0) {
         return vec2<f32>(1.0e30, 0.0);
     }
@@ -853,10 +874,13 @@ fn seabed_weed(x: f32, y: f32, z: f32, height: f32, share: f32, sway_in: f32, ph
     let cj = i32(floor(y / c));
     let edge = min(min(x - f32(ci - 2) * c, f32(ci + 3) * c - x), min(y - f32(cj - 2) * c, f32(cj + 3) * c - y));
     let above = z - height - th;
-    var best = vec2<f32>(max((edge - (reach - 0.2 * c)) / norm, above), 0.0);
+    var best = vec2<f32>(min(max((edge - (reach - 0.2 * c)) / norm, above), limit), 0.0);
     for (var n = 0; n < 25; n++) {
-        let i = ci + n % 5 - 2;
-        let j = cj + n / 5 - 2;
+        let i = ci + CELL_ORDER[n].x;
+        let j = cj + CELL_ORDER[n].y;
+        if (max(cell_gap(x, y, i, j, c, 0.2, reach), above) >= best.x) {
+            continue;
+        }
         let meadow = clamp(2.5 * water_noise(f32(i) * WEED_CELL / 5.0 + 5.3, f32(j) * WEED_CELL / 5.0 + 1.7) - 1.0, 0.0, 1.0);
         if (meadow <= 0.0) {
             continue;
@@ -915,11 +939,11 @@ fn seabed_feature_top(a2: vec4<f32>, a3: vec4<f32>) -> f32 {
 
 // Mirrors compose::seabed_parts: per part (rocks, pebbles, seaweed) x distance bound, y color
 // value.
-fn seabed_parts(a2: vec4<f32>, a3: vec4<f32>, x: f32, y: f32, z: f32) -> array<vec2<f32>, 3> {
+fn seabed_parts(a2: vec4<f32>, a3: vec4<f32>, x: f32, y: f32, z: f32, limit: f32) -> array<vec2<f32>, 3> {
     let size = abs(a2.z);
-    let r = seabed_stones(x, y, z, size, clamp(a2.y, 0.0, 1.0), ROCK_CELL, 1.0, ROCK_LUMPS, 101);
-    let p = seabed_stones(x, y, z, size * PEBBLE_SIZE, clamp(a2.w, 0.0, 1.0), PEBBLE_CELL, 0.6, 0.0, 102);
-    let w = seabed_weed(x, y, z, abs(a3.y), clamp(a3.x, 0.0, 1.0), a3.z, a3.w);
+    let r = seabed_stones(x, y, z, size, clamp(a2.y, 0.0, 1.0), ROCK_CELL, 1.0, ROCK_LUMPS, 101, limit);
+    let p = seabed_stones(x, y, z, size * PEBBLE_SIZE, clamp(a2.w, 0.0, 1.0), PEBBLE_CELL, 0.6, 0.0, 102, min(limit, r.x));
+    let w = seabed_weed(x, y, z, abs(a3.y), clamp(a3.x, 0.0, 1.0), a3.z, a3.w, min(limit, min(r.x, p.x)));
     return array<vec2<f32>, 3>(vec2<f32>(r.x, 0.5 + 0.25 * r.y), vec2<f32>(p.x, 0.58 + 0.12 * p.y), vec2<f32>(w.x, 0.8 + 0.2 * w.y));
 }
 
@@ -935,7 +959,7 @@ fn seabed_color(a: vec4<f32>, a2: vec4<f32>, a3: vec4<f32>, q: vec3<f32>, size: 
         return sand;
     }
     var best = vec2<f32>(max(z, 0.0), sand);
-    let parts = seabed_parts(a2, a3, q.x, q.y, z);
+    let parts = seabed_parts(a2, a3, q.x, q.y, z, max(z, 0.0));
     for (var k = 0; k < 3; k++) {
         if (parts[k].x < best.x) {
             best = parts[k];
@@ -1079,12 +1103,23 @@ fn plant_de(j: u32, a: vec4<f32>, a2: vec4<f32>, q: vec3<f32>, phase: f32, limit
             best = vec4<f32>(far, f32(k), 0.0, 0.0);
         }
         let warp = 1.0 + PLANT_SWAY * sway * (2.0 * top + 2.0 * top * top);
+        let reach_max = height * (radius + PLANT_SWAY * sway * top * top);
         for (var m = 0; m < 25; m++) {
-            let i = ci + m % 5 - 2;
-            let jj = cj + m / 5 - 2;
-            let clump = clamp(2.5 * water_noise(f32(i) * c / 1.5 + 3.7, f32(jj) * c / 1.5 + 9.1) - 1.0, 0.0, 1.0);
-            if (hash3(i, jj, salt) >= share * (1.0 + (clump - 1.0) * clumping)) {
+            let i = ci + CELL_ORDER[m].x;
+            let jj = cj + CELL_ORDER[m].y;
+            // Mirrors PlantField::nearest: cells too far first, then the share, then the patches.
+            if (max(cell_gap(q.x, q.y, i, jj, c, 0.25, reach_max), above) >= best.x) {
                 continue;
+            }
+            let h0 = hash3(i, jj, salt);
+            if (h0 >= share) {
+                continue;
+            }
+            if (clumping > 0.0) {
+                let clump = clamp(2.5 * water_noise(f32(i) * c / 1.5 + 3.7, f32(jj) * c / 1.5 + 9.1) - 1.0, 0.0, 1.0);
+                if (h0 >= share * (1.0 + (clump - 1.0) * clumping)) {
+                    continue;
+                }
             }
             let size = height * (1.0 - variation * hash3(i + 613, jj, salt));
             let rx = (f32(i) + 0.25 + 0.5 * hash3(i + 613 * 2, jj, salt)) * c;
@@ -1130,7 +1165,7 @@ fn seabed_distance(a: vec4<f32>, a2: vec4<f32>, a3: vec4<f32>, q: vec3<f32>) -> 
     if (parts > 0.0) {
         var near = z - parts;
         if (z <= parts * 1.5) {
-            let p = seabed_parts(a2, a3, q.x, q.y, z);
+            let p = seabed_parts(a2, a3, q.x, q.y, z, d * (1.0 + steep));
             near = min(p[0].x, min(p[1].x, p[2].x));
         }
         d = min(d, near / (1.0 + steep));

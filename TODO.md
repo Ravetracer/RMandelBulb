@@ -181,6 +181,27 @@
   - [ ] Possible: faster underwater rendering (views from below are about twice as slow;
         medium scenes compile about 3 s longer)
 
+## World: sky, weather, landscape (owner's wish 2026-11-27)
+
+Complete scenes the fractals live in. Everything configurable in colors and amounts, so
+alien planets are possible too. At most one water, one seabed, one landscape and one sky
+per scene.
+
+- [x] One water and one seabed per scene (the app offers no second one, no duplicate)
+- [ ] Sky: an atmosphere around the scene (sun position, time of day, scattering colors
+      from Earth-like to alien), as the background and the horizon behind the water
+- [ ] Volumetric clouds in the sky: blue sky with fair-weather clouds, overcast, dark
+      storm clouds; coverage, density, height, wind (moving in animations)
+- [ ] Thunderstorms: lightning bolts and flashes that light the clouds and the scene
+- [ ] The sky lights the scene like an HDRI box image (sky and clouds as ambient and
+      reflection light, the sun as the main light), optional instead of the added lights
+- [ ] Weather: rain (streaks, splashes on the water and the ground, wet surfaces, drops on
+      the lens), snow (flakes, snow cover), mist, hail; amounts and colors configurable
+- [ ] Landscape object: mountains and valleys (eroded-looking noise), materials by height
+      and slope (rock, grass, sand, snow), meeting the water at the shore
+- [ ] Vegetation on land: bushes, trees, grass and other plants grown by L-systems (as
+      the underwater plants), placed by height, slope and patches
+
 ## Gaps to Mandelbulb3D and Mandelbulber 2 (analysis 2026-11-24)
 
 Features the two programs have that RMandelbulb3D does not have yet, in the planned order.

@@ -283,6 +283,11 @@ impl Primitive {
         }
     }
 
+    /// Water and the seabed exist once per scene (the app offers no second one).
+    pub fn single(&self) -> bool {
+        matches!(self, Primitive::Water { .. } | Primitive::Seabed { .. })
+    }
+
     /// The medium settings of water (None for other primitives).
     pub fn medium(&self) -> Option<&WaterMedium> {
         match self {
@@ -623,7 +628,9 @@ pub fn seabed_distance(a: &[f64; 12], q: V3) -> f64 {
     let z = q.z - seabed_height(a, q.x, q.y);
     let mut d = z / (1.0 + steep * steep).sqrt();
     if parts > 0.0 {
-        let near = if z > parts * 1.5 { z - parts } else { seabed_parts(a, q.x, q.y, z).iter().fold(NO_SHORE, |m, p| m.min(p.0)) };
+        // Parts farther than the ground (in the sheared frame) do not matter: search only
+        // nearer ones.
+        let near = if z > parts * 1.5 { z - parts } else { seabed_parts(a, q.x, q.y, z, d * (1.0 + steep)).iter().fold(NO_SHORE, |m, p| m.min(p.0)) };
         d = d.min(near / (1.0 + steep));
     }
     if above > 0.0 { d.max(above) } else { d }
@@ -663,7 +670,7 @@ const ROCK_LUMPS: f64 = 0.1;
 /// stone): a turned ellipsoid `size` (largest), `flat` of it high, partly buried, with bumps
 /// (`lumps`). Returns a distance bound (in the ground-following frame) and the stone's hash.
 #[allow(clippy::too_many_arguments)]
-fn seabed_stones(x: f64, y: f64, z: f64, size: f64, share: f64, cell: f64, flat: f64, lumps: f64, salt: i32) -> (f64, f64) {
+fn seabed_stones(x: f64, y: f64, z: f64, size: f64, share: f64, cell: f64, flat: f64, lumps: f64, salt: i32, limit: f64) -> (f64, f64) {
     let c = size * cell;
     let rmax = size * 1.2 * (1.0 + lumps);
     // Stones of farther cells: one cell between, each reaching at most rmax - c/4 out of its
@@ -674,10 +681,16 @@ fn seabed_stones(x: f64, y: f64, z: f64, size: f64, share: f64, cell: f64, flat:
     // Above the highest stone: at least that far (soft shadows read the bound as the distance
     // to the nearest surface, so it must not stay at the cell bound high above the stones).
     let above = z - size * (0.7 + lumps);
-    let mut best = ((1.25 * c - rmax).max(c * 0.05).max(above), 0.0);
+    let mut best = ((1.25 * c - rmax).max(c * 0.05).max(above).min(limit), 0.0);
     let (ci, cj) = ((x / c).floor() as i32, (y / c).floor() as i32);
-    for k in 0..9 {
-        let (i, j) = (ci + k % 3 - 1, cj + k / 3 - 1);
+    for &(di, dj) in &crate::plants::CELL_ORDER[..9] {
+        let (i, j) = (ci + di, cj + dj);
+        // Centers stay in the middle half of their cell: skip cells too far to beat the best.
+        let gx = ((x - (i as f64 + 0.5) * c).abs() - 0.25 * c).max(0.0);
+        let gy = ((y - (j as f64 + 0.5) * c).abs() - 0.25 * c).max(0.0);
+        if ((gx * gx + gy * gy).sqrt() - rmax).max(above) >= best.0 {
+            continue;
+        }
         let h = |n: i32| crate::render::hash3(i.wrapping_add(n.wrapping_mul(613)), j, salt) as f64;
         if h(0) >= share {
             continue;
@@ -708,7 +721,8 @@ fn seabed_stones(x: f64, y: f64, z: f64, size: f64, share: f64, cell: f64, flat:
 /// `height` at the root, tapering to a point; `WEED_THICK` thick) that leans and sways by
 /// `sway` at the time `phase` and twists along its length. Returns a distance bound
 /// (ground-following frame) and how far up the nearest blade the point is (0..1).
-fn seabed_weed(x: f64, y: f64, z: f64, height: f64, share: f64, sway: f64, phase: f64) -> (f64, f64) {
+#[allow(clippy::too_many_arguments)]
+fn seabed_weed(x: f64, y: f64, z: f64, height: f64, share: f64, sway: f64, phase: f64, limit: f64) -> (f64, f64) {
     if share <= 0.0 || height <= 0.0 {
         return (NO_SHORE, 0.0);
     }
@@ -727,9 +741,15 @@ fn seabed_weed(x: f64, y: f64, z: f64, height: f64, share: f64, sway: f64, phase
     let (ci, cj) = ((x / c).floor() as i32, (y / c).floor() as i32);
     let edge = (x - (ci - 2) as f64 * c).min((ci + 3) as f64 * c - x).min(y - (cj - 2) as f64 * c).min((cj + 3) as f64 * c - y);
     let above = z - height - th;
-    let mut best = (((edge - (reach - 0.2 * c)) / norm).max(above), 0.0);
-    for n in 0..25 {
-        let (i, j) = (ci + n % 5 - 2, cj + n / 5 - 2);
+    let mut best = (((edge - (reach - 0.2 * c)) / norm).max(above).min(limit), 0.0);
+    for &(di, dj) in &crate::plants::CELL_ORDER {
+        let (i, j) = (ci + di, cj + dj);
+        // Roots stay 0.2 cells inside their cell: skip cells too far to beat the best.
+        let gx = ((x - (i as f64 + 0.5) * c).abs() - 0.3 * c).max(0.0);
+        let gy = ((y - (j as f64 + 0.5) * c).abs() - 0.3 * c).max(0.0);
+        if ((gx * gx + gy * gy).sqrt() - reach).max(above) >= best.0 {
+            continue;
+        }
         let meadow = (2.5 * water_noise(i as f64 * WEED_CELL / 5.0 + 5.3, j as f64 * WEED_CELL / 5.0 + 1.7) - 1.0).clamp(0.0, 1.0);
         if meadow <= 0.0 {
             continue;
@@ -785,12 +805,13 @@ fn seabed_feature_top(a: &[f64; 12]) -> f64 {
 
 /// The parts of the seabed at local (`x`, `y`) and `z` above the ground (mirrors march.wgsl
 /// `seabed_parts`): distance bounds in the ground-following frame of rocks, pebbles and
-/// seaweed, each with its color value (see [`seabed_color`]).
-pub fn seabed_parts(a: &[f64; 12], x: f64, y: f64, z: f64) -> [(f64, f64); 3] {
+/// seaweed, each with its color value (see [`seabed_color`]). Parts farther than `limit`
+/// are not searched (their bound is then at most `limit`).
+pub fn seabed_parts(a: &[f64; 12], x: f64, y: f64, z: f64, limit: f64) -> [(f64, f64); 3] {
     let size = a[6].abs();
-    let (rd, rh) = seabed_stones(x, y, z, size, a[5].clamp(0.0, 1.0), ROCK_CELL, 1.0, ROCK_LUMPS, 101);
-    let (pd, ph) = seabed_stones(x, y, z, size * PEBBLE_SIZE, a[7].clamp(0.0, 1.0), PEBBLE_CELL, 0.6, 0.0, 102);
-    let (wd, wt) = seabed_weed(x, y, z, a[9].abs(), a[8].clamp(0.0, 1.0), a[10], a[11]);
+    let (rd, rh) = seabed_stones(x, y, z, size, a[5].clamp(0.0, 1.0), ROCK_CELL, 1.0, ROCK_LUMPS, 101, limit);
+    let (pd, ph) = seabed_stones(x, y, z, size * PEBBLE_SIZE, a[7].clamp(0.0, 1.0), PEBBLE_CELL, 0.6, 0.0, 102, limit.min(rd));
+    let (wd, wt) = seabed_weed(x, y, z, a[9].abs(), a[8].clamp(0.0, 1.0), a[10], a[11], limit.min(rd).min(pd));
     [(rd, 0.5 + 0.25 * rh), (pd, 0.58 + 0.12 * ph), (wd, 0.8 + 0.2 * wt)]
 }
 
@@ -826,7 +847,7 @@ pub fn seabed_color(a: &[f64; 12], q: V3, size: f64) -> f64 {
         return sand;
     }
     let mut best = (z.max(0.0), sand);
-    for (d, v) in seabed_parts(a, q.x, q.y, z) {
+    for (d, v) in seabed_parts(a, q.x, q.y, z, z.max(0.0)) {
         if d < best.0 {
             best = (d, v);
         }

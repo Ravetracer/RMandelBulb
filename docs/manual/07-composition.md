@@ -265,8 +265,9 @@ The **Underwater** section of the water object holds the settings:
 | Drop focus | 0 = soft, bright blobs (drops on a camera lens are out of focus); 1 = sharp drops with dark rims and highlights, like rain on a window. | 0 |
 
 !!! note
-    Only the first see-through water of a scene is a medium you can dive into; further
-    water objects are surfaces. The depth is measured from the open sea's surface, without
+    A scene has one water and one seabed: once there is one, the add menu offers no
+    second one. (Older scenes with several water objects still load; only the first
+    see-through one is a medium you can dive into, further ones are surfaces.) The depth is measured from the open sea's surface, without
     the shore waves. **Bounces** in the Color tab sets how many reflections and passes
     through the surface a ray follows (default 2).
 

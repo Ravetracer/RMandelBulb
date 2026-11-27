@@ -590,6 +590,35 @@ pub fn template(species: &PlantSpecies) -> Arc<PlantTemplate> {
     t
 }
 
+/// The 5 × 5 cells around a point, nearest first (march.wgsl `CELL_ORDER`).
+pub const CELL_ORDER: [(i32, i32); 25] = [
+    (0, 0),
+    (-1, 0),
+    (1, 0),
+    (0, -1),
+    (0, 1),
+    (-1, -1),
+    (1, -1),
+    (-1, 1),
+    (1, 1),
+    (-2, 0),
+    (2, 0),
+    (0, -2),
+    (0, 2),
+    (-2, -1),
+    (2, -1),
+    (-2, 1),
+    (2, 1),
+    (-1, -2),
+    (1, -2),
+    (-1, 2),
+    (1, 2),
+    (-2, -2),
+    (2, -2),
+    (-2, 2),
+    (2, 2),
+];
+
 /// Swaying sideways offset per unit of plant height at most, per unit of sway (march.wgsl
 /// `PLANT_SWAY`).
 pub const PLANT_SWAY: f64 = 0.15;
@@ -714,11 +743,22 @@ impl PlantField {
             }
             // The sway's warp stretches distances by at most 1 + its rate along the height.
             let warp = 1.0 + PLANT_SWAY * s.sway * (2.0 * t.top + 2.0 * t.top * t.top);
-            for n in 0..25 {
-                let (i, j) = (ci + n % 5 - 2, cj + n / 5 - 2);
+            // Farthest sideways reach of the largest plant, and how far above all plants.
+            let reach_max = s.height * (t.radius + PLANT_SWAY * s.sway * t.top * t.top);
+            let up = q.z - ground_top - s.height * t.top;
+            for &(di, dj) in &CELL_ORDER {
+                let (i, j) = (ci + di, cj + dj);
+                // Roots stay in the middle half of their cell: skip cells too far to beat the
+                // best before any hashing (nearest cells first, so the best shrinks early).
+                let gx = ((q.x - (i as f64 + 0.5) * c).abs() - 0.25 * c).max(0.0);
+                let gy = ((q.y - (j as f64 + 0.5) * c).abs() - 0.25 * c).max(0.0);
+                if ((gx * gx + gy * gy).sqrt() - reach_max).max(up) >= best.d {
+                    continue;
+                }
                 let h = |m: i32| crate::render::hash3(i.wrapping_add(m.wrapping_mul(613)), j, s.salt) as f64;
-                let clump = (2.5 * crate::compose::water_noise(i as f64 * c / 1.5 + 3.7, j as f64 * c / 1.5 + 9.1) - 1.0).clamp(0.0, 1.0);
-                if h(0) >= s.share * (1.0 + (clump - 1.0) * s.clumping) {
+                // The patches only thin the plants out: test the share first (cheap).
+                let h0 = h(0);
+                if h0 >= s.share || (s.clumping > 0.0 && h0 >= s.share * (1.0 + ((2.5 * crate::compose::water_noise(i as f64 * c / 1.5 + 3.7, j as f64 * c / 1.5 + 9.1) - 1.0).clamp(0.0, 1.0) - 1.0) * s.clumping)) {
                     continue;
                 }
                 let size = s.height * (1.0 - s.variation * h(1));
@@ -815,3 +855,4 @@ mod tests {
         assert!(checked > 1000, "{checked}");
     }
 }
+

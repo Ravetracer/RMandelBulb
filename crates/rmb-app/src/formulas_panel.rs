@@ -105,7 +105,10 @@ impl FormulasPanel {
                                 Primitive::Water { .. } => "An ocean surface: choppy waves with foam, reflecting the sky and the scene; waves break on the other objects with foam and spray; the waves move in animations. See-through: the camera can dive, light bends and fades in the water (Underwater section)",
                                 _ => "A basic shape",
                             };
-                            if ui.button(p.name()).on_hover_text(tip).clicked() {
+                            // One water and one seabed per scene.
+                            let taken = p.single() && scene.objects.iter().any(|o| matches!(&o.shape, Shape::Primitive(q) if q.index() == p.index()));
+                            let r = ui.add_enabled(!taken, egui::Button::new(p.name())).on_hover_text(tip).on_disabled_hover_text(format!("The scene has its {} already: a scene has only one", p.name().to_lowercase()));
+                            if r.clicked() {
                                 add = Some(primitive_object(p, ahead));
                             }
                         }
@@ -182,7 +185,8 @@ impl FormulasPanel {
                 if widgets::icon_button(ui, icons::CARET_DOWN, "Move down").clicked() && k + 1 < scene.objects.len() {
                     action = Some((k, 1));
                 }
-                if scene.objects.len() < MAX_OBJECTS && widgets::icon_button(ui, egui_phosphor::regular::COPY, "Duplicate this object").clicked() {
+                let single = matches!(&scene.objects[k].shape, Shape::Primitive(p) if p.single());
+                if scene.objects.len() < MAX_OBJECTS && !single && widgets::icon_button(ui, egui_phosphor::regular::COPY, "Duplicate this object").clicked() {
                     action = Some((k, 2));
                 }
                 if widgets::icon_button(ui, icons::TRASH, "Remove this object").clicked() {
