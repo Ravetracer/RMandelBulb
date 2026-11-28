@@ -163,7 +163,9 @@ and the list under "Import notes:" says what (chapter 8).
   default value.
 - **Fine adjustment.** Hold <kbd>Shift</kbd> while dragging a slider or number field for
   10 times finer steps, <kbd>Ctrl</kbd> for 100 times finer. The value then moves from where
-  it was instead of jumping to the pointer. Values show up to four decimals.
+  it is instead of jumping to the pointer, and the drag stays that way until you release the
+  mouse button (letting go of the key only returns to the normal speed). Values show up to
+  four decimals.
 - **Typing values.** Sliders have a soft range: you can type values outside it into the number
   field.
 - **Hover texts.** Almost every control explains itself when you hold the mouse over it.
