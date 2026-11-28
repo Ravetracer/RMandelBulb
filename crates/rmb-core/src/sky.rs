@@ -93,6 +93,8 @@ pub struct Sky {
     pub clouds: crate::clouds::Clouds,
     /// Thunderstorm: lightning bolts and flashes.
     pub storm: crate::storm::Storm,
+    /// Weather: rain, snow, hail, mist, wet surfaces, snow cover.
+    pub weather: crate::weather::Weather,
 }
 
 impl Default for Sky {
@@ -126,6 +128,7 @@ impl Default for Sky {
             day_speed: 0.0,
             clouds: Default::default(),
             storm: Default::default(),
+            weather: Default::default(),
         };
         s.apply_preset("Earth clear");
         s

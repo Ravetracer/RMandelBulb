@@ -26,6 +26,8 @@ pub struct Shader<'a> {
     pub storm: Option<crate::storm::StormFrame>,
     /// The sky as environment light (`sky_env`).
     pub env: Option<std::sync::Arc<crate::sky_env::SkyEnv>>,
+    /// Rain, snow, hail, mist, wet surfaces (`weather`).
+    pub weather: Option<crate::weather::WeatherFrame>,
     /// The 16 × 8 copy of the background image for ambient light.
     pub bg_ambient: Option<std::sync::Arc<crate::maps::Map>>,
     /// Color map with its rotation matrix and average color (display values).
@@ -643,6 +645,7 @@ impl<'a> Shader<'a> {
             clouds,
             storm: crate::storm::StormFrame::for_scene(scene),
             env: crate::sky_env::for_scene(scene),
+            weather: None,
             bg_ambient: super::background_maps(scene).map(|(_, s, _)| s),
             color_map: crate::maps::get_any(&scene.material.color_map.image).map(|m| {
                 let avg = m.average();
@@ -655,6 +658,38 @@ impl<'a> Shader<'a> {
             medium: None,
         }
         .with_medium()
+        .with_weather()
+    }
+
+    /// Prepares the weather (lit by the frame's ambient light and sun).
+    fn with_weather(mut self) -> Self {
+        let light = crate::weather::light_level(self.scene, &self.frame.lights);
+        self.weather = crate::weather::WeatherFrame::for_scene(self.scene, light);
+        self
+    }
+
+    /// The weather on a surface at `p` (geometric normal `n`, shading normal `n_bump`):
+    /// wet and snow-covered surfaces, rain rings bending the water's normal and splash glints
+    /// on wet ground (march.wgsl `weather_surface`). Returns base color, specular color,
+    /// highlight roughness factor, emission and shading normal.
+    #[allow(clippy::too_many_arguments)]
+    fn weather_surface(&self, p: V3, n: V3, n_bump: V3, base: [f64; 3], spec_col: [f64; 3], spec_rough: f64, emis: f64, water: bool) -> ([f64; 3], [f64; 3], f64, f64, V3) {
+        use crate::weather as w;
+        let Some(wf) = &self.weather else { return (base, spec_col, spec_rough, emis, n_bump) };
+        if water {
+            let (gx, gy, _) = w::ripples(wf, p);
+            let nb = (n_bump - v3(gx, gy, 0.0) * w::RIPPLE_TILT).normalize();
+            return (base, spec_col, spec_rough, emis, nb);
+        }
+        let wet = w::wet(wf, n);
+        let glint = if wet > 0.3 { w::ripples(wf, p).2 * wet } else { 0.0 };
+        let snow = w::snow(wf, p, n);
+        let base = [0, 1, 2].map(|k| base[k] * (1.0 - 0.45 * wet) * (1.0 - snow) + wf.snow_color[k] * snow);
+        let spec_col = spec_col.map(|c| c * (1.0 + 1.5 * wet) * (1.0 - 0.8 * snow));
+        let dull = 4.0 / self.scene.lighting.shininess.max(1.0);
+        let spec_rough = spec_rough + (1.0 - spec_rough) * wet * 0.7;
+        let spec_rough = spec_rough + (dull - spec_rough) * snow;
+        (base, spec_col, spec_rough, emis * (1.0 - snow) + glint * 3.0, n_bump)
     }
 
     /// Prepares the water medium of the program (if any).
@@ -1627,34 +1662,41 @@ impl<'a> Shader<'a> {
                 if let Some(t) = crate::compose::refract_dir(d, -cam.forward, 1.0 / m.ior) {
                     d = t;
                 }
-            } else if !in_water && m.lens_drops > 0.0 && m.lens > 0.0 {
-                // Drops on the wet glass above the water: each a tiny lens that shows the view
-                // turned around.
-                if let Some((dx, dy)) = lens_drop(sx * fr.aspect, sy, m.time, m.lens_drops) {
-                    // Out of focus: a soft edge (a share of the samples look past the drop)
-                    // and a blurred view through it.
-                    let (u1, u2, u3) = (rng.next_f64(), rng.next_f64(), rng.next_f64());
-                    let (alpha, f, g) = lens_drop_look(dx, dy, m.drop_focus);
-                    if u1 < alpha {
-                        let blur = 0.05 * (1.0 - m.drop_focus) * u2.sqrt();
-                        let ang = u3 * std::f64::consts::TAU;
-                        d = (d - cam.right * (dx * 0.12 + blur * ang.cos()) - cam.up * (dy * 0.12 + blur * ang.sin())).normalize();
-                        line *= f;
-                        glint = g;
-                    }
-                } else if m.drop_trails > 0.0
-                    && let Some((across, wet)) = lens_trail(sx * fr.aspect, sy, m.time, m.lens_drops)
-                {
-                    // A wet trail: a thin film that smears and bends the view a little and
-                    // catches some light.
-                    let (_, u2, u3) = (rng.next_f64(), rng.next_f64(), rng.next_f64());
-                    let wet = wet * m.drop_trails;
-                    // Smeared mostly along the way the drop ran.
-                    let blur = 0.04 * wet * u2.sqrt();
+            }
+        }
+        // Drops on the wet glass: above the water medium after a dive, or in the rain. The
+        // wetter one decides (same random numbers either way).
+        let mut lens = self.medium.as_ref().filter(|m| !in_water && m.lens > 0.0).map(|m| (m.lens_drops, m.drop_trails, m.drop_focus, m.time)).unwrap_or((0.0, 0.0, 0.0, 0.0));
+        if let Some(wf) = self.weather.as_ref().filter(|w| !in_water && w.lens_drops > lens.0) {
+            lens = (wf.lens_drops, 0.6, 0.0, wf.time);
+        }
+        let (share, trails, focus, time) = lens;
+        if share > 0.0 {
+            // Each drop is a tiny lens that shows the view turned around.
+            if let Some((dx, dy)) = lens_drop(sx * fr.aspect, sy, time, share) {
+                // Out of focus: a soft edge (a share of the samples look past the drop) and a
+                // blurred view through it.
+                let (u1, u2, u3) = (rng.next_f64(), rng.next_f64(), rng.next_f64());
+                let (alpha, f, g) = lens_drop_look(dx, dy, focus);
+                if u1 < alpha {
+                    let blur = 0.05 * (1.0 - focus) * u2.sqrt();
                     let ang = u3 * std::f64::consts::TAU;
-                    d = (d - cam.right * (across * 0.03 * wet + 0.3 * blur * ang.cos()) - cam.up * (blur * ang.sin())).normalize();
-                    line *= 1.0 + 0.15 * wet;
+                    d = (d - cam.right * (dx * 0.12 + blur * ang.cos()) - cam.up * (dy * 0.12 + blur * ang.sin())).normalize();
+                    line *= f;
+                    glint = g;
                 }
+            } else if trails > 0.0
+                && let Some((across, wet)) = lens_trail(sx * fr.aspect, sy, time, share)
+            {
+                // A wet trail: a thin film that smears and bends the view a little and catches
+                // some light.
+                let (_, u2, u3) = (rng.next_f64(), rng.next_f64(), rng.next_f64());
+                let wet = wet * trails;
+                // Smeared mostly along the way the drop ran.
+                let blur = 0.04 * wet * u2.sqrt();
+                let ang = u3 * std::f64::consts::TAU;
+                d = (d - cam.right * (across * 0.03 * wet + 0.3 * blur * ang.cos()) - cam.up * (blur * ang.sin())).normalize();
+                line *= 1.0 + 0.15 * wet;
             }
         }
         ev.water_mode = if in_water { crate::fractal::WATER_INSIDE } else { crate::fractal::WATER_SOLID };
@@ -1979,6 +2021,8 @@ impl<'a> Shader<'a> {
                 let trans = if medium { 0.0 } else { trans };
                 // Water glints: a far sharper sun highlight than the scene's shininess.
                 let shininess = if mirror.is_some() { sc.lighting.shininess.max(WATER_SHININESS) } else { sc.lighting.shininess };
+                // Weather: wet and snow-covered surfaces, rain rings on the water.
+                let (base, spec_col, spec_rough, emis, n_bump) = self.weather_surface(h.pos, n, n_bump, base, spec_col, spec_rough, emis, mirror.is_some());
                 // Shading point just off the surface; inside rendering puts the surface one
                 // threshold into the solid, so it needs a larger offset.
                 let p = h.pos + n * (h.eps * if ev.inside() { 4.0 } else { 1.5 });
@@ -2165,6 +2209,17 @@ impl<'a> Shader<'a> {
         }
         for (ck, b) in c.iter_mut().zip(bolt.0) {
             *ck += b;
+        }
+        // Weather in front of what the ray saw: the precipitation's haze beyond the reach, the
+        // mist, the particles (no random numbers; march.wgsl the same).
+        if let Some(wf) = self.weather.as_ref().filter(|_| open_air) {
+            let (start, end) = (o + d * t_base, hit.as_ref().map_or(f64::MAX, |h| h.t - t_base));
+            for (keep, add) in [crate::weather::haze(wf, start, d, end), crate::weather::mist(wf, start, d, end), crate::weather::particles(wf, start, d, end, fr.pixel_angle)] {
+                for k in 0..3 {
+                    c[k] = c[k] * keep + add[k];
+                    albedo[k] = albedo[k] * keep + (1.0 - keep) * (add[k] / (1.0 - keep).max(1e-9)).clamp(0.0, 1.0);
+                }
+            }
         }
         // The fractal haze in front of everything the ray saw.
         if haze_on {

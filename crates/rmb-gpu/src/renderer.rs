@@ -165,6 +165,8 @@ struct Uniforms {
     storm: [[f32; 4]; 6],
     /// Environment light and the open sea (`env_gpu`).
     env: [[f32; 4]; 4],
+    /// Weather (`weather_gpu`).
+    weather: [[f32; 4]; 10],
 }
 
 /// Splits an f64 into the high and low f32 of a double-float.
@@ -565,6 +567,26 @@ fn env_gpu(scene: &Scene, prog: &Program) -> [[f32; 4]; 4] {
     out
 }
 
+/// The weather for march.wgsl `weather_*` (layout in the `weather` field of `U`; zero
+/// without weather).
+fn weather_gpu(scene: &Scene, lights: &[rmb_core::render::FrameLight]) -> [[f32; 4]; 10] {
+    let light = rmb_core::weather::light_level(scene, lights);
+    let Some(w) = rmb_core::weather::WeatherFrame::for_scene(scene, light) else { return [[0.0; 4]; 10] };
+    let v = |a: [f64; 3], x: f64| [a[0] as f32, a[1] as f32, a[2] as f32, x as f32];
+    [
+        [w.kind.index() as f32, w.share as f32, w.radius as f32, w.cell as f32],
+        v(w.fall.to_array(), w.streak),
+        v(w.offset.to_array(), w.reach),
+        v(w.light, w.opacity),
+        [w.haze as f32, w.haze_top as f32, w.wetness as f32, w.snow_cover as f32],
+        v(w.haze_light, w.splashes),
+        [w.mist as f32, w.mist_base as f32, w.mist_height as f32, w.snow_slope as f32],
+        v(w.mist_light, w.ripple_cell),
+        v(w.snow_color, w.time),
+        v(w.origin.to_array(), w.lens_drops),
+    ]
+}
+
 fn bands_gpu(scene: &Scene, lut: &mut Vec<[f32; 4]>) {
     use rmb_core::gradient::{MAX_BANDS, active_bands};
     lut.resize(LUT_BANDS, [0.0; 4]);
@@ -938,6 +960,7 @@ fn uniforms(scene: &Scene, prog: &Program, w: u32, h: u32, fast: bool, tile: Opt
         cloud: clouds_gpu(scene),
         storm: storm_gpu(scene),
         env: env_gpu(scene, prog),
+        weather: weather_gpu(scene, &fr.lights),
         haze2: [if scene.fog.haze_shape == rmb_core::scene::HazeShape::Iterations { 1.0 } else { 0.0 }, scene.fog.haze_size as f32, 0.0, 0.0],
     }
 }

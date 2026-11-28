@@ -66,6 +66,7 @@ pub fn show(ui: &mut Ui, sky: &mut Sky) {
     });
     clouds(ui, &mut sky.clouds);
     storm(ui, &mut sky.storm, sky.clouds.enabled);
+    weather(ui, &mut sky.weather);
     sub(ui, "Sun and stars");
     widgets::grid(ui, "sky-disk", |ui| {
         widgets::color(ui, "Sun color", "Color of the sunlight before the atmosphere", &mut sky.sun_color);
@@ -164,6 +165,64 @@ fn storm(ui: &mut Ui, s: &mut rmb_core::storm::Storm, clouds: bool) {
         }
         widgets::slider(ui, "Strike height", "Where the bolts end: the height of the ground or the sea level (world units)", &mut s.ground, -50.0..=50.0, d.ground);
         widgets::slider_log(ui, "Scene light", "How strongly a strike lights the scene (direct light with shadows; with the sky lighting the scene also a flash of the ambient light)", &mut s.scene_light, 0.0..=10.0, d.scene_light);
+    });
+}
+
+/// The weather's settings (part of the sky editor).
+fn weather(ui: &mut Ui, w: &mut rmb_core::weather::Weather) {
+    use rmb_core::weather::{Precipitation, Weather};
+    let d = Weather::default();
+    sub(ui, "Weather");
+    ui.horizontal(|ui| {
+        widgets::label(ui, "Preset", "Sets what falls (with its size, speed and color), the amounts, wet surfaces, snow cover, splashes, lens drops and mist");
+        egui::ComboBox::from_id_salt("weather-preset").selected_text("Choose…").show_ui(ui, |ui| {
+            for name in Weather::preset_names() {
+                if ui.selectable_label(false, name).clicked() {
+                    w.apply_preset(name);
+                }
+            }
+        });
+    });
+    let mut kind = w.precipitation;
+    widgets::segmented(
+        ui,
+        &mut kind,
+        &[
+            (Precipitation::None, Precipitation::None.label(), "Nothing falls"),
+            (Precipitation::Rain, Precipitation::Rain.label(), "Thin fast streaks of rain"),
+            (Precipitation::Snow, Precipitation::Snow.label(), "Slow drifting snowflakes"),
+            (Precipitation::Hail, Precipitation::Hail.label(), "Small fast white hailstones"),
+        ],
+    );
+    if kind != w.precipitation {
+        w.set_kind(kind);
+    }
+    widgets::grid(ui, "sky-weather", |ui| {
+        if w.precipitation != Precipitation::None {
+            widgets::slider(ui, "Intensity", "How much falls", &mut w.intensity, 0.0..=1.0, d.intensity);
+            widgets::slider_log(ui, "Particle size", "Radius of a drop, flake or hailstone (world units)", &mut w.size, 0.0005..=0.5, d.size);
+            widgets::slider_log(ui, "Fall speed", "How fast it falls in animations (world units per second); rain streaks grow with it", &mut w.speed, 0.05..=50.0, d.speed);
+            widgets::slider(ui, "Wind direction", "Where the wind blows the precipitation, in degrees from the x axis", &mut w.wind_direction, -180.0..=180.0, d.wind_direction);
+            widgets::slider(ui, "Wind", "How much the wind slants the fall (0 straight down)", &mut w.wind, 0.0..=2.0, d.wind);
+            widgets::color(ui, "Color", "Color of the drops, flakes or hailstones", &mut w.color);
+            widgets::slider_log(ui, "Reach", "How far particles are drawn one by one (world units); beyond, the precipitation is a haze", &mut w.reach, 0.5..=100.0, d.reach);
+            if w.precipitation != Precipitation::Snow {
+                widgets::slider(ui, "Splashes", "Rain rings on the water and short splashes on wet ground", &mut w.splashes, 0.0..=1.0, d.splashes);
+                widgets::slider(ui, "Lens drops", "Rain drops on the camera's glass: they run down and leave wet trails", &mut w.lens_drops, 0.0..=1.0, d.lens_drops);
+            }
+        }
+        widgets::slider(ui, "Wetness", "Wet surfaces: darker and glossier where they face the sky", &mut w.wetness, 0.0..=1.0, d.wetness);
+        widgets::slider(ui, "Snow cover", "Snow lying on faces that point up, in patches when thin", &mut w.snow_cover, 0.0..=1.0, d.snow_cover);
+        if w.snow_cover > 0.0 {
+            widgets::color(ui, "Snow color", "Color of the snow cover", &mut w.snow_color);
+            widgets::slider(ui, "Snow slope", "How steep the snow still holds: 0 only on flat tops, 1 also on steep sides", &mut w.snow_slope, 0.0..=1.0, d.snow_slope);
+        }
+        widgets::slider_log(ui, "Mist", "Ground mist: its density at the base (0 = none); it thins out upward", &mut w.mist, 0.0..=5.0, d.mist);
+        if w.mist > 0.0 {
+            widgets::slider(ui, "Mist base", "Height where the mist is as dense as set (world units; it is denser below)", &mut w.mist_base, -50.0..=50.0, d.mist_base);
+            widgets::slider_log(ui, "Mist height", "How quickly the mist thins upward: the height over which it falls to about a third (world units)", &mut w.mist_height, 0.01..=50.0, d.mist_height);
+            widgets::color(ui, "Mist color", "Color of the mist (lit by the sky and the sun)", &mut w.mist_color);
+        }
     });
 }
 

@@ -161,6 +161,40 @@ Choose how strikes come:
     A strike's light is added after your own lights. With all eight lights in use, the
     strike still glows and lights the clouds, but not the scene.
 
+### Weather
+
+**Weather** (in the sky's settings) brings rain, snow, hail and mist into the scene, and
+leaves its marks on the surfaces: wet, glossy faces, snow on the tops, rain rings on the
+water, drops on the camera's glass. Everything is lit by the sky's sun and light and falls
+with the wind in animations.
+
+![The weather presets (rows: Clear, Drizzle, Downpour, Snowfall, Blizzard, Hailstorm, Morning mist) at 7, 10, 13, 18:30, 19:48 and 21:30](images/weather-presets.jpg)
+
+![The weather settings](images/inspector-weather.png){: .half}
+
+**Preset** sets what falls (with its size, speed and color), the amounts, the surfaces and
+the mist. The buttons below choose what falls: **None**, **Rain** (thin fast streaks),
+**Snow** (slow drifting flakes) or **Hail** (small fast pellets); switching sets that
+kind's size, speed and color.
+
+| Setting | What it does |
+|---------|--------------|
+| **Intensity** | How much falls. |
+| **Particle size** | Radius of a drop, flake or hailstone (world units). Particles right in front of the camera fade out, as a lens would blur them. |
+| **Fall speed** | How fast it falls in animations (world units per second); rain streaks grow with it. |
+| **Wind direction**, **Wind** | Where the wind blows the precipitation and how much it slants the fall. |
+| **Color** | Color of the drops, flakes or hailstones. |
+| **Reach** | How far particles are drawn one by one; beyond, the precipitation is a haze up to the cloud base (grey for rain, white for snow), so distant views fade in heavy rain. |
+| **Splashes** | Rain rings spreading on the water, and short splashes on wet ground. |
+| **Lens drops** | Rain drops on the camera's glass: they run down and leave wet trails (the same drops as after a dive, see "Water"). |
+| **Wetness** | Wet surfaces: darker and glossier where they face the sky. Works without rain too: after the rain. |
+| **Snow cover**, **Snow color**, **Snow slope** | Snow lying on faces that point up (in patches when thin), its color, and how steep it still holds (0 only flat tops, 1 also steep sides). |
+| **Mist**, **Mist base**, **Mist height**, **Mist color** | Ground mist: its density at the base height, how quickly it thins upward and its color. It lies thick over the water and hides the horizon; lit by the sky and the sun. |
+
+!!! tip
+    Weather is sized in world units like the clouds. For a larger scene, raise **Particle
+    size**, **Fall speed** and **Reach** together, and the mist's heights.
+
 ### Background image
 
 **Image…** puts a panorama image (latitude/longitude) behind the scene. The × removes it. A file

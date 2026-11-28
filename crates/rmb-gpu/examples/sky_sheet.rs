@@ -18,14 +18,29 @@ fn main() {
     let panorama = args.iter().any(|a| a == "--panorama");
     let clouds = args.iter().position(|a| a == "--clouds").and_then(|i| args.get(i + 1)).cloned();
     let cloud_rows = args.windows(2).any(|w| w[0] == "--rows" && w[1] == "clouds");
+    let weather_rows = args.windows(2).any(|w| w[0] == "--rows" && w[1] == "weather");
     let (w, h) = if panorama { (320u32, 160u32) } else { (256, 144) };
-    let names: Vec<&str> = if cloud_rows { rmb_core::clouds::Clouds::preset_names() } else { Sky::preset_names() };
+    let names: Vec<&str> = if weather_rows {
+        rmb_core::weather::Weather::preset_names()
+    } else if cloud_rows {
+        rmb_core::clouds::Clouds::preset_names()
+    } else {
+        Sky::preset_names()
+    };
     let mut sheet = image::RgbaImage::new(w * HOURS.len() as u32, h * names.len() as u32);
     for (row, name) in names.iter().enumerate() {
         for (col, hour) in HOURS.iter().enumerate() {
             let mut s = Scene::default();
             s.background.mode = BackgroundMode::Sky;
-            if cloud_rows {
+            if weather_rows {
+                s.sky.weather.apply_preset(name);
+                s.sky.weather.time = 1.3;
+                // Grey skies for the wet and white presets.
+                if s.sky.weather.precipitation != rmb_core::weather::Precipitation::None {
+                    s.sky.clouds.enabled = true;
+                    s.sky.clouds.apply_preset("Overcast");
+                }
+            } else if cloud_rows {
                 s.sky.clouds.enabled = true;
                 s.sky.clouds.apply_preset(name);
             } else {

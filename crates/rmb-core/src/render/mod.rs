@@ -680,6 +680,7 @@ pub fn shifted_scene(scene: &Scene, r: V3) -> Scene {
     s.camera.position = s.camera.position - r;
     s.sky.clouds.origin = r.to_array();
     s.sky.storm.origin = r.to_array();
+    s.sky.weather.origin = r.to_array();
     if let Some(c) = &mut s.motion_end {
         c.position = c.position - r;
     }

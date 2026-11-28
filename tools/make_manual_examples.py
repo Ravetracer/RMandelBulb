@@ -225,9 +225,19 @@ def night_storm():
     render(out, "howto-night-storm.jpg")
 
 
+def weather():
+    """A downpour over the sea and a snowfall (sky with weather)."""
+    EXAMPLES.mkdir(parents=True, exist_ok=True)
+    demo = ROOT / "target" / "release" / "examples" / "sky_demo"
+    for flag, name in (("--rain", "rain-sea"), ("--snow", "snowfall")):
+        out = EXAMPLES / f"{name}.rmb"
+        subprocess.run([str(demo), str(out), flag], check=True, capture_output=True)
+        render(out, f"howto-{name}.jpg", 480, 270)
+
+
 if __name__ == "__main__":
     only = sys.argv[1:]
-    for f in (neon_steps, hybrid_ranges, own_formula, glass, composition, deep_zoom, projections, vr_panorama, sunset_sea, evening_clouds, night_storm):
+    for f in (neon_steps, hybrid_ranges, own_formula, glass, composition, deep_zoom, projections, vr_panorama, sunset_sea, evening_clouds, night_storm, weather):
         if only and f.__name__ not in only:
             continue
         f()

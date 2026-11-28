@@ -783,6 +783,10 @@ fn color_speeds(s: &Scene) -> BTreeMap<String, f64> {
     if s.sky.storm.enabled {
         out.insert("sky.storm".into(), 1.0);
     }
+    // The weather's clock (falling, rings, lens drops).
+    if s.sky.weather.active() {
+        out.insert("sky.weather".into(), 1.0);
+    }
     // Plants on the main fractal sway.
     if s.plant_cover.active() {
         out.insert("plants".into(), s.plant_cover.sway_speed);
@@ -845,6 +849,7 @@ fn apply_phases(s: &mut Scene, phase: &BTreeMap<String, f64>) {
     s.sky.hour = (s.sky.hour + phase.get("sky.time").copied().unwrap_or(0.0)).rem_euclid(24.0);
     s.sky.clouds.time += phase.get("sky.clouds").copied().unwrap_or(0.0);
     s.sky.storm.time += phase.get("sky.storm").copied().unwrap_or(0.0);
+    s.sky.weather.time += phase.get("sky.weather").copied().unwrap_or(0.0);
 }
 
 impl AnimationPlan {

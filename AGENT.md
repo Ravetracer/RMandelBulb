@@ -611,6 +611,29 @@ cargo clippy -j 8 --workspace --all-targets
   `LUT_ENV` / `LUT_IRR` (bolts after them, `LUT_BOLTS`), uniform `env[0]`, `env_lookup`.
 - `Sky::sky_only`: `render::Frame::new` keeps only light 1 (+ lightning).
 
+## Weather
+
+- `rmb-core/src/weather.rs` (`Sky::weather`; `Program::weather` → GPU switch `WEATHER`;
+  `Weather::active`). `WeatherFrame::for_scene(scene, light)` with `light_level` (ambient
+  from above: `sky_env` irradiance or ambient colors, + 0.25 × light 1; shared by CPU and
+  `renderer::weather_gpu`, uniform `weather`).
+- Particles: grid of `cell` (radius × `kind_cell`) moved by fall × speed × time; one
+  particle per cell (`hash3` < share = intensity × `kind_share`), inside its cell with its
+  streak (rain: speed × 1/50 s, ≤ 0.6 cell); `particles` walks cells (Amanatides-Woo, ≤
+  `MAX_CELLS`) up to the hit or `reach`, coverage at least ~0.7 px (energy kept), near fade
+  from 20 to 60 radii, front-to-back. `haze` beyond the reach up to the cloud base; `mist`
+  = exponential height fog, `mist_depth` in closed form (exponents ≤ 60, open rays: up
+  finite, level/down opaque). Composite in `trace` after the clouds and the low bolt glow:
+  haze, mist, particles (no random numbers).
+- Surfaces (`Shader::weather_surface`, GPU in `trace` after the water block): water hits get
+  the `ripples` slope × `RIPPLE_TILT` on the shading normal (reflections use it); others
+  `wet` (darker, more specular, sharper highlight), splash glints from `ripples` on wet
+  ground, `snow` (tilt by `snow_slope`, value-noise patches) → snow color, dull highlight.
+- Lens drops: one block after the medium setup in `sample_aux` / `sample_pixel` takes the
+  larger share of the medium (above the water) and the rain (`WeatherFrame::lens_drops`,
+  uniform `weather[9].w`), with their time, trails and focus; same random numbers.
+- Test `gpu_matches_cpu_with_weather`; `sky_sheet --rows weather`; `sky_demo --rain|--snow`.
+
 ## Sea to the horizon
 
 - `Program::sea_plane` (first water object: position, up axis, number). `Shader::sea_hit` /

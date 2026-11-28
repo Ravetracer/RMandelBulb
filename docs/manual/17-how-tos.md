@@ -289,6 +289,23 @@ Example scene: `night-storm.rmb`.
 
 ![A thunderstorm at night over the sea](images/howto-night-storm.jpg)
 
+## Rain and snow
+
+Example scenes: `rain-sea.rmb`, `snowfall.rmb`.
+
+1. Choose the cloud preset *Overcast* for a grey sky.
+2. In **Weather**, choose the preset *Downpour*: rain streaks, rings on the sea, a wet,
+   glossy fractal and drops on the lens. *Drizzle* is lighter.
+3. For snow, choose *Snowfall* and raise **Snow cover**: the tops and ledges turn white.
+   **Snow slope** decides how steep the snow still holds.
+4. A camera a little above the fractal shows the tops best (the snow, the wet shine).
+5. In an animation, the rain and snow fall, the rings spread and the drops run down the
+   glass by themselves.
+
+![A downpour over the sea](images/howto-rain-sea.jpg){: .half}
+
+![A snowfall: snow on the tops and ledges](images/howto-snowfall.jpg){: .half}
+
 ## Grow your own plant with an L-system
 
 1. Select the seabed (add one with **+ › Seabed** if the scene has none) and open its

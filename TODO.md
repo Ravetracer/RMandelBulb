@@ -203,7 +203,7 @@ per scene.
 - [x] Thunderstorms: lightning bolts and flashes that light the clouds and the scene
 - [x] The sky lights the scene like an HDRI box image (sky and clouds as ambient and
       reflection light, the sun as the main light), optional instead of the added lights
-- [ ] Weather: rain (streaks, splashes on the water and the ground, wet surfaces, drops on
+- [x] Weather: rain (streaks, splashes on the water and the ground, wet surfaces, drops on
       the lens), snow (flakes, snow cover), mist, hail; amounts and colors configurable
 - [ ] Landscape object: mountains and valleys (eroded-looking noise), materials by height
       and slope (rock, grass, sand, snow), meeting the water at the shore

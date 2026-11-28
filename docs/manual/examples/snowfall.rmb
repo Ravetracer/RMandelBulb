@@ -1,0 +1,872 @@
+{
+  "version": 1,
+  "width": 1280,
+  "height": 720,
+  "camera": {
+    "position": {
+      "x": 2.4,
+      "y": -2.4,
+      "z": 1.6
+    },
+    "right": {
+      "x": 0.7071067811865476,
+      "y": 0.7071067811865476,
+      "z": -0.0
+    },
+    "up": {
+      "x": -0.31666636229699147,
+      "y": 0.31666636229699147,
+      "z": 0.8941167876620935
+    },
+    "forward": {
+      "x": -0.6322360437285987,
+      "y": 0.6322360437285987,
+      "z": -0.4478338643077574
+    },
+    "fov": 40.0
+  },
+  "fractal": {
+    "slots": [
+      {
+        "formula": "Mandelbulb",
+        "iterations": 1,
+        "params": {},
+        "start": 0,
+        "stop": null,
+        "weight": 1.0,
+        "add_c": true,
+        "check_bailout": true
+      }
+    ],
+    "repeat_from": 0,
+    "max_iterations": 12,
+    "bailout": 4.0,
+    "julia": false,
+    "julia_c": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "w_slice": 0.0,
+    "de_mode": "Auto",
+    "de_scale": 1.0,
+    "rotation_4d": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "min_iterations": 0,
+    "c_factor": [
+      1.0,
+      1.0,
+      1.0
+    ],
+    "inside": false,
+    "combine": null,
+    "blend": null,
+    "transform": {
+      "position": {
+        "x": 0.0,
+        "y": 0.0,
+        "z": 0.0
+      },
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": 1.0,
+      "stretch": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    }
+  },
+  "march": {
+    "detail": 1.0,
+    "step": 0.8,
+    "max_steps": 400,
+    "max_distance": 200.0,
+    "refine_steps": 4,
+    "near": 0.0,
+    "step_limit": 0.0,
+    "step_sub": false,
+    "plant_detail": 0.0,
+    "smooth_normals": 0,
+    "precision": "Auto"
+  },
+  "lighting": {
+    "lights": [
+      {
+        "enabled": true,
+        "kind": "Directional",
+        "position": {
+          "x": 2.0,
+          "y": -2.0,
+          "z": 2.0
+        },
+        "target": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "cone_angle": 25.0,
+        "cone_softness": 0.3,
+        "width": 0.5,
+        "height": 0.5,
+        "azimuth": -55.49024519523626,
+        "elevation": 65.21971815160197,
+        "camera_relative": false,
+        "color": [
+          1.0,
+          0.8973848,
+          0.75791264
+        ],
+        "intensity": 2.3056864685201117,
+        "specular": 0.5,
+        "shadows": true,
+        "softness": 0.08,
+        "diffuse": "Lambert",
+        "occlusion": 0.0,
+        "visible": false,
+        "glow_shape": "Soft",
+        "glow_size": 0.1,
+        "glow_intensity": 1.0,
+        "flare": {
+          "enabled": false,
+          "intensity": 1.0,
+          "tint": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "glow": 1.0,
+          "glow_size": 0.03,
+          "haze": 0.05,
+          "haze_size": 0.3,
+          "rays": 6,
+          "ray_intensity": 0.5,
+          "ray_length": 0.3,
+          "ray_width": 1.0,
+          "ray_rotation": 15.0,
+          "ray_random": 0.3,
+          "spikes": 0,
+          "spike_intensity": 0.2,
+          "spike_length": 0.25,
+          "streak": 0.0,
+          "streak_length": 1.2,
+          "streak_width": 1.0,
+          "streak_color": [
+            0.35,
+            0.55,
+            1.0
+          ],
+          "streak_angle": 0.0,
+          "ghosts": 7,
+          "ghost_intensity": 0.35,
+          "ghost_size": 0.08,
+          "ghost_spread": 1.0,
+          "ghost_blades": 6,
+          "ghost_softness": 0.4,
+          "ghost_rings": 0.3,
+          "ghost_colors": 0.6,
+          "chromatic": 0.5,
+          "ring": 0.0,
+          "ring_size": 0.25,
+          "ring_width": 0.015,
+          "rainbow": 0.7,
+          "sparkles": 0,
+          "sparkle_intensity": 0.3,
+          "dirt": 0.0,
+          "dirt_reach": 0.6,
+          "seed": 1,
+          "ghost_list": [],
+          "ghost_image": ""
+        }
+      },
+      {
+        "enabled": true,
+        "kind": "Directional",
+        "position": {
+          "x": 2.0,
+          "y": -2.0,
+          "z": 2.0
+        },
+        "target": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "cone_angle": 25.0,
+        "cone_softness": 0.3,
+        "width": 0.5,
+        "height": 0.5,
+        "azimuth": 120.0,
+        "elevation": 10.0,
+        "camera_relative": true,
+        "color": [
+          0.55,
+          0.65,
+          0.9
+        ],
+        "intensity": 0.35,
+        "specular": 0.1,
+        "shadows": false,
+        "softness": 0.08,
+        "diffuse": "Lambert",
+        "occlusion": 0.0,
+        "visible": false,
+        "glow_shape": "Soft",
+        "glow_size": 0.1,
+        "glow_intensity": 1.0,
+        "flare": {
+          "enabled": false,
+          "intensity": 1.0,
+          "tint": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "glow": 1.0,
+          "glow_size": 0.03,
+          "haze": 0.05,
+          "haze_size": 0.3,
+          "rays": 6,
+          "ray_intensity": 0.5,
+          "ray_length": 0.3,
+          "ray_width": 1.0,
+          "ray_rotation": 15.0,
+          "ray_random": 0.3,
+          "spikes": 0,
+          "spike_intensity": 0.2,
+          "spike_length": 0.25,
+          "streak": 0.0,
+          "streak_length": 1.2,
+          "streak_width": 1.0,
+          "streak_color": [
+            0.35,
+            0.55,
+            1.0
+          ],
+          "streak_angle": 0.0,
+          "ghosts": 7,
+          "ghost_intensity": 0.35,
+          "ghost_size": 0.08,
+          "ghost_spread": 1.0,
+          "ghost_blades": 6,
+          "ghost_softness": 0.4,
+          "ghost_rings": 0.3,
+          "ghost_colors": 0.6,
+          "chromatic": 0.5,
+          "ring": 0.0,
+          "ring_size": 0.25,
+          "ring_width": 0.015,
+          "rainbow": 0.7,
+          "sparkles": 0,
+          "sparkle_intensity": 0.3,
+          "dirt": 0.0,
+          "dirt_reach": 0.6,
+          "seed": 1,
+          "ghost_list": [],
+          "ghost_image": ""
+        }
+      }
+    ],
+    "ambient": 1.0,
+    "sky_color": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "ground_color": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "ao_mode": "Raytraced",
+    "ao_strength": 0.9,
+    "ao_radius": 0.08,
+    "shininess": 40.0,
+    "roughness": 0.0,
+    "ambient_camera_relative": false,
+    "ambient_from_background": false,
+    "render_mode": "Classic",
+    "path_bounces": 4,
+    "path_clamp": 10.0,
+    "path_reach": 0.0
+  },
+  "material": {
+    "gradient": [
+      {
+        "pos": 0.0,
+        "color": [
+          0.02121901,
+          0.0060488326,
+          0.00303527
+        ],
+        "specular": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "transparency": 0.0,
+        "emission": 0.0
+      },
+      {
+        "pos": 0.25,
+        "color": [
+          0.47932023,
+          0.10702311,
+          0.029556833
+        ],
+        "specular": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "transparency": 0.0,
+        "emission": 0.0
+      },
+      {
+        "pos": 0.5,
+        "color": [
+          0.9559735,
+          0.5520115,
+          0.26225072
+        ],
+        "specular": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "transparency": 0.0,
+        "emission": 0.0
+      },
+      {
+        "pos": 0.75,
+        "color": [
+          0.30498737,
+          0.06124607,
+          0.02121901
+        ],
+        "specular": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "transparency": 0.0,
+        "emission": 0.0
+      },
+      {
+        "pos": 1.0,
+        "color": [
+          0.02121901,
+          0.0060488326,
+          0.00303527
+        ],
+        "specular": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "transparency": 0.0,
+        "emission": 0.0
+      }
+    ],
+    "color_center": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "color_direction": [
+      0.0,
+      0.0,
+      1.0
+    ],
+    "second_choice": "OrbitTrap",
+    "lli_multiplier": 1.0,
+    "color_on_iteration": -1,
+    "bands": [],
+    "rotation": 0.0,
+    "color_mode": "Iterations",
+    "color_scale": 0.15,
+    "color_offset": 0.0,
+    "repeat": true,
+    "specular": 1.0,
+    "saturation": 1.0,
+    "detail_shift": 0.0,
+    "depth_shift": 0.0,
+    "depth_reference": 0.0,
+    "color_map": {
+      "image": "",
+      "mode": "Orbit",
+      "scale": 1.0,
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "offset": [
+        0.0,
+        0.0
+      ],
+      "luminance_only": false,
+      "iter_scale": 0.05,
+      "iter_offset": 0.0,
+      "emission": 0.0
+    },
+    "layers": [],
+    "interior": [],
+    "interior_scale": 1.0,
+    "interior_offset": 0.0,
+    "reflection": 0.0,
+    "reflection_bounces": 2,
+    "gloss": 0.0,
+    "transmission": false,
+    "refraction_index": 1.5,
+    "absorption": 1.0,
+    "scattering": 0.0,
+    "glass_shadows": false,
+    "emission_light": 1.0,
+    "emission_reach": 0.5,
+    "emission_glow": 1.0,
+    "emission_glow_size": 0.02,
+    "emission_rays": 1,
+    "steam": 0.0,
+    "steam_size": 0.08,
+    "steam_grain": 0.1,
+    "steam_cover": 0.5,
+    "steam_offset": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "steam_drift": [
+      0.0,
+      0.0,
+      0.05
+    ],
+    "shimmer": 0.0,
+    "shimmer_size": 0.05,
+    "shimmer_speed": 3.0,
+    "shimmer_phase": 0.0
+  },
+  "background": {
+    "mode": "Sky",
+    "top": [
+      0.08,
+      0.1,
+      0.16
+    ],
+    "horizon": [
+      0.32,
+      0.34,
+      0.4
+    ],
+    "bottom": [
+      0.06,
+      0.06,
+      0.07
+    ],
+    "curve": 1.0,
+    "image": "",
+    "image_rotation": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "image_intensity": 1.0,
+    "image_smooth": false,
+    "image_spherical": false,
+    "image_fit_border": false,
+    "image_screen": false,
+    "image_fog_add": false
+  },
+  "fog": {
+    "mode": "Exponential",
+    "density": 0.02,
+    "strength": 0.0,
+    "start": 0.0,
+    "curve": 0.0,
+    "squared": false,
+    "color": [
+      0.32,
+      0.34,
+      0.4
+    ],
+    "from_background": true,
+    "glow": 0.0,
+    "glow_color": [
+      0.5,
+      0.7,
+      1.0
+    ],
+    "glow_offset": 0.0,
+    "glow_offset_depth": 0.0,
+    "glow_color2": [
+      0.5,
+      0.7,
+      1.0
+    ],
+    "glow_mix_steps": 0.0,
+    "glow_blend": false,
+    "glow_iteration": 0,
+    "scatter": 0.0,
+    "scatter_forward": 0.3,
+    "haze": 0.0,
+    "haze_shape": "Distance",
+    "haze_size": 0.02,
+    "haze_start": 0.2,
+    "haze_end": 1.0,
+    "haze_glow": 1.0,
+    "haze_color": [
+      0.25,
+      0.5,
+      1.0
+    ],
+    "haze_gradient": false
+  },
+  "dof": {
+    "enabled": false,
+    "aperture": 0.02,
+    "focus_distance": 2.5,
+    "blades": 0,
+    "blade_rotation": 0.0
+  },
+  "view": {
+    "projection": "Perspective",
+    "fisheye_fov": 180.0,
+    "stereo": "Off",
+    "convergence": 0.0,
+    "eye_ratio": 0.03333333333333333,
+    "swap_eyes": false,
+    "anaglyph_color": true
+  },
+  "post": {
+    "exposure": 0.0,
+    "gamma": 2.2,
+    "contrast": 1.0,
+    "saturation": 1.0,
+    "tone_map": true,
+    "vignette": 0.15,
+    "display_space": false,
+    "denoise": false,
+    "denoise_blend": 1.0,
+    "bloom": 0.0,
+    "bloom_threshold": 1.0,
+    "bloom_size": 0.6,
+    "streak": 0.0,
+    "streak_threshold": 2.0,
+    "streak_length": 0.3,
+    "streak_angle": 0.0,
+    "streak_count": 1,
+    "streak_tint": [
+      0.6,
+      0.8,
+      1.0
+    ],
+    "chromatic": 0.0,
+    "temperature": 0.0,
+    "tint": 0.0,
+    "shadow_color": [
+      0.1,
+      0.45,
+      0.55
+    ],
+    "shadow_amount": 0.0,
+    "highlight_color": [
+      1.0,
+      0.6,
+      0.3
+    ],
+    "highlight_amount": 0.0
+  },
+  "cut": {
+    "x": {
+      "enabled": false,
+      "position": 0.0,
+      "keep_above": false
+    },
+    "y": {
+      "enabled": false,
+      "position": 0.0,
+      "keep_above": false
+    },
+    "z": {
+      "enabled": false,
+      "position": 0.0,
+      "keep_above": false
+    }
+  },
+  "notes": "",
+  "objects": [
+    {
+      "name": "Sea",
+      "enabled": true,
+      "shape": {
+        "Primitive": {
+          "Water": {
+            "amplitude": 0.08,
+            "wavelength": 2.0,
+            "phase": 0.0,
+            "angle": 0.0,
+            "choppy": 1.0,
+            "detail": 32.0,
+            "foam": 0.3,
+            "reflect": 1.0,
+            "speed": 1.0,
+            "shore": 1.0,
+            "spray": 0.0,
+            "drop_size": 1.0,
+            "drop_variation": 0.5,
+            "medium": {
+              "see_through": true,
+              "ior": 1.33,
+              "color": [
+                0.03,
+                0.22,
+                0.3
+              ],
+              "filter": [
+                0.12,
+                0.6,
+                0.78
+              ],
+              "visibility": 3.0,
+              "murk": 0.25,
+              "depth_dark": 1.0,
+              "caustics": 1.0,
+              "caustic_sharpness": 0.5,
+              "light_rays": 0.4,
+              "bubbles": 0.2,
+              "bubble_size": 0.012,
+              "bubble_speed": 0.25,
+              "bubble_rim": 0.35,
+              "bubble_source": "Everywhere",
+              "vent_spacing": 1.0,
+              "plume_width": 0.08,
+              "particles": 0.15,
+              "particle_size": 0.0025,
+              "time": 0.0,
+              "lens": 0.2,
+              "flat_lens": true,
+              "lens_drops": 0.4,
+              "lens_wet": 0.0,
+              "dry_time": 5.0,
+              "drop_trails": 0.6,
+              "drop_focus": 0.0
+            }
+          }
+        }
+      },
+      "transform": {
+        "position": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": -1.35
+        },
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": 1.0,
+        "stretch": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "op": "Union",
+      "smooth": 0.1,
+      "material": {
+        "own": true,
+        "gradient": [
+          {
+            "pos": 0.0,
+            "color": [
+              0.03,
+              0.08,
+              0.1
+            ],
+            "specular": [
+              1.0,
+              1.0,
+              1.0
+            ],
+            "transparency": 0.0,
+            "emission": 0.0
+          },
+          {
+            "pos": 1.0,
+            "color": [
+              0.03,
+              0.08,
+              0.1
+            ],
+            "specular": [
+              1.0,
+              1.0,
+              1.0
+            ],
+            "transparency": 0.0,
+            "emission": 0.0
+          }
+        ],
+        "bands": [],
+        "rotation": 0.0,
+        "color_mode": "Iterations",
+        "color_scale": 0.15,
+        "color_offset": 0.0,
+        "repeat": true,
+        "pattern": "Solid",
+        "pattern_size": 1.0,
+        "layers": []
+      },
+      "repeat": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "repeat_limit": [
+        0,
+        0,
+        0
+      ],
+      "bubble_source": false,
+      "plants": []
+    }
+  ],
+  "sky": {
+    "placement": "TimeOfDay",
+    "hour": 11.0,
+    "latitude": 45.0,
+    "day": 172.0,
+    "north": 90.0,
+    "azimuth": 30.0,
+    "elevation": 35.0,
+    "rayleigh_color": [
+      0.15,
+      0.4,
+      1.0
+    ],
+    "rayleigh": 0.25,
+    "mie_color": [
+      1.0,
+      1.0,
+      1.0
+    ],
+    "mie": 0.025,
+    "mie_direction": [
+      0.76,
+      0.76,
+      0.76
+    ],
+    "density": 1.0,
+    "ozone": 1.0,
+    "ground_color": [
+      0.3,
+      0.28,
+      0.25
+    ],
+    "sun_color": [
+      1.0,
+      0.98,
+      0.95
+    ],
+    "sun_size": 0.8,
+    "sun_brightness": 1.0,
+    "brightness": 1.0,
+    "stars": 0.5,
+    "star_brightness": 1.0,
+    "sun_light": true,
+    "sun_light_strength": 1.0,
+    "environment": true,
+    "sky_only": false,
+    "day_speed": 0.0,
+    "clouds": {
+      "enabled": true,
+      "coverage": 1.0,
+      "density": 1.5,
+      "kind": 0.3,
+      "base": 6.0,
+      "thickness": 3.0,
+      "size": 5.0,
+      "detail": 1.0,
+      "wind_direction": 30.0,
+      "wind_speed": 0.3,
+      "evolution": 0.2,
+      "darkness": 0.5,
+      "tint": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "shadows": true,
+      "cirrus": 0.0,
+      "reach": 1000.0,
+      "planet_radius": 25000.0,
+      "time": 0.0
+    },
+    "storm": {
+      "enabled": false,
+      "mode": "Random",
+      "rate": 8.0,
+      "seed": 1,
+      "distance_min": 8.0,
+      "distance_max": 40.0,
+      "direction": 40.0,
+      "distance": 18.0,
+      "variant": 1,
+      "stage": 0.0,
+      "cloud_flashes": 0.4,
+      "brightness": 1.0,
+      "color": [
+        0.78,
+        0.84,
+        1.0
+      ],
+      "branches": 0.6,
+      "width": 0.03,
+      "top": 6.0,
+      "ground": -1.0,
+      "scene_light": 1.0,
+      "time": 0.0
+    },
+    "weather": {
+      "precipitation": "Snow",
+      "intensity": 0.5,
+      "size": 0.012,
+      "speed": 0.6,
+      "wind_direction": 30.0,
+      "wind": 0.15,
+      "color": [
+        0.96,
+        0.97,
+        1.0
+      ],
+      "reach": 10.0,
+      "wetness": 0.0,
+      "snow_cover": 0.9,
+      "snow_color": [
+        0.95,
+        0.97,
+        1.0
+      ],
+      "snow_slope": 0.4,
+      "splashes": 0.0,
+      "lens_drops": 0.0,
+      "mist": 0.03,
+      "mist_base": -1.0,
+      "mist_height": 1.5,
+      "mist_color": [
+        0.85,
+        0.87,
+        0.9
+      ],
+      "time": 1.3
+    }
+  }
+}

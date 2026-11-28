@@ -12,6 +12,11 @@ and the release workflow uses it as the release notes.
 
 ## [Unreleased]
 
+- Weather (Effects › Background › Sky › Weather): rain (streaks, rings on the water,
+  splashes, drops on the lens), snow (flakes, snow cover), hail and ground mist, with wet
+  and glossy surfaces; intensity, size, fall speed, wind, colors and reach configurable;
+  presets Clear, Drizzle, Downpour, Snowfall, Blizzard, Hailstorm, Morning mist. Falls,
+  spreads and runs in animations.
 - The sky as environment light (Sky › Environment light, on with "Sun lights the scene"):
   the sky and its clouds light the scene from every direction like an HDRI image (baked
   into a small panorama and an irradiance map); path tracing's bounces see it. "Only the

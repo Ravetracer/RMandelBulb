@@ -131,6 +131,12 @@ struct U {
     // irradiance map (16 × 8); [1] a point of the open sea's mean plane, w: there is one;
     // [2] its up axis, w: the water object's number (Orbit.obj).
     env: array<vec4<f32>, 4>,
+    // Weather (weather::WeatherFrame, switch WEATHER): [0] kind (0 none, 1 rain, 2 snow,
+    // 3 hail), share, radius, cell; [1] fall direction, w: streak length; [2] fallen way,
+    // w: reach; [3] particle light, w: opacity; [4] haze, haze top, wetness, snow cover;
+    // [5] haze light, w: splashes; [6] mist, base, falloff height, snow slope; [7] mist
+    // light, w: ripple cell; [8] snow color, w: time; [9] origin (deep zoom).
+    weather: array<vec4<f32>, 10>,
 }
 
 @group(0) @binding(0) var<uniform> u: U;
@@ -3155,6 +3161,236 @@ fn bolt_glow(o: vec3<f32>, d: vec3<f32>, t_end: f32) -> BoltGlow {
     return BoltGlow(u.storm[1].xyz * below, u.storm[1].xyz * above);
 }
 
+// ---- Weather (mirror weather.rs; only used with WEATHER) ----
+
+const WEATHER_CELLS: u32 = 256u;
+const WEATHER_RIPPLE_TILT: f32 = 0.5;
+
+// Mirrors weather::particle: the particle of a grid cell (w = 1) or none (w = 0).
+fn weather_particle(c: vec3<i32>) -> vec4<f32> {
+    if (hash3(c.x, c.y, c.z) >= u.weather[0].y) {
+        return vec4<f32>(0.0);
+    }
+    let h1 = hash3(c.x + 7919, c.y, c.z);
+    let h2 = hash3(c.x + 2 * 7919, c.y, c.z);
+    let h3 = hash3(c.x + 3 * 7919, c.y, c.z);
+    return vec4<f32>((vec3<f32>(c) + vec3<f32>(0.2) + 0.6 * vec3<f32>(h1, h2, h3)) * u.weather[0].w, 1.0);
+}
+
+// Mirrors weather::ray_segment: (distance, ray parameter).
+fn weather_ray_segment(o: vec3<f32>, d: vec3<f32>, t_end: f32, a: vec3<f32>, b: vec3<f32>) -> vec2<f32> {
+    let e = b - a;
+    let w = o - a;
+    let dd = dot(d, d);
+    let de = dot(d, e);
+    let ee = dot(e, e);
+    let dw = dot(d, w);
+    let ew = dot(e, w);
+    let den = dd * ee - de * de;
+    var s = clamp(-dw / max(dd, 1.0e-12), 0.0, t_end);
+    if (den > 1.0e-12) {
+        s = clamp((de * ew - ee * dw) / den, 0.0, t_end);
+    }
+    var uu = 0.0;
+    if (ee > 1.0e-12) {
+        uu = clamp((de * s + ew) / ee, 0.0, 1.0);
+    }
+    s = clamp((de * uu - dw) / max(dd, 1.0e-12), 0.0, t_end);
+    uu = 0.0;
+    if (ee > 1.0e-12) {
+        uu = clamp((de * s + ew) / ee, 0.0, 1.0);
+    }
+    return vec2<f32>(length(o + d * s - (a + e * uu)), s);
+}
+
+// Mirrors weather::particles: rgb = light added, w = what passes.
+fn weather_particles(o: vec3<f32>, d: vec3<f32>, t_end: f32) -> vec4<f32> {
+    var keep = 1.0;
+    var add = vec3<f32>(0.0);
+    let t_max = min(t_end, u.weather[2].w);
+    if (u.weather[0].y <= 0.0 || t_max <= 0.0) {
+        return vec4<f32>(add, keep);
+    }
+    let cell = u.weather[0].w;
+    let radius = u.weather[0].z;
+    let rain = u.weather[0].x < 1.5;
+    let g = o + u.weather[9].xyz - u.weather[2].xyz;
+    var c = vec3<i32>(floor(g / cell));
+    let stp = vec3<i32>(sign(d));
+    var tn = vec3<f32>(1.0e30);
+    var dt = vec3<f32>(1.0e30);
+    for (var k = 0; k < 3; k++) {
+        if (abs(d[k]) >= 1.0e-12) {
+            let edge = (f32(c[k]) + select(0.0, 1.0, d[k] > 0.0)) * cell;
+            tn[k] = (edge - g[k]) / d[k];
+            dt[k] = cell / abs(d[k]);
+        }
+    }
+    var t = 0.0;
+    let half = u.weather[1].xyz * (u.weather[1].w * 0.5);
+    let pixel = u.cam_up.w;
+    for (var i = 0u; i < WEATHER_CELLS; i++) {
+        if (t > t_max || keep < 0.01) {
+            break;
+        }
+        let pt = weather_particle(c);
+        if (pt.w > 0.5) {
+            let rs = weather_ray_segment(g, d, t_max, pt.xyz - half, pt.xyz + half);
+            let w = max(radius, pixel * rs.y * 0.7);
+            var cover = (radius / w) * (radius / w);
+            if (rain) {
+                cover = radius / w;
+            }
+            let near = smoothstep(radius * 20.0, radius * 60.0, rs.y);
+            let a = min(cover * exp(-(rs.x / w) * (rs.x / w)) * u.weather[3].w * near, 1.0);
+            if (a > 1.0e-4) {
+                add += keep * a * u.weather[3].xyz;
+                keep *= 1.0 - a;
+            }
+        }
+        var k = 2;
+        if (tn.x < tn.y) {
+            if (tn.x < tn.z) {
+                k = 0;
+            }
+        } else if (tn.y < tn.z) {
+            k = 1;
+        }
+        t = tn[k];
+        c[k] += stp[k];
+        tn[k] += dt[k];
+    }
+    return vec4<f32>(add, keep);
+}
+
+// Mirrors weather::haze.
+fn weather_haze(o: vec3<f32>, d: vec3<f32>, t_end: f32) -> vec4<f32> {
+    let reach = u.weather[2].w;
+    if (u.weather[4].x <= 0.0 || t_end <= reach) {
+        return vec4<f32>(0.0, 0.0, 0.0, 1.0);
+    }
+    let oz = o.z + u.weather[9].z;
+    let top = u.weather[4].y;
+    var t1 = t_end;
+    if (d.z > 1.0e-9) {
+        t1 = min(t1, max((top - oz) / d.z, 0.0));
+    } else if (oz > top) {
+        if (d.z >= -1.0e-9) {
+            t1 = 0.0;
+        }
+    }
+    var t0 = reach;
+    if (d.z < -1.0e-9 && oz > top) {
+        t0 = max(reach, (top - oz) / d.z);
+    }
+    let len = max(t1 - t0, 0.0);
+    var keep = exp(-u.weather[4].x * len);
+    if (len >= 1.0e29) {
+        keep = 0.0;
+    }
+    return vec4<f32>(u.weather[5].xyz * (1.0 - keep), keep);
+}
+
+// Mirrors weather::mist_depth (CLOUD_OPEN-like 1e30: to infinity).
+fn weather_mist_depth(o: vec3<f32>, d: vec3<f32>, t_end: f32) -> f32 {
+    let rho = u.weather[6].x;
+    if (rho <= 0.0) {
+        return 0.0;
+    }
+    let h = u.weather[6].z;
+    let e0 = min(-(o.z + u.weather[9].z - u.weather[6].y) / h, 60.0);
+    let k = d.z / h;
+    if (abs(k) < 1.0e-9) {
+        if (t_end >= 1.0e29) {
+            return 1.0e30;
+        }
+        return rho * exp(e0) * t_end;
+    }
+    if (t_end >= 1.0e29) {
+        if (k > 0.0) {
+            return rho * exp(e0) / k;
+        }
+        return 1.0e30;
+    }
+    let tail = min(-k * t_end, 60.0);
+    return rho * exp(e0) * (1.0 - exp(tail)) / k;
+}
+
+// Mirrors weather::mist.
+fn weather_mist(o: vec3<f32>, d: vec3<f32>, t_end: f32) -> vec4<f32> {
+    let tau = weather_mist_depth(o, d, t_end);
+    if (tau <= 0.0) {
+        return vec4<f32>(0.0, 0.0, 0.0, 1.0);
+    }
+    var keep = exp(-tau);
+    if (tau >= 1.0e29) {
+        keep = 0.0;
+    }
+    return vec4<f32>(u.weather[7].xyz * (1.0 - keep), keep);
+}
+
+// Mirrors weather::snow.
+fn weather_snow(p: vec3<f32>, n: vec3<f32>) -> f32 {
+    let cover = u.weather[4].w;
+    if (cover <= 0.0) {
+        return 0.0;
+    }
+    let lo = 0.75 - 0.75 * u.weather[6].w;
+    let tilt = smoothstep(lo, lo + 0.3, n.z);
+    if (tilt <= 0.0) {
+        return 0.0;
+    }
+    let q = p + u.weather[9].xyz;
+    let s = 1.0 / max(u.weather[0].z * 400.0, 1.0e-6);
+    let patch_n = value_noise(q * s);
+    let c = smoothstep(0.0, 0.25, cover - 0.6 * (1.0 - patch_n));
+    return clamp(tilt * c, 0.0, 1.0);
+}
+
+// Mirrors weather::ripples: (slope x, slope y, splash glint).
+fn weather_ripples(p: vec3<f32>) -> vec3<f32> {
+    let amount = u.weather[5].w;
+    if (amount <= 0.0) {
+        return vec3<f32>(0.0);
+    }
+    let q = p + u.weather[9].xyz;
+    let rc = u.weather[7].w;
+    let cx = i32(floor(q.x / rc));
+    let cy = i32(floor(q.y / rc));
+    var gx = 0.0;
+    var gy = 0.0;
+    var glint = 0.0;
+    let life = 0.8;
+    for (var dy = -1; dy <= 1; dy++) {
+        for (var dx = -1; dx <= 1; dx++) {
+            let ix = cx + dx;
+            let iy = cy + dy;
+            if (hash3(ix, iy, 0x0a1b) >= amount) {
+                continue;
+            }
+            let cycle = u.weather[8].w / life + hash3(ix + 7919, iy, 0x0a1b);
+            let kk = i32(floor(cycle));
+            let age = (cycle - floor(cycle)) * life;
+            let center = vec2<f32>((f32(ix) + 0.2 + 0.6 * hash3(ix + 104729, iy, kk)) * rc, (f32(iy) + 0.2 + 0.6 * hash3(ix + 2 * 104729, iy, kk)) * rc);
+            let e = q.xy - center;
+            let r = length(e);
+            let ring = age / life * rc * 0.9;
+            let width = rc * 0.06;
+            let fade = (1.0 - age / life) * (1.0 - age / life);
+            let x = (r - ring) / width;
+            let slope = -2.0 * x * exp(-x * x) * fade * 0.6;
+            if (r > 1.0e-9) {
+                gx += slope * e.x / r;
+                gy += slope * e.y / r;
+            }
+            if (age < 0.06 && r < rc * 0.08) {
+                glint += (1.0 - age / 0.06) * (1.0 - r / (rc * 0.08));
+            }
+        }
+    }
+    return vec3<f32>(gx, gy, min(glint, 1.0));
+}
+
 // Mirrors clouds::shadow, for light 1 when the clouds shade it (u.cloud[4].w).
 fn cloud_sun_shadow(p: vec3<f32>, l: vec3<f32>) -> f32 {
     if (u.cloud[4].w < 0.5) {
@@ -4569,7 +4805,7 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sx: f32, 
             cols.spec *= lay.spec;
             rr = rr * lay.rough_keep + lay.rough_add;
         }
-        let spec_rough = 1.0 + min(2.0 * rr, 1.0) * (4.0 / max(u.sky.w, 1.0) - 1.0);
+        var spec_rough = 1.0 + min(2.0 * rr, 1.0) * (4.0 / max(u.sky.w, 1.0) - 1.0);
         var n_bump = n_model;
         if (BUMP) {
             n_bump = bump_layers(h.orbit.obj, pos, n_model, cv, h.orbit.trap);
@@ -4605,6 +4841,27 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sx: f32, 
                 let lifted = cols.base * (0.55 + 0.9 * look.x);
                 cols.base = lifted + (WATER_FOAM - lifted) * look.y;
                 mirror = water_fresnel(-dot(d, n), objs[j].prim2.w) * (1.0 - look.y);
+            }
+        }
+        // Weather: wet and snow-covered surfaces, rain rings on the water (mirrors
+        // Shader::weather_surface).
+        if (WEATHER) {
+            if (mirror >= 0.0) {
+                let rp = weather_ripples(pos);
+                n_bump = normalize(n_bump - vec3<f32>(rp.x, rp.y, 0.0) * WEATHER_RIPPLE_TILT);
+            } else {
+                let wet = u.weather[4].z * smoothstep(-0.3, 0.5, n.z);
+                var glint = 0.0;
+                if (wet > 0.3) {
+                    glint = weather_ripples(pos).z * wet;
+                }
+                let snow = weather_snow(pos, n);
+                cols.base = cols.base * (1.0 - 0.45 * wet) * (1.0 - snow) + u.weather[8].xyz * snow;
+                cols.spec *= (1.0 + 1.5 * wet) * (1.0 - 0.8 * snow);
+                let dull = 4.0 / max(u.sky.w, 1.0);
+                spec_rough = spec_rough + (1.0 - spec_rough) * wet * 0.7;
+                spec_rough = spec_rough + (dull - spec_rough) * snow;
+                cols.emis = cols.emis * (1.0 - snow) + glint * 3.0;
             }
         }
         let base = cols.base;
@@ -4851,6 +5108,26 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sx: f32, 
         tr.albedo = tr.albedo * cm.w + (1.0 - cm.w) * clamp(cm.xyz / max(1.0 - cm.w, 1.0e-9), vec3<f32>(0.0), vec3<f32>(1.0));
     }
     c += bolt.below;
+    // Weather in front of what the ray saw (mirrors Shader::trace).
+    if (WEATHER && !inside && !water) {
+        var wend = CLOUD_OPEN;
+        if (h.hit) {
+            wend = h.t - t_base;
+        }
+        let ws = o + d * t_base;
+        for (var part = 0; part < 3; part++) {
+            var wm: vec4<f32>;
+            if (part == 0) {
+                wm = weather_haze(ws, d, wend);
+            } else if (part == 1) {
+                wm = weather_mist(ws, d, wend);
+            } else {
+                wm = weather_particles(ws, d, wend);
+            }
+            c = c * wm.w + wm.xyz;
+            tr.albedo = tr.albedo * wm.w + (1.0 - wm.w) * clamp(wm.xyz / max(1.0 - wm.w, 1.0e-9), vec3<f32>(0.0), vec3<f32>(1.0));
+        }
+    }
     // The fractal haze in front of everything the ray saw (mirrors Shader::trace).
     if (hz) {
         c = c * haze_keep + haze_light;
@@ -5116,44 +5393,62 @@ fn sample_pixel(px: u32, py: u32, sample: u32, k: u32) -> vec3<f32> {
             if (t.z != 0.0 || t.x != 0.0 || t.y != 0.0) {
                 rd = t;
             }
-        } else if (!in_water && u.wmed[3].w > 0.0 && lens > 0.0) {
-            // Drops on the wet glass above the water.
-            let ld = lens_drop(sx * u.cam_right.w, sy, u.wmed[2].w, u.wmed[3].w);
-            if (ld.z > 0.5) {
-                // Out of focus: a soft edge and a blurred view (mirrors Shader::sample_eye).
+        }
+    }
+    // Drops on the wet glass: above the water medium after a dive, or in the rain; the
+    // wetter one decides (mirrors Shader::sample_eye).
+    var lshare = 0.0;
+    var ltime = 0.0;
+    var ltrails = 0.0;
+    var lfocus = 0.0;
+    if (MEDIUM && !in_water && u.wmed[7].z > 0.0) {
+        lshare = u.wmed[3].w;
+        ltime = u.wmed[2].w;
+        ltrails = u.wmed[9].y;
+        lfocus = u.wmed[8].x;
+    }
+    if (WEATHER && !in_water && u.weather[9].w > lshare) {
+        lshare = u.weather[9].w;
+        ltime = u.weather[8].w;
+        ltrails = 0.6;
+        lfocus = 0.0;
+    }
+    if (lshare > 0.0) {
+        let ld = lens_drop(sx * u.cam_right.w, sy, ltime, lshare);
+        if (ld.z > 0.5) {
+            // Out of focus: a soft edge and a blurred view (mirrors Shader::sample_eye).
+            let u1 = rnd();
+            let u2 = rnd();
+            let u3 = rnd();
+            let focus = lfocus;
+            let r = sqrt(ld.x * ld.x + ld.y * ld.y);
+            let soft = 0.08 + 0.52 * (1.0 - focus);
+            let a = clamp((1.0 - r) / soft, 0.0, 1.0);
+            if (u1 < a * a * (3.0 - 2.0 * a)) {
+                let blur = 0.05 * (1.0 - focus) * sqrt(u2);
+                let ang = u3 * 6.283185307179586;
+                rd = normalize(rd - cr * (ld.x * 0.12 + blur * cos(ang)) - cu * (ld.y * 0.12 + blur * sin(ang)));
+                let x = clamp((r * r - 0.5) / 0.5, 0.0, 1.0);
+                let rim = x * x * (3.0 - 2.0 * x) * (0.6 + 0.4 * clamp(-ld.y, 0.0, 1.0));
+                let ring = clamp((r - 0.6) / 0.4, 0.0, 1.0);
+                let blurred = 0.5 * (1.0 - r * r) - 0.2 * ring * ring * (3.0 - 2.0 * ring);
+                line *= 1.0 + (1.0 - focus) * blurred - 0.6 * focus * rim;
+                let hx = ld.x + 0.35;
+                let hy = ld.y - 0.35;
+                glint = 0.5 * focus * exp(-(hx * hx + hy * hy) / 0.03);
+            }
+        } else if (ltrails > 0.0) {
+            // A wet trail (mirrors Shader::sample_eye).
+            let tr = lens_trail(sx * u.cam_right.w, sy, ltime, lshare);
+            if (tr.y > 0.0) {
                 let u1 = rnd();
                 let u2 = rnd();
                 let u3 = rnd();
-                let focus = u.wmed[8].x;
-                let r = sqrt(ld.x * ld.x + ld.y * ld.y);
-                let soft = 0.08 + 0.52 * (1.0 - focus);
-                let a = clamp((1.0 - r) / soft, 0.0, 1.0);
-                if (u1 < a * a * (3.0 - 2.0 * a)) {
-                    let blur = 0.05 * (1.0 - focus) * sqrt(u2);
-                    let ang = u3 * 6.283185307179586;
-                    rd = normalize(rd - cr * (ld.x * 0.12 + blur * cos(ang)) - cu * (ld.y * 0.12 + blur * sin(ang)));
-                    let x = clamp((r * r - 0.5) / 0.5, 0.0, 1.0);
-                    let rim = x * x * (3.0 - 2.0 * x) * (0.6 + 0.4 * clamp(-ld.y, 0.0, 1.0));
-                    let ring = clamp((r - 0.6) / 0.4, 0.0, 1.0);
-                    let blurred = 0.5 * (1.0 - r * r) - 0.2 * ring * ring * (3.0 - 2.0 * ring);
-                    line *= 1.0 + (1.0 - focus) * blurred - 0.6 * focus * rim;
-                    let hx = ld.x + 0.35;
-                    let hy = ld.y - 0.35;
-                    glint = 0.5 * focus * exp(-(hx * hx + hy * hy) / 0.03);
-                }
-            } else if (u.wmed[9].y > 0.0) {
-                // A wet trail (mirrors Shader::sample_eye).
-                let tr = lens_trail(sx * u.cam_right.w, sy, u.wmed[2].w, u.wmed[3].w);
-                if (tr.y > 0.0) {
-                    let u1 = rnd();
-                    let u2 = rnd();
-                    let u3 = rnd();
-                    let wet = tr.y * u.wmed[9].y;
-                    let blur = 0.04 * wet * sqrt(u2);
-                    let ang = u3 * 6.283185307179586;
-                    rd = normalize(rd - cr * (tr.x * 0.03 * wet + 0.3 * blur * cos(ang)) - cu * (blur * sin(ang)));
-                    line *= 1.0 + 0.15 * wet;
-                }
+                let wet = tr.y * ltrails;
+                let blur = 0.04 * wet * sqrt(u2);
+                let ang = u3 * 6.283185307179586;
+                rd = normalize(rd - cr * (tr.x * 0.03 * wet + 0.3 * blur * cos(ang)) - cu * (blur * sin(ang)));
+                line *= 1.0 + 0.15 * wet;
             }
         }
     }

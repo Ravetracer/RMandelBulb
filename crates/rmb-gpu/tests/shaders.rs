@@ -1658,3 +1658,47 @@ fn gpu_matches_cpu_with_the_sky_environment() {
     assert_eq!(f.lights.len(), 1);
     render(only);
 }
+
+#[test]
+fn gpu_matches_cpu_with_weather() {
+    use rmb_core::compose::{Primitive, SceneObject, Shape, Transform};
+    use rmb_core::weather::Weather;
+    let p = |x: f64, y: f64, z: f64| rmb_core::v3(x, y, z);
+    let mut scene = Scene::default();
+    scene.lighting.ao_mode = rmb_core::scene::AoMode::Fast;
+    scene.background.mode = rmb_core::scene::BackgroundMode::Sky;
+    scene.sky.hour = 11.0;
+    scene.lighting.ambient = 1.0;
+    scene.march.max_distance = 40.0;
+    scene.objects = vec![SceneObject { name: "Sea".into(), shape: Shape::Primitive(Primitive::water()), transform: Transform { position: p(0.0, 0.0, -1.2), ..Default::default() }, ..Default::default() }];
+    scene.camera.position = p(2.6, -2.6, 0.2);
+    scene.camera.look_at(p(0.0, 0.0, -0.2), p(0.0, 0.0, 1.0));
+    let with = |name: &str| {
+        let mut s = scene.clone();
+        let mut w = Weather::default();
+        w.apply_preset(name);
+        // Larger particles, so they show at the test's size; a moment into the fall.
+        w.size *= 4.0;
+        w.time = 1.7;
+        s.sky.weather = w;
+        s
+    };
+    let rain = with("Downpour");
+    let prog = Program::for_scene(&rain);
+    assert!(prog.weather);
+    validate(&rmb_gpu::codegen::march_shader(&prog), "weather");
+    let render = |mut s: Scene| {
+        rmb_core::sky::sync_sun(&mut s);
+        parity(s);
+    };
+    // Rain over the sea: streaks, rings on the water, wet bulb, haze.
+    render(rain);
+    // Snow with snow cover on the bulb.
+    render(with("Snowfall"));
+    // Hail.
+    render(with("Hailstorm"));
+    // Morning mist at sunrise, no precipitation.
+    let mut mist = with("Morning mist");
+    mist.sky.hour = 6.5;
+    render(mist);
+}
