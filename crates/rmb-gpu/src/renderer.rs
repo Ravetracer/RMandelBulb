@@ -216,6 +216,7 @@ fn medium_gpu(prog: &Program, lights: &[rmb_core::render::FrameLight]) -> [[f32;
     let mut out = [[0.0f32; 4]; 14];
     out[..8].copy_from_slice(&base);
     out[9][1] = m.drop_trails as f32;
+    out[9][2] = m.bubble_ior as f32;
     let pl = m.plumes;
     out[8] = [m.drop_focus as f32, if pl.is_some() { 1.0 } else { 0.0 }, pl.map_or(0.0, |p| p.spacing as f32), pl.map_or(1.0, |p| p.width as f32)];
     if let Some(p) = pl {

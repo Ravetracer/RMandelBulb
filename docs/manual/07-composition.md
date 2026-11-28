@@ -249,6 +249,7 @@ The **Underwater** section of the water object holds the settings:
 | Light rays | Sunlight scattered in the water: shafts from the waves and the shadows of objects, brightest looking toward the light (0 = none). | 0.4 |
 | Bubbles | Air bubbles rising in the water (0 = none, 1 = many). | 0.2 |
 | Bubble size | Size of the largest bubbles (scene units). | 0.012 |
+| Bubble rim | Width of the bubbles' silvery rim: 0 none, 1 physical (seen from the water an air bubble mirrors everything over its outer quarter, which can look like a drawn outline). | 0.35 |
 | Bubble speed | How fast the bubbles rise in animations (units per second). | 0.25 |
 | Bubbles from | Everywhere: spread evenly. Vents and sources: plumes from random vents and from objects marked as bubble sources. | Everywhere |
 | Vent spacing | Mean distance between the random vents (0 = none, only the source objects). | 1 |

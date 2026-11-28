@@ -360,6 +360,10 @@ pub struct WaterMedium {
     pub bubbles: f64,
     pub bubble_size: f64,
     pub bubble_speed: f64,
+    /// Width of the bubbles' mirror rim (0 = none .. 1 = physical: seen from the water, an air
+    /// bubble reflects everything totally over its outer quarter). Scales the refraction
+    /// index used for the rim.
+    pub bubble_rim: f64,
     /// Where the bubbles rise: spread through the water, or in plumes from vents.
     pub bubble_source: BubbleSource,
     /// Vents: mean distance between the random vents on the ground (scene units; 0 = none,
@@ -420,7 +424,7 @@ impl BubbleSource {
 
 impl Default for WaterMedium {
     fn default() -> Self {
-        WaterMedium { see_through: false, ior: 1.33, color: [0.03, 0.22, 0.3], filter: [0.12, 0.6, 0.78], visibility: 3.0, murk: 0.25, depth_dark: 1.0, caustics: 1.0, caustic_sharpness: 0.5, light_rays: 0.4, bubbles: 0.2, bubble_size: 0.012, bubble_speed: 0.25, bubble_source: BubbleSource::Everywhere, vent_spacing: 1.0, plume_width: 0.08, particles: 0.15, particle_size: 0.0025, time: 0.0, lens: 0.2, flat_lens: true, lens_drops: 0.4, lens_wet: 0.0, dry_time: 5.0, drop_trails: 0.6, drop_focus: 0.0 }
+        WaterMedium { see_through: false, ior: 1.33, color: [0.03, 0.22, 0.3], filter: [0.12, 0.6, 0.78], visibility: 3.0, murk: 0.25, depth_dark: 1.0, caustics: 1.0, caustic_sharpness: 0.5, light_rays: 0.4, bubbles: 0.2, bubble_size: 0.012, bubble_speed: 0.25, bubble_rim: 0.35, bubble_source: BubbleSource::Everywhere, vent_spacing: 1.0, plume_width: 0.08, particles: 0.15, particle_size: 0.0025, time: 0.0, lens: 0.2, flat_lens: true, lens_drops: 0.4, lens_wet: 0.0, dry_time: 5.0, drop_trails: 0.6, drop_focus: 0.0 }
     }
 }
 

@@ -719,6 +719,7 @@ fn water_medium_params(ui: &mut Ui, m: &mut rmb_core::compose::WaterMedium) {
         widgets::slider(ui, "Light rays", "Sunlight scattered in the water: shafts from the waves and shadows of the objects in the water, brightest looking toward the light (0 = none). Costs a shadow ray per sample", &mut m.light_rays, 0.0..=3.0, d.light_rays);
         widgets::slider(ui, "Bubbles", "Air bubbles rising in the water, clear with a bright rim and the sun as a glint (0 = none, 1 = many)", &mut m.bubbles, 0.0..=1.0, d.bubbles);
         widgets::slider_log(ui, "Bubble size", "Size of the largest bubbles (scene units)", &mut m.bubble_size, 0.0005..=1.0, d.bubble_size);
+        widgets::slider(ui, "Bubble rim", "Width of the bubbles' silvery rim (0: none, 1: physical — seen from the water an air bubble mirrors everything over its outer quarter, which looks like a thick outline at small sizes)", &mut m.bubble_rim, 0.0..=1.0, d.bubble_rim);
         widgets::slider_log(ui, "Bubble speed", "How fast the bubbles rise in animations (scene units per second)", &mut m.bubble_speed, 0.0..=10.0, d.bubble_speed);
         widgets::label(ui, "Bubbles from", "Everywhere: spread evenly through the water. Vents and sources: in winding plumes that rise from random vents on the ground and from the objects marked as bubble sources");
         egui::ComboBox::from_id_salt("bubble-source").selected_text(m.bubble_source.label()).show_ui(ui, |ui| {

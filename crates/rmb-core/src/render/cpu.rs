@@ -85,6 +85,7 @@ impl MediumFrame {
             flat_lens: m.flat_lens,
             lens_drops: m.lens_drops.clamp(0.0, 1.0) * m.lens_wet.clamp(0.0, 1.0),
             drop_trails: m.drop_trails.clamp(0.0, 1.0),
+            bubble_ior: 1.0 + (m.ior - 1.0).max(0.0) * m.bubble_rim.clamp(0.0, 1.0),
             drop_focus: m.drop_focus.clamp(0.0, 1.0),
             time: m.time,
             plumes,
@@ -127,6 +128,8 @@ pub struct MediumFrame {
     /// Color of deep water near the surface.
     pub color: [f64; 3],
     pub ior: f64,
+    /// Refraction index for the bubbles' rim (`WaterMedium::bubble_rim`).
+    pub bubble_ior: f64,
     /// The water's up axis in the world.
     pub up: V3,
     /// Per frame light: whether the light sits under the water.
@@ -748,7 +751,7 @@ impl<'a> Shader<'a> {
                 // An air bubble: water to air, total reflection at the rim; it mirrors the
                 // light from above and shows the sun as a glint.
                 let r = d - n * (2.0 * d.dot(n));
-                let refl = crate::compose::fresnel_exact(-d.dot(n), m.ior);
+                let refl = crate::compose::fresnel_exact(-d.dot(n), m.bubble_ior);
                 let sky = 0.3 + 0.7 * r.dot(m.up).max(0.0);
                 let mut col: [f64; 3] = std::array::from_fn(|i| amb[i] * sky);
                 for (i, li) in self.frame.lights.iter().enumerate() {

@@ -12,6 +12,8 @@ and the release workflow uses it as the release notes.
 
 ## [Unreleased]
 
+- Water › Bubble rim: width of the bubbles' mirror rim (0 none .. 1 physical); the default
+  is thinner than before, so bubbles no longer look outlined.
 - Volumetric clouds (Effects › Background › Sky › Clouds): a cloud layer lit by the sky's
   sun, with coverage, density, type (stratus to cumulonimbus), height, thickness, size,
   detail, darkness, tint, high cirrus, wind and evolution for animations, and a far deck

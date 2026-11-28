@@ -105,7 +105,8 @@ struct U {
     // [5] bubbles, [6] particles: cell, share, smallest and largest radius; [7] their rise,
     // z: the camera's front glass size, w: flat glass; [8] x: focus of the lens drops, y:
     // bubbles in plumes (1), z: vent spacing, w: plume width; [9] x: number of bubble
-    // sources, y: drop trails; [10..14] their x, y in the water's frame (two per entry).
+    // sources, y: drop trails, z: refraction index of the bubbles' rim; [10..14] their x, y in
+    // the water's frame (two per entry).
     wmed: array<vec4<f32>, 14>,
     // Sway phases of the baked plants (Program::covers), four per entry; [2].w: level of
     // detail of plants (March::plant_detail × pixel angle; 0 in mesh exports).
@@ -4098,7 +4099,7 @@ fn water_drops(a: vec3<f32>, d: vec3<f32>, len: f32, c_in: vec3<f32>) -> vec3<f3
         var alpha = 0.7;
         if (k == 0) {
             let r = d - n * (2.0 * dot(d, n));
-            alpha = fresnel_exact(-dot(d, n), u.wmed[0].w);
+            alpha = fresnel_exact(-dot(d, n), u.wmed[9].z);
             col = amb * (0.3 + 0.7 * max(dot(r, u.wmed[3].xyz), 0.0));
             for (var i = 0u; i < u.size.w; i++) {
                 let ls = light_sample(i, x, vec2<f32>(0.5));
