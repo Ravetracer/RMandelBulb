@@ -75,6 +75,7 @@ impl Inspector {
         let d = rmb_core::scene::Lighting::default();
         // Placing helpers need the whole scene; they run after the controls.
         let mut place: Option<Place> = None;
+        let sky_drives = scene.background.mode == BackgroundMode::Sky && scene.sky.sun_light;
         let l = &mut scene.lighting;
         if widgets::section(ui, "Lights", false).open {
             ui.horizontal_wrapped(|ui| {
@@ -94,6 +95,9 @@ impl Inspector {
                     self.light = self.light.saturating_sub(1);
                 }
             });
+            if self.light == 0 && sky_drives {
+                ui.label(RichText::new("Light 1 follows the sky's sun (Effects › Background); its direction, color and intensity are set there").size(theme::fs(11.0)).color(theme::TEXT_MUTED));
+            }
             if let Some(li) = l.lights.get_mut(self.light) {
                 let dl = Light::default();
                 widgets::grid(ui, "light", |ui| {
@@ -204,6 +208,9 @@ impl Inspector {
             l.ambient_from_background = d.ambient_from_background;
         }
         if sec.open {
+            if sky_drives {
+                ui.label(RichText::new("Amount, sky and ground colors follow the sky (Effects › Background › Skylight)").size(theme::fs(11.0)).color(theme::TEXT_MUTED));
+            }
             widgets::grid(ui, "ambient", |ui| {
                 widgets::slider(ui, "Amount", "Light from the surroundings", &mut l.ambient, 0.0..=2.0, d.ambient);
                 if l.ambient_from_background {
@@ -937,11 +944,12 @@ fn color_map(ui: &mut Ui, m: &mut rmb_core::scene::Material) {
 
 fn effects(ui: &mut Ui, scene: &mut Scene) {
     let db = rmb_core::scene::Background::default();
-    let b = &mut scene.background;
     let sec = widgets::section(ui, "Background", true);
     if sec.reset {
-        *b = db.clone();
+        scene.background = db.clone();
+        scene.sky = Default::default();
     }
+    let b = &mut scene.background;
     if sec.open {
         widgets::segmented(
             ui,
@@ -950,20 +958,26 @@ fn effects(ui: &mut Ui, scene: &mut Scene) {
                 (BackgroundMode::Solid, "Solid", "One color"),
                 (BackgroundMode::Gradient, "Gradient", "Sky gradient: top, horizon, bottom"),
                 (BackgroundMode::Vertical, "Vertical", "Top to bottom over the screen height (Mandelbulb3D)"),
+                (BackgroundMode::Sky, "Sky", "An atmosphere lit by the sun: time of day, sunsets, stars, alien skies; the sun can light the scene"),
             ],
         );
-        widgets::grid(ui, "bg", |ui| {
-            widgets::color(ui, if b.mode == BackgroundMode::Solid { "Color" } else { "Top" }, "", &mut b.top);
-            if b.mode == BackgroundMode::Gradient {
-                widgets::color(ui, "Horizon", "", &mut b.horizon);
-            }
-            if b.mode != BackgroundMode::Solid {
-                widgets::color(ui, "Bottom", "", &mut b.bottom);
-            }
-            if b.mode == BackgroundMode::Vertical {
-                widgets::slider_log(ui, "Curve", "1: even; above 1: more of the top color; below 1: more of the bottom color", &mut b.curve, 0.1..=10.0, db.curve);
-            }
-        });
+        if b.mode == BackgroundMode::Sky {
+            crate::sky_editor::show(ui, &mut scene.sky);
+        } else {
+            widgets::grid(ui, "bg", |ui| {
+                widgets::color(ui, if b.mode == BackgroundMode::Solid { "Color" } else { "Top" }, "", &mut b.top);
+                if b.mode == BackgroundMode::Gradient {
+                    widgets::color(ui, "Horizon", "", &mut b.horizon);
+                }
+                if b.mode != BackgroundMode::Solid {
+                    widgets::color(ui, "Bottom", "", &mut b.bottom);
+                }
+                if b.mode == BackgroundMode::Vertical {
+                    widgets::slider_log(ui, "Curve", "1: even; above 1: more of the top color; below 1: more of the bottom color", &mut b.curve, 0.1..=10.0, db.curve);
+                }
+            });
+        }
+        let b = &mut scene.background;
         ui.horizontal(|ui| {
             let label = if b.image.is_empty() { "No image".to_string() } else { b.image.clone() };
             if ui.button("Image…").on_hover_text("Panorama image (latitude/longitude) behind the object; the fog keeps the colors above").clicked()

@@ -12,6 +12,10 @@ of a switched-off light is grayed). **+** adds a light, the trash icon removes t
 A new scene starts with two directional lights: a warm main light with shadows and a weak blue
 fill light without.
 
+With the **Sky** background and **Sun lights the scene** (Effects › Background), light 1
+follows the sky's sun: its direction, color and intensity come from the sky, and so do the
+ambient amount and its sky and ground colors (notes above the settings say so).
+
 With **Lights** switched on in the top bar, the lights are drawn in the view with handles:
 click one to select it, drag it to move or aim it. Clicking a light in the view also opens
 this tab with that light selected.

@@ -24,6 +24,7 @@ mod palette_editor;
 mod plants_editor;
 mod prefs;
 mod render_view;
+mod sky_editor;
 mod theme;
 mod timeline;
 mod viewport;

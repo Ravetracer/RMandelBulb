@@ -157,6 +157,8 @@ struct Uniforms {
     wmed: [[f32; 4]; 14],
     /// Sway phases of the baked plants (`Program::covers`, four per entry).
     cover: [[f32; 4]; 3],
+    /// The sky (`sky_gpu`).
+    atmo: [[f32; 4]; 8],
 }
 
 /// Splits an f64 into the high and low f32 of a double-float.
@@ -168,6 +170,21 @@ fn split_dd(v: f64) -> (f32, f32) {
 /// The water medium (march.wgsl `u.wmed`): extinction and refraction index, depth fade and
 /// the lights under the water (bits), its color, its up axis; caustics, their step, light
 /// rays, scattering; bubbles and particles (cell, share, radii), their rise.
+/// The sky for march.wgsl `sky_radiance` (layout in the `atmo` field of `U`).
+fn sky_gpu(f: &rmb_core::sky::SkyFrame) -> [[f32; 4]; 8] {
+    let v = |a: [f64; 3], w: f64| [a[0] as f32, a[1] as f32, a[2] as f32, w as f32];
+    [
+        v(f.sun.to_array(), f.sun_cos),
+        v(f.beta_r, f.stars),
+        v(f.beta_m, f.star_brightness),
+        v(f.mie_g, 0.0),
+        v(f.sun_light, 0.0),
+        v(f.sun_disk, 0.0),
+        v(f.ground, 0.0),
+        v(f.sun_air, 0.0),
+    ]
+}
+
 fn medium_gpu(prog: &Program, lights: &[rmb_core::render::FrameLight]) -> [[f32; 4]; 14] {
     let Some(m) = rmb_core::render::cpu::MediumFrame::new(prog, lights) else { return [[0.0; 4]; 14] };
     let wet = m.wet_lights.iter().enumerate().filter(|(_, w)| **w).fold(0u32, |b, (i, _)| b | 1 << i);
@@ -700,6 +717,7 @@ fn uniforms(scene: &Scene, prog: &Program, w: u32, h: u32, fast: bool, tile: Opt
                 BackgroundMode::Solid => 0.0,
                 BackgroundMode::Gradient => 1.0,
                 BackgroundMode::Vertical => 2.0,
+                BackgroundMode::Sky => 3.0,
             },
         ),
         bg_horizon: c4(bg.horizon, 0.0),
@@ -822,6 +840,7 @@ fn uniforms(scene: &Scene, prog: &Program, w: u32, h: u32, fast: bool, tile: Opt
             c[2][3] = (scene.march.plant_detail.max(0.0) * fr.pixel_angle) as f32;
             c
         },
+        atmo: sky_gpu(&rmb_core::sky::SkyFrame::new(&scene.sky)),
         haze2: [if scene.fog.haze_shape == rmb_core::scene::HazeShape::Iterations { 1.0 } else { 0.0 }, scene.fog.haze_size as f32, 0.0, 0.0],
     }
 }

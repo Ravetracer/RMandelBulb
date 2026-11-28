@@ -217,9 +217,16 @@ pub fn compile_drivers(drivers: &[Driver]) -> (Vec<CompiledDriver>, Vec<String>)
 
 /// A still image's scene with its drivers applied (`Animation::still_drivers`): at frame 0 of
 /// one frame, `value` = the scene's own value, the sound levels at its start. The result has
-/// `still_drivers` off, so it is never driven twice. `None` when nothing applies.
+/// `still_drivers` off, so it is never driven twice. Also the sky's sun written into light 1
+/// (`sky::sync_sun`) when that changes it. `None` when nothing applies.
 pub fn still_scene(scene: &Scene) -> Option<Scene> {
-    let a = scene.animation.as_ref().filter(|a| a.still_drivers && a.drivers.iter().any(|d| d.enabled))?;
+    let Some(a) = scene.animation.as_ref().filter(|a| a.still_drivers && a.drivers.iter().any(|d| d.enabled)) else {
+        if scene.background.mode != crate::scene::BackgroundMode::Sky || !scene.sky.sun_light {
+            return None;
+        }
+        let mut s = scene.clone();
+        return crate::sky::sync_sun(&mut s).then_some(s);
+    };
     let drivers = compile_drivers(&a.drivers).0;
     let audio = a.audio_levels.as_ref().map_or([0.0; 4], |l| l.at(a.audio_offset_s.max(0.0)));
     let mut s = scene.clone();
@@ -227,6 +234,7 @@ pub fn still_scene(scene: &Scene) -> Option<Scene> {
         an.still_drivers = false;
     }
     apply_drivers(&mut s, &drivers, DriverTime { frame: 0.0, frames: 1, fps: a.fps, key: 0.0, audio });
+    crate::sky::sync_sun(&mut s);
     Some(s)
 }
 
@@ -763,6 +771,10 @@ fn color_speeds(s: &Scene) -> BTreeMap<String, f64> {
             out.insert(format!("o{k}.plants"), o.cover.sway_speed);
         }
     }
+    // The sky's clock runs by its day speed (hours per second).
+    if s.sky.day_speed != 0.0 {
+        out.insert("sky.time".into(), s.sky.day_speed);
+    }
     // Plants on the main fractal sway.
     if s.plant_cover.active() {
         out.insert("plants".into(), s.plant_cover.sway_speed);
@@ -822,6 +834,7 @@ fn apply_phases(s: &mut Scene, phase: &BTreeMap<String, f64>) {
         o.cover.phase += phase.get(&format!("o{k}.plants")).copied().unwrap_or(0.0);
     }
     s.plant_cover.phase += phase.get("plants").copied().unwrap_or(0.0);
+    s.sky.hour = (s.sky.hour + phase.get("sky.time").copied().unwrap_or(0.0)).rem_euclid(24.0);
 }
 
 impl AnimationPlan {
@@ -931,6 +944,8 @@ impl AnimationPlan {
         let audio = self.audio.as_ref().map_or([0.0; 4], |(l, off)| l.at(off + t / self.fps.max(1e-9)));
         apply_drivers(&mut scene, &self.drivers, DriverTime { frame: t, frames: self.frames.len(), fps: self.fps, key: fc.u, audio });
         self.wet_lens(&mut scene, t);
+        // The sun's light follows the animated time of day.
+        crate::sky::sync_sun(&mut scene);
         scene
     }
 

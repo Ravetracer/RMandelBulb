@@ -3,7 +3,8 @@
 """Writes the example scenes of the manual's how-to chapter (docs/manual/examples/*.rmb) and
 renders their images (docs/manual/images/howto-*.jpg) with rmb-cli.
 
-    cargo build --release -p rmb-cli -p rmb-core --example compose_demo
+    cargo build --release -p rmb-cli
+    cargo build --release -p rmb-core --example compose_demo --example sky_demo
     python3 tools/make_manual_examples.py [neon_steps hybrid_ranges …]  (default: all)
 
 Needs ImageMagick (`convert`) for the JPEG conversion.
@@ -197,9 +198,18 @@ def vr_panorama():
     render(path, "howto-vr-panorama.jpg", 480, 480)
 
 
+def sunset_sea():
+    """The bulb over the sea at sunset (sky background, the sun as light 1)."""
+    out = EXAMPLES / "sunset-sea.rmb"
+    EXAMPLES.mkdir(parents=True, exist_ok=True)
+    demo = ROOT / "target" / "release" / "examples" / "sky_demo"
+    subprocess.run([str(demo), str(out)], check=True, capture_output=True)
+    render(out, "howto-sunset-sea.jpg")
+
+
 if __name__ == "__main__":
     only = sys.argv[1:]
-    for f in (neon_steps, hybrid_ranges, own_formula, glass, composition, deep_zoom, projections, vr_panorama):
+    for f in (neon_steps, hybrid_ranges, own_formula, glass, composition, deep_zoom, projections, vr_panorama, sunset_sea):
         if only and f.__name__ not in only:
             continue
         f()

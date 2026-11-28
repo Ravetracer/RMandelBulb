@@ -53,7 +53,11 @@ RAYON_NUM_THREADS=8 cargo test -j 8 --workspace -- --test-threads=8
 cargo clippy -j 8 --workspace --all-targets
 ```
 
-- `rmb-gpu/tests/shaders.rs` checks every library formula's WGSL with naga. It also compares
+- `rmb-gpu/tests/shaders.rs` checks every library formula's WGSL with naga and renders a
+  sample on the GPU (`formula_sample_renders_on_the_gpu`: one formula per kind plus every
+  25th; each shader is a full driver compile, seconds each after a `march.wgsl` change empties
+  the driver's disk cache). The whole library on the GPU: `cargo test --release -p rmb-gpu
+  --test shaders -- --ignored` (after regenerating or translating formulas). It also compares
   a GPU render with the CPU one (mean difference must stay below 4 out of 255; it is
   currently 0.02).
 - `rmb-core` tests import all `../mb3d/M3Parameter/*.m3p` files.
@@ -125,8 +129,9 @@ cargo clippy -j 8 --workspace --all-targets
 - `docs/mb3d-notes.md`: parameter format, record layout, calling convention.
 - Regenerate the built-in MB3D formulas after translator changes:
   `cargo run --release -p rmb-cli -- m3f ../mb3d/M3Formulas -o crates/rmb-core/src/formula/lib/mb3d.mbf`
-  (prints the count and the failure reasons). Then run the GPU tests: every formula must give
-  valid WGSL and render.
+  (prints the count and the failure reasons). Then run the GPU tests including the ignored
+  `every_formula_renders_on_the_gpu` (`-- --ignored`): every formula must give valid WGSL
+  and render.
 - `cargo run --release -p m3f-check -- ../mb3d/M3Formulas` runs the original machine code in the
   Unicorn emulator and compares it with every translation (4 iterations, 10 random points).
   All but `_DonutTransform` match (that one drifts by about 1e-5, probably x87 trig precision
@@ -503,6 +508,33 @@ cargo clippy -j 8 --workspace --all-targets
   bound uses the rate at the highest reachable height. Underwater floor view 2040 → 1295 ms
   per pass, plant garden 1113 → 660 ms; plants are still ~70 % of it (GPU threads wait for
   the slowest lane in the BVH walks). `PLANT_STACK` 16 covers 4000 segments.
+
+## Sky
+
+- `rmb-core/src/sky.rs` (`Scene::sky`, `BackgroundMode::Sky`): analytic single scattering
+  per channel (Rayleigh/Mie optical depths as RGB, Kasten-Young air mass, HG Mie phase per
+  channel, isotropic `MULTI` fill). `SkyFrame::new` precomputes per frame: the sun's light at
+  the ground (`sun_light`, full air mass) and at the scattering air (`sun_air`: half the air
+  mass, at most `SUN_PATH_MAX`, so low suns do not black out hazy skies); ozone (`OZONE` ×
+  `Sky::ozone`) absorbs along the full sun path in both (blue dusk); twilight fades over 18°
+  below the horizon. `radiance` = air + sun disk + stars (`star`: hash grid, `STAR_CELLS`);
+  `air` leaves out disk and stars and is the fog color with `Fog::from_background` (else the
+  sun shines through the fog on surfaces in front of it). Ground below the horizon: haze
+  toward the horizon + ground color × `sun_light` × `GROUND_LIGHT`.
+- GPU: uniform `atmo` (8 vec4, `renderer::sky_gpu`), march.wgsl `sky_radiance(d, sources)`
+  mirrors `radiance_ex`; background mode 3 in `bg_top.w`. No compile switch (small code).
+- `sync_sun` writes the sun into light 1 (directional, world-relative, color normalized,
+  intensity from the ground light × `sun_light_strength`; adds light 1 when there is none)
+  and the ambient light (`hemispheres`: cosine-weighted averages of `air` above and below,
+  48 fixed directions; amount = the brightest sky channel × `sky_light_strength`). A stand-in
+  for the World item "the sky lights the scene like an HDRI". Called by the app every frame,
+  by `AnimationPlan::scene_of`, and through `animation::still_scene` (returns a synced copy
+  when it changes light 1), so every renderer and export sees the same light.
+- `Sky::day_speed` → phase `sky.time` (hours per second). Editor `rmb-app/src/sky_editor.rs`
+  (CPU strip preview, cached in egui temp data). `cargo run --release -p rmb-gpu --example
+  sky_sheet -- out.png [--panorama]` renders all presets at six hours (judge model changes);
+  `rmb-core` example `sky_demo` writes the manual's sunset scene. Test
+  `gpu_matches_cpu_with_the_sky`.
 
 ## Light through glass
 

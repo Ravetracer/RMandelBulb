@@ -17,6 +17,8 @@ pub struct Shader<'a> {
     /// Materials: 0 the main one, k the one of `Scene::objects[k - 1]`.
     pub materials: Vec<Mat>,
     pub bg_image: Option<(std::sync::Arc<crate::maps::Map>, [[f64; 3]; 3])>,
+    /// The sky (background mode Sky).
+    pub sky: crate::sky::SkyFrame,
     /// The 16 × 8 copy of the background image for ambient light.
     pub bg_ambient: Option<std::sync::Arc<crate::maps::Map>>,
     /// Color map with its rotation matrix and average color (display values).
@@ -624,6 +626,7 @@ impl<'a> Shader<'a> {
             frame: Frame::new(scene, width, height),
             materials,
             bg_image: super::background_image(scene),
+            sky: crate::sky::SkyFrame::new(&scene.sky),
             bg_ambient: super::background_maps(scene).map(|(_, s, _)| s),
             color_map: crate::maps::get_any(&scene.material.color_map.image).map(|m| {
                 let avg = m.average();
@@ -1315,6 +1318,7 @@ impl<'a> Shader<'a> {
         let f = |c: [f32; 3]| c.map(|x| x as f64);
         match b.mode {
             BackgroundMode::Solid => f(b.top),
+            BackgroundMode::Sky => crate::sky::radiance(&self.sky, d),
             BackgroundMode::Vertical => {
                 let s = ((1.0 - sy) * 0.5).clamp(0.0, 1.0).powf(b.curve.max(0.01));
                 let (top, bottom) = (f(b.top), f(b.bottom));
@@ -1855,7 +1859,12 @@ impl<'a> Shader<'a> {
         let (glow, glow_mix) = sc.fog.glow_at(steps, sc.march.max_steps as f64, glow_dist);
         let grad = self.background(d, sy);
         let bg = if env { self.environment(d) } else { self.background_image(d, sx, sy).unwrap_or(grad) };
-        let fog_col = if sc.fog.from_background { grad } else { sc.fog.color.map(|x| x as f64) };
+        // The sky's fog is its air without the sun disk and stars (else the sun shines through).
+        let fog_col = match (sc.fog.from_background, sc.background.mode) {
+            (true, BackgroundMode::Sky) => crate::sky::air(&self.sky, d),
+            (true, _) => grad,
+            _ => sc.fog.color.map(|x| x as f64),
+        };
         let (near, far) = (super::start_distance(sc), sc.march.max_distance);
         let albedo: [f64; 3];
         let mut normal = V3::ZERO;

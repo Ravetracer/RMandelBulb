@@ -35,6 +35,8 @@ pub struct Scene {
     pub notes: String,
     /// Objects combined with the main fractal (scene composition).
     pub objects: Vec<crate::compose::SceneObject>,
+    /// The sky (background mode Sky).
+    pub sky: crate::sky::Sky,
     /// Plants growing on the main fractal.
     #[serde(skip_serializing_if = "crate::plant_cover::PlantCover::is_empty")]
     pub plant_cover: crate::plant_cover::PlantCover,
@@ -71,6 +73,7 @@ impl Default for Scene {
             cut: Cutting::default(),
             notes: String::new(),
             objects: Vec::new(),
+            sky: Default::default(),
             plant_cover: Default::default(),
             animation: None,
             motion_end: None,
@@ -1133,6 +1136,8 @@ pub enum BackgroundMode {
     Gradient,
     /// Top to bottom over the screen height (Mandelbulb3D).
     Vertical,
+    /// An atmosphere lit by the sun (`Scene::sky`).
+    Sky,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

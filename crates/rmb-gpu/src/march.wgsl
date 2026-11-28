@@ -110,6 +110,11 @@ struct U {
     // Sway phases of the baked plants (Program::covers), four per entry; [2].w: level of
     // detail of plants (March::plant_detail × pixel angle; 0 in mesh exports).
     cover: array<vec4<f32>, 3>,
+    // The sky (sky::SkyFrame, background mode 3): [0] sun direction, w: cosine of its
+    // radius; [1] Rayleigh optical depth, w: star share; [2] Mie optical depth, w: star
+    // brightness; [3] Mie direction per channel; [4] the sun's light at the air; [5] its
+    // disk brightness; [6] ground color; [7] the sun's light at the scattering air.
+    atmo: array<vec4<f32>, 8>,
 }
 
 @group(0) @binding(0) var<uniform> u: U;
@@ -2681,9 +2686,98 @@ fn ambient_occlusion_in(p: vec3<f32>, n: vec3<f32>, t: f32) -> vec4<f32> {
     return vec4<f32>(ao, emitted);
 }
 
+const SKY_PI: f32 = 3.141592653589793;
+
+// Mirrors sky::air_mass (Kasten and Young).
+fn sky_air_mass(sin_el: f32) -> f32 {
+    let s = max(sin_el, 0.0);
+    let deg = degrees(asin(min(s, 1.0)));
+    return 1.0 / (s + 0.50572 * pow(deg + 6.07995, -1.6364));
+}
+
+// Mirrors sky::atmosphere: light scattered toward the eye along `d` (d.z >= 0) and the
+// transmittance of that path.
+fn sky_atmosphere(d: vec3<f32>, trans: ptr<function, vec3<f32>>) -> vec3<f32> {
+    let m = sky_air_mass(d.z);
+    let mu = clamp(dot(d, u.atmo[0].xyz), -1.0, 1.0);
+    let rayleigh = 3.0 / (16.0 * SKY_PI) * (1.0 + mu * mu);
+    let br = u.atmo[1].xyz;
+    let bm = u.atmo[2].xyz;
+    let g = u.atmo[3].xyz;
+    let mie = (1.0 - g * g) / (4.0 * SKY_PI * pow(max(1.0 + g * g - 2.0 * g * mu, vec3<f32>(1e-9)), vec3<f32>(1.5)));
+    let ext = br + 1.1 * bm;
+    let t = exp(-ext * m);
+    let has = ext > vec3<f32>(1e-12);
+    let safe = select(vec3<f32>(1.0), ext, has);
+    let scattered = select(vec3<f32>(0.0), (br * rayleigh + bm * mie) / safe, has);
+    let fill = select(vec3<f32>(0.0), br / safe * 0.15 / (4.0 * SKY_PI), has);
+    *trans = t;
+    return u.atmo[7].xyz * (scattered + fill) * (1.0 - t);
+}
+
+// Mirrors sky::star: a star in the grid cell of `d`, if any.
+fn sky_star(d: vec3<f32>) -> vec3<f32> {
+    let p = d * 140.0;
+    let c = floor(p);
+    let ix = i32(c.x);
+    let iy = i32(c.y);
+    let iz = i32(c.z);
+    if (hash3(ix, iy, iz) >= u.atmo[1].w * 0.25) {
+        return vec3<f32>(0.0);
+    }
+    let s = c + vec3<f32>(0.2) + 0.6 * vec3<f32>(hash3(ix + 7919, iy, iz), hash3(ix + 2 * 7919, iy, iz), hash3(ix + 3 * 7919, iy, iz));
+    let dist = length(p - normalize(s) * length(p));
+    let r = 0.06 + 0.05 * hash3(ix + 4 * 7919, iy, iz);
+    if (dist >= r) {
+        return vec3<f32>(0.0);
+    }
+    let h5 = hash3(ix + 5 * 7919, iy, iz);
+    let b = (1.0 - dist / r) * (1.0 - dist / r) * 8.0 * h5 * h5 * h5;
+    let tint = hash3(ix + 6 * 7919, iy, iz);
+    return vec3<f32>(b * (0.8 + 0.3 * tint), b * 0.9, b * (1.15 - 0.4 * tint));
+}
+
+// Mirrors sky::radiance (sources) and sky::air (no sun disk, no stars): atmosphere, sun disk,
+// ground below the horizon, stars.
+fn sky_radiance(d: vec3<f32>, sources: bool) -> vec3<f32> {
+    let sun = u.atmo[0].xyz;
+    var t = vec3<f32>(0.0);
+    if (d.z < 0.0) {
+        var h = vec3<f32>(d.x, d.y, 0.0);
+        h = select(vec3<f32>(1.0, 0.0, 0.0), normalize(h), length(h) > 1e-9);
+        let haze = sky_atmosphere(h, &t);
+        let lit = (max(sun.z, 0.0) / SKY_PI + 0.05) * 0.3;
+        let w = exp(d.z * 8.0);
+        return haze * w + u.atmo[6].xyz * u.atmo[4].xyz * lit * (1.0 - w);
+    }
+    var c = sky_atmosphere(d, &t);
+    if (!sources) {
+        return c;
+    }
+    let mu = dot(d, sun);
+    let sun_cos = u.atmo[0].w;
+    if (mu > sun_cos) {
+        let r = clamp((1.0 - mu) / (1.0 - sun_cos), 0.0, 1.0);
+        let edge = smoothstep(1.0, 0.8, r);
+        let limb = 1.0 - 0.6 * (1.0 - sqrt(1.0 - r));
+        c += u.atmo[5].xyz * t * limb * edge;
+    }
+    if (u.atmo[1].w > 0.0 && u.atmo[2].w > 0.0) {
+        let lum = dot(c, vec3<f32>(0.2126, 0.7152, 0.0722));
+        let night = clamp(1.0 - lum * 20.0, 0.0, 1.0);
+        if (night > 0.0) {
+            c += sky_star(d) * night * u.atmo[2].w * t;
+        }
+    }
+    return c;
+}
+
 fn background(d: vec3<f32>, sy: f32) -> vec3<f32> {
     if (u.bg_top.w < 0.5) {
         return u.bg_top.xyz;
+    }
+    if (u.bg_top.w > 2.5) {
+        return sky_radiance(d, true);
     }
     if (u.bg_top.w > 1.5) {
         let s = pow(clamp((1.0 - sy) * 0.5, 0.0, 1.0), max(u.amb_up.w, 0.01));
@@ -3941,7 +4035,8 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sx: f32, 
     }
     var fog_col = u.fog.xyz;
     if (u.fog3.y > 0.5) {
-        fog_col = grad;
+        // The sky's fog is its air without the sun disk and stars (mirrors cpu.rs).
+        fog_col = select(grad, sky_radiance(d, false), u.bg_top.w > 2.5);
     }
     var c: vec3<f32>;
     tr.normal = vec3<f32>(0.0);

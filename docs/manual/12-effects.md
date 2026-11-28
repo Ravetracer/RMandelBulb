@@ -16,6 +16,61 @@ The background shows where rays hit nothing. Choose its kind:
 - **Gradient** (default): a sky gradient with **Top**, **Horizon** and **Bottom** colors.
 - **Vertical**: from **Top** to **Bottom** over the screen height, like Mandelbulb3D. **Curve**
   bends it: 1 is even, above 1 more of the top color, below 1 more of the bottom color.
+- **Sky**: an atmosphere lit by the sun (below).
+
+### Sky
+
+The sky mode computes the light of an atmosphere for every direction: a blue sky with a paler
+horizon by day, red and orange sunsets with a blue dusk above them, twilight after sunset and
+stars at night. The colors of the air and its haze are settings, so Mars (butterscotch by day,
+blue at sunset), Titan or invented planets are as easy as Earth. Below the horizon lies the
+ground, hazed toward the horizon. A strip at the top of the section shows the sky all around
+(north, east, south, west, from just below the horizon to the zenith).
+
+![The presets (rows: Earth clear, Earth hazy, Mars, Titan, Alien green, Alien violet) at 7, 10, 13, 18:30, 19:48 and 21:30](images/sky-presets.jpg)
+
+![The sky settings](images/inspector-sky.png){: .half}
+
+**Preset** sets the atmosphere: colors, haze, density, ozone, ground and sun color. The sun's
+place, the stars and the brightness stay.
+
+The sun is placed by **Time of day** (real solar geometry) or **Manual**:
+
+| Setting | What it does |
+|---------|--------------|
+| **Time** | Local solar time in hours; at 12 the sun is highest (in the south for northern latitudes). |
+| **Latitude** | Degrees north (negative: south). Near the poles the sun stays low or never sets. |
+| **Day of year** | 1 = January 1st, 172 = the longest day in the north. |
+| **North** | Direction of north in the world, in degrees from the x axis (like a light's direction). |
+| **Direction**, **Height** | Manual: the sun's direction from the x axis and its height above the horizon (negative: below it; the twilight lasts to -18°). |
+| **Time-lapse** | Hours per second in animations (0: the time stands still). |
+
+| Atmosphere | What it does |
+|------------|--------------|
+| **Sky color**, **Scattering** | The colors the air scatters most (Rayleigh scattering) and how much: a deeper sky, a whiter horizon, redder sunsets. |
+| **Haze color**, **Haze** | Haze or dust (Mie scattering): a paler sky and a glow around the sun. |
+| **Sun glow** | How tightly the haze gathers around the sun (0: evenly, 0.95: a small bright halo). The Mars preset sets it per color (blue scatters more forward: blue sunsets); the slider moves all three. |
+| **Density** | Thickness of the atmosphere (multiplies scattering and haze). |
+| **Ozone** | Ozone high above absorbs orange and green along the low sun's long path: it keeps the sky blue at dusk (Earth: 1). |
+| **Ground** | Color of the ground below the horizon. |
+| **Brightness** | Overall brightness of the sky and the stars. |
+
+| Sun and stars | What it does |
+|---------------|--------------|
+| **Sun color** | Color of the sunlight before the atmosphere. |
+| **Sun size**, **Disk brightness** | Angular diameter of the sun disk in degrees (ours: 0.53) and its brightness (0: no disk, only its light). |
+| **Stars**, **Star brightness** | How many stars show where the sky is dark, and how bright. |
+| **Sun lights the scene** | Light 1 follows the sun: its direction, its color (redder when low) and its intensity, which fades out at sunset. The ambient light takes the average colors of the sky and the ground: shadows are filled bluish by day, warm at sunset, and the night is dark. If the scene has no light, the sky adds light 1. The Light tab shows notes; these settings are then set by the sky. |
+| **Sunlight** | Intensity of light 1 relative to the sun. |
+| **Skylight** | Ambient light from the sky relative to its brightness. |
+
+With **Fog › Background color**, the fog takes the sky's air in each direction (without the
+sun disk and the stars): distant things fade into the horizon's color, and water melts into
+the sky at the horizon.
+
+!!! tip
+    For a quick time-lapse, set **Time-lapse** to 1–2 hours per second and export an
+    animation: the sky, the sun light and its shadows follow the time.
 
 ### Background image
 
@@ -35,7 +90,8 @@ name that is not found is shown as a warning: give the full path or put the file
 | **Ambient light** | The image lights the scene: a blurred copy replaces the sky and ground colors of the ambient light (Lighting › Ambient). |
 
 !!! note
-    The fog keeps using the background *colors* above, also when an image is shown.
+    The fog keeps using the background *colors* above (or the sky), also when an image is
+    shown.
 
 ## Fog and glow
 

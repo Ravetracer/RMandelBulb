@@ -26,6 +26,7 @@ pub mod queue;
 pub mod math;
 pub mod render;
 pub mod scene;
+pub mod sky;
 pub mod texture;
 pub mod video;
 pub mod voxel_export;

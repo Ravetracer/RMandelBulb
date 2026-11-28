@@ -123,6 +123,8 @@ Some settings are speeds. They act only in animations, adding up over the frames
 - **Drift X/Y/Z** of texture layers: tiles per second.
 - **Steam drift X/Y/Z** (Emissive colors): the steam clouds move.
 - **Shimmer speed**: new flicker patterns per second.
+- **Time-lapse** (Effects › Background › Sky): hours per second; the sun, its light and the
+  sky follow the time of day.
 
 These speeds can themselves differ between keyframes; the program blends them and sums them up
 over time, so the movement stays smooth.

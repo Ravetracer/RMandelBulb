@@ -214,14 +214,18 @@ fn gpu_matches_cpu_with_de_combination_and_4d_rotation() {
     parity(scene);
 }
 
-#[test]
-fn every_formula_renders_on_the_gpu() {
+/// Renders formulas on the GPU (the driver's compiler, beyond naga's validation above).
+fn formulas_render_on_the_gpu(pick: impl Fn(usize, &rmb_core::formula::Formula) -> bool) {
     let Ok(ctx) = rmb_gpu::GpuContext::new_headless() else {
         eprintln!("no GPU, skipped");
         return;
     };
     let lib = rmb_core::formula::library();
-    for f in lib.all() {
+    let mut n = 0;
+    for (i, f) in lib.all().iter().enumerate() {
+        if !pick(i, f) {
+            continue;
+        }
         let mut s = Scene::default();
         s.fractal.slots = vec![Slot::new(&f.def.name)];
         if f.def.transform {
@@ -229,7 +233,31 @@ fn every_formula_renders_on_the_gpu() {
         }
         let img = rmb_gpu::render_blocking(ctx.clone(), &s, 16, 16, 1, |_| true).unwrap_or_else(|e| panic!("{}: {e}", f.def.name));
         assert_eq!(img.len(), 16 * 16 * 4, "{}", f.def.name);
+        n += 1;
     }
+    eprintln!("{n} formulas rendered");
+}
+
+/// A sample of the library on the GPU: the first formula of every kind (DE kind, transform,
+/// sets iteration counts, uses maps) and every 25th. Every shader is a full driver compile
+/// (seconds each without the disk cache), so the whole library runs only on request:
+/// `every_formula_renders_on_the_gpu`.
+#[test]
+fn formula_sample_renders_on_the_gpu() {
+    let seen = std::cell::RefCell::new(std::collections::HashSet::new());
+    formulas_render_on_the_gpu(|i, f| {
+        let maps = f.text.contains("mapsph") || f.text.contains("mapxy");
+        let kind = format!("{:?} {} {} {maps}", f.def.de, f.def.transform, f.def.sets_counts);
+        seen.borrow_mut().insert(kind) || i % 25 == 0
+    });
+}
+
+/// Every library formula on the GPU (slow: run after regenerating or translating formulas,
+/// `cargo test --release -p rmb-gpu --test shaders -- --ignored`).
+#[test]
+#[ignore]
+fn every_formula_renders_on_the_gpu() {
+    formulas_render_on_the_gpu(|_, _| true);
 }
 
 #[test]
@@ -1476,4 +1504,41 @@ fn interpolation_hybrid_compiles_for_deep_zoom() {
     assert!(prog.blend.is_some() && prog.sets_counts());
     prog.deep = Some([0.1, -0.2, 0.3]);
     validate(&rmb_gpu::codegen::march_shader(&prog), "interpolation hybrid (deep)");
+}
+
+#[test]
+fn gpu_matches_cpu_with_the_sky() {
+    use rmb_core::compose::{Primitive, SceneObject, Shape, Transform};
+    use rmb_core::sky::SunPlacement;
+    let p = |x: f64, y: f64, z: f64| rmb_core::v3(x, y, z);
+    let mut scene = Scene::default();
+    scene.lighting.ao_mode = rmb_core::scene::AoMode::Fast;
+    scene.background.mode = rmb_core::scene::BackgroundMode::Sky;
+    scene.camera.position = p(3.0, -3.0, 0.4);
+    scene.camera.look_at(p(0.0, 0.0, 0.5), p(0.0, 0.0, 1.0));
+    let render = |mut s: Scene| {
+        rmb_core::sky::sync_sun(&mut s);
+        parity(s);
+    };
+    // Afternoon, and a low sun (large disk) behind the bulb.
+    render(scene.clone());
+    let mut low = scene.clone();
+    (low.sky.placement, low.sky.azimuth, low.sky.elevation, low.sky.sun_size) = (SunPlacement::Manual, 140.0, 3.0, 6.0);
+    render(low.clone());
+    // Fog colored by the sky's air (not by the sun disk behind the bulb).
+    let mut foggy = low.clone();
+    (foggy.fog.density, foggy.fog.from_background) = (0.2, true);
+    render(foggy);
+    // Mars at sunset.
+    low.sky.apply_preset("Mars");
+    render(low);
+    // Night: bright stars.
+    let mut night = scene.clone();
+    (night.sky.hour, night.sky.stars, night.sky.star_brightness) = (0.5, 1.0, 20.0);
+    render(night);
+    // The sea reflects the sky.
+    let mut sea = scene;
+    sea.sky.hour = 18.5;
+    sea.objects = vec![SceneObject { name: "Sea".into(), shape: Shape::Primitive(Primitive::water()), transform: Transform { position: p(0.0, 0.0, -1.0), ..Default::default() }, ..Default::default() }];
+    render(sea);
 }

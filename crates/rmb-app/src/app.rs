@@ -909,6 +909,9 @@ impl eframe::App for App {
             }
         }
 
+        // The sky's sun drives light 1 (direction, color, intensity), so the light editor,
+        // gizmos and lens flares see the same light as the renders.
+        rmb_core::sky::sync_sun(&mut self.doc.scene);
         // One undo step per finished edit: not while a button is held or the view moves.
         let busy = ctx.input(|i| i.pointer.any_down()) || self.view.navigating();
         if !busy {

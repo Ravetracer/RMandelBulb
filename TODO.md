@@ -196,7 +196,7 @@ alien planets are possible too. At most one water, one seabed, one landscape and
 per scene.
 
 - [x] One water and one seabed per scene (the app offers no second one, no duplicate)
-- [ ] Sky: an atmosphere around the scene (sun position, time of day, scattering colors
+- [x] Sky: an atmosphere around the scene (sun position, time of day, scattering colors
       from Earth-like to alien), as the background and the horizon behind the water
 - [ ] Volumetric clouds in the sky: blue sky with fair-weather clouds, overcast, dark
       storm clouds; coverage, density, height, wind (moving in animations)

@@ -238,6 +238,26 @@ Example scene: `vr-panorama.rmb` (inside the Amazing Box).
 For planetarium domes, use *Fisheye circle* with a fisheye angle of 180° and a square image;
 for VR180, *Panorama 180°* with *Side by side*.
 
+## A sunset over the sea
+
+Example scene: `sunset-sea.rmb`.
+
+1. In **Effects › Background**, choose **Sky**. The preset *Earth clear* and the sun by
+   **Time of day** are the defaults; **Sun lights the scene** makes light 1 the sun.
+2. Drag **Time** toward the evening (about 19:30 at the default latitude and day): the
+   sun sinks, the sky turns orange near it and blue-violet above, the light on the fractal
+   turns warm and weak.
+3. Add a sea: **+** next to the SCENE title › *Water*. Move it below the fractal, so it does not
+   touch it (no shore waves).
+4. Turn the camera so the sun stands beside the fractal, low over the water.
+5. In **Fog**, set a little density (0.02) and **Background color**: the sea melts into the
+   sky at the horizon.
+
+![The Mandelbulb over the sea at sunset](images/howto-sunset-sea.jpg)
+
+Try the *Mars* preset at the same time for a blue sunset, or **Height** below 0 (Manual
+placement) for the stars.
+
 ## Grow your own plant with an L-system
 
 1. Select the seabed (add one with **+ › Seabed** if the scene has none) and open its
