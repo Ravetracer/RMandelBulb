@@ -325,10 +325,15 @@ pub fn view_ray(scene: &Scene, fx: f64, fy: f64, width: u32, height: u32) -> Opt
 impl Frame {
     pub fn new(scene: &Scene, width: u32, height: u32) -> Frame {
         let tan_half = scene.camera.tan_half_fov();
+        // Only the sky lights the scene: the sun (light 1) stays, the other lights are left out.
+        let sky_only = scene.background.mode == crate::scene::BackgroundMode::Sky && scene.sky.sun_light && scene.sky.sky_only;
         let lights = scene
             .lighting
             .lights
             .iter()
+            .enumerate()
+            .filter(|(i, _)| !sky_only || *i == 0)
+            .map(|(_, l)| l)
             .filter(|l| l.enabled && (l.intensity > 0.0 || l.visible))
             .take(crate::scene::MAX_LIGHTS)
             .map(|l| FrameLight {

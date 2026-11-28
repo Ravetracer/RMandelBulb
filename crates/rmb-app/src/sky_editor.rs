@@ -76,6 +76,8 @@ pub fn show(ui: &mut Ui, sky: &mut Sky) {
         widgets::checkbox(ui, "Sun lights the scene", "Light 1 follows the sun: direction, color (redder when low) and intensity; the ambient light takes the colors of the sky and the ground (its Amount in the Light tab scales it; 1 = the sky's brightness). Light 1 and the ambient colors are then set by the sky", &mut sky.sun_light);
         if sky.sun_light {
             widgets::slider_log(ui, "Sunlight", "Intensity of light 1 relative to the sun's brightness", &mut sky.sun_light_strength, 0.0..=4.0, d.sun_light_strength);
+            widgets::checkbox(ui, "Environment light", "The sky lights the scene like an HDRI image: sky and clouds from every direction (a sunset glow from its side, the blue zenith from above, a cloud bank where it stands). Off: two colors, sky above and ground below", &mut sky.environment);
+            widgets::checkbox(ui, "Only the sky", "Only the sky lights the scene: the sun, the sky's light and lightning. Your other lights are left out of renders (not deleted)", &mut sky.sky_only);
         }
     });
 }
@@ -116,6 +118,7 @@ fn clouds(ui: &mut Ui, c: &mut rmb_core::clouds::Clouds) {
         widgets::slider_log(ui, "Wind speed", "How fast the clouds drift in animations (world units per second)", &mut c.wind_speed, 0.0..=10.0, d.wind_speed);
         widgets::slider_log(ui, "Evolution", "How fast the clouds change their shape in animations", &mut c.evolution, 0.0..=4.0, d.evolution);
         widgets::slider_log(ui, "Reach", "How far the cloud layer is drawn in detail (world units); beyond it a distant deck closes the horizon as much as the coverage says", &mut c.reach, 10.0..=5000.0, d.reach);
+        widgets::slider_log(ui, "Planet radius", "Radius of the planet in world units: the cloud layer curves down with the ground, so distant clouds sink to the horizon (0 = flat)", &mut c.planet_radius, 0.0..=1_000_000.0, d.planet_radius);
         widgets::checkbox(ui, "Shadows", "The clouds shade the scene from the sun (light 1, when the sun lights the scene)", &mut c.shadows);
     });
 }

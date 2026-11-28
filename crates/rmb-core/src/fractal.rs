@@ -524,6 +524,15 @@ impl Program {
         }
     }
 
+    /// The open sea for rays that run out of steps above it (`render::cpu`, march.wgsl
+    /// `sea_hit`): a point of the first water object's mean plane, its up axis and the
+    /// object's number in `Orbit::object` (index + 1).
+    pub fn sea_plane(&self) -> Option<(V3, V3, u32)> {
+        let (j, o) = self.objects.iter().enumerate().find(|(_, o)| matches!(o.shape, ObjectShape::Primitive(WATER_KIND, _)))?;
+        let up = crate::math::v3(o.inv[2][0], o.inv[2][1], o.inv[2][2]);
+        (up.length() > 1e-12).then(|| (o.pos, up.normalize(), j as u32 + 1))
+    }
+
     /// The water surfaces among the objects (they reflect by themselves).
     pub fn has_water(&self) -> bool {
         self.objects.iter().any(|o| matches!(o.shape, ObjectShape::Primitive(WATER_KIND, _)))

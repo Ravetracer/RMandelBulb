@@ -201,7 +201,7 @@ per scene.
 - [x] Volumetric clouds in the sky: blue sky with fair-weather clouds, overcast, dark
       storm clouds; coverage, density, height, wind (moving in animations)
 - [x] Thunderstorms: lightning bolts and flashes that light the clouds and the scene
-- [ ] The sky lights the scene like an HDRI box image (sky and clouds as ambient and
+- [x] The sky lights the scene like an HDRI box image (sky and clouds as ambient and
       reflection light, the sun as the main light), optional instead of the added lights
 - [ ] Weather: rain (streaks, splashes on the water and the ground, wet surfaces, drops on
       the lens), snow (flakes, snow cover), mist, hail; amounts and colors configurable

@@ -29,6 +29,7 @@ pub mod scene;
 pub mod sky;
 pub mod clouds;
 pub mod storm;
+pub mod sky_env;
 pub mod texture;
 pub mod video;
 pub mod voxel_export;

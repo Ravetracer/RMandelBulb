@@ -132,7 +132,8 @@ stand upright along their own z axis.
 The water is an ocean surface made of many waves, from long swells down to small ripples.
 They run around the wind direction (small ones spread wider), long waves faster than short
 ones as on the sea, and their crests are pulled sharp. Over large distances the crests bend
-and the sea gets calmer and rougher in turns, so a wide view does not repeat. It reflects the sky and the scene by itself, like real water: little when you look
+and the sea gets calmer and rougher in turns, so a wide view does not repeat. The sea reaches the horizon: rays that skim it so flatly that the ray marcher would need
+too many steps meet its mean level directly. It reflects the sky and the scene by itself, like real water: little when you look
 straight down, almost a mirror at grazing angles. The material's **Reflection** (Color tab)
 is not needed for it, and the rest of the scene keeps its own setting.
 

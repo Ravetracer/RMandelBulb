@@ -562,6 +562,12 @@ cargo clippy -j 8 --workspace --all-targets
   values) → `sync_sun`'s ambient colors.
 - Deep zoom: `shifted_scene` stores the shift in `Clouds::origin` (not saved); every cloud
   function adds it back (`CloudFrame::origin`, uniform `cloud[9]`).
+- Curvature: `Clouds::planet_radius` → `CloudFrame::curve` = 1 / 2R; `height` = z + (x² +
+  y²) × curve (paraboloid, f32-safe) for density, the noise's z and the profile; `slab` =
+  first stretch between the two curved heights from the roots of a t² + b t + c (`roots`,
+  stable form); cirrus the same. View steps t = t0 + len × x^pw with pw up to 2 for long
+  paths (`size` in `cloud[5].w`, curve in `cloud[9].w`). Storm bolts start at the curved
+  base (`Chunk::split` per chunk).
 - Animation: phase `sky.clouds` (1 per second) → `Clouds::time`; wind offset = direction ×
   speed × time, `evolve` = evolution × time (detail z offset).
 - GPU uniform `cloud` (10 vec4, `renderer::clouds_gpu`). Cost (2026-11-28, laptop):
@@ -590,6 +596,27 @@ cargo clippy -j 8 --workspace --all-targets
   per chunk), uniform `storm` (`storm_gpu`). Phase `sky.storm` (1 per second) →
   `Storm::time`. Compile time: no measurable change. Test `gpu_matches_cpu_with_lightning`;
   example `sky_demo --storm`.
+
+## Sky environment light
+
+- `rmb-core/src/sky_env.rs`: `bake` = radiance map 64 × 32 (equirectangular: x around from
+  +x, y from zenith to nadir; `sky::air` through `clouds::march` from the world origin, no
+  sun disk) + irradiance map 16 × 8 (cosine-weighted mean radiance around each normal, solid
+  angle per row; same units as the hemisphere colors). `for_scene` caches on the sky and
+  cloud frame values. `active` = Sky background + `sun_light` + `Sky::environment`.
+- Use: classic ambient `mix(ground, sky, hemi) + irradiance(n)`; in environment mode
+  `sync_sun` writes only the lightning fill into the ambient colors (so the mix carries the
+  flash). Path tracing `environment(d)` adds `radiance(d)`; `water_top` adds
+  `irradiance(up)`. Background-image ambient still overrides. GPU: maps in `lut` from
+  `LUT_ENV` / `LUT_IRR` (bolts after them, `LUT_BOLTS`), uniform `env[0]`, `env_lookup`.
+- `Sky::sky_only`: `render::Frame::new` keeps only light 1 (+ lightning).
+
+## Sea to the horizon
+
+- `Program::sea_plane` (first water object: position, up axis, number). `Shader::sea_hit` /
+  march.wgsl after `march_ray`: a ray outside the water that found nothing, above the plane
+  and going down, hits the mean plane; the orbit is made by hand (object number, shore 1e6)
+  so no extra fractal call site is compiled. Uniform `env[1..2]`.
 
 ## Light through glass
 

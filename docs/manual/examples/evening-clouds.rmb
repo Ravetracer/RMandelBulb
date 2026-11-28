@@ -276,14 +276,14 @@
     ],
     "ambient": 1.0,
     "sky_color": [
-      0.09131693,
-      0.10341657,
-      0.12529248
+      0.0,
+      0.0,
+      0.0
     ],
     "ground_color": [
-      0.028961081,
-      0.018831631,
-      0.010206212
+      0.0,
+      0.0,
+      0.0
     ],
     "ao_mode": "Raytraced",
     "ao_strength": 0.9,
@@ -643,6 +643,7 @@
               "bubbles": 0.2,
               "bubble_size": 0.012,
               "bubble_speed": 0.25,
+              "bubble_rim": 0.35,
               "bubble_source": "Everywhere",
               "vent_spacing": 1.0,
               "plume_width": 0.08,
@@ -782,6 +783,8 @@
     "star_brightness": 1.0,
     "sun_light": true,
     "sun_light_strength": 1.0,
+    "environment": true,
+    "sky_only": false,
     "day_speed": 0.0,
     "clouds": {
       "enabled": true,
@@ -803,7 +806,33 @@
       ],
       "shadows": true,
       "cirrus": 0.25,
-      "reach": 200.0,
+      "reach": 1000.0,
+      "planet_radius": 25000.0,
+      "time": 0.0
+    },
+    "storm": {
+      "enabled": false,
+      "mode": "Random",
+      "rate": 8.0,
+      "seed": 1,
+      "distance_min": 8.0,
+      "distance_max": 40.0,
+      "direction": 40.0,
+      "distance": 18.0,
+      "variant": 1,
+      "stage": 0.0,
+      "cloud_flashes": 0.4,
+      "brightness": 1.0,
+      "color": [
+        0.78,
+        0.84,
+        1.0
+      ],
+      "branches": 0.6,
+      "width": 0.03,
+      "top": 6.0,
+      "ground": -1.0,
+      "scene_light": 1.0,
       "time": 0.0
     }
   }

@@ -63,6 +63,9 @@ pub struct Clouds {
     pub cirrus: f64,
     /// How far the clouds reach (world units); far clouds fade into the horizon.
     pub reach: f64,
+    /// Radius of the planet (world units; 0 = flat): the layer curves down with the ground,
+    /// so distant clouds sink to the horizon.
+    pub planet_radius: f64,
     /// The clouds' clock (seconds; advanced in animations).
     pub time: f64,
     /// World position of the scene's origin (set by `render::shifted_scene` for the deep
@@ -89,7 +92,8 @@ impl Default for Clouds {
             tint: [1.0; 3],
             shadows: true,
             cirrus: 0.0,
-            reach: 200.0,
+            reach: 1000.0,
+            planet_radius: 25_000.0,
             time: 0.0,
             origin: [0.0; 3],
         };
@@ -249,6 +253,8 @@ pub struct CloudFrame {
     pub detail_scale: f64,
     /// Extinction per world unit at density 1.
     pub sigma: f64,
+    /// Typical cloud size (world units).
+    pub size: f64,
     /// First step of the light march (it doubles; the march spans about 1.6 cloud sizes or
     /// layer thicknesses, whichever is smaller, so a low sun still reaches the clouds).
     pub light_step: f64,
@@ -269,6 +275,8 @@ pub struct CloudFrame {
     pub tint: [f64; 3],
     /// Added to every position to get world positions (deep zoom shift).
     pub origin: V3,
+    /// Curvature 1 / (2 × planet radius): height above the ground = z + (x² + y²) × curve.
+    pub curve: f64,
 }
 
 impl CloudFrame {
@@ -298,6 +306,7 @@ impl CloudFrame {
             cover_scale: n / (size * 12.0),
             detail_scale: n / size,
             sigma: c.density.max(0.0) * EXTINCTION / size,
+            size,
             light_step: size.min(thick) * 0.025,
             wind: [wa.cos() * c.wind_speed * c.time, wa.sin() * c.wind_speed * c.time],
             evolve: c.evolution * c.time,
@@ -313,6 +322,7 @@ impl CloudFrame {
             amb_down: down,
             tint: c.tint.map(|t| t as f64 * albedo),
             origin: V3::from_array(c.origin),
+            curve: if c.planet_radius > 0.0 { 0.5 / c.planet_radius } else { 0.0 },
         }
     }
 }
@@ -327,13 +337,19 @@ fn profile(h: f64, kind: f64) -> f64 {
 
 /// Cloud density (0..) at the world point `p`; `fine` adds the detail erosion (view rays),
 /// without it the cheaper shape only (light and shadow rays).
+/// Height above the curved ground of the world point `p`.
+fn height(cf: &CloudFrame, p: V3) -> f64 {
+    p.z + (p.x * p.x + p.y * p.y) * cf.curve
+}
+
 pub fn density(cf: &CloudFrame, p: V3, fine: bool) -> f64 {
     let p = p + cf.origin;
-    let h = (p.z - cf.base) / (cf.top - cf.base);
+    let hz = height(cf, p);
+    let h = (hz - cf.base) / (cf.top - cf.base);
     if h <= 0.0 || h >= 1.0 || cf.coverage <= 0.0 {
         return 0.0;
     }
-    let q = v3(p.x - cf.wind[0], p.y - cf.wind[1], p.z);
+    let q = v3(p.x - cf.wind[0], p.y - cf.wind[1], hz);
     // Where clouds may form: the coverage, varied by a large-scale map.
     let cn = noise(v3(q.x * cf.cover_scale, q.y * cf.cover_scale, 7.5))[0];
     // Anvils: towering clouds spread at their top.
@@ -361,16 +377,50 @@ pub fn density(cf: &CloudFrame, p: V3, fine: bool) -> f64 {
     d
 }
 
-/// Distances along `d` from `o` where the ray is inside the slab between `lo` and `hi`
-/// heights, starting at 0 (`None`: never).
+/// The first stretch of the ray from `o` along `d` (t ≥ 0) between the curved heights `lo`
+/// and `hi` (`None`: never). The height along the ray is a parabola in t: a t² + b t + g0.
 fn slab(cf: &CloudFrame, o: V3, d: V3, lo: f64, hi: f64) -> Option<(f64, f64)> {
     let o = o + cf.origin;
-    if d.z.abs() < 1e-9 {
-        return (o.z > lo && o.z < hi).then_some((0.0, f64::MAX));
+    let a = cf.curve * (d.x * d.x + d.y * d.y);
+    let b = d.z + 2.0 * cf.curve * (o.x * d.x + o.y * d.y);
+    let g0 = height(cf, o);
+    let g = |t: f64| (a * t + b) * t + g0;
+    let mut ts = [0.0, f64::MAX, f64::MAX, f64::MAX, f64::MAX];
+    let mut n = 1;
+    for level in [lo, hi] {
+        for r in roots(a, b, g0 - level) {
+            if r > 0.0 {
+                ts[n] = r;
+                n += 1;
+            }
+        }
     }
-    let (a, b) = ((lo - o.z) / d.z, (hi - o.z) / d.z);
-    let (t0, t1) = (a.min(b).max(0.0), a.max(b));
-    (t1 > t0).then_some((t0, t1))
+    ts[..n].sort_by(|x, y| x.total_cmp(y));
+    for i in 0..n {
+        let (t0, t1) = (ts[i], if i + 1 < n { ts[i + 1] } else { f64::MAX });
+        let mid = if t1 == f64::MAX { t0 + 1.0 } else { 0.5 * (t0 + t1) };
+        let h = g(mid);
+        if h > lo && h < hi {
+            return Some((t0, t1));
+        }
+    }
+    None
+}
+
+/// Positive and negative roots of a t² + b t + c (`f64::MIN` for none; numerically stable).
+fn roots(a: f64, b: f64, c: f64) -> [f64; 2] {
+    if a.abs() < 1e-12 {
+        return [if b.abs() > 1e-12 { -c / b } else { f64::MIN }, f64::MIN];
+    }
+    let disc = b * b - 4.0 * a * c;
+    if disc < 0.0 {
+        return [f64::MIN; 2];
+    }
+    let q = -0.5 * (b + b.signum() * disc.sqrt());
+    if q == 0.0 {
+        return [0.0, f64::MIN];
+    }
+    [q / a, c / q]
 }
 
 /// Optical depth toward the sun from `p` (growing steps through the slab, shape only).
@@ -396,9 +446,11 @@ pub fn march(cf: &CloudFrame, o: V3, d: V3, t_end: f64, jitter: f64, air: [f64; 
     // Cirrus behind everything (only on rays to the open sky).
     let (mut keep, mut add) = (1.0, [0.0; 3]);
     if cf.cirrus > 0.0 && t_end == f64::MAX && d.z > 1e-4 {
-        let t = (cf.cirrus_height - o.z - cf.origin.z) / d.z;
-        if t > 0.0 {
-            let q = o + cf.origin + d * t;
+        let ow = o + cf.origin;
+        let [r0, r1] = roots(cf.curve * (d.x * d.x + d.y * d.y), d.z + 2.0 * cf.curve * (ow.x * d.x + ow.y * d.y), height(cf, ow) - cf.cirrus_height);
+        let t = [r0, r1].into_iter().filter(|r| *r > 0.0).fold(f64::MAX, f64::min);
+        if t < f64::MAX {
+            let q = ow + d * t;
             let s = cf.shape_scale * 0.35;
             let n = noise(v3((q.x - cf.wind[0] * 2.0) * s * 0.4, (q.y - cf.wind[1] * 2.0) * s * 1.6, 3.5 + cf.evolve * 0.3));
             let streak = smoothstep(0.45, 0.8, n[1] * 0.7 + n[2] * 0.3);
@@ -414,7 +466,7 @@ pub fn march(cf: &CloudFrame, o: V3, d: V3, t_end: f64, jitter: f64, air: [f64; 
     let deck = ((cf.coverage - 0.15) / 0.85).clamp(0.0, 1.0);
     // Under a closed deck the air itself lies in the shade.
     let air = air.map(|a| a * (1.0 - 0.7 * deck));
-    if open && d.z < 0.0 && o.z + cf.origin.z < cf.base {
+    if open && d.z < 0.0 && height(cf, o + cf.origin) < cf.base {
         let shade = 1.0 - 0.7 * deck;
         return (keep * shade, add.map(|a| a * shade));
     }
@@ -433,12 +485,17 @@ pub fn march(cf: &CloudFrame, o: V3, d: V3, t_end: f64, jitter: f64, air: [f64; 
     if t1 <= t0 {
         return (keep, add);
     }
-    let dt = (t1 - t0) / STEPS as f64;
+    // Long paths (toward the horizon) put their steps closer near the start: t ∝ x^pw.
+    let len = t1 - t0;
+    let pw = 1.0 + (len / (20.0 * cf.size)).clamp(0.0, 1.0);
+    let n = STEPS as f64;
     let mut trans = 1.0;
     let mut light = [0.0; 3];
     let (mut wsum, mut tsum) = (0.0, 0.0);
     for i in 0..STEPS {
-        let t = t0 + (i as f64 + jitter) * dt;
+        let x = (i as f64 + jitter) / n;
+        let t = t0 + len * x.powf(pw);
+        let dt = len * (((i as f64 + 1.0) / n).powf(pw) - (i as f64 / n).powf(pw));
         let p = o + d * t;
         let dn = density(cf, p, true);
         if dn <= 1e-4 {
@@ -455,7 +512,7 @@ pub fn march(cf: &CloudFrame, o: V3, d: V3, t_end: f64, jitter: f64, air: [f64; 
         // Powder: edges seen away from the sun stay darker.
         let powder = 1.0 - (-2.0 * ld).exp();
         let sun = sun * (powder + (1.0 - powder) * (0.5 + 0.5 * mu));
-        let h = (p.z - cf.base) / (cf.top - cf.base);
+        let h = (height(cf, p + cf.origin) - cf.base) / (cf.top - cf.base);
         let a = (-cf.sigma * dn * dt).exp();
         let w = trans * (1.0 - a);
         let fl = if flash.is_empty() { [0.0; 3] } else { crate::storm::cloud_light(flash, p, cf.top - cf.base, cf.sigma) };
@@ -587,7 +644,8 @@ mod tests {
     #[test]
     fn the_slab_is_found_from_below_inside_and_above() {
         let (lo, hi) = (6.0, 9.0);
-        let cf = frame(0.5);
+        let mut cf = frame(0.5);
+        cf.curve = 0.0;
         let up = v3(0.0, 0.6, 0.8);
         let (a, b) = slab(&cf, v3(0.0, 0.0, 0.0), up, lo, hi).unwrap();
         assert!((a - 7.5).abs() < 1e-9 && (b - 11.25).abs() < 1e-9);
@@ -596,6 +654,45 @@ mod tests {
         assert!(slab(&cf, v3(0.0, 0.0, 10.0), up, lo, hi).is_none());
         assert!(slab(&cf, v3(0.0, 0.0, 10.0), -up, lo, hi).is_some());
         assert!(slab(&cf, v3(0.0, 0.0, 0.0), v3(1.0, 0.0, 0.0), lo, hi).is_none());
+    }
+
+    #[test]
+    fn the_curved_layer_matches_a_walk_and_reaches_the_horizon() {
+        let cf = frame(0.5);
+        assert!(cf.curve > 0.0);
+        let (lo, hi) = (cf.base, cf.top);
+        for (o, d) in [(v3(0.0, 0.0, 0.0), v3(0.7, 0.1, 0.05)), (v3(3.0, -2.0, 7.0), v3(0.2, 0.9, 0.0)), (v3(0.0, 0.0, 12.0), v3(0.5, 0.5, -0.3)), (v3(0.0, 0.0, 0.3), v3(1.0, 0.0, 0.0))] {
+            let d = d.normalize();
+            let span = slab(&cf, o, d, lo, hi);
+            // Walk: the first stretch inside the layer.
+            let (mut first, mut last) = (None, None);
+            let mut t = 0.0;
+            while t < 3000.0 {
+                let h = height(&cf, o + d * t);
+                let inside = h > lo && h < hi;
+                if inside && first.is_none() {
+                    first = Some(t);
+                }
+                if !inside && first.is_some() {
+                    last = Some(t);
+                    break;
+                }
+                t += 0.05;
+            }
+            match (span, first) {
+                (Some((a, b)), Some(f)) => {
+                    assert!((a - f).abs() < 0.1, "{o:?} {d:?}: start {a} vs {f}");
+                    if let Some(l) = last {
+                        assert!((b - l).abs() < 0.1, "{o:?} {d:?}: end {b} vs {l}");
+                    }
+                }
+                (None, None) => {}
+                other => panic!("{o:?} {d:?}: {other:?}"),
+            }
+        }
+        // A level ray from near the ground reaches the cloud base (flat: never).
+        let (a, _) = slab(&cf, v3(0.0, 0.0, 0.3), v3(1.0, 0.0, 0.0), lo, hi).expect("curved layer at the horizon");
+        assert!(a < 1000.0, "{a}");
     }
 
     #[test]

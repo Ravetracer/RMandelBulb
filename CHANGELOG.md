@@ -12,6 +12,14 @@ and the release workflow uses it as the release notes.
 
 ## [Unreleased]
 
+- The sky as environment light (Sky › Environment light, on with "Sun lights the scene"):
+  the sky and its clouds light the scene from every direction like an HDRI image (baked
+  into a small panorama and an irradiance map); path tracing's bounces see it. "Only the
+  sky" leaves the other lights out of renders.
+- The sea reaches the horizon: grazing rays that run out of march steps meet the sea's
+  mean level.
+- Clouds: the layer curves with the planet (Planet radius), so distant clouds sink to the
+  horizon; default reach 1000 with steps spaced closer near the camera.
 - Thunderstorms (Effects › Background › Sky › Thunderstorm): lightning bolts from the cloud
   base to the ground or the sea (jagged, branching, flickering with several strokes) and
   flashes inside the clouds. Strikes light the clouds from inside and the scene (a line

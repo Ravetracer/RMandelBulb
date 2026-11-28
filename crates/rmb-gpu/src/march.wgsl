@@ -119,13 +119,18 @@ struct U {
     // The clouds (clouds::CloudFrame, switch CLOUDS): [0] base, top, reach, extinction;
     // [1] texels per unit of shape, coverage, detail, first light step; [2] wind offset x, y,
     // evolution offset, coverage; [3] type, detail, cirrus, cirrus height; [4] sun, w: the
-    // clouds shade light 1; [5] sun light; [6] ambient above; [7] below; [8] tint × albedo;
-    // [9] world position of the origin (deep zoom).
+    // clouds shade light 1; [5] sun light, w: cloud size; [6] ambient above; [7] below;
+    // [8] tint × albedo; [9] world position of the origin (deep zoom), w: curvature
+    // 1 / (2 × planet radius).
     cloud: array<vec4<f32>, 10>,
     // Lightning (storm::StormFrame, switch LIGHTNING): [0] LUT index of the bolt chunks,
     // chunk count, cloud base (bolt parts above glow behind the clouds), halo width; [1] color
     // × brightness, w: lights inside the clouds; [2], [4] their positions; [3], [5] colors.
     storm: array<vec4<f32>, 6>,
+    // [0] the sky's environment light: on, LUT index of the radiance map (64 × 32), of the
+    // irradiance map (16 × 8); [1] a point of the open sea's mean plane, w: there is one;
+    // [2] its up axis, w: the water object's number (Orbit.obj).
+    env: array<vec4<f32>, 4>,
 }
 
 @group(0) @binding(0) var<uniform> u: U;
@@ -2842,17 +2847,23 @@ fn cloud_profile(h: f32, kind: f32) -> f32 {
     return cumulus + (nimbus - cumulus) * (kind - 1.0);
 }
 
+// Mirrors clouds::height: height above the curved ground of a world point.
+fn cloud_height(p: vec3<f32>) -> f32 {
+    return p.z + (p.x * p.x + p.y * p.y) * u.cloud[9].w;
+}
+
 // Mirrors clouds::density (`p` relative to the origin, u.cloud[9]).
 fn cloud_density(vb: u32, pl: vec3<f32>, fine: bool) -> f32 {
     let p = pl + u.cloud[9].xyz;
     let base = u.cloud[0].x;
     let top = u.cloud[0].y;
-    let h = (p.z - base) / (top - base);
+    let hz = cloud_height(p);
+    let h = (hz - base) / (top - base);
     let coverage = u.cloud[2].w;
     if (h <= 0.0 || h >= 1.0 || coverage <= 0.0) {
         return 0.0;
     }
-    let q = vec3<f32>(p.x - u.cloud[2].x, p.y - u.cloud[2].y, p.z);
+    let q = vec3<f32>(p.x - u.cloud[2].x, p.y - u.cloud[2].y, hz);
     let cs = u.cloud[1].y;
     let cn = cloud_noise(vb, vec3<f32>(q.x * cs, q.y * cs, 7.5)).x;
     let kind = u.cloud[3].x;
@@ -2880,20 +2891,67 @@ fn cloud_density(vb: u32, pl: vec3<f32>, fine: bool) -> f32 {
     return d;
 }
 
-// Mirrors clouds::slab: distances inside the cloud layer (x > y: none).
-fn cloud_slab(o: vec3<f32>, d: vec3<f32>) -> vec2<f32> {
-    let oz = o.z + u.cloud[9].z;
+// Mirrors clouds::roots: roots of a t² + b t + c (-CLOUD_OPEN for none).
+fn cloud_roots(a: f32, b: f32, c: f32) -> vec2<f32> {
+    if (abs(a) < 1.0e-12) {
+        if (abs(b) > 1.0e-12) {
+            return vec2<f32>(-c / b, -CLOUD_OPEN);
+        }
+        return vec2<f32>(-CLOUD_OPEN);
+    }
+    let disc = b * b - 4.0 * a * c;
+    if (disc < 0.0) {
+        return vec2<f32>(-CLOUD_OPEN);
+    }
+    let q = -0.5 * (b + select(-1.0, 1.0, b >= 0.0) * sqrt(disc));
+    if (q == 0.0) {
+        return vec2<f32>(0.0, -CLOUD_OPEN);
+    }
+    return vec2<f32>(q / a, c / q);
+}
+
+// Mirrors clouds::slab: the first stretch of the ray inside the curved layer (x > y: none).
+fn cloud_slab(ol: vec3<f32>, d: vec3<f32>) -> vec2<f32> {
+    let o = ol + u.cloud[9].xyz;
     let lo = u.cloud[0].x;
     let hi = u.cloud[0].y;
-    if (abs(d.z) < 1.0e-9) {
-        if (oz > lo && oz < hi) {
-            return vec2<f32>(0.0, CLOUD_OPEN);
+    let cv = u.cloud[9].w;
+    let a = cv * (d.x * d.x + d.y * d.y);
+    let b = d.z + 2.0 * cv * (o.x * d.x + o.y * d.y);
+    let g0 = cloud_height(o);
+    var ts = array<f32, 5>(0.0, CLOUD_OPEN, CLOUD_OPEN, CLOUD_OPEN, CLOUD_OPEN);
+    var n = 1u;
+    let r_lo = cloud_roots(a, b, g0 - lo);
+    let r_hi = cloud_roots(a, b, g0 - hi);
+    let all = array<f32, 4>(r_lo.x, r_lo.y, r_hi.x, r_hi.y);
+    for (var i = 0u; i < 4u; i++) {
+        if (all[i] > 0.0) {
+            // Insertion into the sorted list.
+            var j = n;
+            while (j > 0u && ts[j - 1u] > all[i]) {
+                ts[j] = ts[j - 1u];
+                j -= 1u;
+            }
+            ts[j] = all[i];
+            n += 1u;
         }
-        return vec2<f32>(1.0, 0.0);
     }
-    let a = (lo - oz) / d.z;
-    let b = (hi - oz) / d.z;
-    return vec2<f32>(max(min(a, b), 0.0), max(a, b));
+    for (var i = 0u; i < n; i++) {
+        let t0 = ts[i];
+        var t1 = CLOUD_OPEN;
+        if (i + 1u < n) {
+            t1 = ts[i + 1u];
+        }
+        var mid = 0.5 * (t0 + t1);
+        if (t1 >= CLOUD_OPEN) {
+            mid = t0 + 1.0;
+        }
+        let hm = (a * mid + b) * mid + g0;
+        if (hm > lo && hm < hi) {
+            return vec2<f32>(t0, t1);
+        }
+    }
+    return vec2<f32>(1.0, 0.0);
 }
 
 fn cloud_light_depth(vb: u32, p: vec3<f32>) -> f32 {
@@ -2920,9 +2978,18 @@ fn cloud_march(o: vec3<f32>, d: vec3<f32>, t_end: f32, jitter: f32, air_in: vec3
     var add = vec3<f32>(0.0);
     let cirrus = u.cloud[3].z;
     if (cirrus > 0.0 && t_end >= CLOUD_OPEN && d.z > 1.0e-4) {
-        let t = (u.cloud[3].w - o.z - u.cloud[9].z) / d.z;
-        if (t > 0.0) {
-            let q = o + u.cloud[9].xyz + d * t;
+        let ow = o + u.cloud[9].xyz;
+        let cv = u.cloud[9].w;
+        let rr = cloud_roots(cv * (d.x * d.x + d.y * d.y), d.z + 2.0 * cv * (ow.x * d.x + ow.y * d.y), cloud_height(ow) - u.cloud[3].w);
+        var t = CLOUD_OPEN;
+        if (rr.x > 0.0) {
+            t = rr.x;
+        }
+        if (rr.y > 0.0) {
+            t = min(t, rr.y);
+        }
+        if (t < CLOUD_OPEN) {
+            let q = ow + d * t;
             let s = u.cloud[1].x * 0.35;
             let n = cloud_noise(vb, vec3<f32>((q.x - u.cloud[2].x * 2.0) * s * 0.4, (q.y - u.cloud[2].y * 2.0) * s * 1.6, 3.5 + u.cloud[2].z * 0.3));
             let streak = smoothstep(0.45, 0.8, n.y * 0.7 + n.z * 0.3);
@@ -2934,7 +3001,7 @@ fn cloud_march(o: vec3<f32>, d: vec3<f32>, t_end: f32, jitter: f32, air_in: vec3
     let open = t_end >= CLOUD_OPEN;
     let deck = clamp((u.cloud[2].w - 0.15) / 0.85, 0.0, 1.0);
     let air = air_in * (1.0 - 0.7 * deck);
-    if (open && d.z < 0.0 && o.z + u.cloud[9].z < u.cloud[0].x) {
+    if (open && d.z < 0.0 && cloud_height(o + u.cloud[9].xyz) < u.cloud[0].x) {
         let shade = 1.0 - 0.7 * deck;
         return vec4<f32>(add * shade, keep * shade);
     }
@@ -2957,7 +3024,10 @@ fn cloud_march(o: vec3<f32>, d: vec3<f32>, t_end: f32, jitter: f32, air_in: vec3
     if (t1 <= t0) {
         return vec4<f32>(add, keep);
     }
-    let dt = (t1 - t0) / f32(CLOUD_STEPS);
+    // Long paths put their steps closer near the start (mirrors clouds::march).
+    let len = t1 - t0;
+    let pw = 1.0 + clamp(len / (20.0 * u.cloud[5].w), 0.0, 1.0);
+    let ns = f32(CLOUD_STEPS);
     let base = u.cloud[0].x;
     let top = u.cloud[0].y;
     let sigma = u.cloud[0].w;
@@ -2966,7 +3036,9 @@ fn cloud_march(o: vec3<f32>, d: vec3<f32>, t_end: f32, jitter: f32, air_in: vec3
     var wsum = 0.0;
     var tsum = 0.0;
     for (var i = 0u; i < CLOUD_STEPS; i++) {
-        let t = t0 + (f32(i) + jitter) * dt;
+        let x = (f32(i) + jitter) / ns;
+        let t = t0 + len * pow(x, pw);
+        let dt = len * (pow((f32(i) + 1.0) / ns, pw) - pow(f32(i) / ns, pw));
         let p = o + d * t;
         let dn = cloud_density(vb, p, true);
         if (dn <= 1.0e-4) {
@@ -2981,7 +3053,7 @@ fn cloud_march(o: vec3<f32>, d: vec3<f32>, t_end: f32, jitter: f32, air_in: vec3
         }
         let powder = 1.0 - exp(-2.0 * ld);
         sun *= powder + (1.0 - powder) * (0.5 + 0.5 * mu);
-        let h = (p.z + u.cloud[9].z - base) / (top - base);
+        let h = (cloud_height(p + u.cloud[9].xyz) - base) / (top - base);
         let a = exp(-sigma * dn * dt);
         let w = trans * (1.0 - a);
         let amb = mix(u.cloud[7].xyz, u.cloud[6].xyz, h);
@@ -3054,7 +3126,6 @@ fn bolt_glow(o: vec3<f32>, d: vec3<f32>, t_end: f32) -> BoltGlow {
     var above = 0.0;
     let base = u32(u.storm[0].x);
     let chunks = u32(u.storm[0].y);
-    let split = u.storm[0].z;
     let hw = u.storm[0].w;
     let pixel = u.cam_up.w;
     for (var c = 0u; c < chunks; c++) {
@@ -3065,6 +3136,7 @@ fn bolt_glow(o: vec3<f32>, d: vec3<f32>, t_end: f32) -> BoltGlow {
             continue;
         }
         let n = u32(lut[h + 1u].x);
+        let split_c = lut[h + 1u].y;
         for (var k = 0u; k < n; k++) {
             let ga = lut[h + 2u + 2u * k];
             let gb = lut[h + 3u + 2u * k];
@@ -3073,7 +3145,7 @@ fn bolt_glow(o: vec3<f32>, d: vec3<f32>, t_end: f32) -> BoltGlow {
             let core = ga.w / wc * exp(-(rs.x / wc) * (rs.x / wc)) * BOLT_CORE;
             let halo = BOLT_HALO / (1.0 + (rs.x / hw) * (rs.x / hw));
             let v = (core + halo) * gb.w;
-            if (o.z + d.z * rs.y > split) {
+            if (o.z + d.z * rs.y > split_c) {
                 above = max(above, v);
             } else {
                 below = max(below, v);
@@ -4205,7 +4277,7 @@ fn water_drops(a: vec3<f32>, d: vec3<f32>, len: f32, c_in: vec3<f32>) -> vec3<f3
 
 // Mirrors Shader::water_top: light from above that lights the water at its surface.
 fn water_top(a: vec3<f32>) -> vec3<f32> {
-    var top = u.sky.xyz * u.ao.w;
+    var top = (u.sky.xyz + env_irradiance(u.wmed[3].xyz)) * u.ao.w;
     for (var i = 0u; i < u.size.w; i++) {
         let ls = light_sample(i, a, vec2<f32>(0.5));
         top += u.lights[i].color.xyz * (max(dot(ls.dir, u.wmed[3].xyz), 0.0) * ls.atten);
@@ -4280,8 +4352,41 @@ fn path_on() -> bool {
 }
 
 // Mirrors Shader::environment: the light of the surroundings for path tracing.
+// Mirrors sky_env::lookup: bilinear in a w × h equirectangular map from LUT index `off`.
+fn env_lookup(off: u32, w: u32, h: u32, d: vec3<f32>) -> vec3<f32> {
+    var uu = atan2(d.y, d.x) / (2.0 * SKY_PI);
+    uu = uu - floor(uu);
+    let vv = (0.5 * SKY_PI - asin(clamp(d.z, -1.0, 1.0))) / SKY_PI;
+    let x = uu * f32(w) - 0.5;
+    let y = clamp(vv * f32(h) - 0.5, 0.0, f32(h) - 1.0);
+    let x0 = floor(x);
+    let y0 = floor(y);
+    let tx = x - x0;
+    let ty = y - y0;
+    let wi = i32(w);
+    let xa = u32(((i32(x0) % wi) + wi) % wi);
+    let xb = u32(((i32(x0) + 1) % wi + wi) % wi);
+    let ya = u32(clamp(i32(y0), 0, i32(h) - 1));
+    let yb = u32(clamp(i32(y0) + 1, 0, i32(h) - 1));
+    let a = mix(lut[off + ya * w + xa].xyz, lut[off + ya * w + xb].xyz, tx);
+    let b = mix(lut[off + yb * w + xa].xyz, lut[off + yb * w + xb].xyz, tx);
+    return mix(a, b, ty);
+}
+
+// The sky's environment: ambient light for a normal (mirrors sky_env::irradiance), 0 off.
+fn env_irradiance(n: vec3<f32>) -> vec3<f32> {
+    if (u.env[0].x < 0.5) {
+        return vec3<f32>(0.0);
+    }
+    return env_lookup(u32(u.env[0].z), 16u, 8u, n);
+}
+
 fn environment(d: vec3<f32>) -> vec3<f32> {
     var a = mix(u.ground.xyz, u.sky.xyz, dot(d, u.amb_up.xyz) * 0.5 + 0.5);
+    // Bounces see the sky's radiance (mirrors Shader::environment).
+    if (u.env[0].x > 0.5) {
+        a += env_lookup(u32(u.env[0].y), 64u, 32u, d);
+    }
     if (u.bg2.z > 0.5 && u.bg_rot[0].w > 0.5) {
         a = background_ambient(d);
     }
@@ -4323,6 +4428,33 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sx: f32, 
     haze_keep = 1.0;
     leave_steps = select(0u, LEAVE_STEPS, leave);
     var h = march_ray(o, d, t0, max_t, u.band.z, true, t_base <= 0.0 && !inside);
+    // Grazing rays over the open sea meet its mean plane (mirrors Shader::sea_hit).
+    if (WATER && !h.hit && !inside && !water && u.env[1].w > 0.5) {
+        let n = u.env[2].xyz;
+        let hh = dot(o - u.env[1].xyz, n);
+        let den = dot(d, n);
+        if (hh > 0.0 && den < -1.0e-9) {
+            let t = hh / -den;
+            if (t > t0) {
+                h.hit = true;
+                h.t = t;
+                h.eps = eps_at(t);
+                var ob: Orbit;
+                ob.de = 0.0;
+                ob.n = 0u;
+                ob.r2 = 0.0;
+                ob.r2_old = 0.0;
+                ob.trap = 0.0;
+                ob.c2 = 0.0;
+                ob.escaped = false;
+                ob.obj = u32(u.env[2].w + 0.5);
+                ob.shore = 1.0e6;
+                ob.pc = 0.0;
+                h.orbit = ob;
+                h.steps = 0u;
+            }
+        }
+    }
     leave_steps = 0u;
     pick_on = false;
     haze_on = false;
@@ -4486,7 +4618,8 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sx: f32, 
         // Lighting uses the bumped normal.
         n = n_bump;
         let hemi = dot(n, u.amb_up.xyz) * 0.5 + 0.5;
-        var amb = mix(u.ground.xyz, u.sky.xyz, hemi);
+        // The sky's environment from the direction of the normal (mirrors Shader::trace).
+        var amb = mix(u.ground.xyz, u.sky.xyz, hemi) + env_irradiance(n);
         if (u.bg2.z > 0.5 && u.bg_rot[0].w > 0.5) {
             let fi = clamp(fog_amount(u.cam_fwd.w), 0.0, 1.0);
             var keep = 1.0 - fi;

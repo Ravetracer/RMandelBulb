@@ -62,6 +62,8 @@ The sun is placed by **Time of day** (real solar geometry) or **Manual**:
 | **Stars**, **Star brightness** | How many stars show where the sky is dark, and how bright. |
 | **Sun lights the scene** | Light 1 follows the sun: its direction, its color (redder when low) and its intensity, which fades out at sunset. The ambient light takes the average light of the sky and the ground as its colors: shadows are filled bluish by day, warm at sunset, and the night is dark. Its **Amount** (Light tab) stays yours and scales this skylight; it is set to 1 (the sky's own brightness) when the sky starts lighting the scene. If the scene has no light, the sky adds light 1. The Light tab shows notes; these settings are then set by the sky. |
 | **Sunlight** | Intensity of light 1 relative to the sun. |
+| **Environment light** | The sky lights the scene like an HDRI image (on by default): see below. Off, the ambient light is two colors, the sky's average above and the ground's below. |
+| **Only the sky** | Only the sky lights the scene: the sun, the environment light and lightning. Your other lights are left out of renders but kept (the Light tab marks them). |
 
 With **Fog › Background color**, the fog takes the sky's air in each direction (without the
 sun disk and the stars): distant things fade into the horizon's color, and water melts into
@@ -98,8 +100,19 @@ size, wind and reach stay.
 | **Cirrus** | Thin high streaks above the clouds. |
 | **Wind direction**, **Wind speed** | Where the clouds drift in animations, and how fast (world units per second). |
 | **Evolution** | How fast the clouds change their shape in animations. |
-| **Reach** | How far the layer is drawn in detail. Beyond it a distant deck closes the horizon as far as the coverage says, and far clouds fade into the haze of the horizon. |
+| **Reach** | How far the layer is drawn in detail (default 1000). Beyond it a distant deck closes the horizon as far as the coverage says, and far clouds fade into the haze of the horizon. The steps are spaced closer near the camera, so near clouds keep their detail. |
+| **Planet radius** | The layer curves down with the planet's ground, like real clouds: toward the horizon they sink and pile up. 0 makes the layer flat. |
 | **Shadows** | The clouds shade the scene from the sun (light 1, when **Sun lights the scene** is on): moving shadows on the sea and the fractal, light shafts in the fog. |
+
+#### Environment light
+
+With **Environment light** on, the sky and its clouds light the scene from every direction,
+like an HDRI image: a sunset glow lights the faces toward it warm and bright, the zenith
+lights the tops blue, a bank of clouds dims the side where it stands. RMandelbulb3D renders
+the sky (without the sun disk: the sun stays light 1) into a small panorama around the
+scene's center and from it the light each surface direction receives. The ambient
+**Amount** (Light tab) scales it and ambient occlusion shades it; path tracing's bounces see
+the panorama itself. Reflections always show the real sky and clouds.
 
 With clouds, the skylight (ambient light) is the sky's light seen through them: an overcast
 sky lights the scene grey and dim, and the ground below the horizon lies in their shade.

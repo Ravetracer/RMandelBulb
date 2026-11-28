@@ -76,6 +76,8 @@ impl Inspector {
         // Placing helpers need the whole scene; they run after the controls.
         let mut place: Option<Place> = None;
         let sky_drives = scene.background.mode == BackgroundMode::Sky && scene.sky.sun_light;
+        let sky_only = sky_drives && scene.sky.sky_only;
+        let scene_env = rmb_core::sky_env::active(scene);
         let l = &mut scene.lighting;
         if widgets::section(ui, "Lights", false).open {
             ui.horizontal_wrapped(|ui| {
@@ -97,6 +99,9 @@ impl Inspector {
             });
             if self.light == 0 && sky_drives {
                 ui.label(RichText::new("Light 1 follows the sky's sun (Effects › Background); its direction, color and intensity are set there").size(theme::fs(11.0)).color(theme::TEXT_MUTED));
+            }
+            if self.light > 0 && sky_only {
+                ui.label(RichText::new("Left out of renders: only the sky lights the scene (Effects › Background › Only the sky)").size(theme::fs(11.0)).color(theme::WARN));
             }
             if let Some(li) = l.lights.get_mut(self.light) {
                 let dl = Light::default();
@@ -209,7 +214,8 @@ impl Inspector {
         }
         if sec.open {
             if sky_drives {
-                ui.label(RichText::new("Sky and ground colors follow the sky (Effects › Background); Amount scales it, 1 = the sky's brightness").size(theme::fs(11.0)).color(theme::TEXT_MUTED));
+                let text = if scene_env { "The ambient light comes from the sky's environment (Effects › Background); Amount scales it, 1 = the sky's brightness" } else { "Sky and ground colors follow the sky (Effects › Background); Amount scales it, 1 = the sky's brightness" };
+                ui.label(RichText::new(text).size(theme::fs(11.0)).color(theme::TEXT_MUTED));
             }
             widgets::grid(ui, "ambient", |ui| {
                 widgets::slider(ui, "Amount", "Light from the surroundings", &mut l.ambient, 0.0..=2.0, d.ambient);

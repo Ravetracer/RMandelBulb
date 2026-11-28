@@ -24,6 +24,8 @@ pub struct Shader<'a> {
     pub cloud_sun: bool,
     /// Active lightning (bolts, flashes).
     pub storm: Option<crate::storm::StormFrame>,
+    /// The sky as environment light (`sky_env`).
+    pub env: Option<std::sync::Arc<crate::sky_env::SkyEnv>>,
     /// The 16 × 8 copy of the background image for ambient light.
     pub bg_ambient: Option<std::sync::Arc<crate::maps::Map>>,
     /// Color map with its rotation matrix and average color (display values).
@@ -640,6 +642,7 @@ impl<'a> Shader<'a> {
             cloud_sun: clouds.is_some() && scene.sky.clouds.shadows && scene.sky.sun_light,
             clouds,
             storm: crate::storm::StormFrame::for_scene(scene),
+            env: crate::sky_env::for_scene(scene),
             bg_ambient: super::background_maps(scene).map(|(_, s, _)| s),
             color_map: crate::maps::get_any(&scene.material.color_map.image).map(|m| {
                 let avg = m.average();
@@ -686,6 +689,12 @@ impl<'a> Shader<'a> {
     fn water_top(&self, m: &MediumFrame, a: V3) -> [f64; 3] {
         let l = &self.scene.lighting;
         let mut top = l.sky_color.map(|c| c as f64 * l.ambient);
+        if let Some(env) = &self.env {
+            let e = crate::sky_env::irradiance(env, m.up);
+            for (t, e) in top.iter_mut().zip(e) {
+                *t += e * l.ambient;
+            }
+        }
         for li in &self.frame.lights {
             let (ldir, atten, _) = li.sample(a, 0.5, 0.5, self.scene.march.max_distance);
             let c = ldir.dot(m.up).max(0.0) * atten;
@@ -1132,6 +1141,19 @@ impl<'a> Shader<'a> {
         (n.normalize(), rough)
     }
 
+    /// Where a ray that found nothing meets the open sea's mean plane (only from above it,
+    /// going down): a water hit there, its orbit made by hand (the water object, far from any
+    /// shore), so no fractal is evaluated (march.wgsl `sea_hit`).
+    fn sea_hit(&self, o: V3, d: V3, t0: f64) -> Option<Hit> {
+        let (c, n, obj) = self.prog.sea_plane()?;
+        let (h, den) = ((o - c).dot(n), d.dot(n));
+        if h <= 0.0 || den >= -1e-9 {
+            return None;
+        }
+        let t = h / -den;
+        (t > t0).then(|| Hit { t, pos: o + d * t, eps: self.eps_at(t), orbit: crate::fractal::Orbit { object: obj, shore: 1e6, ..Default::default() }, steps: 0 })
+    }
+
     /// Share of light 1 (the sky's sun) that passes the clouds from `p` toward `l` (1 without
     /// cloud shadows; march.wgsl `cloud_sun_shadow`).
     fn cloud_shadow(&self, p: V3, l: V3) -> f64 {
@@ -1315,7 +1337,15 @@ impl<'a> Shader<'a> {
             Some(a) => a,
             None => {
                 let hemi = d.dot(self.frame.ambient_up) * 0.5 + 0.5;
-                [0, 1, 2].map(|k| l.ground_color[k] as f64 + (l.sky_color[k] - l.ground_color[k]) as f64 * hemi)
+                let mix = [0, 1, 2].map(|k| l.ground_color[k] as f64 + (l.sky_color[k] - l.ground_color[k]) as f64 * hemi);
+                // The sky's environment: bounces see its radiance.
+                match &self.env {
+                    Some(env) => {
+                        let r = crate::sky_env::radiance(env, d);
+                        [0, 1, 2].map(|k| mix[k] + r[k])
+                    }
+                    None => mix,
+                }
             }
         };
         a.map(|v| v * l.ambient)
@@ -1855,6 +1885,9 @@ impl<'a> Shader<'a> {
         let camera = t_base <= 0.0 && !inside;
         let leave = if leave { LEAVE_STEPS } else { 0 };
         let (hit, _, steps) = self.march_ex(ev, o, d, t0, max_t, sc.march.max_steps, true, (steam_on || haze_on).then_some(&mut pick), camera, leave);
+        // Grazing rays over the open sea run out of steps long before the horizon: they meet
+        // the sea's mean plane instead (march.wgsl the same).
+        let hit = hit.or_else(|| if inside || water { None } else { self.sea_hit(o, d, t0) });
         let mut halo = [0.0; 3];
         if steam_on {
             let (u1, u2) = (rng.next_f64(), rng.next_f64());
@@ -1963,7 +1996,17 @@ impl<'a> Shader<'a> {
                         let keep = if sc.background.image_fog_add { 1.0 } else { 1.0 - fi };
                         [0, 1, 2].map(|k| a[k] * keep + fog_col[k] * fi)
                     }
-                    None => [0, 1, 2].map(|k| l.ground_color[k] as f64 + (l.sky_color[k] - l.ground_color[k]) as f64 * hemi),
+                    None => {
+                        let mix = [0, 1, 2].map(|k| l.ground_color[k] as f64 + (l.sky_color[k] - l.ground_color[k]) as f64 * hemi);
+                        // The sky's environment from the direction of the normal.
+                        match &self.env {
+                            Some(env) => {
+                                let e = crate::sky_env::irradiance(env, n);
+                                [0, 1, 2].map(|k| mix[k] + e[k])
+                            }
+                            None => mix,
+                        }
+                    }
                 };
                 let ambient = if path { 0.0 } else { l.ambient };
                 // Under the water: less light from above with depth, red first.

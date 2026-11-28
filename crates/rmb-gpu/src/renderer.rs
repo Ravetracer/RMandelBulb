@@ -163,6 +163,8 @@ struct Uniforms {
     cloud: [[f32; 4]; 10],
     /// The storm (`storm_gpu`).
     storm: [[f32; 4]; 6],
+    /// Environment light and the open sea (`env_gpu`).
+    env: [[f32; 4]; 4],
 }
 
 /// Splits an f64 into the high and low f32 of a double-float.
@@ -201,11 +203,11 @@ fn clouds_gpu(scene: &Scene) -> [[f32; 4]; 10] {
         [c.wind[0] as f32, c.wind[1] as f32, c.evolve as f32, c.coverage as f32],
         [c.kind as f32, c.detail as f32, c.cirrus as f32, c.cirrus_height as f32],
         v(c.sun.to_array(), if sun_shadow { 1.0 } else { 0.0 }),
-        v(c.sun_light, 0.0),
+        v(c.sun_light, c.size),
         v(c.amb_up, 0.0),
         v(c.amb_down, 0.0),
         v(c.tint, 0.0),
-        v(c.origin.to_array(), 0.0),
+        v(c.origin.to_array(), c.curve),
     ]
 }
 
@@ -496,8 +498,19 @@ const LUT_BANDS: usize = LUT_LAYERS + 9 * rmb_core::texture::MAX_LAYERS * 7;
 /// The glow bands of the main material and the objects' own ones (appended to `lut` at
 /// `LUT_BANDS`: per material `MAX_BANDS` bands of 2 entries: position, half width, core half
 /// width, emission; color, 1 = in use).
-/// LUT entries before the lightning bolts (`bolts_gpu`): after the glow bands of 9 materials.
-const LUT_BOLTS: usize = LUT_BANDS + 9 * rmb_core::gradient::MAX_BANDS * 2;
+/// LUT entries before the sky's environment maps (`env_lut`): after the glow bands of 9
+/// materials; radiance map then irradiance map, one entry per texel.
+const LUT_ENV: usize = LUT_BANDS + 9 * rmb_core::gradient::MAX_BANDS * 2;
+const LUT_IRR: usize = LUT_ENV + rmb_core::sky_env::ENV_W * rmb_core::sky_env::ENV_H;
+/// LUT entries before the lightning bolts (`bolts_gpu`).
+const LUT_BOLTS: usize = LUT_IRR + rmb_core::sky_env::IRR_W * rmb_core::sky_env::IRR_H;
+
+/// The sky's environment maps for march.wgsl `env_lookup` (from `LUT_ENV`).
+fn env_lut(scene: &Scene, lut: &mut Vec<[f32; 4]>) {
+    let Some(env) = rmb_core::sky_env::for_scene(scene) else { return };
+    lut.resize(LUT_ENV, [0.0; 4]);
+    lut.extend(env.radiance.iter().chain(&env.irradiance).map(|c| [c[0], c[1], c[2], 0.0]));
+}
 /// LUT entries per bolt chunk: center + radius, segment count, then per segment (a, radius),
 /// (b, brightness).
 const BOLT_CHUNK: usize = 2 + 2 * rmb_core::storm::CHUNK;
@@ -510,7 +523,7 @@ fn bolts_gpu(scene: &Scene, lut: &mut Vec<[f32; 4]>) {
     for c in &f.chunks {
         let start = lut.len();
         lut.push(v(c.center, c.radius));
-        lut.push([c.segs.len() as f32, 0.0, 0.0, 0.0]);
+        lut.push([c.segs.len() as f32, c.split as f32, 0.0, 0.0]);
         for k in 0..rmb_core::storm::CHUNK {
             match c.segs.get(k) {
                 Some(g) => {
@@ -534,6 +547,20 @@ fn storm_gpu(scene: &Scene) -> [[f32; 4]; 6] {
     for (i, l) in f.cloud_lights.iter().take(2).enumerate() {
         out[2 + 2 * i] = v(l.pos.to_array(), 0.0);
         out[3 + 2 * i] = v(l.color, 0.0);
+    }
+    out
+}
+
+/// The open sea (`Program::sea_plane`) for march.wgsl `sea_hit` and the environment light
+/// (layout in the `env` field of `U`).
+fn env_gpu(scene: &Scene, prog: &Program) -> [[f32; 4]; 4] {
+    let mut out = [[0.0f32; 4]; 4];
+    if rmb_core::sky_env::active(scene) {
+        out[0] = [1.0, LUT_ENV as f32, LUT_IRR as f32, 0.0];
+    }
+    if let Some((c, n, obj)) = prog.sea_plane() {
+        out[1] = [c.x as f32, c.y as f32, c.z as f32, 1.0];
+        out[2] = [n.x as f32, n.y as f32, n.z as f32, obj as f32];
     }
     out
 }
@@ -910,6 +937,7 @@ fn uniforms(scene: &Scene, prog: &Program, w: u32, h: u32, fast: bool, tile: Opt
         atmo: sky_gpu(&rmb_core::sky::SkyFrame::new(&scene.sky)),
         cloud: clouds_gpu(scene),
         storm: storm_gpu(scene),
+        env: env_gpu(scene, prog),
         haze2: [if scene.fog.haze_shape == rmb_core::scene::HazeShape::Iterations { 1.0 } else { 0.0 }, scene.fog.haze_size as f32, 0.0, 0.0],
     }
 }
@@ -1350,6 +1378,7 @@ impl GpuRenderer {
         let objs = objects_gpu(&shade, &prog, &mut lut);
         layers_gpu(&shade, &mut lut);
         bands_gpu(&shade, &mut lut);
+        env_lut(&shade, &mut lut);
         bolts_gpu(&shade, &mut lut);
         let device = self.ctx.device.clone();
         let device = &device;

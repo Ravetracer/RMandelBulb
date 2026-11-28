@@ -1623,3 +1623,38 @@ fn gpu_matches_cpu_with_lightning() {
     random.sky.storm.time = t;
     render(random);
 }
+
+#[test]
+fn gpu_matches_cpu_with_the_sky_environment() {
+    use rmb_core::compose::{Primitive, SceneObject, Shape, Transform};
+    let p = |x: f64, y: f64, z: f64| rmb_core::v3(x, y, z);
+    let mut scene = Scene::default();
+    scene.lighting.ao_mode = rmb_core::scene::AoMode::Fast;
+    scene.background.mode = rmb_core::scene::BackgroundMode::Sky;
+    scene.sky.hour = 18.8;
+    scene.lighting.ambient = 1.0;
+    scene.sky.clouds.enabled = true;
+    scene.sky.clouds.apply_preset("Cumulus");
+    scene.march.max_distance = 30.0;
+    scene.objects = vec![SceneObject { name: "Sea".into(), shape: Shape::Primitive(Primitive::water()), transform: Transform { position: p(0.0, 0.0, -1.2), ..Default::default() }, ..Default::default() }];
+    scene.camera.position = p(3.0, -3.0, 0.4);
+    scene.camera.look_at(p(0.0, 0.0, 0.3), p(0.0, 0.0, 1.0));
+    assert!(rmb_core::sky_env::active(&scene));
+    let render = |mut s: Scene| {
+        rmb_core::sky::sync_sun(&mut s);
+        parity(s);
+    };
+    // Environment light at sunset, with clouds; the sea out to the horizon (short max distance).
+    render(scene.clone());
+    // Path traced: bounces see the environment.
+    let mut path = scene.clone();
+    path.lighting.render_mode = rmb_core::scene::RenderMode::PathTraced;
+    render(path);
+    // Only the sky: a second, strong light is left out.
+    let mut only = scene;
+    only.lighting.lights.push(rmb_core::scene::Light { intensity: 3.0, color: [1.0, 0.0, 0.0], ..Default::default() });
+    only.sky.sky_only = true;
+    let f = rmb_core::render::Frame::new(&{ let mut s = only.clone(); rmb_core::sky::sync_sun(&mut s); s }, 64, 64);
+    assert_eq!(f.lights.len(), 1);
+    render(only);
+}

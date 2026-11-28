@@ -783,6 +783,8 @@
     "star_brightness": 1.0,
     "sun_light": true,
     "sun_light_strength": 1.0,
+    "environment": true,
+    "sky_only": false,
     "day_speed": 0.0,
     "clouds": {
       "enabled": true,
@@ -804,7 +806,8 @@
       ],
       "shadows": true,
       "cirrus": 0.0,
-      "reach": 200.0,
+      "reach": 1000.0,
+      "planet_radius": 25000.0,
       "time": 0.0
     },
     "storm": {

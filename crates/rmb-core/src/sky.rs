@@ -80,6 +80,13 @@ pub struct Sky {
     /// amount stays the user's and scales them).
     pub sun_light: bool,
     pub sun_light_strength: f64,
+    /// With the sun lighting the scene: the ambient light comes from the sky's environment
+    /// (sky and clouds from every direction, like an HDRI image; `sky_env`) instead of two
+    /// hemisphere colors.
+    pub environment: bool,
+    /// Only the sky lights the scene: the sun (light 1), the environment and lightning; the
+    /// other lights are left out of renders (not deleted).
+    pub sky_only: bool,
     /// Time-lapse: hours per second in animations.
     pub day_speed: f64,
     /// Volumetric clouds.
@@ -114,6 +121,8 @@ impl Default for Sky {
             star_brightness: 1.0,
             sun_light: true,
             sun_light_strength: 1.0,
+            environment: true,
+            sky_only: false,
             day_speed: 0.0,
             clouds: Default::default(),
             storm: Default::default(),
@@ -411,10 +420,16 @@ pub fn sync_sun(scene: &mut crate::Scene) -> bool {
     let mut changed = added || *l != before;
     // Ambient: the colors are the sky's and the ground's average light (dark at night); the
     // amount stays the user's and scales them (1 = the sky's own brightness).
-    // With clouds: the sky's light through them (overcast skies light grey and dim).
-    let (up, down) = match crate::clouds::CloudFrame::for_scene(scene, &f) {
-        Some(cf) => crate::clouds::hemispheres(&cf, &f),
-        None => hemispheres(&f),
+    // With clouds: the sky's light through them (overcast skies light grey and dim). With
+    // the environment light the shading takes it from `sky_env`; the colors here then only
+    // carry a lightning flash.
+    let (up, down) = if crate::sky_env::active(scene) {
+        ([0.0; 3], [0.0; 3])
+    } else {
+        match crate::clouds::CloudFrame::for_scene(scene, &f) {
+            Some(cf) => crate::clouds::hemispheres(&cf, &f),
+            None => hemispheres(&f),
+        }
     };
     // A lightning flash lights the scene diffusely from the clouds (sky above, less below).
     let fill = crate::storm::StormFrame::for_scene(scene).map_or([0.0; 3], |f| f.fill());
@@ -529,9 +544,14 @@ mod tests {
         let d = l.direction(&scene.camera);
         assert!((d - scene.sky.sun_dir()).length() < 1e-9);
         assert!(l.intensity > 0.5);
-        // The ambient colors are the sky's (bluish by day); the amount stays the user's.
+        // With the environment light the ambient colors carry only flashes (none here) ...
+        assert_eq!(scene.lighting.sky_color, [0.0; 3]);
+        // ... without it they are the sky's (bluish by day); the amount stays the user's.
+        let mut hemi = scene.clone();
+        hemi.sky.environment = false;
+        sync_sun(&mut hemi);
         let amount = scene.lighting.ambient;
-        let lt = &scene.lighting;
+        let lt = &hemi.lighting;
         assert!(lt.sky_color[2] > 0.05 && lt.sky_color[2] > lt.sky_color[0], "{:?}", lt.sky_color);
         let mut edited = scene.clone();
         edited.lighting.ambient = amount * 2.0 + 0.1;

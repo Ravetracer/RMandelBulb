@@ -267,6 +267,8 @@ pub fn bolt(s: &Storm, strike: &Strike, top: f64) -> Vec<Segment> {
 pub struct Chunk {
     pub center: V3,
     pub radius: f64,
+    /// Parts above this height glow behind the clouds (the cloud base at the strike).
+    pub split: f64,
     /// Segments with the strike's brightness folded into `w`.
     pub segs: Vec<Segment>,
 }
@@ -302,6 +304,8 @@ impl StormFrame {
         }
         let c = &scene.sky.clouds;
         let (top, thick) = if c.enabled { (c.base, c.thickness.max(0.1)) } else { (s.top, 1.0) };
+        // The cloud base curves down with the planet (clouds::height).
+        let curve = if c.enabled && c.planet_radius > 0.0 { 0.5 / c.planet_radius } else { 0.0 };
         let origin = V3::from_array(s.origin);
         let color = s.color.map(|v| v as f64 * s.brightness.max(0.0));
         let mut f = StormFrame { chunks: Vec::new(), color, split: top - origin.z, halo_width: s.width.max(1e-4) * HALO_WIDTHS, cloud_lights: Vec::new(), scene_light: None };
@@ -312,13 +316,14 @@ impl StormFrame {
                 continue;
             }
             let glow = |k: f64| color.map(|v| v * main * k);
+            let top = top - curve * (st.x * st.x + st.y * st.y);
             if st.bolt {
                 let segs: Vec<Segment> = bolt(s, &st, top).iter().map(|g| Segment { a: g.a - origin, b: g.b - origin, ..*g }).collect();
                 let lit: Vec<Segment> = segs.iter().map(|g| Segment { w: g.w * if g.branch { branch } else { main }, ..*g }).collect();
                 for part in lit.chunks(CHUNK) {
                     let center = part.iter().fold(V3::ZERO, |acc, g| acc + g.a + g.b) * (0.5 / part.len() as f64);
                     let radius = part.iter().map(|g| (g.a - center).length().max((g.b - center).length())).fold(0.0, f64::max) + f.halo_width * 4.0;
-                    f.chunks.push(Chunk { center, radius, segs: part.to_vec() });
+                    f.chunks.push(Chunk { center, radius, split: top - origin.z, segs: part.to_vec() });
                 }
                 let (a, b) = (segs[0].a, v3(st.x, st.y, s.ground) - origin);
                 f.cloud_lights.push(CloudLight { pos: a + v3(0.0, 0.0, thick * 0.3), color: glow(CLOUD_K) });
@@ -381,7 +386,7 @@ pub fn glow(f: &StormFrame, o: V3, d: V3, t_end: f64, pixel: f64) -> ([f64; 3], 
             let core = g.r / wc * (-(dist / wc) * (dist / wc)).exp() * CORE;
             let halo = HALO / (1.0 + (dist / f.halo_width) * (dist / f.halo_width));
             let v = (core + halo) * g.w;
-            if o.z + d.z * s > f.split {
+            if o.z + d.z * s > c.split {
                 above = above.max(v);
             } else {
                 below = below.max(v);
