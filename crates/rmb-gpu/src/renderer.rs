@@ -159,6 +159,8 @@ struct Uniforms {
     cover: [[f32; 4]; 3],
     /// The sky (`sky_gpu`).
     atmo: [[f32; 4]; 8],
+    /// The clouds (`clouds_gpu`).
+    cloud: [[f32; 4]; 10],
 }
 
 /// Splits an f64 into the high and low f32 of a double-float.
@@ -182,6 +184,26 @@ fn sky_gpu(f: &rmb_core::sky::SkyFrame) -> [[f32; 4]; 8] {
         v(f.sun_disk, 0.0),
         v(f.ground, 0.0),
         v(f.sun_air, 0.0),
+    ]
+}
+
+/// The clouds for march.wgsl `cloud_*` (layout in the `cloud` field of `U`; zero without
+/// clouds).
+fn clouds_gpu(scene: &Scene) -> [[f32; 4]; 10] {
+    let Some(c) = rmb_core::clouds::CloudFrame::for_scene(scene, &rmb_core::sky::SkyFrame::new(&scene.sky)) else { return [[0.0; 4]; 10] };
+    let sun_shadow = c.shadows && scene.sky.sun_light;
+    let v = |a: [f64; 3], w: f64| [a[0] as f32, a[1] as f32, a[2] as f32, w as f32];
+    [
+        [c.base as f32, c.top as f32, c.reach as f32, c.sigma as f32],
+        [c.shape_scale as f32, c.cover_scale as f32, c.detail_scale as f32, c.light_step as f32],
+        [c.wind[0] as f32, c.wind[1] as f32, c.evolve as f32, c.coverage as f32],
+        [c.kind as f32, c.detail as f32, c.cirrus as f32, c.cirrus_height as f32],
+        v(c.sun.to_array(), if sun_shadow { 1.0 } else { 0.0 }),
+        v(c.sun_light, 0.0),
+        v(c.amb_up, 0.0),
+        v(c.amb_down, 0.0),
+        v(c.tint, 0.0),
+        v(c.origin.to_array(), 0.0),
     ]
 }
 
@@ -841,6 +863,7 @@ fn uniforms(scene: &Scene, prog: &Program, w: u32, h: u32, fast: bool, tile: Opt
             c
         },
         atmo: sky_gpu(&rmb_core::sky::SkyFrame::new(&scene.sky)),
+        cloud: clouds_gpu(scene),
         haze2: [if scene.fog.haze_shape == rmb_core::scene::HazeShape::Iterations { 1.0 } else { 0.0 }, scene.fog.haze_size as f32, 0.0, 0.0],
     }
 }
@@ -1344,9 +1367,9 @@ impl GpuRenderer {
         let numbers = prog.map_numbers();
         let b = &scene.background;
         let layers = layer_images(scene);
-        let background = format!("{}|{}|{}|{}|{}|{}", b.image.trim(), b.image_smooth, b.image_spherical, b.image_fit_border, scene.material.color_map.image.trim(), layers.join("|"));
+        let background = format!("{}|{}|{}|{}|{}|{}|{}", b.image.trim(), b.image_smooth, b.image_spherical, b.image_fit_border, scene.material.color_map.image.trim(), layers.join("|"), prog.clouds);
         // New buffers are zeroed: no maps (count 0) until the first upload.
-        let none = b.image.trim().is_empty() && scene.material.color_map.image.trim().is_empty() && layers.is_empty();
+        let none = b.image.trim().is_empty() && scene.material.color_map.image.trim().is_empty() && layers.is_empty() && !prog.clouds;
         if numbers == self.map_numbers && background == self.map_background && !(numbers.is_empty() && none && self.maps.size() > 16) {
             return;
         }
@@ -1365,11 +1388,18 @@ impl GpuRenderer {
                 maps.push((u32::MAX - 16 - i as u32, m));
             }
         }
-        let mut data: Vec<u32> = vec![maps.len() as u32];
-        let mut offset = 1 + 4 * maps.len() as u32;
+        // The clouds' noise volume (64 × 4096 texels, already packed) under its own key.
+        let cloud = prog.clouds.then(rmb_core::clouds::volume);
+        let count = maps.len() + cloud.is_some() as usize;
+        let mut data: Vec<u32> = vec![count as u32];
+        let mut offset = 1 + 4 * count as u32;
         for (n, m) in &maps {
             data.extend_from_slice(&[*n, m.width, m.height, offset]);
             offset += m.width * m.height;
+        }
+        if cloud.is_some() {
+            let n = rmb_core::clouds::NOISE_N as u32;
+            data.extend_from_slice(&[rmb_core::clouds::NOISE_KEY, n, n * n, offset]);
         }
         // Blue | green << 8 | red << 16 | alpha << 24 (255 without an alpha channel).
         for (_, m) in &maps {
@@ -1377,6 +1407,9 @@ impl GpuRenderer {
                 Some(a) => data.extend(m.pixels.iter().zip(a).map(|(p, a)| p[0] as u32 | (p[1] as u32) << 8 | (p[2] as u32) << 16 | (*a as u32) << 24)),
                 None => data.extend(m.pixels.iter().map(|p| p[0] as u32 | (p[1] as u32) << 8 | (p[2] as u32) << 16 | 255 << 24)),
             }
+        }
+        if let Some(v) = cloud {
+            data.extend_from_slice(v);
         }
         let bytes = (data.len() * 4) as u64;
         if self.maps.size() < bytes {

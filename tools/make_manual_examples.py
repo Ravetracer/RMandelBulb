@@ -207,9 +207,18 @@ def sunset_sea():
     render(out, "howto-sunset-sea.jpg")
 
 
+def evening_clouds():
+    """Evening cumulus clouds over the sea (sky with clouds, the sun as light 1)."""
+    out = EXAMPLES / "evening-clouds.rmb"
+    EXAMPLES.mkdir(parents=True, exist_ok=True)
+    demo = ROOT / "target" / "release" / "examples" / "sky_demo"
+    subprocess.run([str(demo), str(out), "--clouds"], check=True, capture_output=True)
+    render(out, "howto-evening-clouds.jpg")
+
+
 if __name__ == "__main__":
     only = sys.argv[1:]
-    for f in (neon_steps, hybrid_ranges, own_formula, glass, composition, deep_zoom, projections, vr_panorama, sunset_sea):
+    for f in (neon_steps, hybrid_ranges, own_formula, glass, composition, deep_zoom, projections, vr_panorama, sunset_sea, evening_clouds):
         if only and f.__name__ not in only:
             continue
         f()

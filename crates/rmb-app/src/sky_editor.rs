@@ -64,6 +64,7 @@ pub fn show(ui: &mut Ui, sky: &mut Sky) {
         widgets::color(ui, "Ground", "Color of the ground below the horizon", &mut sky.ground_color);
         widgets::slider_log(ui, "Brightness", "Overall brightness of the sky and the stars", &mut sky.brightness, 0.0..=8.0, d.brightness);
     });
+    clouds(ui, &mut sky.clouds);
     sub(ui, "Sun and stars");
     widgets::grid(ui, "sky-disk", |ui| {
         widgets::color(ui, "Sun color", "Color of the sunlight before the atmosphere", &mut sky.sun_color);
@@ -78,6 +79,46 @@ pub fn show(ui: &mut Ui, sky: &mut Sky) {
     });
 }
 
+/// The clouds' settings (part of the sky editor).
+fn clouds(ui: &mut Ui, c: &mut rmb_core::clouds::Clouds) {
+    use rmb_core::clouds::Clouds;
+    let d = Clouds::default();
+    sub(ui, "Clouds");
+    widgets::grid(ui, "sky-clouds-on", |ui| {
+        widgets::checkbox(ui, "Clouds", "Volumetric clouds in the sky: lit by the sun, casting shadows, reflected by the water, moving with the wind in animations", &mut c.enabled);
+    });
+    if !c.enabled {
+        return;
+    }
+    ui.horizontal(|ui| {
+        widgets::label(ui, "Preset", "Sets the look (coverage, density, type, thickness, darkness, cirrus); keeps the height, size, wind and reach");
+        egui::ComboBox::from_id_salt("cloud-preset").selected_text("Choose…").show_ui(ui, |ui| {
+            for name in Clouds::preset_names() {
+                if ui.selectable_label(false, name).clicked() {
+                    c.apply_preset(name);
+                }
+            }
+        });
+    });
+    widgets::grid(ui, "sky-clouds", |ui| {
+        widgets::slider(ui, "Coverage", "Share of the sky the clouds cover (0: clear, 1: overcast)", &mut c.coverage, 0.0..=1.0, d.coverage);
+        widgets::slider_log(ui, "Density", "How dense and opaque the clouds are", &mut c.density, 0.05..=5.0, d.density);
+        widgets::slider(ui, "Type", "0: stratus (a thin flat layer), 1: cumulus (puffy heaps), 2: cumulonimbus (towering storm clouds with anvil tops)", &mut c.kind, 0.0..=2.0, d.kind);
+        widgets::slider_log(ui, "Height", "Height of the cloud base above the world's zero level (world units)", &mut c.base, 0.1..=100.0, d.base);
+        widgets::slider_log(ui, "Thickness", "Thickness of the cloud layer (world units); towering types need a thick layer", &mut c.thickness, 0.1..=50.0, d.thickness);
+        widgets::slider_log(ui, "Size", "Typical size of a cloud (world units)", &mut c.size, 0.2..=100.0, d.size);
+        widgets::slider(ui, "Detail", "How much the edges are torn into wisps and billows", &mut c.detail, 0.0..=1.0, d.detail);
+        widgets::slider(ui, "Darkness", "Darker clouds: storm and rain clouds scatter less light", &mut c.darkness, 0.0..=1.0, d.darkness);
+        widgets::color(ui, "Tint", "Color of the clouds' own reflection (white for Earth)", &mut c.tint);
+        widgets::slider(ui, "Cirrus", "Thin high streaks above the clouds (0: none)", &mut c.cirrus, 0.0..=1.0, d.cirrus);
+        widgets::slider(ui, "Wind direction", "Direction the wind blows toward, in degrees from the x axis", &mut c.wind_direction, -180.0..=180.0, d.wind_direction);
+        widgets::slider_log(ui, "Wind speed", "How fast the clouds drift in animations (world units per second)", &mut c.wind_speed, 0.0..=10.0, d.wind_speed);
+        widgets::slider_log(ui, "Evolution", "How fast the clouds change their shape in animations", &mut c.evolution, 0.0..=4.0, d.evolution);
+        widgets::slider_log(ui, "Reach", "How far the cloud layer is drawn in detail (world units); beyond it a distant deck closes the horizon as much as the coverage says", &mut c.reach, 10.0..=5000.0, d.reach);
+        widgets::checkbox(ui, "Shadows", "The clouds shade the scene from the sun (light 1, when the sun lights the scene)", &mut c.shadows);
+    });
+}
+
 fn sub(ui: &mut Ui, text: &str) {
     ui.add_space(4.0);
     ui.label(RichText::new(text).color(theme::TEXT_MUTED).size(theme::fs(11.0)));
@@ -88,8 +129,10 @@ fn sub(ui: &mut Ui, text: &str) {
 fn strip(ui: &mut Ui, sky: &Sky) {
     let id = egui::Id::new("sky-strip");
     let cached: Option<(Sky, TextureHandle)> = ui.data(|d| d.get_temp(id));
+    // Clouds make the strip costly: it is only redone when no button is held.
+    let busy = sky.clouds.enabled && ui.input(|i| i.pointer.any_down());
     let tex = match cached {
-        Some((s, t)) if s == *sky => t,
+        Some((s, t)) if s == *sky || busy => t,
         _ => {
             let t = ui.ctx().load_texture("sky-strip", strip_image(sky), TextureOptions::LINEAR);
             ui.data_mut(|d| d.insert_temp(id, (sky.clone(), t.clone())));
@@ -102,20 +145,26 @@ fn strip(ui: &mut Ui, sky: &Sky) {
 }
 
 fn strip_image(sky: &Sky) -> ColorImage {
+    use rayon::prelude::*;
     let f = SkyFrame::new(&Sky { stars: 0.0, ..sky.clone() });
+    let cf = sky.clouds.enabled.then(|| rmb_core::clouds::CloudFrame::new(sky, &f));
     let north = sky.north.to_radians();
-    let mut px = Vec::with_capacity(STRIP_W * STRIP_H);
-    for y in 0..STRIP_H {
-        // From the zenith down to 10° below the horizon.
-        let el = (90.0 - (y as f64 + 0.5) / STRIP_H as f64 * 100.0).to_radians();
-        for x in 0..STRIP_W {
-            // Clockwise from north, as on a compass.
+    let px: Vec<Color32> = (0..STRIP_W * STRIP_H)
+        .into_par_iter()
+        .map(|i| {
+            let (x, y) = (i % STRIP_W, i / STRIP_W);
+            // From the zenith down to 10° below the horizon, clockwise from north (a compass).
+            let el = (90.0 - (y as f64 + 0.5) / STRIP_H as f64 * 100.0).to_radians();
             let az = north - (x as f64 + 0.5) / STRIP_W as f64 * std::f64::consts::TAU;
             let d = rmb_core::v3(el.cos() * az.cos(), el.cos() * az.sin(), el.sin());
-            let c = rmb_core::sky::radiance(&f, d);
+            let mut c = rmb_core::sky::radiance(&f, d);
+            if let Some(cf) = &cf {
+                let (keep, add) = rmb_core::clouds::march(cf, rmb_core::V3::ZERO, d, f64::MAX, 0.5, rmb_core::sky::air(&f, d));
+                c = [0, 1, 2].map(|k| c[k] * keep + add[k]);
+            }
             let enc = |v: f64| (rmb_core::render::srgb_encode((v / (1.0 + v * 0.25)).clamp(0.0, 1.0)) * 255.0).round() as u8;
-            px.push(Color32::from_rgb(enc(c[0]), enc(c[1]), enc(c[2])));
-        }
-    }
+            Color32::from_rgb(enc(c[0]), enc(c[1]), enc(c[2]))
+        })
+        .collect();
     ColorImage::new([STRIP_W, STRIP_H], px)
 }

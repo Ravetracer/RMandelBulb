@@ -537,6 +537,37 @@ cargo clippy -j 8 --workspace --all-targets
   `rmb-core` example `sky_demo` writes the manual's sunset scene. Test
   `gpu_matches_cpu_with_the_sky`.
 
+## Clouds
+
+- `rmb-core/src/clouds.rs` (`Sky::clouds`; `Program::clouds` → GPU switch `CLOUDS`, part of
+  the signature): a slab between `base` and `base + thickness`. Density (Nubis scheme) =
+  coverage (regional variation from a large-scale 2D slice, fading out toward coverage 1) ×
+  height `profile` (type 0 stratus .. 1 cumulus .. 2 cumulonimbus, anvil spread) remapped
+  against the Perlin-Worley shape, eroded by three Worley octaves (`fine`; light and shadow
+  rays skip it). All noise from one baked 64³ volume (`volume`, 4 × u8 per texel, built once
+  from `hash3`, deterministic); the GPU reads the same bytes from the `maps` buffer under
+  `NOISE_KEY` (64 × 4096 texels; `renderer::upload_maps`), `cloud_noise` = `noise`
+  (trilinear, wrap).
+- `march`: 48 steps between the ray's start and its hit or the slab's end (≤ `reach`), one
+  jitter number per traced ray (drawn in `trace` only with clouds, after the fog scatter),
+  light march toward the sun (6 doubling steps from `light_step` = 0.025 × min(size,
+  thickness), so low suns still light the clouds), dual-lobe HG `phase`, 3 multiple-
+  scattering octaves, powder, ambient `amb_down`→`amb_up` (clear-sky `sky::hemispheres`) by
+  height, aerial fade toward the sky's `air` by the mean depth. Open-sky rays add cirrus
+  (2D, behind) and a far deck beyond `reach` (opacity from the coverage); rays below the
+  horizon get the deck's shade; under a closed deck the air color is dimmed.
+- `shadow` (8 steps, shape only): `trace` multiplies light 1's shadow (lights loop and fog
+  scatter) when `cloud_sun` (clouds' shadows + sky drives light 1). `clouds::hemispheres`
+  averages the sky through the clouds from the origin (48 directions, cached on the frame
+  values) → `sync_sun`'s ambient colors.
+- Deep zoom: `shifted_scene` stores the shift in `Clouds::origin` (not saved); every cloud
+  function adds it back (`CloudFrame::origin`, uniform `cloud[9]`).
+- Animation: phase `sky.clouds` (1 per second) → `Clouds::time`; wind offset = direction ×
+  speed × time, `evolve` = evolution × time (detail z offset).
+- GPU uniform `cloud` (10 vec4, `renderer::clouds_gpu`). Cost (2026-11-28, laptop):
+  compile +0.6 s (5.5 vs 4.9 s with water), a sky-heavy 960 × 540 frame +20 %. Test
+  `gpu_matches_cpu_with_clouds`; `sky_sheet --rows clouds [--panorama]` renders the presets.
+
 ## Light through glass
 
 - `Material::glass_shadows` (`Program::glass_shadows`, GPU switch `GLASS_SHADOW`):

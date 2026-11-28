@@ -17,8 +17,11 @@ pub struct Shader<'a> {
     /// Materials: 0 the main one, k the one of `Scene::objects[k - 1]`.
     pub materials: Vec<Mat>,
     pub bg_image: Option<(std::sync::Arc<crate::maps::Map>, [[f64; 3]; 3])>,
-    /// The sky (background mode Sky).
+    /// The sky (background mode Sky) and its clouds; `cloud_sun`: the clouds shade light 1
+    /// (the sky's sun).
     pub sky: crate::sky::SkyFrame,
+    pub clouds: Option<crate::clouds::CloudFrame>,
+    pub cloud_sun: bool,
     /// The 16 × 8 copy of the background image for ambient light.
     pub bg_ambient: Option<std::sync::Arc<crate::maps::Map>>,
     /// Color map with its rotation matrix and average color (display values).
@@ -620,13 +623,17 @@ impl<'a> Shader<'a> {
         let used = |k: usize| k == 0 || prog.objects.iter().any(|o| o.material == k);
         let glows = |m: &Mat| m.lut_emis.iter().any(|e| *e > 0.0) || m.bands.iter().any(|b| b.emission > 0.0) || m.layers.iter().any(|l| l.layer.target == crate::texture::Target::Emission);
         let emissive = materials.iter().enumerate().any(|(k, m)| used(k) && glows(m));
+        let sky = crate::sky::SkyFrame::new(&scene.sky);
+        let clouds = crate::clouds::CloudFrame::for_scene(scene, &sky);
         Shader {
             scene,
             prog,
             frame: Frame::new(scene, width, height),
             materials,
             bg_image: super::background_image(scene),
-            sky: crate::sky::SkyFrame::new(&scene.sky),
+            sky,
+            cloud_sun: clouds.is_some() && scene.sky.clouds.shadows && scene.sky.sun_light,
+            clouds,
             bg_ambient: super::background_maps(scene).map(|(_, s, _)| s),
             color_map: crate::maps::get_any(&scene.material.color_map.image).map(|m| {
                 let avg = m.average();
@@ -1117,6 +1124,15 @@ impl<'a> Shader<'a> {
         let rough = ((spread * 7.0 * dt2 * dt2 / (n0.dot(n0) + 1e-40)).max(0.0).sqrt() - 0.05).clamp(0.0, 1.0);
         let n = if s < 8 { n0 + tx * (n1 * dt2) + ty * (n2 * dt2) } else { n0 };
         (n.normalize(), rough)
+    }
+
+    /// Share of light 1 (the sky's sun) that passes the clouds from `p` toward `l` (1 without
+    /// cloud shadows; march.wgsl `cloud_sun_shadow`).
+    fn cloud_shadow(&self, p: V3, l: V3) -> f64 {
+        match self.clouds.as_ref().filter(|_| self.cloud_sun) {
+            Some(cf) => crate::clouds::shadow(cf, p, l),
+            None => 1.0,
+        }
     }
 
     /// Light reaching `p` from direction `l` (0 = in shadow, per color channel). With
@@ -1967,6 +1983,10 @@ impl<'a> Shader<'a> {
                         continue;
                     }
                     let mut sh = if li.shadows { self.soft_shadow(ev, p, ldir, h.eps, li.softness, max_t, h.t) } else { [1.0; 3] };
+                    if li_index == 0 {
+                        let cs = self.cloud_shadow(p, ldir);
+                        sh = sh.map(|v| v * cs);
+                    }
                     if let Some((m, depth)) = wet {
                         let pass = self.water_light(m, li_index, depth, ldir, max_t);
                         // Caustics: light from above the water, focused by the waves.
@@ -2064,11 +2084,23 @@ impl<'a> Shader<'a> {
                 };
                 if atten > 0.0 && tint[0].max(tint[1]).max(tint[2]) > 0.0 {
                     let sh = if li.shadows { self.soft_shadow(ev, x, ldir, self.eps_at(t_base + s), li.softness, max_l, t_base + s) } else { [1.0; 3] };
+                    let sh = if i == 0 { sh.map(|v| v * self.cloud_shadow(x, ldir)) } else { sh };
                     let w = atten * amount * count as f64;
                     for k in 0..3 {
                         c[k] += li.color[k] * w * tint[k] * sh[k];
                     }
                 }
+            }
+        }
+        // Clouds between the ray's start and what it hit (or the sky): one random number for
+        // the step offset, only with clouds (march.wgsl the same).
+        if let Some(cf) = self.clouds.as_ref().filter(|_| !inside && !water) {
+            let jitter = rng.next_f64();
+            let end = hit.as_ref().map_or(f64::MAX, |h| h.t - t_base);
+            let (keep, add) = crate::clouds::march(cf, o + d * t_base, d, end, jitter, crate::sky::air(&self.sky, d));
+            for k in 0..3 {
+                c[k] = c[k] * keep + add[k];
+                albedo[k] = albedo[k] * keep + (1.0 - keep) * (add[k] / (1.0 - keep).max(1e-9)).clamp(0.0, 1.0);
             }
         }
         // The fractal haze in front of everything the ray saw.

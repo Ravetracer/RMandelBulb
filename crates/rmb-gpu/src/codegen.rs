@@ -46,6 +46,7 @@ pub fn march_shader_baked(prog: &Program, baked: &[Option<f64>]) -> String {
     let _ = writeln!(s, "const MODELS: bool = {};", prog.objects.iter().any(|o| matches!(o.shape, rmb_core::fractal::ObjectShape::Model(_))));
     let _ = writeln!(s, "const PLANTS: bool = {};", prog.objects.iter().any(|o| o.plants.is_some()));
     let _ = writeln!(s, "const COVER: bool = {};", !prog.covers.is_empty());
+    let _ = writeln!(s, "const CLOUDS: bool = {};", prog.clouds);
     // Deep zoom: the main fractal in double-float arithmetic (composed objects stay f32, they
     // are evaluated in local coordinates).
     let main_chain = if prog.deep.is_some() { chain_dd } else { chain };

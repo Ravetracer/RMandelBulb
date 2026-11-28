@@ -198,7 +198,7 @@ per scene.
 - [x] One water and one seabed per scene (the app offers no second one, no duplicate)
 - [x] Sky: an atmosphere around the scene (sun position, time of day, scattering colors
       from Earth-like to alien), as the background and the horizon behind the water
-- [ ] Volumetric clouds in the sky: blue sky with fair-weather clouds, overcast, dark
+- [x] Volumetric clouds in the sky: blue sky with fair-weather clouds, overcast, dark
       storm clouds; coverage, density, height, wind (moving in animations)
 - [ ] Thunderstorms: lightning bolts and flashes that light the clouds and the scene
 - [ ] The sky lights the scene like an HDRI box image (sky and clouds as ambient and

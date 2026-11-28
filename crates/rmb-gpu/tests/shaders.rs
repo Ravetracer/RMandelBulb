@@ -1542,3 +1542,40 @@ fn gpu_matches_cpu_with_the_sky() {
     sea.objects = vec![SceneObject { name: "Sea".into(), shape: Shape::Primitive(Primitive::water()), transform: Transform { position: p(0.0, 0.0, -1.0), ..Default::default() }, ..Default::default() }];
     render(sea);
 }
+
+#[test]
+fn gpu_matches_cpu_with_clouds() {
+    use rmb_core::compose::{Primitive, SceneObject, Shape, Transform};
+    let p = |x: f64, y: f64, z: f64| rmb_core::v3(x, y, z);
+    let mut scene = Scene::default();
+    scene.lighting.ao_mode = rmb_core::scene::AoMode::Fast;
+    scene.background.mode = rmb_core::scene::BackgroundMode::Sky;
+    scene.sky.clouds.enabled = true;
+    scene.sky.hour = 14.0;
+    scene.march.max_distance = 100.0;
+    scene.objects = vec![SceneObject { name: "Sea".into(), shape: Shape::Primitive(Primitive::water()), transform: Transform { position: p(0.0, 0.0, -1.2), ..Default::default() }, ..Default::default() }];
+    scene.camera.position = p(3.0, -3.0, 0.3);
+    scene.camera.look_at(p(0.0, 0.0, 1.5), p(0.0, 0.0, 1.0));
+    let prog = Program::for_scene(&scene);
+    assert!(prog.clouds);
+    validate(&rmb_gpu::codegen::march_shader(&prog), "clouds");
+    let render = |mut s: Scene| {
+        rmb_core::sky::sync_sun(&mut s);
+        parity(s);
+    };
+    // Fair weather by day, looking up past the bulb (cloud shadows on the sea and the bulb).
+    render(scene.clone());
+    // A storm at sunset with cirrus.
+    let mut storm = scene.clone();
+    storm.sky.clouds.apply_preset("Storm");
+    storm.sky.clouds.cirrus = 0.6;
+    storm.sky.hour = 19.3;
+    render(storm);
+    // Inside the cloud layer, wind and evolution moved on.
+    let mut inside = scene.clone();
+    inside.sky.clouds.apply_preset("Cumulus");
+    inside.sky.clouds.time = 7.0;
+    inside.camera.position = p(2.0, -2.0, 7.5);
+    inside.camera.look_at(p(0.0, 0.0, 7.0), p(0.0, 0.0, 1.0));
+    render(inside);
+}

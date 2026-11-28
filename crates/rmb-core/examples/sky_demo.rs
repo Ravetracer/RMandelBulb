@@ -1,16 +1,23 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
-//! Writes the manual's sky example: the bulb over the sea at sunset, the sky as background
-//! and the sun as light 1 (`sky_demo out.rmb`).
+//! Writes the manual's sky examples: the bulb over the sea at sunset, the sky as background
+//! and the sun as light 1 (`sky_demo out.rmb`); with `--clouds`, evening cumulus clouds.
 use rmb_core::compose::{ObjectMaterial, Primitive, SceneObject, Shape, Transform};
 use rmb_core::scene::{BackgroundMode, ColorStop};
 use rmb_core::{Scene, v3};
 
 fn main() {
     let out = std::env::args().nth(1).unwrap_or_else(|| "sunset-sea.rmb".into());
+    let clouds = std::env::args().any(|a| a == "--clouds");
     let mut s = Scene::default();
     s.background.mode = BackgroundMode::Sky;
     s.sky.hour = 19.6;
+    if clouds {
+        s.sky.hour = 18.6;
+        s.sky.clouds.enabled = true;
+        s.sky.clouds.apply_preset("Cumulus");
+        s.lighting.ambient = 1.0;
+    }
     s.fog.density = 0.02;
     s.fog.from_background = true;
     let sea_color = vec![ColorStop::new(0.0, [0.03, 0.08, 0.1]), ColorStop::new(1.0, [0.03, 0.08, 0.1])];

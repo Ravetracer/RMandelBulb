@@ -125,6 +125,8 @@ Some settings are speeds. They act only in animations, adding up over the frames
 - **Shimmer speed**: new flicker patterns per second.
 - **Time-lapse** (Effects › Background › Sky): hours per second; the sun, its light and the
   sky follow the time of day.
+- The **clouds** run on their own clock: **Wind speed** moves them, **Evolution** changes
+  their shapes, their shadows follow.
 
 These speeds can themselves differ between keyframes; the program blends them and sums them up
 over time, so the movement stays smooth.

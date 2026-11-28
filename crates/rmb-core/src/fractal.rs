@@ -113,6 +113,8 @@ pub struct Program {
     /// then: it compiles faster without).
     pub layers: bool,
     pub bump: bool,
+    /// The sky has clouds (GPU switch `CLOUDS`).
+    pub clouds: bool,
     /// Shadows let light through glass (`Material::glass_shadows`; the GPU shader includes
     /// that code only then).
     pub glass_shadows: bool,
@@ -391,6 +393,7 @@ impl Program {
             main_transform: None,
             layers: false,
             bump: false,
+            clouds: false,
             glass_shadows: false,
             medium: None,
             bubble_sources: Vec::new(),
@@ -473,6 +476,7 @@ impl Program {
             p.layers = true;
             p.bump |= l.target.bends();
         }
+        p.clouds = scene.background.mode == crate::scene::BackgroundMode::Sky && scene.sky.clouds.enabled;
         p
     }
 
@@ -546,6 +550,7 @@ impl Program {
         s.push_str(if self.slot_extras() { "|extras" } else { "" });
         s.push_str(if self.layers { "|layers" } else { "" });
         s.push_str(if self.bump { "|bump" } else { "" });
+        s.push_str(if self.clouds { "|clouds" } else { "" });
         s.push_str(if self.glass_shadows { "|gsh" } else { "" });
         if let Some((j, _)) = self.medium {
             s.push_str(&format!("|med{j}"));

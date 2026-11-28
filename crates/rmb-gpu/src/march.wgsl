@@ -115,6 +115,12 @@ struct U {
     // brightness; [3] Mie direction per channel; [4] the sun's light at the air; [5] its
     // disk brightness; [6] ground color; [7] the sun's light at the scattering air.
     atmo: array<vec4<f32>, 8>,
+    // The clouds (clouds::CloudFrame, switch CLOUDS): [0] base, top, reach, extinction;
+    // [1] texels per unit of shape, coverage, detail, first light step; [2] wind offset x, y,
+    // evolution offset, coverage; [3] type, detail, cirrus, cirrus height; [4] sun, w: the
+    // clouds shade light 1; [5] sun light; [6] ambient above; [7] below; [8] tint × albedo;
+    // [9] world position of the origin (deep zoom).
+    cloud: array<vec4<f32>, 10>,
 }
 
 @group(0) @binding(0) var<uniform> u: U;
@@ -2772,6 +2778,243 @@ fn sky_radiance(d: vec3<f32>, sources: bool) -> vec3<f32> {
     return c;
 }
 
+// ---- Clouds (mirror clouds.rs; only used with CLOUDS) ----
+
+const CLOUD_STEPS: u32 = 48u;
+const CLOUD_LIGHT_STEPS: u32 = 6u;
+const CLOUD_SHADOW_STEPS: u32 = 8u;
+const CLOUD_OPEN: f32 = 1.0e30;
+
+// Start of the noise volume's texels in `maps` (clouds::NOISE_KEY), 0 when missing.
+fn cloud_volume() -> u32 {
+    let i = map_find_u(0xffffffe0u);
+    if (i < 0) {
+        return 0u;
+    }
+    return maps[1u + 4u * u32(i) + 3u];
+}
+
+// Mirrors clouds::noise: trilinear with wrap-around over the 64³ texels.
+fn cloud_noise(vb: u32, v: vec3<f32>) -> vec4<f32> {
+    let f = v - vec3<f32>(0.5);
+    let f0 = floor(f);
+    let t = f - f0;
+    let i0 = vec3<i32>(f0);
+    var out = vec4<f32>(0.0);
+    for (var dz = 0; dz < 2; dz++) {
+        let wz = select(t.z, 1.0 - t.z, dz == 0);
+        for (var dy = 0; dy < 2; dy++) {
+            let wy = select(t.y, 1.0 - t.y, dy == 0);
+            for (var dx = 0; dx < 2; dx++) {
+                let wx = select(t.x, 1.0 - t.x, dx == 0);
+                let x = (((i0.x + dx) % 64) + 64) % 64;
+                let y = (((i0.y + dy) % 64) + 64) % 64;
+                let z = (((i0.z + dz) % 64) + 64) % 64;
+                let tx = maps[vb + u32((z * 64 + y) * 64 + x)];
+                let c = vec4<f32>(f32(tx & 255u), f32((tx >> 8u) & 255u), f32((tx >> 16u) & 255u), f32(tx >> 24u));
+                out += c * (wx * wy * wz);
+            }
+        }
+    }
+    return out / 255.0;
+}
+
+fn cloud_hg(mu: f32, g: f32) -> f32 {
+    return (1.0 - g * g) / (4.0 * SKY_PI * pow(max(1.0 + g * g - 2.0 * g * mu, 1.0e-6), 1.5));
+}
+
+fn cloud_phase(mu: f32, c: f32) -> f32 {
+    return 0.7 * cloud_hg(mu, 0.8 * c) + 0.3 * cloud_hg(mu, -0.25 * c);
+}
+
+fn cloud_profile(h: f32, kind: f32) -> f32 {
+    let stratus = smoothstep(0.0, 0.08, h) * smoothstep(0.4, 0.15, h);
+    let cumulus = smoothstep(0.0, 0.15, h) * smoothstep(1.0, 0.45, h);
+    let nimbus = smoothstep(0.0, 0.06, h) * smoothstep(1.0, 0.8, h);
+    if (kind < 1.0) {
+        return stratus + (cumulus - stratus) * kind;
+    }
+    return cumulus + (nimbus - cumulus) * (kind - 1.0);
+}
+
+// Mirrors clouds::density (`p` relative to the origin, u.cloud[9]).
+fn cloud_density(vb: u32, pl: vec3<f32>, fine: bool) -> f32 {
+    let p = pl + u.cloud[9].xyz;
+    let base = u.cloud[0].x;
+    let top = u.cloud[0].y;
+    let h = (p.z - base) / (top - base);
+    let coverage = u.cloud[2].w;
+    if (h <= 0.0 || h >= 1.0 || coverage <= 0.0) {
+        return 0.0;
+    }
+    let q = vec3<f32>(p.x - u.cloud[2].x, p.y - u.cloud[2].y, p.z);
+    let cs = u.cloud[1].y;
+    let cn = cloud_noise(vb, vec3<f32>(q.x * cs, q.y * cs, 7.5)).x;
+    let kind = u.cloud[3].x;
+    let anvil = max(kind - 1.0, 0.0) * smoothstep(0.65, 0.95, h) * 0.3;
+    let vary = 0.6 * min(2.0 * (1.0 - coverage), 1.0);
+    let cov = clamp(coverage + (cn - 0.5) * vary + anvil, 0.0, 1.0) * smoothstep(0.0, 0.1, coverage);
+    if (cov <= 0.0) {
+        return 0.0;
+    }
+    let shape = cloud_noise(vb, q * u.cloud[1].x).x;
+    let lo = 1.0 - cov;
+    var d = max((shape * cloud_profile(h, kind) - lo) / max(1.0 - lo, 1.0e-6), 0.0) * cov;
+    if (d <= 0.0) {
+        return 0.0;
+    }
+    let detail = u.cloud[3].y;
+    if (fine && detail > 0.0) {
+        let ds = u.cloud[1].z;
+        let dn = cloud_noise(vb, vec3<f32>(q.x * ds, q.y * ds, q.z * ds + u.cloud[2].z));
+        let df = dn.y * 0.625 + dn.z * 0.25 + dn.w * 0.125;
+        let m = df + (1.0 - 2.0 * df) * clamp(h * 8.0, 0.0, 1.0);
+        let e = m * 0.4 * detail;
+        d = max((d - e) / (1.0 - e), 0.0);
+    }
+    return d;
+}
+
+// Mirrors clouds::slab: distances inside the cloud layer (x > y: none).
+fn cloud_slab(o: vec3<f32>, d: vec3<f32>) -> vec2<f32> {
+    let oz = o.z + u.cloud[9].z;
+    let lo = u.cloud[0].x;
+    let hi = u.cloud[0].y;
+    if (abs(d.z) < 1.0e-9) {
+        if (oz > lo && oz < hi) {
+            return vec2<f32>(0.0, CLOUD_OPEN);
+        }
+        return vec2<f32>(1.0, 0.0);
+    }
+    let a = (lo - oz) / d.z;
+    let b = (hi - oz) / d.z;
+    return vec2<f32>(max(min(a, b), 0.0), max(a, b));
+}
+
+fn cloud_light_depth(vb: u32, p: vec3<f32>) -> f32 {
+    var ds = u.cloud[1].w;
+    var t = 0.0;
+    var depth = 0.0;
+    for (var j = 0u; j < CLOUD_LIGHT_STEPS; j++) {
+        depth += cloud_density(vb, p + u.cloud[4].xyz * (t + ds * 0.5), false) * ds;
+        t += ds;
+        ds *= 2.0;
+    }
+    return depth * u.cloud[0].w;
+}
+
+// Mirrors clouds::march: the clouds from `o` along `d` up to `t_end` (CLOUD_OPEN: the open
+// sky). rgb = added light, w = what passes.
+fn cloud_march(o: vec3<f32>, d: vec3<f32>, t_end: f32, jitter: f32, air_in: vec3<f32>) -> vec4<f32> {
+    let vb = cloud_volume();
+    let sun_dir = u.cloud[4].xyz;
+    let sun_light = u.cloud[5].xyz;
+    let tint = u.cloud[8].xyz;
+    let mu = dot(d, sun_dir);
+    var keep = 1.0;
+    var add = vec3<f32>(0.0);
+    let cirrus = u.cloud[3].z;
+    if (cirrus > 0.0 && t_end >= CLOUD_OPEN && d.z > 1.0e-4) {
+        let t = (u.cloud[3].w - o.z - u.cloud[9].z) / d.z;
+        if (t > 0.0) {
+            let q = o + u.cloud[9].xyz + d * t;
+            let s = u.cloud[1].x * 0.35;
+            let n = cloud_noise(vb, vec3<f32>((q.x - u.cloud[2].x * 2.0) * s * 0.4, (q.y - u.cloud[2].y * 2.0) * s * 1.6, 3.5 + u.cloud[2].z * 0.3));
+            let streak = smoothstep(0.45, 0.8, n.y * 0.7 + n.z * 0.3);
+            let a = clamp(streak * cirrus * 0.6 * exp(-t / (u.cloud[0].z * 3.0)), 0.0, 1.0);
+            keep = 1.0 - a;
+            add = (sun_light * cloud_phase(mu, 0.6) * 0.5 + u.cloud[6].xyz) * tint * a;
+        }
+    }
+    let open = t_end >= CLOUD_OPEN;
+    let deck = clamp((u.cloud[2].w - 0.15) / 0.85, 0.0, 1.0);
+    let air = air_in * (1.0 - 0.7 * deck);
+    if (open && d.z < 0.0 && o.z + u.cloud[9].z < u.cloud[0].x) {
+        let shade = 1.0 - 0.7 * deck;
+        return vec4<f32>(add * shade, keep * shade);
+    }
+    let sl = cloud_slab(o, d);
+    if (sl.y <= sl.x) {
+        return vec4<f32>(add, keep);
+    }
+    let t0 = sl.x;
+    if (open && deck > 0.0 && sl.y > u.cloud[0].z) {
+        let far = sl.y - max(t0, u.cloud[0].z);
+        let a = deck * (1.0 - exp(-far * 0.15 * u.cloud[0].w));
+        if (a > 0.0) {
+            let cloud = (sun_light * cloud_phase(mu, 0.5) * 0.6 * exp(-2.0 * u.cloud[2].w) + u.cloud[6].xyz) * tint;
+            let color = 0.5 * (cloud + air);
+            add = add * (1.0 - a) + color * a;
+            keep *= 1.0 - a;
+        }
+    }
+    let t1 = min(min(sl.y, t_end), u.cloud[0].z);
+    if (t1 <= t0) {
+        return vec4<f32>(add, keep);
+    }
+    let dt = (t1 - t0) / f32(CLOUD_STEPS);
+    let base = u.cloud[0].x;
+    let top = u.cloud[0].y;
+    let sigma = u.cloud[0].w;
+    var trans = 1.0;
+    var light = vec3<f32>(0.0);
+    var wsum = 0.0;
+    var tsum = 0.0;
+    for (var i = 0u; i < CLOUD_STEPS; i++) {
+        let t = t0 + (f32(i) + jitter) * dt;
+        let p = o + d * t;
+        let dn = cloud_density(vb, p, true);
+        if (dn <= 1.0e-4) {
+            continue;
+        }
+        let ld = cloud_light_depth(vb, p);
+        var sun = 0.0;
+        var oa = 1.0;
+        for (var k = 0; k < 3; k++) {
+            sun += oa * cloud_phase(mu, oa) * exp(-ld * oa);
+            oa *= 0.5;
+        }
+        let powder = 1.0 - exp(-2.0 * ld);
+        sun *= powder + (1.0 - powder) * (0.5 + 0.5 * mu);
+        let h = (p.z + u.cloud[9].z - base) / (top - base);
+        let a = exp(-sigma * dn * dt);
+        let w = trans * (1.0 - a);
+        let amb = mix(u.cloud[7].xyz, u.cloud[6].xyz, h);
+        light += w * (sun_light * sun + amb) * tint;
+        wsum += w;
+        tsum += w * t;
+        trans *= a;
+        if (trans < 0.01) {
+            break;
+        }
+    }
+    if (wsum <= 0.0) {
+        return vec4<f32>(add, keep);
+    }
+    let fade = exp(-(tsum / wsum) / (u.cloud[0].z * 0.35));
+    light = light * fade + air * (1.0 - trans) * (1.0 - fade);
+    return vec4<f32>(light + add * trans, keep * trans);
+}
+
+// Mirrors clouds::shadow, for light 1 when the clouds shade it (u.cloud[4].w).
+fn cloud_sun_shadow(p: vec3<f32>, l: vec3<f32>) -> f32 {
+    if (u.cloud[4].w < 0.5) {
+        return 1.0;
+    }
+    let sl = cloud_slab(p, l);
+    if (sl.y <= sl.x) {
+        return 1.0;
+    }
+    let vb = cloud_volume();
+    let t1 = min(sl.y, sl.x + u.cloud[0].z);
+    let dt = (t1 - sl.x) / f32(CLOUD_SHADOW_STEPS);
+    var depth = 0.0;
+    for (var i = 0u; i < CLOUD_SHADOW_STEPS; i++) {
+        depth += cloud_density(vb, p + l * (sl.x + (f32(i) + 0.5) * dt), false) * dt;
+    }
+    return exp(-depth * u.cloud[0].w);
+}
+
 fn background(d: vec3<f32>, sy: f32) -> vec3<f32> {
     if (u.bg_top.w < 0.5) {
         return u.bg_top.xyz;
@@ -4223,6 +4466,9 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sx: f32, 
             if (li.opts.x > 0.5 && u.dof.w < 0.5) {
                 sh = soft_shadow(p, ldir, h.eps, li.opts.y, max_l, h.t);
             }
+            if (CLOUDS && i == 0u) {
+                sh *= cloud_sun_shadow(p, ldir);
+            }
             if (wet_depth > 0.0) {
                 var caustic = 1.0;
                 if (u.wmed[4].x > 0.0) {
@@ -4353,10 +4599,25 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sx: f32, 
                 if (li.opts.x > 0.5 && u.dof.w < 0.5) {
                     sh = soft_shadow(x, ls.dir, eps_at(t_base + s), li.opts.y, ls.dist, t_base + s);
                 }
+                if (CLOUDS && i == 0u) {
+                    sh *= cloud_sun_shadow(x, ls.dir);
+                }
                 let w = ls.atten * amount * f32(u.size.w);
                 c += li.color.xyz * w * tint * sh;
             }
         }
+    }
+    // Clouds between the ray's start and what it hit, or the sky (mirrors Shader::trace:
+    // one random number, only with clouds).
+    if (CLOUDS && !inside && !water) {
+        let jitter = rnd();
+        var end = CLOUD_OPEN;
+        if (h.hit) {
+            end = h.t - t_base;
+        }
+        let cm = cloud_march(o + d * t_base, d, end, jitter, sky_radiance(d, false));
+        c = c * cm.w + cm.xyz;
+        tr.albedo = tr.albedo * cm.w + (1.0 - cm.w) * clamp(cm.xyz / max(1.0 - cm.w, 1.0e-9), vec3<f32>(0.0), vec3<f32>(1.0));
     }
     // The fractal haze in front of everything the ray saw (mirrors Shader::trace).
     if (hz) {

@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
 //! Renders every sky preset at several times of day as one sheet (rows: presets, columns:
-//! hours), to judge changes to the sky model: `sky_sheet out.png [--panorama]`.
+//! hours), to judge changes to the sky model: `sky_sheet out.png [--panorama]
+//! [--clouds <preset>] [--rows clouds]` (`--rows clouds`: rows are the cloud presets over
+//! Earth clear instead of the sky presets).
 
 use rmb_core::Scene;
 use rmb_core::scene::{BackgroundMode, Projection};
@@ -14,14 +16,26 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let out = args.get(1).cloned().unwrap_or_else(|| "sky_sheet.png".into());
     let panorama = args.iter().any(|a| a == "--panorama");
+    let clouds = args.iter().position(|a| a == "--clouds").and_then(|i| args.get(i + 1)).cloned();
+    let cloud_rows = args.windows(2).any(|w| w[0] == "--rows" && w[1] == "clouds");
     let (w, h) = if panorama { (320u32, 160u32) } else { (256, 144) };
-    let names = Sky::preset_names();
+    let names: Vec<&str> = if cloud_rows { rmb_core::clouds::Clouds::preset_names() } else { Sky::preset_names() };
     let mut sheet = image::RgbaImage::new(w * HOURS.len() as u32, h * names.len() as u32);
     for (row, name) in names.iter().enumerate() {
         for (col, hour) in HOURS.iter().enumerate() {
             let mut s = Scene::default();
             s.background.mode = BackgroundMode::Sky;
-            s.sky.apply_preset(name);
+            if cloud_rows {
+                s.sky.clouds.enabled = true;
+                s.sky.clouds.apply_preset(name);
+            } else {
+                s.sky.apply_preset(name);
+                if let Some(c) = &clouds {
+                    s.sky.clouds.enabled = true;
+                    s.sky.clouds.apply_preset(c);
+                }
+            }
+            s.lighting.ambient = 1.0;
             s.sky.hour = *hour;
             s.camera.position = v3(3.2, -3.2, 0.3);
             s.camera.look_at(v3(0.0, 0.0, 0.6), v3(0.0, 0.0, 1.0));

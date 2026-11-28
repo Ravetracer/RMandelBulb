@@ -258,6 +258,20 @@ Example scene: `sunset-sea.rmb`.
 Try the *Mars* preset at the same time for a blue sunset, or **Height** below 0 (Manual
 placement) for the stars.
 
+## Evening clouds over the sea
+
+Example scene: `evening-clouds.rmb`.
+
+1. Start from the sunset over the sea above, with **Time** at about 18:30.
+2. In the sky's settings, turn on **Clouds** and choose the preset *Cumulus*. The clouds
+   catch the low sun: bright and golden toward it, grey-blue away from it.
+3. Set the ambient **Amount** (Light tab) to 1, so the shadows take the sky's light.
+4. For a darker mood, choose *Storm*; for a clear sky with a few streaks, *High cirrus*.
+5. In an animation, the clouds drift with the **Wind speed** and change with the
+   **Evolution**; their shadows wander over the sea.
+
+![Evening cumulus clouds over the sea](images/howto-evening-clouds.jpg)
+
 ## Grow your own plant with an L-system
 
 1. Select the seabed (add one with **+ › Seabed** if the scene has none) and open its

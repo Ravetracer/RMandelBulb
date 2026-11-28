@@ -12,6 +12,12 @@ and the release workflow uses it as the release notes.
 
 ## [Unreleased]
 
+- Volumetric clouds (Effects › Background › Sky › Clouds): a cloud layer lit by the sky's
+  sun, with coverage, density, type (stratus to cumulonimbus), height, thickness, size,
+  detail, darkness, tint, high cirrus, wind and evolution for animations, and a far deck
+  that closes the horizon. Presets Fair weather, Cumulus, Overcast, Storm, High cirrus.
+  The clouds cast shadows from the sun (light 1), are seen in reflections, the camera can
+  fly into them, and the skylight is taken through them (overcast lights the scene grey).
 - Fine adjustment: Shift while dragging a slider or number field gives 10 times finer
   steps, Ctrl 100 times finer (relative to the current value, no jump); values show up to
   four decimals. Ctrl in the view makes camera turns, pans and zoom ten times finer, Alt

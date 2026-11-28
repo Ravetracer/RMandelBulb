@@ -276,14 +276,14 @@
     ],
     "ambient": 0.35,
     "sky_color": [
-      0.75,
-      0.82,
-      1.0
+      0.05458663,
+      0.04201333,
+      0.058408253
     ],
     "ground_color": [
-      0.35,
-      0.3,
-      0.28
+      0.03446663,
+      0.010864339,
+      0.006623726
     ],
     "ao_mode": "Raytraced",
     "ao_strength": 0.9,
@@ -782,6 +782,29 @@
     "star_brightness": 1.0,
     "sun_light": true,
     "sun_light_strength": 1.0,
-    "day_speed": 0.0
+    "day_speed": 0.0,
+    "clouds": {
+      "enabled": false,
+      "coverage": 0.5,
+      "density": 1.0,
+      "kind": 1.0,
+      "base": 6.0,
+      "thickness": 3.0,
+      "size": 5.0,
+      "detail": 1.0,
+      "wind_direction": 30.0,
+      "wind_speed": 0.3,
+      "evolution": 0.2,
+      "darkness": 0.0,
+      "tint": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "shadows": true,
+      "cirrus": 0.0,
+      "reach": 200.0,
+      "time": 0.0
+    }
   }
 }

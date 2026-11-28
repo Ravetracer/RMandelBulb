@@ -82,6 +82,8 @@ pub struct Sky {
     pub sun_light_strength: f64,
     /// Time-lapse: hours per second in animations.
     pub day_speed: f64,
+    /// Volumetric clouds.
+    pub clouds: crate::clouds::Clouds,
 }
 
 impl Default for Sky {
@@ -111,6 +113,7 @@ impl Default for Sky {
             sun_light: true,
             sun_light_strength: 1.0,
             day_speed: 0.0,
+            clouds: Default::default(),
         };
         s.apply_preset("Earth clear");
         s
@@ -405,7 +408,11 @@ pub fn sync_sun(scene: &mut crate::Scene) -> bool {
     let mut changed = added || *l != before;
     // Ambient: the colors are the sky's and the ground's average light (dark at night); the
     // amount stays the user's and scales them (1 = the sky's own brightness).
-    let (up, down) = hemispheres(&f);
+    // With clouds: the sky's light through them (overcast skies light grey and dim).
+    let (up, down) = match crate::clouds::CloudFrame::for_scene(scene, &f) {
+        Some(cf) => crate::clouds::hemispheres(&cf, &f),
+        None => hemispheres(&f),
+    };
     let lt = &mut scene.lighting;
     let before = (lt.sky_color, lt.ground_color, lt.ambient_camera_relative);
     lt.sky_color = up.map(|v| v as f32);

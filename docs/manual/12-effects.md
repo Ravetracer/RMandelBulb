@@ -71,6 +71,48 @@ the sky at the horizon.
     For a quick time-lapse, set **Time-lapse** to 1–2 hours per second and export an
     animation: the sky, the sun light and its shadows follow the time.
 
+### Clouds
+
+**Clouds** (in the sky's settings) adds volumetric clouds: a layer of real three-dimensional
+clouds above the scene, lit by the sky's sun (white by day, golden and pink at sunset, dark at
+night), casting moving shadows, reflected by the water. The camera can fly into them, and the
+fractal can tower into them.
+
+![The cloud presets (rows: Fair weather, Cumulus, Overcast, Storm, High cirrus) at 7, 10, 13, 18:30, 19:48 and 21:30](images/cloud-presets.jpg)
+
+![The cloud settings](images/inspector-clouds.png){: .half}
+
+**Preset** sets the look: coverage, density, type, thickness, darkness and cirrus. The height,
+size, wind and reach stay.
+
+| Setting | What it does |
+|---------|--------------|
+| **Coverage** | Share of the sky the clouds cover: 0 clear, 1 overcast. A large-scale pattern varies it from place to place. |
+| **Density** | How dense and opaque the clouds are. |
+| **Type** | 0 stratus (a thin flat layer), 1 cumulus (puffy heaps), 2 cumulonimbus (towering storm clouds that spread at the top). |
+| **Height**, **Thickness** | Height of the cloud base above the world's zero level and the thickness of the layer, in world units. Towering types need a thick layer. |
+| **Size** | Typical size of a single cloud (world units). |
+| **Detail** | How much the edges are torn into wisps (at the bottom) and billows (at the top). |
+| **Darkness** | Darker clouds that scatter less light: rain and storm clouds. |
+| **Tint** | Color of the clouds' own reflection; white for Earth, any color for other planets. |
+| **Cirrus** | Thin high streaks above the clouds. |
+| **Wind direction**, **Wind speed** | Where the clouds drift in animations, and how fast (world units per second). |
+| **Evolution** | How fast the clouds change their shape in animations. |
+| **Reach** | How far the layer is drawn in detail. Beyond it a distant deck closes the horizon as far as the coverage says, and far clouds fade into the haze of the horizon. |
+| **Shadows** | The clouds shade the scene from the sun (light 1, when **Sun lights the scene** is on): moving shadows on the sea and the fractal, light shafts in the fog. |
+
+With clouds, the skylight (ambient light) is the sky's light seen through them: an overcast
+sky lights the scene grey and dim, and the ground below the horizon lies in their shade.
+
+!!! tip
+    Clouds are sized in world units, like everything else. For the default scene (the bulb
+    about 2 units across) the defaults put the cloud base 6 units up. For a large scene, raise
+    **Height**, **Thickness**, **Size** and **Reach** together.
+
+!!! note
+    Clouds take time to render: they double the work of the pixels that see the sky in the
+    worst case. Scenes without clouds are not slowed down.
+
 ### Background image
 
 **Image…** puts a panorama image (latitude/longitude) behind the scene. The × removes it. A file
