@@ -113,8 +113,9 @@ pub struct Program {
     /// then: it compiles faster without).
     pub layers: bool,
     pub bump: bool,
-    /// The sky has clouds (GPU switch `CLOUDS`).
+    /// The sky has clouds (GPU switch `CLOUDS`) / lightning (`LIGHTNING`).
     pub clouds: bool,
+    pub lightning: bool,
     /// Shadows let light through glass (`Material::glass_shadows`; the GPU shader includes
     /// that code only then).
     pub glass_shadows: bool,
@@ -394,6 +395,7 @@ impl Program {
             layers: false,
             bump: false,
             clouds: false,
+            lightning: false,
             glass_shadows: false,
             medium: None,
             bubble_sources: Vec::new(),
@@ -477,6 +479,7 @@ impl Program {
             p.bump |= l.target.bends();
         }
         p.clouds = scene.background.mode == crate::scene::BackgroundMode::Sky && scene.sky.clouds.enabled;
+        p.lightning = scene.background.mode == crate::scene::BackgroundMode::Sky && scene.sky.storm.enabled;
         p
     }
 
@@ -551,6 +554,7 @@ impl Program {
         s.push_str(if self.layers { "|layers" } else { "" });
         s.push_str(if self.bump { "|bump" } else { "" });
         s.push_str(if self.clouds { "|clouds" } else { "" });
+        s.push_str(if self.lightning { "|lightning" } else { "" });
         s.push_str(if self.glass_shadows { "|gsh" } else { "" });
         if let Some((j, _)) = self.medium {
             s.push_str(&format!("|med{j}"));

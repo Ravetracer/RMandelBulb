@@ -390,8 +390,8 @@ fn light_depth(cf: &CloudFrame, p: V3) -> f64 {
 /// The clouds along a view ray from `o` (world) in direction `d` up to `t_end` (`f64::MAX`
 /// for rays that miss the scene): what passes (`keep`, 0..1) and the light they add.
 /// `jitter` (0..1) offsets the steps; `air` is the sky's air color in direction `d` (far
-/// clouds fade into it).
-pub fn march(cf: &CloudFrame, o: V3, d: V3, t_end: f64, jitter: f64, air: [f64; 3]) -> (f64, [f64; 3]) {
+/// clouds fade into it); `flash`: lightning inside the clouds (`storm::StormFrame`).
+pub fn march(cf: &CloudFrame, o: V3, d: V3, t_end: f64, jitter: f64, air: [f64; 3], flash: &[crate::storm::CloudLight]) -> (f64, [f64; 3]) {
     let mu = d.dot(cf.sun);
     // Cirrus behind everything (only on rays to the open sky).
     let (mut keep, mut add) = (1.0, [0.0; 3]);
@@ -458,9 +458,10 @@ pub fn march(cf: &CloudFrame, o: V3, d: V3, t_end: f64, jitter: f64, air: [f64; 
         let h = (p.z - cf.base) / (cf.top - cf.base);
         let a = (-cf.sigma * dn * dt).exp();
         let w = trans * (1.0 - a);
+        let fl = if flash.is_empty() { [0.0; 3] } else { crate::storm::cloud_light(flash, p, cf.top - cf.base, cf.sigma) };
         for (k, l) in light.iter_mut().enumerate() {
             let amb = cf.amb_down[k] + (cf.amb_up[k] - cf.amb_down[k]) * h;
-            *l += w * (cf.sun_light[k] * sun + amb * AMBIENT) * cf.tint[k];
+            *l += w * (cf.sun_light[k] * sun + amb * AMBIENT + fl[k]) * cf.tint[k];
         }
         wsum += w;
         tsum += w * t;
@@ -502,7 +503,7 @@ pub fn hemispheres(cf: &CloudFrame, f: &SkyFrame) -> ([f64; 3], [f64; 3]) {
         let r = (1.0 - z * z).sqrt();
         let d = v3(r * a.cos(), r * a.sin(), z);
         let air = crate::sky::air(f, d);
-        let (keep, add) = march(cf, V3::ZERO, d, f64::MAX, 0.5, air);
+        let (keep, add) = march(cf, V3::ZERO, d, f64::MAX, 0.5, air, &[]);
         for k in 0..3 {
             up[k] += (air[k] * keep + add[k]) / N as f64;
         }
@@ -602,8 +603,8 @@ mod tests {
         let clear = frame(0.0);
         let overcast = frame(1.0);
         let up = v3(0.1, 0.2, 0.97).normalize();
-        let (k0, _) = march(&clear, V3::ZERO, up, f64::MAX, 0.5, [0.0; 3]);
-        let (k1, l1) = march(&overcast, V3::ZERO, up, f64::MAX, 0.5, [0.0; 3]);
+        let (k0, _) = march(&clear, V3::ZERO, up, f64::MAX, 0.5, [0.0; 3], &[]);
+        let (k1, l1) = march(&overcast, V3::ZERO, up, f64::MAX, 0.5, [0.0; 3], &[]);
         assert_eq!(k0, 1.0);
         assert!(k1 < 0.2, "overcast lets {k1} through");
         assert!(l1.iter().all(|v| *v > 0.0));
@@ -612,7 +613,7 @@ mod tests {
         // Denser clouds let less through.
         let mut thick = overcast;
         thick.sigma *= 3.0;
-        assert!(march(&thick, V3::ZERO, up, f64::MAX, 0.5, [0.0; 3]).0 <= k1);
+        assert!(march(&thick, V3::ZERO, up, f64::MAX, 0.5, [0.0; 3], &[]).0 <= k1);
     }
 
     #[test]

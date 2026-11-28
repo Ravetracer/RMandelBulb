@@ -272,6 +272,23 @@ Example scene: `evening-clouds.rmb`.
 
 ![Evening cumulus clouds over the sea](images/howto-evening-clouds.jpg)
 
+## A thunderstorm at night
+
+Example scene: `night-storm.rmb`.
+
+1. Start from the evening clouds above, choose the cloud preset *Storm* and set **Time** to
+   about 22:30: a dark night under heavy clouds.
+2. Turn on **Lightning** and choose **Fixed**. Turn **Direction** until the bolt stands
+   beside the fractal in the view; **Distance** about 30.
+3. Try a few **Variant** numbers for a bolt shape you like. **Moment** 0 is the brightest
+   flash; a little later the light is dimmer and the branches are gone.
+4. Keep the ambient **Amount** (Light tab) at 1: the flashing clouds then light the
+   fractal from above, while the bolt lights its side and glitters on the sea.
+5. For an animation, switch to **Random** and set **Strikes** per minute; the clouds drift
+   and the strikes flicker as the frames run.
+
+![A thunderstorm at night over the sea](images/howto-night-storm.jpg)
+
 ## Grow your own plant with an L-system
 
 1. Select the seabed (add one with **+ › Seabed** if the scene has none) and open its

@@ -1579,3 +1579,47 @@ fn gpu_matches_cpu_with_clouds() {
     inside.camera.look_at(p(0.0, 0.0, 7.0), p(0.0, 0.0, 1.0));
     render(inside);
 }
+
+#[test]
+fn gpu_matches_cpu_with_lightning() {
+    use rmb_core::compose::{Primitive, SceneObject, Shape, Transform};
+    use rmb_core::storm::{Storm, StrikeMode};
+    let p = |x: f64, y: f64, z: f64| rmb_core::v3(x, y, z);
+    let mut scene = Scene::default();
+    scene.lighting.ao_mode = rmb_core::scene::AoMode::Fast;
+    scene.background.mode = rmb_core::scene::BackgroundMode::Sky;
+    scene.sky.hour = 23.0;
+    scene.lighting.ambient = 1.0;
+    scene.march.max_distance = 100.0;
+    scene.sky.clouds.enabled = true;
+    scene.sky.clouds.apply_preset("Storm");
+    scene.objects = vec![SceneObject { name: "Sea".into(), shape: Shape::Primitive(Primitive::water()), transform: Transform { position: p(0.0, 0.0, -1.2), ..Default::default() }, ..Default::default() }];
+    scene.camera.position = p(3.0, -3.0, 0.3);
+    scene.camera.look_at(p(-2.0, 2.0, 1.0), p(0.0, 0.0, 1.0));
+    // A bolt beside the bulb, over the sea (its light on the bulb, its reflection).
+    scene.sky.storm = Storm { enabled: true, mode: StrikeMode::Fixed, direction: 125.0, distance: 14.0, ground: -1.2, width: 0.08, ..Storm::default() };
+    let prog = Program::for_scene(&scene);
+    assert!(prog.lightning && prog.clouds);
+    validate(&rmb_gpu::codegen::march_shader(&prog), "lightning");
+    let render = |mut s: Scene| {
+        rmb_core::sky::sync_sun(&mut s);
+        parity(s);
+    };
+    render(scene.clone());
+    // A later stroke with fewer branches, without clouds.
+    let mut clear = scene.clone();
+    clear.sky.clouds.enabled = false;
+    clear.sky.storm.stage = 0.3;
+    render(clear);
+    // Random strikes at a time with a cloud flash or bolt active.
+    let mut random = scene;
+    random.sky.storm.mode = StrikeMode::Random;
+    random.sky.storm.rate = 60.0;
+    random.sky.storm.cloud_flashes = 1.0;
+    let mut t = 0.0;
+    while rmb_core::storm::strikes(&{ let mut s = random.sky.storm.clone(); s.time = t; s }).is_empty() {
+        t += 0.05;
+    }
+    random.sky.storm.time = t;
+    render(random);
+}

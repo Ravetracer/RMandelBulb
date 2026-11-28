@@ -84,6 +84,8 @@ pub struct Sky {
     pub day_speed: f64,
     /// Volumetric clouds.
     pub clouds: crate::clouds::Clouds,
+    /// Thunderstorm: lightning bolts and flashes.
+    pub storm: crate::storm::Storm,
 }
 
 impl Default for Sky {
@@ -114,6 +116,7 @@ impl Default for Sky {
             sun_light_strength: 1.0,
             day_speed: 0.0,
             clouds: Default::default(),
+            storm: Default::default(),
         };
         s.apply_preset("Earth clear");
         s
@@ -413,6 +416,10 @@ pub fn sync_sun(scene: &mut crate::Scene) -> bool {
         Some(cf) => crate::clouds::hemispheres(&cf, &f),
         None => hemispheres(&f),
     };
+    // A lightning flash lights the scene diffusely from the clouds (sky above, less below).
+    let fill = crate::storm::StormFrame::for_scene(scene).map_or([0.0; 3], |f| f.fill());
+    let up = [0, 1, 2].map(|k| up[k] + fill[k]);
+    let down = [0, 1, 2].map(|k| down[k] + fill[k] * 0.4);
     let lt = &mut scene.lighting;
     let before = (lt.sky_color, lt.ground_color, lt.ambient_camera_relative);
     lt.sky_color = up.map(|v| v as f32);

@@ -568,6 +568,29 @@ cargo clippy -j 8 --workspace --all-targets
   compile +0.6 s (5.5 vs 4.9 s with water), a sky-heavy 960 × 540 frame +20 %. Test
   `gpu_matches_cpu_with_clouds`; `sky_sheet --rows clouds [--panorama]` renders the presets.
 
+## Thunderstorms
+
+- `rmb-core/src/storm.rs` (`Sky::storm`; `Program::lightning` → GPU switch `LIGHTNING`):
+  `strikes` (Random: slots of 60 / rate s, one strike per slot from `hash3` — offset,
+  place, kind, shape seed — at most `MAX_STRIKES` active; Fixed: one bolt at direction /
+  distance / variant, `stage` × `DURATION`), `envelope` (2–4 return strokes, decay 0.03 s,
+  continuing current, tail fade; branches follow only the first stroke), `bolt` (main
+  channel by midpoint displacement, 6 levels; up to 10 branches of 4 levels; ≤
+  `MAX_SEGMENTS`), `StormFrame::for_scene` (segments in scene coordinates = world −
+  `Storm::origin`, chunks of `CHUNK` with bounding spheres incl. the halo, envelope folded
+  into the segment weights, cloud lights, the brightest strike's scene light).
+- Scene light: `render::Frame::new` appends a line light (bolt) or point light (cloud flash)
+  after the user's lights when there is room (all renderers, shadows, water get it). The
+  ambient flash: `sky::sync_sun` adds `StormFrame::fill` to the ambient sky / ground colors.
+- `glow` in `trace` (CPU and GPU, no random numbers): per segment the closest distance to
+  the ray part (`ray_segment`), core at least 0.75 px wide (`pixel_angle`, energy kept) +
+  halo; maximum per side of the cloud base (above: added before the cloud composite, below:
+  after). `cloud_light` adds the strikes' light per cloud sample in `clouds::march`.
+- GPU: segments in `lut` from `LUT_BOLTS` (`renderer::bolts_gpu`, `BOLT_CHUNK` = 34 entries
+  per chunk), uniform `storm` (`storm_gpu`). Phase `sky.storm` (1 per second) →
+  `Storm::time`. Compile time: no measurable change. Test `gpu_matches_cpu_with_lightning`;
+  example `sky_demo --storm`.
+
 ## Light through glass
 
 - `Material::glass_shadows` (`Program::glass_shadows`, GPU switch `GLASS_SHADOW`):

@@ -113,6 +113,41 @@ sky lights the scene grey and dim, and the ground below the horizon lies in thei
     Clouds take time to render: they double the work of the pixels that see the sky in the
     worst case. Scenes without clouds are not slowed down.
 
+### Thunderstorm
+
+**Lightning** (in the sky's settings) adds lightning: jagged bolts from the cloud base down
+to the ground or the sea, and flashes inside the clouds. A strike lights the clouds from
+inside and throws its light on the scene, with shadows; the water reflects the bolt. Each
+strike flickers with two to four strokes over about half a second, the branches fade first.
+
+![The thunderstorm settings](images/inspector-storm.png){: .half}
+
+Choose how strikes come:
+
+- **Random**: as the animation runs, strikes come at random times, places and shapes. A
+  still shows a strike only when its time hits one, so use *Fixed* for stills.
+- **Fixed**: one bolt where you place it, at the moment of the flash you choose.
+
+| Setting | What it does |
+|---------|--------------|
+| **Strikes** | Random: strikes per minute. |
+| **Sequence** | Random: number of the random sequence (another number, other strikes). |
+| **Nearest**, **Farthest** | Random: the distance range of strikes around the scene's center (world units). |
+| **Cloud flashes** | Random: share of strikes that only light the clouds from inside, without a bolt. |
+| **Direction**, **Distance** | Fixed: where the bolt strikes, in degrees from the x axis and world units from the scene's center. |
+| **Variant** | Fixed: the bolt's shape; every number gives another path and other branches. |
+| **Moment** | Fixed: the moment of the flash, from the first and brightest stroke (0) to the end of the strike (1). |
+| **Brightness**, **Color** | Brightness and color of bolts and flashes (bluish white on Earth). |
+| **Branches** | How much the bolts branch. |
+| **Width** | Width of a bolt's channel (world units). Far bolts are drawn at least a pixel wide, so they stay visible. |
+| **Bolt top** | Without clouds: the height where bolts start (with clouds they start at the cloud base). |
+| **Strike height** | Where bolts end: the ground or the sea level. |
+| **Scene light** | How strongly a strike lights the scene: a direct light along the bolt with shadows and, when the sky lights the scene, a flash of the ambient light from the clouds. |
+
+!!! tip
+    A strike's light is added after your own lights. With all eight lights in use, the
+    strike still glows and lights the clouds, but not the scene.
+
 ### Background image
 
 **Image…** puts a panorama image (latitude/longitude) behind the scene. The × removes it. A file

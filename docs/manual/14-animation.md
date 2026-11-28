@@ -127,6 +127,9 @@ Some settings are speeds. They act only in animations, adding up over the frames
   sky follow the time of day.
 - The **clouds** run on their own clock: **Wind speed** moves them, **Evolution** changes
   their shapes, their shadows follow.
+- **Lightning** in *Random* mode strikes by its own clock: **Strikes** per minute, each
+  flickering for about half a second. The same scene and settings always give the same
+  strikes, also when frames render on several computers.
 
 These speeds can themselves differ between keyframes; the program blends them and sums them up
 over time, so the movement stays smooth.

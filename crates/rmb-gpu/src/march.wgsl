@@ -122,6 +122,10 @@ struct U {
     // clouds shade light 1; [5] sun light; [6] ambient above; [7] below; [8] tint × albedo;
     // [9] world position of the origin (deep zoom).
     cloud: array<vec4<f32>, 10>,
+    // Lightning (storm::StormFrame, switch LIGHTNING): [0] LUT index of the bolt chunks,
+    // chunk count, cloud base (bolt parts above glow behind the clouds), halo width; [1] color
+    // × brightness, w: lights inside the clouds; [2], [4] their positions; [3], [5] colors.
+    storm: array<vec4<f32>, 6>,
 }
 
 @group(0) @binding(0) var<uniform> u: U;
@@ -2981,7 +2985,11 @@ fn cloud_march(o: vec3<f32>, d: vec3<f32>, t_end: f32, jitter: f32, air_in: vec3
         let a = exp(-sigma * dn * dt);
         let w = trans * (1.0 - a);
         let amb = mix(u.cloud[7].xyz, u.cloud[6].xyz, h);
-        light += w * (sun_light * sun + amb) * tint;
+        var fl = vec3<f32>(0.0);
+        if (LIGHTNING) {
+            fl = storm_cloud_light(p, top - base, sigma);
+        }
+        light += w * (sun_light * sun + amb + fl) * tint;
         wsum += w;
         tsum += w * t;
         trans *= a;
@@ -2995,6 +3003,84 @@ fn cloud_march(o: vec3<f32>, d: vec3<f32>, t_end: f32, jitter: f32, air_in: vec3
     let fade = exp(-(tsum / wsum) / (u.cloud[0].z * 0.35));
     light = light * fade + air * (1.0 - trans) * (1.0 - fade);
     return vec4<f32>(light + add * trans, keep * trans);
+}
+
+// ---- Lightning (mirror storm.rs; only used with LIGHTNING) ----
+
+const BOLT_CORE: f32 = 60.0;
+const BOLT_HALO: f32 = 0.06;
+const BOLT_CHUNK: u32 = 34u;
+
+// Mirrors storm::cloud_light.
+fn storm_cloud_light(p: vec3<f32>, r0: f32, sigma: f32) -> vec3<f32> {
+    var out = vec3<f32>(0.0);
+    let n = u32(u.storm[1].w);
+    for (var i = 0u; i < n; i++) {
+        let dist = length(p - u.storm[2u + 2u * i].xyz);
+        let k = 1.0 / (1.0 + (dist / r0) * (dist / r0)) * exp(-dist * sigma * 0.02);
+        out += u.storm[3u + 2u * i].xyz * k;
+    }
+    return out;
+}
+
+// Mirrors storm::ray_segment: (distance, ray parameter).
+fn bolt_ray_segment(o: vec3<f32>, d: vec3<f32>, t_end: f32, a: vec3<f32>, b: vec3<f32>) -> vec2<f32> {
+    let e = b - a;
+    let w = o - a;
+    let dd = dot(d, d);
+    let de = dot(d, e);
+    let ee = dot(e, e);
+    let dw = dot(d, w);
+    let ew = dot(e, w);
+    let den = dd * ee - de * de;
+    var s = 0.0;
+    if (den > 1.0e-12) {
+        s = clamp((de * ew - ee * dw) / den, 0.0, t_end);
+    }
+    var uu = clamp((de * s + ew) / max(ee, 1.0e-12), 0.0, 1.0);
+    s = clamp((de * uu - dw) / max(dd, 1.0e-12), 0.0, t_end);
+    uu = clamp((de * s + ew) / max(ee, 1.0e-12), 0.0, 1.0);
+    return vec2<f32>(length(o + d * s - (a + e * uu)), s);
+}
+
+struct BoltGlow {
+    below: vec3<f32>,
+    above: vec3<f32>,
+}
+
+// Mirrors storm::glow: the bolts' light along the ray (below / above the cloud base).
+fn bolt_glow(o: vec3<f32>, d: vec3<f32>, t_end: f32) -> BoltGlow {
+    var below = 0.0;
+    var above = 0.0;
+    let base = u32(u.storm[0].x);
+    let chunks = u32(u.storm[0].y);
+    let split = u.storm[0].z;
+    let hw = u.storm[0].w;
+    let pixel = u.cam_up.w;
+    for (var c = 0u; c < chunks; c++) {
+        let h = base + c * BOLT_CHUNK;
+        let sph = lut[h];
+        let sc = clamp(dot(sph.xyz - o, d), 0.0, t_end);
+        if (length(o + d * sc - sph.xyz) > sph.w) {
+            continue;
+        }
+        let n = u32(lut[h + 1u].x);
+        for (var k = 0u; k < n; k++) {
+            let ga = lut[h + 2u + 2u * k];
+            let gb = lut[h + 3u + 2u * k];
+            let rs = bolt_ray_segment(o, d, t_end, ga.xyz, gb.xyz);
+            let wc = max(ga.w, pixel * rs.y * 0.75);
+            let core = ga.w / wc * exp(-(rs.x / wc) * (rs.x / wc)) * BOLT_CORE;
+            let halo = BOLT_HALO / (1.0 + (rs.x / hw) * (rs.x / hw));
+            let v = (core + halo) * gb.w;
+            if (o.z + d.z * rs.y > split) {
+                above = max(above, v);
+            } else {
+                below = max(below, v);
+            }
+        }
+    }
+    return BoltGlow(u.storm[1].xyz * below, u.storm[1].xyz * above);
 }
 
 // Mirrors clouds::shadow, for light 1 when the clouds shade it (u.cloud[4].w).
@@ -4610,6 +4696,17 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sx: f32, 
     }
     // Clouds between the ray's start and what it hit, or the sky (mirrors Shader::trace:
     // one random number, only with clouds).
+    // Lightning bolts: the parts above the cloud base glow behind the clouds, the rest in
+    // front of them (mirrors Shader::trace).
+    var bolt = BoltGlow(vec3<f32>(0.0), vec3<f32>(0.0));
+    if (LIGHTNING && !inside && !water && u.storm[0].y > 0.5) {
+        var bend = CLOUD_OPEN;
+        if (h.hit) {
+            bend = h.t - t_base;
+        }
+        bolt = bolt_glow(o + d * t_base, d, bend);
+    }
+    c += bolt.above;
     if (CLOUDS && !inside && !water) {
         let jitter = rnd();
         var end = CLOUD_OPEN;
@@ -4620,6 +4717,7 @@ fn trace(o: vec3<f32>, d: vec3<f32>, t0: f32, max_t: f32, t_base: f32, sx: f32, 
         c = c * cm.w + cm.xyz;
         tr.albedo = tr.albedo * cm.w + (1.0 - cm.w) * clamp(cm.xyz / max(1.0 - cm.w, 1.0e-9), vec3<f32>(0.0), vec3<f32>(1.0));
     }
+    c += bolt.below;
     // The fractal haze in front of everything the ray saw (mirrors Shader::trace).
     if (hz) {
         c = c * haze_keep + haze_light;

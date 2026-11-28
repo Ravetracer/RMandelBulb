@@ -161,6 +161,8 @@ struct Uniforms {
     atmo: [[f32; 4]; 8],
     /// The clouds (`clouds_gpu`).
     cloud: [[f32; 4]; 10],
+    /// The storm (`storm_gpu`).
+    storm: [[f32; 4]; 6],
 }
 
 /// Splits an f64 into the high and low f32 of a double-float.
@@ -494,6 +496,48 @@ const LUT_BANDS: usize = LUT_LAYERS + 9 * rmb_core::texture::MAX_LAYERS * 7;
 /// The glow bands of the main material and the objects' own ones (appended to `lut` at
 /// `LUT_BANDS`: per material `MAX_BANDS` bands of 2 entries: position, half width, core half
 /// width, emission; color, 1 = in use).
+/// LUT entries before the lightning bolts (`bolts_gpu`): after the glow bands of 9 materials.
+const LUT_BOLTS: usize = LUT_BANDS + 9 * rmb_core::gradient::MAX_BANDS * 2;
+/// LUT entries per bolt chunk: center + radius, segment count, then per segment (a, radius),
+/// (b, brightness).
+const BOLT_CHUNK: usize = 2 + 2 * rmb_core::storm::CHUNK;
+
+/// The active lightning bolts for march.wgsl `bolt_glow`, appended from `LUT_BOLTS`.
+fn bolts_gpu(scene: &Scene, lut: &mut Vec<[f32; 4]>) {
+    let Some(f) = rmb_core::storm::StormFrame::for_scene(scene) else { return };
+    lut.resize(LUT_BOLTS, [0.0; 4]);
+    let v = |p: rmb_core::V3, w: f64| [p.x as f32, p.y as f32, p.z as f32, w as f32];
+    for c in &f.chunks {
+        let start = lut.len();
+        lut.push(v(c.center, c.radius));
+        lut.push([c.segs.len() as f32, 0.0, 0.0, 0.0]);
+        for k in 0..rmb_core::storm::CHUNK {
+            match c.segs.get(k) {
+                Some(g) => {
+                    lut.push(v(g.a, g.r));
+                    lut.push(v(g.b, g.w));
+                }
+                None => lut.extend([[0.0; 4]; 2]),
+            }
+        }
+        debug_assert_eq!(lut.len() - start, BOLT_CHUNK, "march.wgsl BOLT_CHUNK");
+    }
+}
+
+/// The storm for march.wgsl (layout in the `storm` field of `U`; zero without lightning).
+fn storm_gpu(scene: &Scene) -> [[f32; 4]; 6] {
+    let Some(f) = rmb_core::storm::StormFrame::for_scene(scene) else { return [[0.0; 4]; 6] };
+    let v = |a: [f64; 3], w: f64| [a[0] as f32, a[1] as f32, a[2] as f32, w as f32];
+    let mut out = [[0.0f32; 4]; 6];
+    out[0] = [LUT_BOLTS as f32, f.chunks.len() as f32, f.split as f32, f.halo_width as f32];
+    out[1] = v(f.color, f.cloud_lights.len().min(2) as f64);
+    for (i, l) in f.cloud_lights.iter().take(2).enumerate() {
+        out[2 + 2 * i] = v(l.pos.to_array(), 0.0);
+        out[3 + 2 * i] = v(l.color, 0.0);
+    }
+    out
+}
+
 fn bands_gpu(scene: &Scene, lut: &mut Vec<[f32; 4]>) {
     use rmb_core::gradient::{MAX_BANDS, active_bands};
     lut.resize(LUT_BANDS, [0.0; 4]);
@@ -865,6 +909,7 @@ fn uniforms(scene: &Scene, prog: &Program, w: u32, h: u32, fast: bool, tile: Opt
         },
         atmo: sky_gpu(&rmb_core::sky::SkyFrame::new(&scene.sky)),
         cloud: clouds_gpu(scene),
+        storm: storm_gpu(scene),
         haze2: [if scene.fog.haze_shape == rmb_core::scene::HazeShape::Iterations { 1.0 } else { 0.0 }, scene.fog.haze_size as f32, 0.0, 0.0],
     }
 }
@@ -1305,6 +1350,7 @@ impl GpuRenderer {
         let objs = objects_gpu(&shade, &prog, &mut lut);
         layers_gpu(&shade, &mut lut);
         bands_gpu(&shade, &mut lut);
+        bolts_gpu(&shade, &mut lut);
         let device = self.ctx.device.clone();
         let device = &device;
         let n = objs.len().min(rmb_core::compose::MAX_OBJECTS);

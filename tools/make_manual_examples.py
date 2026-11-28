@@ -216,9 +216,18 @@ def evening_clouds():
     render(out, "howto-evening-clouds.jpg")
 
 
+def night_storm():
+    """A night thunderstorm over the sea with a bolt beside the bulb."""
+    out = EXAMPLES / "night-storm.rmb"
+    EXAMPLES.mkdir(parents=True, exist_ok=True)
+    demo = ROOT / "target" / "release" / "examples" / "sky_demo"
+    subprocess.run([str(demo), str(out), "--storm"], check=True, capture_output=True)
+    render(out, "howto-night-storm.jpg")
+
+
 if __name__ == "__main__":
     only = sys.argv[1:]
-    for f in (neon_steps, hybrid_ranges, own_formula, glass, composition, deep_zoom, projections, vr_panorama, sunset_sea, evening_clouds):
+    for f in (neon_steps, hybrid_ranges, own_formula, glass, composition, deep_zoom, projections, vr_panorama, sunset_sea, evening_clouds, night_storm):
         if only and f.__name__ not in only:
             continue
         f()

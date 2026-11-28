@@ -12,6 +12,12 @@ and the release workflow uses it as the release notes.
 
 ## [Unreleased]
 
+- Thunderstorms (Effects › Background › Sky › Thunderstorm): lightning bolts from the cloud
+  base to the ground or the sea (jagged, branching, flickering with several strokes) and
+  flashes inside the clouds. Strikes light the clouds from inside and the scene (a line
+  light with shadows plus an ambient flash), the water reflects them. Random strikes by
+  the clock for animations (rate, sequence, distance range, share of cloud flashes) or one
+  fixed bolt for stills (direction, distance, variant, moment).
 - Water › Bubble rim: width of the bubbles' mirror rim (0 none .. 1 physical); the default
   is thinner than before, so bubbles no longer look outlined.
 - Volumetric clouds (Effects › Background › Sky › Clouds): a cloud layer lit by the sky's

@@ -65,6 +65,7 @@ pub fn show(ui: &mut Ui, sky: &mut Sky) {
         widgets::slider_log(ui, "Brightness", "Overall brightness of the sky and the stars", &mut sky.brightness, 0.0..=8.0, d.brightness);
     });
     clouds(ui, &mut sky.clouds);
+    storm(ui, &mut sky.storm, sky.clouds.enabled);
     sub(ui, "Sun and stars");
     widgets::grid(ui, "sky-disk", |ui| {
         widgets::color(ui, "Sun color", "Color of the sunlight before the atmosphere", &mut sky.sun_color);
@@ -119,6 +120,50 @@ fn clouds(ui: &mut Ui, c: &mut rmb_core::clouds::Clouds) {
     });
 }
 
+/// The thunderstorm's settings (part of the sky editor).
+fn storm(ui: &mut Ui, s: &mut rmb_core::storm::Storm, clouds: bool) {
+    use rmb_core::storm::{Storm, StrikeMode};
+    let d = Storm::default();
+    sub(ui, "Thunderstorm");
+    widgets::grid(ui, "sky-storm-on", |ui| {
+        widgets::checkbox(ui, "Lightning", "Lightning bolts and flashes inside the clouds: they light the clouds and the scene (with shadows), and the water reflects them", &mut s.enabled);
+    });
+    if !s.enabled {
+        return;
+    }
+    widgets::segmented(
+        ui,
+        &mut s.mode,
+        &[
+            (StrikeMode::Random, StrikeMode::Random.label(), "Strikes at random times, places and shapes as the animation runs (a still shows one only when its time hits a strike)"),
+            (StrikeMode::Fixed, StrikeMode::Fixed.label(), "One bolt where you place it, at the moment of the flash you choose (for stills)"),
+        ],
+    );
+    widgets::grid(ui, "sky-storm", |ui| {
+        if s.mode == StrikeMode::Random {
+            widgets::slider_log(ui, "Strikes", "Strikes per minute in animations", &mut s.rate, 0.5..=120.0, d.rate);
+            widgets::slider_u32(ui, "Sequence", "Number of the random sequence of strikes", &mut s.seed, 0..=999, d.seed);
+            widgets::slider_log(ui, "Nearest", "Nearest distance of strikes from the scene's center (world units)", &mut s.distance_min, 0.5..=500.0, d.distance_min);
+            widgets::slider_log(ui, "Farthest", "Farthest distance of strikes from the scene's center (world units)", &mut s.distance_max, 1.0..=2000.0, d.distance_max);
+            widgets::slider(ui, "Cloud flashes", "Share of strikes that only light the clouds from inside, without a bolt", &mut s.cloud_flashes, 0.0..=1.0, d.cloud_flashes);
+        } else {
+            widgets::slider(ui, "Direction", "Where the bolt strikes: degrees from the x axis around the scene's center", &mut s.direction, -180.0..=180.0, d.direction);
+            widgets::slider_log(ui, "Distance", "How far from the scene's center the bolt strikes (world units)", &mut s.distance, 0.5..=1000.0, d.distance);
+            widgets::slider_u32(ui, "Variant", "Shape of the bolt: every number gives another path and branches", &mut s.variant, 0..=999, d.variant);
+            widgets::slider(ui, "Moment", "The moment of the flash: 0 the first, brightest stroke; later the bolt flickers with further strokes and fades", &mut s.stage, 0.0..=1.0, d.stage);
+        }
+        widgets::slider_log(ui, "Brightness", "Brightness of the bolts and flashes", &mut s.brightness, 0.05..=10.0, d.brightness);
+        widgets::color(ui, "Color", "Color of the lightning (bluish white on Earth)", &mut s.color);
+        widgets::slider(ui, "Branches", "How much the bolts branch", &mut s.branches, 0.0..=1.0, d.branches);
+        widgets::slider_log(ui, "Width", "Width of a bolt's channel (world units); far bolts are drawn at least a pixel wide", &mut s.width, 0.001..=2.0, d.width);
+        if !clouds {
+            widgets::slider_log(ui, "Bolt top", "Where the bolts start without clouds (world height; with clouds they start at the cloud base)", &mut s.top, 0.1..=200.0, d.top);
+        }
+        widgets::slider(ui, "Strike height", "Where the bolts end: the height of the ground or the sea level (world units)", &mut s.ground, -50.0..=50.0, d.ground);
+        widgets::slider_log(ui, "Scene light", "How strongly a strike lights the scene (direct light with shadows; with the sky lighting the scene also a flash of the ambient light)", &mut s.scene_light, 0.0..=10.0, d.scene_light);
+    });
+}
+
 fn sub(ui: &mut Ui, text: &str) {
     ui.add_space(4.0);
     ui.label(RichText::new(text).color(theme::TEXT_MUTED).size(theme::fs(11.0)));
@@ -159,7 +204,7 @@ fn strip_image(sky: &Sky) -> ColorImage {
             let d = rmb_core::v3(el.cos() * az.cos(), el.cos() * az.sin(), el.sin());
             let mut c = rmb_core::sky::radiance(&f, d);
             if let Some(cf) = &cf {
-                let (keep, add) = rmb_core::clouds::march(cf, rmb_core::V3::ZERO, d, f64::MAX, 0.5, rmb_core::sky::air(&f, d));
+                let (keep, add) = rmb_core::clouds::march(cf, rmb_core::V3::ZERO, d, f64::MAX, 0.5, rmb_core::sky::air(&f, d), &[]);
                 c = [0, 1, 2].map(|k| c[k] * keep + add[k]);
             }
             let enc = |v: f64| (rmb_core::render::srgb_encode((v / (1.0 + v * 0.25)).clamp(0.0, 1.0)) * 255.0).round() as u8;

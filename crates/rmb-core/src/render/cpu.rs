@@ -22,6 +22,8 @@ pub struct Shader<'a> {
     pub sky: crate::sky::SkyFrame,
     pub clouds: Option<crate::clouds::CloudFrame>,
     pub cloud_sun: bool,
+    /// Active lightning (bolts, flashes).
+    pub storm: Option<crate::storm::StormFrame>,
     /// The 16 × 8 copy of the background image for ambient light.
     pub bg_ambient: Option<std::sync::Arc<crate::maps::Map>>,
     /// Color map with its rotation matrix and average color (display values).
@@ -637,6 +639,7 @@ impl<'a> Shader<'a> {
             sky,
             cloud_sun: clouds.is_some() && scene.sky.clouds.shadows && scene.sky.sun_light,
             clouds,
+            storm: crate::storm::StormFrame::for_scene(scene),
             bg_ambient: super::background_maps(scene).map(|(_, s, _)| s),
             color_map: crate::maps::get_any(&scene.material.color_map.image).map(|m| {
                 let avg = m.average();
@@ -2097,14 +2100,28 @@ impl<'a> Shader<'a> {
         }
         // Clouds between the ray's start and what it hit (or the sky): one random number for
         // the step offset, only with clouds (march.wgsl the same).
-        if let Some(cf) = self.clouds.as_ref().filter(|_| !inside && !water) {
+        // Lightning bolts: the parts above the cloud base glow behind the clouds, the rest in
+        // front of them (march.wgsl the same).
+        let open_air = !inside && !water;
+        let bolt = match self.storm.as_ref().filter(|f| open_air && !f.chunks.is_empty()) {
+            Some(f) => crate::storm::glow(f, o + d * t_base, d, hit.as_ref().map_or(f64::MAX, |h| h.t - t_base), fr.pixel_angle),
+            None => ([0.0; 3], [0.0; 3]),
+        };
+        for (ck, b) in c.iter_mut().zip(bolt.1) {
+            *ck += b;
+        }
+        if let Some(cf) = self.clouds.as_ref().filter(|_| open_air) {
             let jitter = rng.next_f64();
             let end = hit.as_ref().map_or(f64::MAX, |h| h.t - t_base);
-            let (keep, add) = crate::clouds::march(cf, o + d * t_base, d, end, jitter, crate::sky::air(&self.sky, d));
+            let flash = self.storm.as_ref().map_or(&[][..], |f| &f.cloud_lights[..]);
+            let (keep, add) = crate::clouds::march(cf, o + d * t_base, d, end, jitter, crate::sky::air(&self.sky, d), flash);
             for k in 0..3 {
                 c[k] = c[k] * keep + add[k];
                 albedo[k] = albedo[k] * keep + (1.0 - keep) * (add[k] / (1.0 - keep).max(1e-9)).clamp(0.0, 1.0);
             }
+        }
+        for (ck, b) in c.iter_mut().zip(bolt.0) {
+            *ck += b;
         }
         // The fractal haze in front of everything the ray saw.
         if haze_on {

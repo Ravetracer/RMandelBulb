@@ -354,6 +354,25 @@ impl Frame {
                 }),
             })
             .collect();
+        // A lightning strike lights the scene (after the user's lights, while there is room).
+        let mut lights: Vec<FrameLight> = lights;
+        if let Some((a, b, color)) = crate::storm::StormFrame::for_scene(scene).and_then(|f| f.scene_light)
+            && lights.len() < crate::scene::MAX_LIGHTS
+        {
+            let line = (b - a).length() > 1e-9;
+            lights.push(FrameLight {
+                dir: crate::math::v3(0.0, 0.0, 1.0),
+                point: Some(a),
+                shape: if line { LightShape::Line { end: b } } else { LightShape::Point },
+                color,
+                specular: 1.0,
+                shadows: true,
+                softness: if line { 0.0 } else { 0.1 },
+                diffuse: crate::scene::DiffuseCurve::default(),
+                occlusion: 0.0,
+                glow: None,
+            });
+        }
         let view = ViewFrame::new(scene);
         let (ew, eh) = view.eye_size(width, height);
         let (ew, eh) = (ew as f64, eh as f64);
@@ -655,6 +674,7 @@ pub fn shifted_scene(scene: &Scene, r: V3) -> Scene {
     let mut s = scene.clone();
     s.camera.position = s.camera.position - r;
     s.sky.clouds.origin = r.to_array();
+    s.sky.storm.origin = r.to_array();
     if let Some(c) = &mut s.motion_end {
         c.position = c.position - r;
     }
