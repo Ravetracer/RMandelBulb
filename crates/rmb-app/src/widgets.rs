@@ -363,13 +363,15 @@ mod tests {
             let mut events = events;
             events.insert(0, egui::Event::ModifiersChanged(mods_now.get()));
             let raw = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600.0, 200.0))), events, ..Default::default() };
-            let _ = ctx.run_ui(raw, |ui| {
+            ctx.run_ui(raw, |ui| {
                 let r = super::fine_slider(ui, v, 0.0..=24.0, false, "");
                 // The knob of a value 10 on the rail (left part of the response).
                 let (w, h) = (ui.spacing().slider_width, ui.spacing().interact_size.y);
                 let radius = h / 2.5;
                 *knob = egui::pos2(r.rect.left() + radius + (w - 2.0 * radius) * 10.0 / 24.0, r.rect.center().y);
-            });
+            })
+            // Nothing paints in the test; dropping the output unapplied is intended.
+            .drop_without_applying_deltas();
         };
         frame(vec![], &mut v, &mut knob);
         let p = knob;
