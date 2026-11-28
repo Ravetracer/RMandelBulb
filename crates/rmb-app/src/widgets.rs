@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
-//! Small reusable widgets. Every value control resets to its default on double-click.
+//! Small reusable widgets. Every value control resets to its default on double-click; while
+//! dragging, Shift makes it 10 times and Ctrl 100 times finer (`fine_drag`).
 
 use egui::{Color32, Response, RichText, Ui, vec2};
 
@@ -82,10 +83,72 @@ pub fn reset_on_double_click<T: Copy + PartialEq>(mut r: Response, v: &mut T, de
     r
 }
 
+/// How much finer a drag moves values: Shift 10 times, Ctrl 100 times (`None`: normal).
+pub fn fine_factor(ui: &Ui) -> Option<f64> {
+    ui.input(|i| {
+        if i.modifiers.command {
+            Some(0.01)
+        } else if i.modifiers.shift {
+            Some(0.1)
+        } else {
+            None
+        }
+    })
+}
+
+/// A value as text: up to four decimals from 1 on, four significant digits below, without
+/// trailing zeros (at least one decimal).
+pub fn fmt_value(v: f64) -> String {
+    let a = v.abs();
+    let dec = if a >= 1.0 || a == 0.0 { 4 } else { (3 - a.log10().floor() as i32).clamp(4, 9) as usize };
+    let mut s = format!("{v:.dec$}");
+    if s.contains('.') {
+        while s.ends_with('0') {
+            s.pop();
+        }
+        if s.ends_with('.') {
+            s.push('0');
+        }
+    }
+    s
+}
+
+/// Fine adjustment of a slider just added (`r`, value `old` before it): with Shift or Ctrl
+/// held, the drag moves the value relative to where it was, 10 or 100 times slower than the
+/// slider's scale, instead of jumping to the pointer. Call right after `ui.add`.
+pub fn fine_drag(ui: &Ui, r: &mut Response, old: f64, v: &mut f64, range: &std::ops::RangeInclusive<f64>, log: bool) {
+    let Some(k) = fine_factor(ui) else { return };
+    if !(r.dragged() || r.drag_stopped() || r.clicked()) {
+        return;
+    }
+    let dx = r.drag_delta().x as f64;
+    let w = ui.spacing().slider_width.max(20.0) as f64;
+    let (lo, hi) = (*range.start(), *range.end());
+    let new = if log && hi > 0.0 && old > 0.0 {
+        // Equal ratios per pixel, as on the logarithmic slider.
+        let lo_pos = if lo > 0.0 { lo } else { hi * 1e-4 };
+        old * ((hi / lo_pos).ln() * dx / w * k).exp()
+    } else {
+        old + (hi - lo) * dx / w * k
+    };
+    if *v != new {
+        *v = new;
+        r.mark_changed();
+    }
+}
+
+/// A slider with the fine adjustment and the value format of this module.
+pub fn fine_slider(ui: &mut Ui, v: &mut f64, range: std::ops::RangeInclusive<f64>, log: bool, suffix: &str) -> Response {
+    let old = *v;
+    let mut r = ui.add(egui::Slider::new(v, range.clone()).logarithmic(log).clamping(egui::SliderClamping::Never).suffix(suffix).custom_formatter(|x, _| fmt_value(x)));
+    fine_drag(ui, &mut r, old, v, &range, log);
+    r
+}
+
 /// Labeled slider row (soft range: typed values may leave it).
 pub fn slider(ui: &mut Ui, text: &str, tip: &str, v: &mut f64, range: std::ops::RangeInclusive<f64>, default: f64) -> Response {
     label(ui, text, tip);
-    let r = ui.add(egui::Slider::new(v, range).clamping(egui::SliderClamping::Never).max_decimals(4));
+    let r = fine_slider(ui, v, range, false, "");
     ui.end_row();
     let r = if tip.is_empty() { r } else { r.on_hover_text(tip) };
     reset_on_double_click(r, v, default)
@@ -93,7 +156,7 @@ pub fn slider(ui: &mut Ui, text: &str, tip: &str, v: &mut f64, range: std::ops::
 
 pub fn slider_log(ui: &mut Ui, text: &str, tip: &str, v: &mut f64, range: std::ops::RangeInclusive<f64>, default: f64) -> Response {
     label(ui, text, tip);
-    let r = ui.add(egui::Slider::new(v, range).logarithmic(true).clamping(egui::SliderClamping::Never).max_decimals(5));
+    let r = fine_slider(ui, v, range, true, "");
     ui.end_row();
     let r = if tip.is_empty() { r } else { r.on_hover_text(tip) };
     reset_on_double_click(r, v, default)
@@ -107,10 +170,25 @@ pub fn slider_u32(ui: &mut Ui, text: &str, tip: &str, v: &mut u32, range: std::o
     reset_on_double_click(r, v, default)
 }
 
+/// A drag number with Ctrl for 100 times finer steps (egui's own Shift gives 10 times).
+pub fn fine_drag_value(ui: &mut Ui, v: &mut f64, speed: f64) -> Response {
+    let old = *v;
+    let mut r = ui.add(egui::DragValue::new(v).speed(speed).max_decimals(10).custom_formatter(|x, _| fmt_value(x)));
+    if ui.input(|i| i.modifiers.command) && r.dragged() {
+        let d = r.drag_delta();
+        let new = old + (d.x - d.y) as f64 * speed * 0.01;
+        if *v != new {
+            *v = new;
+            r.mark_changed();
+        }
+    }
+    r
+}
+
 /// Unbounded number with drag-to-change.
 pub fn drag(ui: &mut Ui, text: &str, tip: &str, v: &mut f64, speed: f64, default: f64) -> Response {
     label(ui, text, tip);
-    let r = ui.add(egui::DragValue::new(v).speed(speed).max_decimals(10));
+    let r = fine_drag_value(ui, v, speed);
     ui.end_row();
     let r = if tip.is_empty() { r } else { r.on_hover_text(tip) };
     reset_on_double_click(r, v, default)
@@ -190,4 +268,61 @@ pub fn gradient_strip_sized(ui: &mut Ui, stops: &[rmb_core::scene::ColorStop], w
     ui.painter().add(egui::Shape::mesh(mesh));
     ui.painter().rect_stroke(rect, egui::CornerRadius::same(4), egui::Stroke::new(1.0, theme::BORDER), egui::StrokeKind::Outside);
     resp
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fmt_value;
+
+    /// Drags the slider (0..24, starting at 10) by `dx` pixels from its knob with `mods` held
+    /// and returns the value.
+    fn drag_slider(dx: f32, mods: egui::Modifiers) -> f64 {
+        let ctx = egui::Context::default();
+        let mut v = 10.0;
+        let mut knob = egui::Pos2::ZERO;
+        let frame = |events: Vec<egui::Event>, v: &mut f64, knob: &mut egui::Pos2| {
+            let mut events = events;
+            events.insert(0, egui::Event::ModifiersChanged(mods));
+            let raw = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600.0, 200.0))), events, ..Default::default() };
+            let _ = ctx.run_ui(raw, |ui| {
+                let r = super::fine_slider(ui, v, 0.0..=24.0, false, "");
+                // The knob of a value 10 on the rail (left part of the response).
+                let w = ui.spacing().slider_width;
+                *knob = egui::pos2(r.rect.left() + w * 10.0 / 24.0, r.rect.center().y);
+            });
+        };
+        frame(vec![], &mut v, &mut knob);
+        let p = knob;
+        let press = |down: bool, at: egui::Pos2| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: down, modifiers: mods };
+        frame(vec![egui::Event::PointerMoved(p), press(true, p)], &mut v, &mut knob);
+        let mut at = p;
+        for _ in 0..10 {
+            at.x += dx / 10.0;
+            frame(vec![egui::Event::PointerMoved(at)], &mut v, &mut knob);
+        }
+        frame(vec![press(false, at)], &mut v, &mut knob);
+        v
+    }
+
+    #[test]
+    fn shift_and_ctrl_drag_finer() {
+        let plain = drag_slider(50.0, egui::Modifiers::NONE);
+        let shift = drag_slider(50.0, egui::Modifiers::SHIFT);
+        let ctrl = drag_slider(50.0, egui::Modifiers::COMMAND);
+        let (a, b, c) = (plain - 10.0, shift - 10.0, ctrl - 10.0);
+        assert!(a > 1.0, "plain {plain}");
+        assert!((b / a - 0.1).abs() < 0.03, "shift {shift} plain {plain}");
+        assert!((c / a - 0.01).abs() < 0.003, "ctrl {ctrl} plain {plain}");
+    }
+
+    #[test]
+    fn values_show_up_to_four_decimals() {
+        assert_eq!(fmt_value(8.0), "8.0");
+        assert_eq!(fmt_value(0.4), "0.4");
+        assert_eq!(fmt_value(19.62549), "19.6255");
+        assert_eq!(fmt_value(-123.5), "-123.5");
+        assert_eq!(fmt_value(0.025), "0.025");
+        assert_eq!(fmt_value(0.000123456), "0.0001235");
+        assert_eq!(fmt_value(0.0), "0.0");
+    }
 }

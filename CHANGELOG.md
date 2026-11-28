@@ -12,6 +12,10 @@ and the release workflow uses it as the release notes.
 
 ## [Unreleased]
 
+- Fine adjustment: Shift while dragging a slider or number field gives 10 times finer
+  steps, Ctrl 100 times finer (relative to the current value, no jump); values show up to
+  four decimals. Ctrl in the view makes camera turns, pans, zoom, fly keys and mouse look
+  ten times finer.
 - Sky background (Effects › Background › Sky): an atmosphere lit by the sun for every
   direction — blue by day, sunsets with a blue dusk above (ozone), twilight, stars at night,
   the ground below the horizon. The sun by time of day, latitude and day of the year, or by

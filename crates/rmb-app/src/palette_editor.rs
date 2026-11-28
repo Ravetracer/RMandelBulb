@@ -414,7 +414,7 @@ fn stops(ui: &mut Ui, gradient: &mut Vec<ColorStop>, st: &mut State, glass: bool
                     e.highlight();
                 }
                 ui.spacing_mut().slider_width = (ui.spacing().slider_width - 55.0).max(50.0);
-                if ui.add(egui::Slider::new(&mut s.pos, 0.0..=1.0).max_decimals(3)).on_hover_text("Position of this color on the gradient").changed() {
+                if widgets::fine_slider(ui, &mut s.pos, 0.0..=1.0, false, "").on_hover_text("Position of this color on the gradient (Shift / Ctrl: finer)").changed() {
                     st.selected = Some(i);
                 }
                 if n > 2 && widgets::icon_button(ui, icons::X, "Remove this color").clicked() {

@@ -644,9 +644,11 @@ impl Viewport {
                 }
             };
         }
+        // Ctrl: ten times finer turns, pans, moves and zoom steps.
+        let fine = if ui.input(|i| i.modifiers.command) { 0.1 } else { 1.0 };
         let delta = resp.drag_delta();
         if delta != egui::Vec2::ZERO {
-            let (dx, dy) = (delta.x as f64, delta.y as f64 * inv);
+            let (dx, dy) = (delta.x as f64 * fine, delta.y as f64 * inv * fine);
             let shift = ui.input(|i| i.modifiers.shift);
             if resp.dragged_by(PointerButton::Primary) && self.mode == NavMode::Orbit && !shift {
                 if let Some(pv) = self.pivot {
@@ -669,7 +671,7 @@ impl Viewport {
         }
 
         // Wheel
-        let scroll = if resp.hovered() { ui.input(|i| i.smooth_scroll_delta.y) as f64 } else { 0.0 };
+        let scroll = if resp.hovered() { ui.input(|i| i.smooth_scroll_delta.y) as f64 * fine } else { 0.0 };
         if scroll != 0.0 {
             match self.mode {
                 NavMode::Orbit => {
@@ -716,13 +718,13 @@ impl Viewport {
             // Raw mouse motion: no limits at the window border, full turns and loops.
             let m = ui.input(|i| i.pointer.motion()).unwrap_or_default();
             if m != egui::Vec2::ZERO {
-                scene.camera.rotate_local(m.x as f64 * speed * 0.5, -(m.y as f64) * speed * 0.5 * inv, 0.0);
+                scene.camera.rotate_local(m.x as f64 * speed * 0.5 * fine, -(m.y as f64) * speed * 0.5 * inv * fine, 0.0);
                 self.nav();
             }
             ui.ctx().request_repaint();
         }
         if resp.has_focus() {
-            let dt = ui.input(|i| i.stable_dt).min(0.1) as f64;
+            let dt = ui.input(|i| i.stable_dt).min(0.1) as f64 * fine;
             let (fwd, side, upd, roll, yaw, pitch) = ui.input(|i| {
                 let k = |a: Key, b: Key| (i.key_down(a) as i32 - i.key_down(b) as i32) as f64;
                 (k(Key::W, Key::S), k(Key::D, Key::A), k(Key::R, Key::F), k(Key::E, Key::Q), k(Key::ArrowRight, Key::ArrowLeft), k(Key::ArrowUp, Key::ArrowDown))

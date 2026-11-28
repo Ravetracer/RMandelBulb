@@ -702,7 +702,7 @@ pub fn bands_editor(ui: &mut Ui, gradient: &[ColorStop], bands: &mut Vec<rmb_cor
             widgets::reset_on_double_click(ui.add(egui::DragValue::new(&mut b.emission).range(0.0..=100.0).speed(0.02).max_decimals(2).prefix(format!("{} ", egui_phosphor::regular::SPARKLE)))
                 .on_hover_text("Emission: the band shines by itself, lights its surroundings and glows (0 = a plain color stripe; settings under Mapping › Emissive colors)"), &mut b.emission, db.emission);
             ui.spacing_mut().slider_width = (ui.spacing().slider_width - 60.0).max(50.0);
-            widgets::reset_on_double_click(ui.add(egui::Slider::new(&mut b.pos, 0.0..=1.0).max_decimals(3)).on_hover_text("Position of the band on the gradient"), &mut b.pos, db.pos);
+            widgets::reset_on_double_click(widgets::fine_slider(ui, &mut b.pos, 0.0..=1.0, false, "").on_hover_text("Position of the band on the gradient (Shift / Ctrl: finer)"), &mut b.pos, db.pos);
             if widgets::icon_button(ui, icons::X, "Remove this band").clicked() {
                 remove = Some(i);
             }

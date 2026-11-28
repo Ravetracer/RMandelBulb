@@ -25,6 +25,7 @@ or when the mouse is over it and no text field has the focus.
 | Mouse wheel | Moves toward the surface point under the pointer (or away from it). Each step covers a part of the distance, so you can zoom in as far as you like and never pass through the surface. |
 | Double-click | Looks at the point under the pointer and sets the focus distance of the depth of field there. The point also becomes the center for orbiting. |
 | <kbd>Ctrl</kbd> + click | Selects the object under the pointer (chapter 7). |
+| <kbd>Ctrl</kbd> + drag or wheel | Ten times finer: orbit, look around, pan and zoom move slowly for exact framing. In Fly mode <kbd>Ctrl</kbd> also slows the keys and the mouse look. |
 
 !!! tip
     To zoom in on a detail, point at it and turn the wheel. Then double-click it to center it

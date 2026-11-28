@@ -469,7 +469,7 @@ impl FormulasPanel {
                         }
                         ParamKind::Angle => {
                             widgets::label(ui, &p.label, &tip);
-                            let r = ui.add(egui::Slider::new(&mut v, p.min..=p.max).suffix("°").clamping(egui::SliderClamping::Never).max_decimals(3));
+                            let r = widgets::fine_slider(ui, &mut v, p.min..=p.max, false, "°");
                             widgets::reset_on_double_click(r, &mut v, p.default);
                             ui.end_row();
                         }
