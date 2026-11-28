@@ -526,7 +526,8 @@ cargo clippy -j 8 --workspace --all-targets
 - `sync_sun` writes the sun into light 1 (directional, world-relative, color normalized,
   intensity from the ground light × `sun_light_strength`; adds light 1 when there is none)
   and the ambient light (`hemispheres`: cosine-weighted averages of `air` above and below,
-  48 fixed directions; amount = the brightest sky channel × `sky_light_strength`). A stand-in
+  48 fixed directions) as the ambient sky / ground colors; `Lighting::ambient` stays the
+  user's and scales them (the inspector sets it to 1 when the sky starts driving). A stand-in
   for the World item "the sky lights the scene like an HDRI". Called by the app every frame,
   by `AnimationPlan::scene_of`, and through `animation::still_scene` (returns a synced copy
   when it changes light 1), so every renderer and export sees the same light.

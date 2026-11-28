@@ -21,8 +21,8 @@ and the release workflow uses it as the release notes.
   the ground below the horizon. The sun by time of day, latitude and day of the year, or by
   hand; colors of the air and its haze for alien skies; presets Earth clear, Earth hazy,
   Mars, Titan, Alien green, Alien violet. "Sun lights the scene" makes light 1 follow the
-  sun (direction, color, intensity) and takes the ambient light from the sky's and the
-  ground's colors (Skylight); Time-lapse animates the time of day. Fog with
+  sun (direction, color, intensity) and takes the ambient colors from the sky's and the
+  ground's light (the ambient amount scales it); Time-lapse animates the time of day. Fog with
   "Background color" takes the sky's air (aerial perspective, water melting into the sky).
 - Plants on any surface: the main fractal and every object but the seabed and the water
   have a Plants section with the seabed's L-system plants. Their places are baked onto the

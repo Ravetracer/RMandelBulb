@@ -14,7 +14,8 @@ fill light without.
 
 With the **Sky** background and **Sun lights the scene** (Effects › Background), light 1
 follows the sky's sun: its direction, color and intensity come from the sky, and so do the
-ambient amount and its sky and ground colors (notes above the settings say so).
+ambient sky and ground colors; the ambient **Amount** then scales the sky's light (notes above
+the settings say so).
 
 With **Lights** switched on in the top bar, the lights are drawn in the view with handles:
 click one to select it, drag it to move or aim it. Clicking a light in the view also opens

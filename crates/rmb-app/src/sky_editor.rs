@@ -71,10 +71,9 @@ pub fn show(ui: &mut Ui, sky: &mut Sky) {
         widgets::slider_log(ui, "Disk brightness", "Brightness of the sun disk (0 = no disk, only its light)", &mut sky.sun_brightness, 0.0..=10.0, d.sun_brightness);
         widgets::slider(ui, "Stars", "How many stars show where the sky is dark", &mut sky.stars, 0.0..=1.0, d.stars);
         widgets::slider_log(ui, "Star brightness", "Brightness of the stars", &mut sky.star_brightness, 0.0..=20.0, d.star_brightness);
-        widgets::checkbox(ui, "Sun lights the scene", "Light 1 follows the sun: direction, color (redder when low) and intensity; the ambient light takes the colors of the sky and the ground. Their settings in the Light tab are then set by the sky", &mut sky.sun_light);
+        widgets::checkbox(ui, "Sun lights the scene", "Light 1 follows the sun: direction, color (redder when low) and intensity; the ambient light takes the colors of the sky and the ground (its Amount in the Light tab scales it; 1 = the sky's brightness). Light 1 and the ambient colors are then set by the sky", &mut sky.sun_light);
         if sky.sun_light {
             widgets::slider_log(ui, "Sunlight", "Intensity of light 1 relative to the sun's brightness", &mut sky.sun_light_strength, 0.0..=4.0, d.sun_light_strength);
-            widgets::slider_log(ui, "Skylight", "Ambient light from the sky relative to its brightness: fills the shadows bluish by day, warm at sunset", &mut sky.sky_light_strength, 0.0..=4.0, d.sky_light_strength);
         }
     });
 }

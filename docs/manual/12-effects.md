@@ -60,9 +60,8 @@ The sun is placed by **Time of day** (real solar geometry) or **Manual**:
 | **Sun color** | Color of the sunlight before the atmosphere. |
 | **Sun size**, **Disk brightness** | Angular diameter of the sun disk in degrees (ours: 0.53) and its brightness (0: no disk, only its light). |
 | **Stars**, **Star brightness** | How many stars show where the sky is dark, and how bright. |
-| **Sun lights the scene** | Light 1 follows the sun: its direction, its color (redder when low) and its intensity, which fades out at sunset. The ambient light takes the average colors of the sky and the ground: shadows are filled bluish by day, warm at sunset, and the night is dark. If the scene has no light, the sky adds light 1. The Light tab shows notes; these settings are then set by the sky. |
+| **Sun lights the scene** | Light 1 follows the sun: its direction, its color (redder when low) and its intensity, which fades out at sunset. The ambient light takes the average light of the sky and the ground as its colors: shadows are filled bluish by day, warm at sunset, and the night is dark. Its **Amount** (Light tab) stays yours and scales this skylight; it is set to 1 (the sky's own brightness) when the sky starts lighting the scene. If the scene has no light, the sky adds light 1. The Light tab shows notes; these settings are then set by the sky. |
 | **Sunlight** | Intensity of light 1 relative to the sun. |
-| **Skylight** | Ambient light from the sky relative to its brightness. |
 
 With **Fog › Background color**, the fog takes the sky's air in each direction (without the
 sun disk and the stars): distant things fade into the horizon's color, and water melts into

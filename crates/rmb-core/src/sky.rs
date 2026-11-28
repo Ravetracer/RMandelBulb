@@ -76,10 +76,10 @@ pub struct Sky {
     pub stars: f64,
     pub star_brightness: f64,
     /// The sun lights the scene: light 1 follows it (direction, color, intensity × strength),
-    /// and the ambient light takes the sky's and the ground's average colors (× skylight).
+    /// and the ambient light's colors are the sky's and the ground's average light (its
+    /// amount stays the user's and scales them).
     pub sun_light: bool,
     pub sun_light_strength: f64,
-    pub sky_light_strength: f64,
     /// Time-lapse: hours per second in animations.
     pub day_speed: f64,
 }
@@ -110,7 +110,6 @@ impl Default for Sky {
             star_brightness: 1.0,
             sun_light: true,
             sun_light_strength: 1.0,
-            sky_light_strength: 1.0,
             day_speed: 0.0,
         };
         s.apply_preset("Earth clear");
@@ -404,18 +403,15 @@ pub fn sync_sun(scene: &mut crate::Scene) -> bool {
     l.intensity = intensity;
     l.enabled = true;
     let mut changed = added || *l != before;
-    // Ambient: the hemisphere colors scaled to the brightest channel of the sky.
+    // Ambient: the colors are the sky's and the ground's average light (dark at night); the
+    // amount stays the user's and scales them (1 = the sky's own brightness).
     let (up, down) = hemispheres(&f);
-    let amb = up.iter().fold(0.0f64, |a, b| a.max(*b));
     let lt = &mut scene.lighting;
-    let before = (lt.ambient, lt.sky_color, lt.ground_color, lt.ambient_camera_relative);
-    lt.ambient = amb * scene.sky.sky_light_strength.max(0.0);
-    if amb > 1e-9 {
-        lt.sky_color = up.map(|v| (v / amb) as f32);
-        lt.ground_color = down.map(|v| (v / amb).min(1.0) as f32);
-    }
+    let before = (lt.sky_color, lt.ground_color, lt.ambient_camera_relative);
+    lt.sky_color = up.map(|v| v as f32);
+    lt.ground_color = down.map(|v| v as f32);
     lt.ambient_camera_relative = false;
-    changed |= before != (lt.ambient, lt.sky_color, lt.ground_color, lt.ambient_camera_relative);
+    changed |= before != (lt.sky_color, lt.ground_color, lt.ambient_camera_relative);
     changed
 }
 
@@ -519,9 +515,14 @@ mod tests {
         let d = l.direction(&scene.camera);
         assert!((d - scene.sky.sun_dir()).length() < 1e-9);
         assert!(l.intensity > 0.5);
-        // The ambient light is the sky's: bluish by day.
+        // The ambient colors are the sky's (bluish by day); the amount stays the user's.
+        let amount = scene.lighting.ambient;
         let lt = &scene.lighting;
-        assert!(lt.ambient > 0.05 && lt.sky_color[2] > lt.sky_color[0], "{} {:?}", lt.ambient, lt.sky_color);
+        assert!(lt.sky_color[2] > 0.05 && lt.sky_color[2] > lt.sky_color[0], "{:?}", lt.sky_color);
+        let mut edited = scene.clone();
+        edited.lighting.ambient = amount * 2.0 + 0.1;
+        sync_sun(&mut edited);
+        assert_eq!(edited.lighting.ambient, amount * 2.0 + 0.1);
         // Without lights the sky adds light 1.
         let mut bare = scene.clone();
         bare.lighting.lights.clear();

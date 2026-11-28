@@ -209,7 +209,7 @@ impl Inspector {
         }
         if sec.open {
             if sky_drives {
-                ui.label(RichText::new("Amount, sky and ground colors follow the sky (Effects › Background › Skylight)").size(theme::fs(11.0)).color(theme::TEXT_MUTED));
+                ui.label(RichText::new("Sky and ground colors follow the sky (Effects › Background); Amount scales it, 1 = the sky's brightness").size(theme::fs(11.0)).color(theme::TEXT_MUTED));
             }
             widgets::grid(ui, "ambient", |ui| {
                 widgets::slider(ui, "Amount", "Light from the surroundings", &mut l.ambient, 0.0..=2.0, d.ambient);
@@ -949,6 +949,7 @@ fn effects(ui: &mut Ui, scene: &mut Scene) {
         scene.background = db.clone();
         scene.sky = Default::default();
     }
+    let drove = scene.background.mode == BackgroundMode::Sky && scene.sky.sun_light;
     let b = &mut scene.background;
     if sec.open {
         widgets::segmented(
@@ -963,6 +964,10 @@ fn effects(ui: &mut Ui, scene: &mut Scene) {
         );
         if b.mode == BackgroundMode::Sky {
             crate::sky_editor::show(ui, &mut scene.sky);
+            // The sky starts lighting the scene: the ambient amount starts at its brightness.
+            if scene.sky.sun_light && !drove {
+                scene.lighting.ambient = 1.0;
+            }
         } else {
             widgets::grid(ui, "bg", |ui| {
                 widgets::color(ui, if b.mode == BackgroundMode::Solid { "Color" } else { "Top" }, "", &mut b.top);
